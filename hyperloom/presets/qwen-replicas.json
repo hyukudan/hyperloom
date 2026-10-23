@@ -1,6 +1,6 @@
 {
   "receipt": "qwen-rep-rfix",
-  "engine_sha": "70ec42b9b5ead86c42cd673eff19bea3c09bd1df",
+  "engine_sha": "9211b07e13c64ab80ae04fcbfcbeab50fe0cbf04",
   "port": 18501,
   "binary": "strix-hip-decode-token",
   "assets": [
@@ -273,8 +273,8 @@
       "effect": "off disables the context n-gram draft extension (auto: +5.8..+7.7 % on document correction, within noise elsewhere); the target verifies every token",
       "qualification": {
         "receipt": "D-055 decode defaults campaign",
-        "engine_sha": "70ec42b9b5ead86c42cd673eff19bea3c09bd1df",
-        "evidence": "docs/decode-defaults.md, Context n-gram extension: auto by default; gate strix-hip-mtp-decode-options-tests"
+        "engine_sha": "9211b07e13c64ab80ae04fcbfcbeab50fe0cbf04",
+        "evidence": "docs/decode-defaults.md, Context n-gram extension: auto by default; gate strix-hip-mtp-decode-options-tests; requalified at 9211b07e (70ec42b9..9211b07e changes only README.md, README.es.md, REPO_DESCRIPTION.txt, docs/performance.md)"
       }
     }
   },
@@ -286,10 +286,10 @@
       },
       "output": "stderr",
       "source": [
-        "src/known_prefix_prefill_runtime.cpp:51-56@70ec42b9",
-        "src/hip_known_prompt_backend.cpp:105-109@70ec42b9",
-        "src/hip_ple_launcher.hip:2477-2483@70ec42b9",
-        "apps/hip_decode_token_main.cpp:829-833@70ec42b9"
+        "src/known_prefix_prefill_runtime.cpp:51-56@9211b07e",
+        "src/hip_known_prompt_backend.cpp:105-109@9211b07e",
+        "src/hip_ple_launcher.hip:2477-2483@9211b07e",
+        "apps/hip_decode_token_main.cpp:829-833@9211b07e"
       ]
     },
     "cycle-timing": {
@@ -299,8 +299,8 @@
       },
       "output": "stderr",
       "source": [
-        "include/strix/host_phase_timing.hpp:12-27@70ec42b9",
-        "src/hip_ple_launcher.hip:2575-2576@70ec42b9"
+        "include/strix/host_phase_timing.hpp:12-27@9211b07e",
+        "src/hip_ple_launcher.hip:2575-2576@9211b07e"
       ]
     },
     "prompt-batch-log": {
@@ -310,7 +310,7 @@
       },
       "output": "stderr",
       "source": [
-        "apps/hip_mtp_decode_bridge.hpp:659-665@70ec42b9"
+        "apps/hip_mtp_decode_bridge.hpp:659-665@9211b07e"
       ]
     }
   }

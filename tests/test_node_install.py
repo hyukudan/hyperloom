@@ -52,7 +52,7 @@ class InstallCase(unittest.TestCase):
 
 class InstallTests(InstallCase):
     def test_verbs(self):
-        self.assertEqual(install.VERBS, {"install", "job", "releases", "activate", "uninstall", "verify-model", "push-release"})
+        self.assertEqual(install.VERBS, {"install", "job", "releases", "activate", "uninstall", "verify-model", "stat-assets", "push-release"})
 
     def test_marker_created_once(self):
         self.mark()
@@ -228,10 +228,11 @@ class InstallTests(InstallCase):
             mutate(payload)
             self.assertIn("error", install.run("install", payload))
 
-    def test_verify_model_size_only_and_failures(self):
+    def test_stat_assets_and_verify_failures(self):
         model = self.base / "model.gguf"
         model.write_bytes(b"model")
-        self.assertTrue(install.run("verify-model", {"path": str(model), "bytes": 5, "sha256": None})["verified"])
+        self.assertEqual(install.run("stat-assets", {"paths": [str(model)]})["assets"][str(model)]["bytes"], 5)
+        self.assertIn("error", install.run("verify-model", {"path": str(model), "bytes": 5}))
         self.assertIn("error", install.run("verify-model", {"path": str(model), "bytes": 4}))
         self.assertIn("error", install.run("verify-model", {"path": str(model), "bytes": 5, "sha256": "bad"}))
 

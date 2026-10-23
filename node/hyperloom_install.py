@@ -1,12 +1,15 @@
 """Marked node installs and detached, low-priority build/hash jobs (Python 3.10+)."""
 
+import errno
 import hashlib
 import json
+import mmap
 import os
 from pathlib import Path, PurePosixPath
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -16,7 +19,9 @@ import unicodedata
 import uuid
 
 
-VERBS = {"install", "job", "releases", "activate", "uninstall", "verify-model", "push-release"}
+VERBS = {"install", "job", "releases", "activate", "uninstall", "verify-model", "stat-assets", "push-release"}
+HASH_BLOCK = 8 * 1024 ** 2
+DIRECT_UNSUPPORTED = {errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP, errno.ENOTSUP}
 RUNTIME_ENV = {"LD_LIBRARY_PATH": "/opt/rocm/core-10.1/lib"}
 TERMINAL = {"stopped", "failed", "aborted", "cancelled", "canceled", "finished"}
 
@@ -165,6 +170,110 @@ def sha256(path):
     return digest.hexdigest()
 
 
+def file_identity(info):
+    return {"bytes": info.st_size, "mtime_ns": info.st_mtime_ns,
+            "inode": info.st_ino, "dev": info.st_dev}
+
+
+def asset_files(path):
+    """Return sorted regular files; internal links are allowed, escapes/cycles are not."""
+    root = path.resolve(strict=True)
+    files, metadata = [], []
+
+    def visit(current, ancestors):
+        try:
+            resolved = current.resolve(strict=True)
+        except RuntimeError as exc:
+            raise ValueError("asset symlink cycle: " + str(current)) from exc
+        if not resolved.is_relative_to(root):
+            raise ValueError("asset symlink leaves directory: " + str(current))
+        info = current.stat()
+        relative = current.relative_to(path).as_posix()
+        metadata.append((relative, file_identity(info), file_identity(current.lstat())))
+        if stat.S_ISREG(info.st_mode):
+            files.append((relative, current, info))
+        elif stat.S_ISDIR(info.st_mode):
+            identity = (info.st_dev, info.st_ino)
+            if identity in ancestors:
+                raise ValueError("asset directory symlink cycle: " + str(current))
+            for child in sorted(current.iterdir()):
+                visit(child, ancestors | {identity})
+        else:
+            raise ValueError("asset is not a regular file or directory: " + str(current))
+
+    visit(path, set())
+    return sorted(files), sorted(metadata)
+
+
+def stat_asset(path):
+    info = path.stat()
+    result = file_identity(info)
+    if stat.S_ISDIR(info.st_mode):
+        files, metadata = asset_files(path)
+        result["bytes"] = sum(info.st_size for _, _, info in files)
+        # Directory mtime alone misses changes to existing children. This hashes metadata only.
+        result["tree_stat_sha256"] = hashlib.sha256(canonical(metadata)).hexdigest()
+    elif not stat.S_ISREG(info.st_mode):
+        raise ValueError("asset is not a regular file or directory: " + str(path))
+    return result
+
+
+def hash_file(path):
+    """Keep model reads out of the page cache when the filesystem supports O_DIRECT."""
+    def read_hash(direct):
+        flags = os.O_RDONLY | (os.O_DIRECT if direct else 0)
+        fd = os.open(path, flags)
+        try:
+            before = os.fstat(fd)
+            if not stat.S_ISREG(before.st_mode):
+                raise ValueError("asset is not a regular file")
+            if not direct and hasattr(os, "posix_fadvise") and hasattr(os, "POSIX_FADV_NOREUSE"):
+                os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_NOREUSE)
+            digest, total = hashlib.sha256(), 0
+            # Anonymous mmap starts on a page boundary; every request/offset is 8 MiB aligned.
+            with mmap.mmap(-1, HASH_BLOCK) as buffer:
+                with memoryview(buffer) as view:
+                    while total < before.st_size:
+                        if direct:
+                            count = os.readv(fd, [view])
+                        else:
+                            chunk = os.read(fd, HASH_BLOCK)
+                            count = len(chunk)
+                        if not count:
+                            raise ValueError("asset changed while hashing: " + str(path))
+                        digest.update(view[:count] if direct else chunk)
+                        total += count
+                        if count < HASH_BLOCK and total != before.st_size:
+                            raise ValueError("short asset read: " + str(path))
+            if (total != before.st_size or file_identity(before) != file_identity(os.fstat(fd))
+                    or file_identity(before) != file_identity(path.stat())):
+                raise ValueError("asset changed while hashing: " + str(path))
+            return digest.hexdigest()
+        finally:
+            os.close(fd)
+
+    if hasattr(os, "O_DIRECT") and hasattr(os, "readv"):
+        try:
+            return read_hash(True)
+        except OSError as exc:
+            if exc.errno not in DIRECT_UNSUPPORTED:
+                raise
+    return read_hash(False)
+
+
+def hash_asset(path):
+    before = stat_asset(path)
+    if path.is_dir():
+        files, _ = asset_files(path)
+        rows = [(relative, info.st_size, hash_file(filename)) for relative, filename, info in files]
+        digest = hashlib.sha256(canonical(rows)).hexdigest()
+    else:
+        digest = hash_file(path)
+    if before != stat_asset(path):
+        raise ValueError("asset changed while hashing: " + str(path))
+    return {**before, "sha256": digest}
+
+
 def release(root, rid):
     if not re.fullmatch(r"[0-9a-f]{12}", text(rid)):
         raise ValueError("release_id must be 12 lowercase hex characters")
@@ -228,7 +337,9 @@ def launch_job(root, kind, payload):
     state_path = inside(root, "run", "job-" + job + ".json")
     log = inside(root, "log", "job-" + job + ".log")
     prefix = envelope() if kind == "install" else ["nice", "-n", "19"]
-    if kind == "verify-model" and shutil.which("ionice"):
+    if kind == "verify-model":
+        if not shutil.which("ionice"):
+            raise ValueError("verify-model requires ionice for idle I/O priority")
         prefix += ["ionice", "-c3"]
     atomic_json(spec, {"root": str(root), "kind": kind, "payload": payload,
                        "job": job, "limited": prefix[0] != "systemd-run"})
@@ -385,12 +496,14 @@ def job_main(spec_path):
             payload = spec["payload"]
             lab_idle(payload.get("lab_dir"))
             model = absolute(payload["path"])
-            if model.stat().st_size != payload["bytes"]:
+            if payload["bytes"] and stat_asset(model)["bytes"] != payload["bytes"]:
                 raise ValueError("model size mismatch")
-            digest = sha256(model)
-            if digest != payload["sha256"]:
+            verified = hash_asset(model)
+            if payload["bytes"] and verified["bytes"] != payload["bytes"]:
+                raise ValueError("model size mismatch")
+            if payload.get("sha256") is not None and verified["sha256"] != payload["sha256"]:
                 raise ValueError("model sha256 mismatch")
-            state.update(sha256=digest, verified=True)
+            state.update(verified, verified=True)
         state["state"] = "succeeded"
     except Exception as exc:
         state.update(state="failed", error=str(exc))
@@ -477,15 +590,25 @@ def run(verb, payload):
     try:
         if verb not in VERBS or not isinstance(payload, dict):
             raise ValueError("unsupported install request")
+        if verb == "stat-assets":
+            paths = payload.get("paths")
+            if not isinstance(paths, list) or len(paths) > 4096:
+                raise ValueError("paths must be a list of at most 4096 asset paths")
+            rows = {}
+            for value in paths:
+                try:
+                    rows[text(value)] = stat_asset(absolute(value))
+                except (OSError, ValueError) as exc:
+                    rows[text(value)] = {"error": str(exc)}
+            return {**result, "assets": rows}
         if verb == "verify-model":
             model = absolute(payload.get("path"))
             size = payload.get("bytes")
-            if type(size) is not int or size < 0 or model.stat().st_size != size:
+            info = stat_asset(model)
+            if type(size) is not int or size < 0 or (size and info["bytes"] != size):
                 raise ValueError("model size mismatch")
             digest = payload.get("sha256")
-            if digest is None:
-                return {**result, "verified": True, "bytes": size}
-            if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            if digest is not None and (not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)):
                 raise ValueError("invalid model sha256")
             if "root" not in payload:
                 raise ValueError("root is required for a background hashing job")

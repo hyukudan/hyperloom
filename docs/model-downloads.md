@@ -10,7 +10,7 @@ and run them on a node after you confirm the exact plan.
   - Sizes and hashes are the upstream LFS metadata at that revision.
 - `unavailable`: the reason, for example a local artifact with no public immutable source.
 
-At engine `70ec42b9`:
+At engine `9211b07e` (the ledger is unchanged since `70ec42b9`):
 
 | profile | asset | source |
 |---|---|---|

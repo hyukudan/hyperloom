@@ -1,6 +1,6 @@
 {
   "receipt": "P17.5 production defaults",
-  "engine_sha": "70ec42b9b5ead86c42cd673eff19bea3c09bd1df",
+  "engine_sha": "9211b07e13c64ab80ae04fcbfcbeab50fe0cbf04",
   "port": 18431,
   "binary": "strix-deepseek41-serve",
   "assets": [
@@ -79,8 +79,8 @@
       "effect": "0 drafts at every load (DSpark always on); 4 runs plain steps while more than 4 requests are in flight",
       "qualification": {
         "receipt": "P17.1 timing campaign (serve C1..C8)",
-        "engine_sha": "70ec42b9b5ead86c42cd673eff19bea3c09bd1df",
-        "evidence": "docs/ds41-production-defaults.md, Code defaults: serve --dspark-max-inflight (4 keeps C1..C4 +19..+76 % without the C8 TTFT cost)"
+        "engine_sha": "9211b07e13c64ab80ae04fcbfcbeab50fe0cbf04",
+        "evidence": "docs/ds41-production-defaults.md, Code defaults: serve --dspark-max-inflight (4 keeps C1..C4 +19..+76 % without the C8 TTFT cost); requalified at 9211b07e (70ec42b9..9211b07e changes only README.md, README.es.md, REPO_DESCRIPTION.txt, docs/performance.md)"
       }
     },
     "dspark_ranks": {
@@ -94,8 +94,8 @@
       "effect": "1 keeps the drafter on rank 0 only",
       "qualification": {
         "receipt": "P17.1 timing campaign",
-        "engine_sha": "70ec42b9b5ead86c42cd673eff19bea3c09bd1df",
-        "evidence": "docs/ds41-production-defaults.md, Code defaults: serve --dspark-ranks (2, off = 1)"
+        "engine_sha": "9211b07e13c64ab80ae04fcbfcbeab50fe0cbf04",
+        "evidence": "docs/ds41-production-defaults.md, Code defaults: serve --dspark-ranks (2, off = 1); requalified at 9211b07e (70ec42b9..9211b07e changes only README.md, README.es.md, REPO_DESCRIPTION.txt, docs/performance.md)"
       }
     },
     "serve_sched": {
@@ -109,8 +109,8 @@
       "effect": "off: no interleaved prefill under load (8K prompt stalls decode ~13 s instead of <= 1 s; its own TTFT about halves)",
       "qualification": {
         "receipt": "P17.1 timing campaign (8K prompt under load)",
-        "engine_sha": "70ec42b9b5ead86c42cd673eff19bea3c09bd1df",
-        "evidence": "docs/ds41-production-defaults.md, Code defaults: STRIX_DS41_SERVE_SCHED"
+        "engine_sha": "9211b07e13c64ab80ae04fcbfcbeab50fe0cbf04",
+        "evidence": "docs/ds41-production-defaults.md, Code defaults: STRIX_DS41_SERVE_SCHED; requalified at 9211b07e (70ec42b9..9211b07e changes only README.md, README.es.md, REPO_DESCRIPTION.txt, docs/performance.md)"
       }
     }
   },
@@ -122,8 +122,8 @@
       },
       "output": "stderr",
       "source": [
-        "apps/deepseek41_serve_main.cpp:77-78@70ec42b9",
-        "apps/deepseek41_serve_main.cpp:815-819@70ec42b9"
+        "apps/deepseek41_serve_main.cpp:77-78@9211b07e",
+        "apps/deepseek41_serve_main.cpp:815-819@9211b07e"
       ]
     },
     "dist-latency-trace": {
@@ -133,9 +133,9 @@
       },
       "output": "files {log_dir}/diag-{run}-{role}-dist-latency.t<tid>.csv",
       "source": [
-        "src/dist_latency_trace.hpp:1-2@70ec42b9",
-        "src/dist_latency_trace.hpp:15-19@70ec42b9",
-        "src/dist_communicator.cpp:159-167@70ec42b9"
+        "src/dist_latency_trace.hpp:1-2@9211b07e",
+        "src/dist_latency_trace.hpp:15-19@9211b07e",
+        "src/dist_communicator.cpp:159-167@9211b07e"
       ]
     }
   }

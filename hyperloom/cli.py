@@ -332,6 +332,29 @@ def main(argv=None):
     install.add_argument("profile")
     install.add_argument("--build-on")
     install.add_argument("--config", type=Path, default=config_path())
+    assets = commands.add_parser("assets", help="verify assets or inspect the integrity cache")
+    asset_commands = assets.add_subparsers(dest="operation", required=True)
+    for operation in ("verify", "status"):
+        asset_command = asset_commands.add_parser(operation)
+        asset_command.add_argument("profile")
+        asset_command.add_argument("--config", type=Path, default=config_path())
+        if operation == "verify":
+            asset_command.add_argument("--include-large", action="store_true")
+            asset_command.add_argument("--machine")
+    asset_sources = asset_commands.add_parser("sources", help="show each asset's pinned source (read-only)")
+    asset_sources.add_argument("profile")
+    asset_sources.add_argument("--config", type=Path, default=config_path())
+    asset_download = asset_commands.add_parser("download", help="show the exact download plan; run it only with --confirm")
+    asset_download.add_argument("profile")
+    asset_download.add_argument("asset")
+    asset_download.add_argument("--machine", required=True)
+    asset_download.add_argument("--confirm", help="the code printed by the plan; nothing runs without it")
+    asset_download.add_argument("--config", type=Path, default=config_path())
+    for name in ("job", "cancel"):
+        asset_job = asset_commands.add_parser(name, help="a download job's state" if name == "job" else "cancel a download job")
+        asset_job.add_argument("machine")
+        asset_job.add_argument("job")
+        asset_job.add_argument("--config", type=Path, default=config_path())
     up = commands.add_parser("up")
     # Keep the no-argument Phase 0 probe for existing launchers.
     up.add_argument("profile", nargs="?")
@@ -355,22 +378,6 @@ def main(argv=None):
     logs.add_argument("profile")
     logs.add_argument("process")
     logs.add_argument("--tail", type=int, default=100)
-    assets = commands.add_parser("assets", help="pinned model sources and user-confirmed downloads")
-    assets_ops = assets.add_subparsers(dest="asset_operation", required=True)
-    asset_sources = assets_ops.add_parser("sources", help="show each asset's pinned source (read-only)")
-    asset_sources.add_argument("profile")
-    asset_sources.add_argument("--config", type=Path, default=config_path())
-    asset_download = assets_ops.add_parser("download", help="show the exact download plan; run it only with --confirm")
-    asset_download.add_argument("profile")
-    asset_download.add_argument("asset")
-    asset_download.add_argument("--machine", required=True)
-    asset_download.add_argument("--confirm", help="the code printed by the plan; nothing runs without it")
-    asset_download.add_argument("--config", type=Path, default=config_path())
-    for name in ("job", "cancel"):
-        asset_job = assets_ops.add_parser(name)
-        asset_job.add_argument("machine")
-        asset_job.add_argument("job")
-        asset_job.add_argument("--config", type=Path, default=config_path())
     hosts = commands.add_parser("hosts", help="scan or pin a machine's ssh host key")
     hosts.add_argument("operation", choices=("scan", "pin"))
     hosts.add_argument("machine")
@@ -414,6 +421,26 @@ def main(argv=None):
             _, kind, mids = orchestrate._profile(cluster, args.profile)
             targets = ["strix-hip-decode-token" if kind == "qwen-replicas" else "strix-deepseek41-serve"]
             _json({"release_id": orchestrate.install(cluster, args.build_on or mids[0], targets, profile=args.profile)})
+        elif args.command == "assets" and args.operation in ("sources", "download", "job", "cancel"):
+            downloads = _module("hyperloom.downloads")
+            cluster = _cluster(args.config)
+            if args.operation == "sources":
+                _json(downloads.sources(cluster, args.profile))
+            elif args.operation in ("job", "cancel"):
+                if args.machine not in cluster.machines:
+                    raise ValueError("unknown machine: " + args.machine)
+                _json(downloads.job(cluster, args.machine, args.job, cancel=args.operation == "cancel"))
+            elif args.confirm is None:
+                _json(downloads.plan(cluster, args.profile, args.asset, args.machine))
+            else:
+                _json(downloads.start(cluster, args.profile, args.asset, args.machine, args.confirm))
+        elif args.command == "assets":
+            cluster = _cluster(args.config)
+            assets = _module("hyperloom.assets")
+            if args.operation == "verify":
+                _json(assets.verify(cluster, args.profile, include_large=args.include_large, machine=args.machine))
+            else:
+                _json(assets.status(cluster, args.profile))
         elif args.command == "up":
             supplied = [args.approval_ref is not None, args.approval_lease is not None, args.approval_end is not None]
             approval = None
@@ -442,19 +469,6 @@ def main(argv=None):
                 sys.stdout.write(exporter.collect(profile=args.profile))
             else:
                 exporter.serve(args.listen, args.profile)
-        elif args.command == "assets":
-            downloads = _module("hyperloom.downloads")
-            cluster = _cluster(args.config)
-            if args.asset_operation == "sources":
-                _json(downloads.sources(cluster, args.profile))
-            elif args.asset_operation in ("job", "cancel"):
-                if args.machine not in cluster.machines:
-                    raise ValueError("unknown machine: " + args.machine)
-                _json(downloads.job(cluster, args.machine, args.job, cancel=args.asset_operation == "cancel"))
-            elif args.confirm is None:
-                _json(downloads.plan(cluster, args.profile, args.asset, args.machine))
-            else:
-                _json(downloads.start(cluster, args.profile, args.asset, args.machine, args.confirm))
         elif args.command == "hosts":
             _json(_hosts(args))
         elif args.command == "service":

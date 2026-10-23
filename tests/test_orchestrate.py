@@ -428,7 +428,7 @@ class OrchestrationTests(unittest.TestCase):
 
     def test_missing_asset_fails_before_any_lease(self):
         self.cluster.assets["halo-1"] = {"model": {"path": "/opt/models/model.gguf", "bytes": 1}}
-        self.fail.add(("halo-1", "verify-model"))
+        self.fail.add(("halo-1", "stat-assets"))
         with self.assertRaises(orch.OrchestrationError):
             orch.up(self.cluster, "qwen-replicas")
         self.assertNotIn("lease", [verb for _, verb, _ in self.calls])

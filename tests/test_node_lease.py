@@ -325,6 +325,27 @@ class LeaseLogicTests(LeaseFixture):
             with self.assertRaisesRegex(ValueError, "lab layout"):
                 lease.layout_check(self.spec)
 
+    def test_layout_fault_file_can_only_fail(self):
+        turn = self.lab / ".gpu-turn"
+        (turn / "holder").write_text("hl-qwen-test since synthetic")
+        (turn / "layout-state").write_text("1 -")
+        usb = self.base / "usb.json"
+        usb.write_text('{"layout":"1"}')
+        self.spec["layout_required"] = "1"
+        fault = Path(self.spec["root"]) / "fault" / "usb4-layout.json"
+        fault.parent.mkdir()
+        fault.write_text('{"layout":"gpu-direct"}')
+        with patch.object(lease, "USB_LAYOUT", usb):
+            with self.assertRaisesRegex(ValueError, "fault file"):
+                lease.layout_check(self.spec)
+            # A fault file naming layout 1 never hides a wrong real record.
+            fault.write_text('{"layout":"1"}')
+            lease.layout_check(self.spec)
+            usb.write_text('{"layout":"2b"}')
+            with self.assertRaisesRegex(ValueError, "USB4 layout mismatch: 2b$"):
+                lease.layout_check(self.spec)
+        fault.unlink()
+
     def test_pair_layout_checks_peer(self):
         turn = self.lab / ".gpu-turn"
         (turn / "holder").write_text("PAIR hl-qwen-test (local) since synthetic")

@@ -13,7 +13,7 @@ This page describes how they are now exposed.
 - Refused as targets: identity, transport, layout, numerics, endpoints and asset flags; the production identity env; `STRIX_DIST_*`;
   loader/interpreter variables; any flag the production line or a basic knob already sets.
 
-## Rows at engine `70ec42b9`
+## Rows at engine `9211b07e` (first qualified at `70ec42b9`; the code is identical, only README and docs/performance.md changed)
 
 | profile | knob | values (production first) | evidence at the pin |
 |---|---|---|---|

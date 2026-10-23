@@ -23,7 +23,7 @@ hyperloom logs qwen-replicas halo-1   # stderr diagnostics are in the engine's l
   stderr writes. hyperloom has no measurement publisher; any bench or report that reads hyperloom state must refuse a
   run whose state says `"production": false`.
 
-## Verified diagnostics (engine pin `70ec42b9`; unchanged in `9211b07e`)
+## Verified diagnostics (engine pin `9211b07e`; source lines identical to `70ec42b9`)
 Each entry was read in the pinned source and only reads clocks and prints or buffers records; none changes what is
 enqueued or computed, and none gates a code path.
 

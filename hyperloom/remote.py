@@ -25,7 +25,7 @@ from .winproc import no_window
 MAX_JSON = 256 * 1024
 VERBS = frozenset({"version", "doctor", "gpu",
                    # hyperloom_install (phase 1a)
-                   "install", "job", "releases", "activate", "uninstall", "verify-model", "push-release",
+                   "install", "job", "releases", "activate", "uninstall", "verify-model", "stat-assets", "push-release",
                    # hyperloom_lease (phase 1a)
                    "lease", "cancel", "status", "logs", "stop", "put-secret",
                    "peer-run", "supervise-internal",
