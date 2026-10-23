@@ -82,3 +82,17 @@
 - **Token regression gate:** the same binary launched lab-style (inherited user environment, the same flags and identity) against hyperloom (clean environment), 8 greedy prompts: **all 8 identical (290 tokens)**.
 - **Stop:** `down` → both ranks printed `STOPPED`; the pair turn was 2 min 44 s; no process was left on either node; `usb4stream-describe` shows 4 of 4 streams openable on both nodes afterwards.
 - **Not yet run for the pair:** the router on a node (covered for Qwen), the negative tests (mismatched releases, same-size wrong asset), and interleaved C1/C4 against the lab launch.
+
+## Phase 1b portal on real hardware
+
+- **Real data:** `hyperloom ui` against the real config (doctor read-only) shows the three machines with summarized hardware:
+  - unified VRAM+GTT memory on the Strix Halo nodes;
+  - USB4 4/4 streams with cable warnings;
+  - the cluster map.
+- **Start and stop from the portal** (Qwen on halo-1):
+  - `POST /up` succeeded in 455 s, most of it queued behind other pair turns;
+  - `POST /down` succeeded in 4 s, the turn was released and no engine was left.
+- **Found and fixed:**
+  - a portal `down` job ran in a daemon thread and died with the portal. Mutations now run as detached CLI processes (3fba3a8);
+  - on Windows, `CREATE_BREAKAWAY_FROM_JOB` is refused inside a job that forbids breakaway; the portal now falls back (d65f1e6).
+- **Not yet verified on hardware:** killing the portal while a detached `down` runs. My kill step did not find the process, so the case was not exercised. It is covered by design, but the real test is still open.
