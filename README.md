@@ -78,7 +78,7 @@ Everything in the boxes comes from pinned components. hyperloom itself contains 
 > [!NOTE]
 > The Phase 1a CLI is written and unit-tested but **not yet accepted on real hardware**: no GPU acceptance run has happened yet. Plan files (`--plan`) and `--allow-partial` are specified but not implemented. `hloom` is a short alias for `hyperloom` everywhere.
 
-**1. Install on the control machine** (Windows, Python ≥ 3.11, git, OpenSSH client):
+**1. Install on the control machine** (Windows, Python ≥ 3.11, git, OpenSSH client). The full from-scratch guide, including release archives, Linux, node prerequisites, upgrades and rollback, is [docs/install.md](docs/install.md):
 
 ```powershell
 git clone --recurse-submodules https://github.com/hyukudan/hyperloom.git
