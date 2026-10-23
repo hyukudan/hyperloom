@@ -134,9 +134,10 @@ def openssh_tool(name):
     return shutil.which(name) or name
 
 
-def _run(argv, data=b"", timeout=30, cancel_event=None, limit=MAX_JSON):
+def _run(argv, data=b"", timeout=30, cancel_event=None, limit=MAX_JSON, executable=None):
     """Drain bounded pipes while allowing timeout and cooperative cancellation."""
-    executable = openssh_tool(argv[0]) if argv and argv[0] in ("ssh", "scp", "ssh-keyscan") else None
+    if executable is None and argv and argv[0] in ("ssh", "scp", "ssh-keyscan"):
+        executable = openssh_tool(argv[0])
     if not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
         raise RemoteError("timeout must be positive and finite")
     if cancel_event is not None and cancel_event.is_set():
@@ -202,7 +203,26 @@ def _run(argv, data=b"", timeout=30, cancel_event=None, limit=MAX_JSON):
 def keyscan(address, port):
     """Return candidates only; scanning never authorizes a key or bootstraps."""
     address, port = _address(address), _port(port)
-    raw = _run(["ssh-keyscan", "-t", "ed25519,ecdsa,rsa", "-p", str(port), address])
+    argv = ["ssh-keyscan", "-t", "ed25519,ecdsa,rsa", "-p", str(port), address]
+    try:
+        return _keys(_run(argv))
+    except RemoteError:
+        # Windows' bundled ssh-keyscan 9.5 offers a key exchange it cannot complete
+        # (sntrup761) and finds no keys; retry with the one on PATH or Git for Windows'
+        # (which usually has only Git\cmd on PATH).
+        if os.name != "nt":
+            raise
+        native = ntpath.normcase(openssh_tool("ssh-keyscan"))
+        git = shutil.which("git")
+        candidates = [shutil.which("ssh-keyscan"),
+                      git and ntpath.join(ntpath.dirname(ntpath.dirname(git)), "usr", "bin", "ssh-keyscan.exe")]
+        fallback = next((c for c in candidates if c and os.path.isfile(c) and ntpath.normcase(c) != native), None)
+        if fallback is None:
+            raise
+        return _keys(_run(argv, executable=fallback))
+
+
+def _keys(raw):
     result = []
     try:
         for line in raw.decode("utf-8").splitlines():
