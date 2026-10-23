@@ -1,5 +1,6 @@
 @echo off
 setlocal
+rem -P: the current directory never shadows the installed package.
 rem A versioned install names its active release in current.txt (install.ps1 -Activate).
 set "_HYPERLOOM_PY="
 if exist "%~dp0current.txt" (
@@ -12,5 +13,5 @@ if not exist "%_HYPERLOOM_PY%" (
   echo Hyperloom is not installed. Run windows\install.ps1. 1>&2
   exit /b 1
 )
-"%_HYPERLOOM_PY%" -m hyperloom %*
+"%_HYPERLOOM_PY%" -P -m hyperloom %*
 exit /b %errorlevel%
