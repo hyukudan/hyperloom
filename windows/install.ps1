@@ -79,7 +79,7 @@ function Set-HyperloomActive {
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut($ShortcutPath)
     $shortcut.TargetPath = $python
-    $shortcut.Arguments = '-m hyperloom ui'
+    $shortcut.Arguments = '-P -m hyperloom ui'
     $shortcut.WorkingDirectory = $Base
     $shortcut.Save()
 }
@@ -150,7 +150,7 @@ $pipArguments += @((Join-Path $source 'third_party\tensormeld'), '-e', $source)
 Write-Output "Python: $interpreter"
 Write-Output "Venv: $venv"
 Write-Output ("Pip arguments: " + ($pipArguments | ConvertTo-Json -Compress))
-Write-Output "Shortcut: $shortcutPath -> $venvPython -m hyperloom ui (Phase 1b)"
+Write-Output "Shortcut: $shortcutPath -> $venvPython -P -m hyperloom ui (Phase 1b)"
 Write-Output "Launcher: $(Join-Path $base 'hyperloom.cmd')"
 if ($PSCmdlet.ShouldProcess($base, 'Create venv, install TensorMeld and hyperloom, record interpreter, create shortcut and launcher')) {
     New-Item -ItemType Directory -Path $base -Force | Out-Null
@@ -183,7 +183,7 @@ if ($PSCmdlet.ShouldProcess($base, 'Create venv, install TensorMeld and hyperloo
         $shell = New-Object -ComObject WScript.Shell
         $shortcut = $shell.CreateShortcut($shortcutPath)
         $shortcut.TargetPath = $venvPython
-        $shortcut.Arguments = '-m hyperloom ui'
+        $shortcut.Arguments = '-P -m hyperloom ui'
         $shortcut.WorkingDirectory = $base
         $shortcut.Save()
     }
