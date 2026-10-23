@@ -6,6 +6,7 @@ import hashlib
 import ipaddress
 import json
 import math
+import ntpath
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -17,13 +18,16 @@ import tempfile
 import threading
 import time
 
+from .paths import repo_root
+
 
 MAX_JSON = 256 * 1024
 VERBS = frozenset({"version", "doctor", "gpu",
                    # telar_install (phase 1a)
-                   "install", "releases", "activate", "uninstall", "verify-model", "push-release",
+                   "install", "job", "releases", "activate", "uninstall", "verify-model", "push-release",
                    # telar_lease (phase 1a)
-                   "lease", "cancel", "status", "logs", "stop", "put-secret"})
+                   "lease", "cancel", "status", "logs", "stop", "put-secret",
+                   "peer-run", "supervise-internal"})
 # Files bootstrap copies into ~/.telar-boot (the node CLI and its extension modules).
 NODE_FILES = ("telar-node", "telar_install.py", "telar_lease.py", "build-node.sh")
 
@@ -124,7 +128,7 @@ def openssh_tool(name):
     if found:
         return found
     if os.name == "nt":
-        system = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "OpenSSH", name + ".exe")
+        system = ntpath.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "OpenSSH", name + ".exe")
         if os.path.isfile(system):
             return system
     return name
@@ -318,16 +322,19 @@ class Remote:
         self.node_path = path
 
     def bootstrap(self, source=None, timeout=30, *, scp="scp", cancel_event=None):
-        source = Path(source) if source is not None else Path(__file__).resolve().parents[1] / "node" / "telar-node"
-        if not source.is_file():
-            raise RemoteError("telar-node source is missing")
+        source = Path(source) if source is not None else repo_root() / "node"
+        directory = source if source.is_dir() else source.parent
+        sources = [directory / name for name in NODE_FILES]
+        if any(not path.is_file() for path in sources):
+            raise RemoteError("telar-node bootstrap files are missing")
         self._path(self._ssh('umask 077; mkdir -p -- "$HOME/.telar-boot" && '
                              'printf \'%s\\n\' "$HOME/.telar-boot/telar-node"',
                              timeout=timeout, cancel_event=cancel_event))
         options = self.known_hosts.options(self.alias, self.address, self.port)
-        _run([scp, *options, "-P", str(self.port), "--", str(source.absolute()),
-              f"{self.target}:.telar-boot/telar-node"], timeout=timeout, cancel_event=cancel_event)
-        self._ssh("chmod 700 -- " + shlex.quote(self.node_path), timeout=timeout,
+        _run([scp, *options, "-P", str(self.port), "--", *(str(path.absolute()) for path in sources),
+              f"{self.target}:.telar-boot/"], timeout=timeout, cancel_event=cancel_event)
+        boot = PurePosixPath(self.node_path).parent
+        self._ssh("chmod 700 -- " + " ".join(shlex.quote(str(boot / name)) for name in NODE_FILES), timeout=timeout,
                   cancel_event=cancel_event)
         return self.call("version", {}, timeout, cancel_event=cancel_event)
 

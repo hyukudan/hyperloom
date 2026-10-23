@@ -42,7 +42,7 @@ class RenderTests(unittest.TestCase):
     def test_launch_path_is_an_immutable_manifest_release(self):
         cluster = parse(self.obj)
         path = render_processes(cluster, "qwen-replicas")[0].argv[0]
-        self.assertIn("/releases/" + "0" * 64 + "/bin/", path)
+        self.assertIn("/releases/" + "0" * 12 + "/bin/", path)
         del self.obj["profiles"]["qwen-replicas"]["release_id"]
         with self.assertRaisesRegex(ConfigError, "release_id"):
             render_processes(parse(self.obj), "qwen-replicas")

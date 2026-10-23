@@ -139,6 +139,8 @@ class LocalChild:
         with socket.socket(family, socket.SOCK_STREAM) as probe:
             if os.name == "nt":
                 probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            else:
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 probe.bind((address, port))
             except OSError as exc:

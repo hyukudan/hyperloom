@@ -161,6 +161,8 @@ class CLITests(unittest.TestCase):
                 with socket.socket() as probe:
                     if os.name == "nt":
                         probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                    else:
+                        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                     probe.bind(("127.0.0.1", port))
             finally:
                 self.invoke("router", "stop")
@@ -185,6 +187,7 @@ class CLITests(unittest.TestCase):
         self.assertIn(str(local / "telar" / "venv"), result.stdout)
         self.assertIn("--no-index", result.stdout)
         self.assertIn("--find-links", result.stdout)
+        self.assertIn('"-e"', result.stdout)
         self.assertIn("checkout with spaces", result.stdout)
         self.assertIn("-m telar ui", result.stdout)
         self.assertFalse(local.exists())

@@ -36,7 +36,7 @@ Read `docs/SPEC.md` §2.5–2.7, §4, §6 (Phase 1a), §15 and §16, plus `docs/
 ## Task F: node install and releases (owner: worker F)
 **Files:** `node/telar_install.py`, `node/build-node.sh`, `tests/test_node_install.py`, `tests/fixtures/node_install/*`
 
-**`VERBS = {"install", "releases", "activate", "uninstall", "verify-model", "push-release"}`**
+**`VERBS = {"install", "job", "releases", "activate", "uninstall", "verify-model", "push-release"}`**
 
 **`install`**
 - Payload: `{root, lab_dir|null, components: {name: {repo, commit}}, recipe: {configure: [...], targets: [...], ctest_regex, trellis: bool}}`.
@@ -54,9 +54,10 @@ Read `docs/SPEC.md` §2.5–2.7, §4, §6 (Phase 1a), §15 and §16, plus `docs/
 - It then configures the engine with the recipe flags passed as env/args, builds only the targets with `ninja -j6`, builds and runs `ctest -R <regex>`, and copies the binaries to `out-bin`.
 
 **Other verbs**
+- `job {root, job}` returns the recorded job fields (including `state`, and `release_id` or `verified` on success) plus `tail`, the last at most 64 KiB of its UTF-8 log. Both build and hash jobs use this interface. A failed job remains queryable with exit 0, with its diagnostic in `reason`; `error` is reserved for a failed query.
 - `releases` lists releases with their manifests and marks the active one per profile.
 - `activate {root, profile, release_id}` writes `<root>/etc/active-<profile>.json` atomically (temp file + rename). It refuses if a lease for that profile is running (check `telar_lease` state files under `<root>/run/`).
-- `push-release {root, release_id, peer_ssh, peer_root}` copies a release to the peer node (rsync over ssh if present, else `tar | ssh tar`) and verifies the sha256 of every binary on the peer (ssh `sha256sum`).
+- `push-release {root, release_id, peer_ssh, peer_root}` copies a release to the peer node (rsync over ssh if present, else `tar | ssh tar`) and verifies the sha256 of every binary on the peer (ssh `sha256sum`). It also fetches the manifest's pinned TensorMeld source into `<peer_root>/src/tensormeld-<commit>` without building it.
 - `verify-model {path, bytes, sha256|null}` checks the size; with a `sha256` it hashes in a background job in the same job framework, at `nice -n 19` / `ionice -c3`.
 - `uninstall {root, keep_logs}` works only on a marked root, never deletes `releases/<active>` while a lease runs, and never touches anything outside the root.
 
@@ -71,7 +72,7 @@ Read `docs/SPEC.md` §2.5–2.7, §4, §6 (Phase 1a), §15 and §16, plus `docs/
 ```
 {root, lab_dir|null, label, kind: "single"|"pair"|"none", deadline_s, approval: null|{lease_s, ref, end_epoch},
  processes: [{name, machine: "local"|"peer", argv, env, ready: "qwen-stderr"|"ds41-json"|"http-health", health_url, ready_timeout_s}],
- peer_ssh|null, peer_root|null, layout_required: null|"1"}
+ peer_ssh|null, peer_root|null, peer_lab_dir|null, layout_required: null|"1"}
 ```
 - It runs `setsid <lab>/gpu-turn.sh <label> <boot>/telar-node supervise-internal <spec-file>`: `gpu-turn-pair.sh` for `kind: pair`; no turn script for `kind: none`, which is the router (no GPU). The spec file is written 0600 in `<root>/run/`.
 - `supervise-internal` is a private CLI entry. Implement it in `telar_lease.py` and add it to `VERBS`; it is a plain module function invoked by `telar-node`.
@@ -123,7 +124,7 @@ POSIX-only parts are skipped on Windows, and the pure logic is tested everywhere
 - `get(name)`, `ensure(name)`, `path_for_router(name)` (the decrypted key written to a 0600 file under `%LOCALAPPDATA%\telar\run\` only while the router runs, deleted at stop), and `rotate(name)`.
 
 **`telar.orchestrate`** (all node work goes through `telar.remote.Remote.call`):
-- `install(cluster, build_machine, targets)`: bootstrap telar-node on every machine of the profile, `install` on the build machine (poll job `status`), `push-release` to the others, then return the release id. The recipe comes from `versions.lock` `toolchains.hip_configure`.
+- `install(cluster, build_machine, targets)`: bootstrap telar-node on every machine of the profile, `install` on the build machine (poll `job`), `push-release` to the others, then return the 12-character release id. The recipe comes from `versions.lock` `toolchains.hip_configure`; components include pinned TensorMeld source, which is fetched without building it.
 - `up(cluster, profile, router="local"|machine_id, nodes=[...], devices=[...])`:
   - validates that every declared machine is reachable (doctor) **before** any lease;
   - ensures keys (`put-secret` on each node, from `telar.secrets`);
@@ -142,5 +143,14 @@ POSIX-only parts are skipped on Windows, and the pure logic is tested everywhere
 - `telar logs PROFILE PROCESS [--tail N]`
 - `telar keys rotate NAME`
 - `--node`/`--device` default to the profile's machines. A declared machine that is not in the config, or is unreachable, fails before any lease.
+
+## Integration notes (worker I)
+
+- The Windows installer installs telar with `pip install -e <checkout>` so node scripts, `versions.lock`, and pinned component sources stay available. `telar.paths.repo_root()` resolves the package parent once and explains missing repository resources.
+- Release IDs are exactly 12 lowercase hex characters in config, node records, rendered paths, and orchestration.
+- POSIX port probes use `SO_REUSEADDR` so a stopped router's TIME_WAIT connections do not block restart; Windows keeps `SO_EXCLUSIVEADDRUSE`.
+- Node launches use Python's `start_new_session=True` (the POSIX `setsid` operation), without relying on a `setsid` executable. Single turns remain `<lab>/gpu-turn.sh <label> <cmd...>`; pairs use `<lab>/gpu-turn-pair.sh` on rank 0. Ambient/spec `GPU_TURN_MAX` cannot set the cap; only a validated single-turn approval can.
+- Pair specs carry the peer's own lab directory. DeepSeek rank 1 emits READY but has no HTTP server: readiness checks the pair API on rank 0, and only rank 0 receives an HTTP drain. Rank-1 logs are fetched from its own node. Peer-run enforces the deadline even while its stdin channel stays open.
+- Tests use fake tools and loopback listeners. `tests/test_verb_contract.py` checks orchestration calls against both node modules and the transport allow-list.
 
 **Tests:** a fake `Remote` recording calls; up/down ordering; failure rollback; router local vs remote rendering; the DPAPI round trip on Windows (skipped elsewhere); the bootstrap copying all `NODE_FILES`.

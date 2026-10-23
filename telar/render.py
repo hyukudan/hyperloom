@@ -11,6 +11,7 @@ import re
 import sys
 
 from .config import ConfigError, listen, preset, validate_overrides
+from .paths import repo_root
 
 
 @dataclass(frozen=True)
@@ -144,7 +145,7 @@ def render_router(cluster, profile_name) -> dict:
 
 def validate_router(obj):
     """Run the pinned parser, including its real key-file checks; no network or GPU."""
-    source = str(Path(__file__).resolve().parents[1] / "third_party" / "tensormeld" / "src")
+    source = str(repo_root() / "third_party" / "tensormeld" / "src")
     sys.path.insert(0, source)
     try:
         parser = importlib.import_module("tensormeld.replica_router")

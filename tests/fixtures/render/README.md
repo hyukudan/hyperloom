@@ -18,7 +18,7 @@ copy. Rendering checks its manifest size and sha256. Tests never use real model
 files or GPUs. Example asset hashes and sizes are placeholders except for the
 frozen Qwen sidecar/golden pins and the synthetic token file. Replace placeholders
 with trusted asset manifests before use.
-Each profile's release_id is the installed release manifest SHA-256. The example
+Each profile's release_id is the first 12 hex characters of its manifest SHA-256. The example
 uses a synthetic all-zero ID; replace it with an installed release ID. Executable
 paths always name releases/<release_id>/bin and never an activation symlink.
 

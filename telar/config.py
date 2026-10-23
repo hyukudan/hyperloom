@@ -99,7 +99,11 @@ def address(value, where):
         ip = ipaddress.ip_address(value)
     except ValueError as exc:
         raise ConfigError(f"{where}: expected numeric private or loopback IP") from exc
-    if ip.is_unspecified or ip.is_multicast or ip.is_link_local or not (ip.is_private or ip.is_loopback):
+    # Only native IPv6 ULA/loopback addresses are plainly private. In particular,
+    # mapped/compatible addresses and reserved space vary across Python versions.
+    native_v6 = ip.version != 6 or ip == ipaddress.IPv6Address("::1") or ip in ipaddress.IPv6Network("fc00::/7")
+    if (not native_v6 or ip.is_unspecified or ip.is_multicast or ip.is_link_local
+            or (ip.is_reserved and not ip.is_loopback) or not (ip.is_private or ip.is_loopback)):
         raise ConfigError(f"{where}: expected private or loopback IP")
     return str(ip)
 
@@ -276,8 +280,8 @@ def parse(obj: dict) -> Cluster:
         data = preset(kind)
         if "receipt" in p and p["receipt"] != data["receipt"]:
             raise ConfigError("profile.receipt: does not match qualified preset")
-        if "release_id" in p and (not isinstance(p["release_id"], str) or not re.fullmatch(r"[0-9a-f]{64}", p["release_id"])):
-            raise ConfigError("profile.release_id: expected manifest SHA-256")
+        if "release_id" in p and (not isinstance(p["release_id"], str) or not re.fullmatch(r"[0-9a-f]{12}", p["release_id"])):
+            raise ConfigError("profile.release_id: expected 12 lowercase hex characters")
         if kind == "qwen-replicas":
             if "rank0" in p or "rank1" in p:
                 raise ConfigError("Qwen profile uses nodes")

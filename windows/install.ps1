@@ -56,7 +56,7 @@ $pipArguments = @('-m', 'pip', 'install')
 if (Test-Path -LiteralPath $wheels -PathType Container) {
     $pipArguments += @('--no-index', '--find-links', $wheels)
 }
-$pipArguments += @($component, $repository)
+$pipArguments += @($component, '-e', $repository)
 Write-Output "Python: $interpreter"
 Write-Output "Venv: $venv"
 Write-Output ("Pip arguments: " + ($pipArguments | ConvertTo-Json -Compress))

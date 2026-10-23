@@ -174,7 +174,7 @@
         "halo-1": "/opt/telar/secrets/engine.key",
         "halo-2": "/opt/telar/secrets/engine.key"
       },
-      "release_id": "0000000000000000000000000000000000000000000000000000000000000000"
+      "release_id": "000000000000"
     },
     "ds41-pair": {
       "rank0": "halo-1",
@@ -186,7 +186,7 @@
         "halo-1": "/opt/telar/secrets/engine.key",
         "halo-2": "/opt/telar/secrets/engine.key"
       },
-      "release_id": "0000000000000000000000000000000000000000000000000000000000000000"
+      "release_id": "000000000000"
     }
   },
   "pc": {

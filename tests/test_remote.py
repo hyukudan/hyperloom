@@ -135,7 +135,11 @@ class RemoteTests(unittest.TestCase):
 
     def test_bootstrap_uses_pinned_scp_and_absolute_node_path(self):
         self.pin()
-        self.client.bootstrap(timeout=3)
+        source = self.directory / "node source"
+        source.mkdir()
+        for name in remote.NODE_FILES:
+            (source / name).write_text("fixture", encoding="utf-8")
+        self.client.bootstrap(source, timeout=3)
         calls = self.calls()
         self.assertEqual(len(calls), 4)
         self.assertTrue(calls[0]["argv"][-1].startswith("umask 077; mkdir"))
@@ -144,14 +148,30 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(scp[scp.index("-P") + 1], "2222")
         self.assertIn("StrictHostKeyChecking=yes", scp)
         self.assertIn("HostKeyAlias=[halo-1]:2222", scp)
-        self.assertEqual(scp[-1], "operator@halo-1:.telar-boot/telar-node")
-        self.assertEqual(shlex.split(calls[2]["argv"][-1]), ["chmod", "700", "--", self.client.node_path])
+        self.assertEqual(scp[-5:-1], [str((source / name).absolute()) for name in remote.NODE_FILES])
+        self.assertEqual(scp[-1], "operator@halo-1:.telar-boot/")
+        boot = remote.PurePosixPath(self.client.node_path).parent
+        self.assertEqual(shlex.split(calls[2]["argv"][-1]),
+                         ["chmod", "700", "--", *(str(boot / name) for name in remote.NODE_FILES)])
+
+    def test_bootstrap_missing_extension_fails_before_connection(self):
+        self.pin()
+        source = self.directory / "incomplete"
+        source.mkdir()
+        (source / "telar-node").write_text("fixture", encoding="utf-8")
+        with self.assertRaisesRegex(remote.RemoteError, "bootstrap files"):
+            self.client.bootstrap(source, timeout=3)
+        self.mock_popen.assert_not_called()
 
     def test_key_changed_after_confirmation_blocks_bootstrap(self):
         self.pin()
+        source = self.directory / "node files"
+        source.mkdir()
+        for name in remote.NODE_FILES:
+            (source / name).write_text("fixture", encoding="utf-8")
         with patch.dict(os.environ, TELAR_FAKE_KEY=hostkey(b"b").key_b64):
             with self.assertRaises(remote.RemoteError):
-                self.client.bootstrap(timeout=3)
+                self.client.bootstrap(source, timeout=3)
         self.assertEqual(len(self.calls()), 1)
 
     def test_pairing_binding_cannot_move_address_or_port(self):

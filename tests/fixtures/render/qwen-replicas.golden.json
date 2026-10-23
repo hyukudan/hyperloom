@@ -3,7 +3,7 @@
     "machine_id": "halo-1",
     "role": "replica",
     "argv": [
-      "/opt/telar/releases/0000000000000000000000000000000000000000000000000000000000000000/bin/strix-hip-decode-token",
+      "/opt/telar/releases/000000000000/bin/strix-hip-decode-token",
       "/opt/assets/qwen.gguf",
       "11",
       "22",
@@ -194,7 +194,7 @@
     "machine_id": "halo-2",
     "role": "replica",
     "argv": [
-      "/opt/telar/releases/0000000000000000000000000000000000000000000000000000000000000000/bin/strix-hip-decode-token",
+      "/opt/telar/releases/000000000000/bin/strix-hip-decode-token",
       "/opt/assets/qwen.gguf",
       "11",
       "22",

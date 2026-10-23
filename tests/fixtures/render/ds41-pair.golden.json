@@ -3,7 +3,7 @@
     "machine_id": "halo-1",
     "role": "rank0",
     "argv": [
-      "/opt/telar/releases/0000000000000000000000000000000000000000000000000000000000000000/bin/strix-deepseek41-serve",
+      "/opt/telar/releases/000000000000/bin/strix-deepseek41-serve",
       "/opt/assets/ds41.gguf",
       "--rank",
       "0",
@@ -36,7 +36,7 @@
     "machine_id": "halo-2",
     "role": "rank1",
     "argv": [
-      "/opt/telar/releases/0000000000000000000000000000000000000000000000000000000000000000/bin/strix-deepseek41-serve",
+      "/opt/telar/releases/000000000000/bin/strix-deepseek41-serve",
       "/opt/assets/ds41.gguf",
       "--rank",
       "1",

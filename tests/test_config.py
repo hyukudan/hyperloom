@@ -68,12 +68,24 @@ class ConfigTests(unittest.TestCase):
             obj = example()
             obj["machines"][1]["http_address"] = value
             self.assertEqual(parse(obj).machines["halo-1"].http_address, value)
-        for value in ("halo-1", "0" * 4, "::", "ff02::1", "fe80::1", "::ffff:0:0", "127.0.0.1:80", "::1%halo-1"):
+        for value in ("halo-1", "0" * 4, "::", "ff02::1", "fe80::1", "::ffff:0:0",
+                      "::ffff:7f00:1", "::7f00:1", "100::1", "2001::1", "2002::1",
+                      "127.0.0.1:80", "::1%halo-1"):
             with self.subTest(value=value):
                 obj = example()
                 obj["machines"][1]["http_address"] = value
                 with self.assertRaises(ConfigError):
                     parse(obj)
+
+    def test_release_id_is_twelve_lowercase_hex_characters(self):
+        obj = example()
+        for profile in obj["profiles"].values():
+            profile["release_id"] = "abcdef012345"
+        self.assertEqual(parse(obj).profiles["qwen-replicas"]["release_id"], "abcdef012345")
+        for value in ("a" * 64, "a" * 11, "A" * 12, "g" * 12):
+            obj["profiles"]["qwen-replicas"]["release_id"] = value
+            with self.subTest(value=value), self.assertRaisesRegex(ConfigError, "12 lowercase hex"):
+                parse(obj)
 
     def test_ssh_target_safety(self):
         for value in ("-halo-1", "halo-1 halo-2", "halo-1\n", "halo-1\x00", "halo-1\x7f", "halo-1\u2003", "halo-1\x80", "halo-1\u200b"):

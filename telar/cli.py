@@ -1,6 +1,7 @@
-"""Phase 0 command line and local router controller."""
+"""Command line and local router controllers."""
 
 import argparse
+from datetime import datetime
 from dataclasses import asdict
 import importlib
 import ipaddress
@@ -13,6 +14,8 @@ import sys
 import time
 from urllib.request import ProxyHandler, Request, build_opener
 import uuid
+
+from .paths import repo_root
 
 
 _controllers = []
@@ -33,6 +36,11 @@ def _module(name):
 
 def _json(obj):
     print(json.dumps(obj, indent=2))
+
+
+def _cluster(path):
+    config = _module("telar.config")
+    return _module("telar.orchestrate").load_cluster(path, config)
 
 
 def _write(path, obj):
@@ -68,7 +76,7 @@ def _state(directory):
 
 def _router_env():
     env = dict(os.environ)
-    source = Path(__file__).resolve().parent.parent / "third_party" / "tensormeld" / "src"
+    source = repo_root() / "third_party" / "tensormeld" / "src"
     if source.is_dir():
         env["PYTHONPATH"] = str(source)
     else:
@@ -102,7 +110,7 @@ def _get_json(endpoint, path):
 
 
 def _router_start(args):
-    cluster = _module("telar.config").load(args.config)
+    cluster = _cluster(args.config)
     renderer = _module("telar.render")
     profiles = list(cluster.profiles)
     profile = args.profile or (profiles[0] if len(profiles) == 1 else None)
@@ -124,7 +132,7 @@ def _router_start(args):
     # The controller imports telar from this checkout or from the installed package.
     controller_env = dict(router_env)
     controller_env["PYTHONPATH"] = os.pathsep.join(
-        [str(Path(__file__).resolve().parent.parent), router_env.get("PYTHONPATH", "")])
+        [str(repo_root()), router_env.get("PYTHONPATH", "")])
     options = {"start_new_session": True}
     if os.name == "nt":
         # Keep a console for CTRL_BREAK delivery without opening a visible window.
@@ -247,7 +255,7 @@ def _router_stop():
 
 def _doctor(args):
     if args.machine:
-        cluster = _module("telar.config").load(args.config)
+        cluster = _cluster(args.config)
         try:
             machine = cluster.machines[args.machine]
         except KeyError as exc:
@@ -258,9 +266,7 @@ def _doctor(args):
             remote = _module("telar.remote")
             _json(remote.Remote(machine, config_path().parent / "known_hosts").call("doctor", {}, timeout=60))
             return
-    script = Path(__file__).resolve().parent.parent / "node" / "telar-node"
-    if not script.is_file():
-        script = Path(sys.prefix) / "share" / "telar" / "node" / "telar-node"
+    script = repo_root() / "node" / "telar-node"
     if not script.is_file():
         raise RuntimeError("node/telar-node is unavailable; complete the telar installation")
     result = subprocess.run([str(Path(sys.executable).absolute()), str(script), "doctor"],
@@ -285,22 +291,77 @@ def main(argv=None):
     router.add_argument("operation", choices=("start", "stop", "status"))
     router.add_argument("--config", type=Path, default=config_path())
     router.add_argument("--profile")
-    commands.add_parser("up")
-    commands.add_parser("down")
+    install = commands.add_parser("install")
+    install.add_argument("profile")
+    install.add_argument("--build-on")
+    install.add_argument("--config", type=Path, default=config_path())
+    up = commands.add_parser("up")
+    # Keep the no-argument Phase 0 probe for existing launchers.
+    up.add_argument("profile", nargs="?")
+    up.add_argument("--config", type=Path, default=config_path())
+    up.add_argument("--router", default="local")
+    up.add_argument("--node", action="extend", nargs="+", default=None)
+    up.add_argument("--device", action="extend", nargs="+", default=None)
+    up.add_argument("--deadline", type=int, default=1140)
+    up.add_argument("--approval-ref")
+    up.add_argument("--approval-lease", type=int)
+    up.add_argument("--approval-end")
+    down = commands.add_parser("down")
+    down.add_argument("profile", nargs="?")
+    status = commands.add_parser("status")
+    status.add_argument("profile", nargs="?")
+    logs = commands.add_parser("logs")
+    logs.add_argument("profile")
+    logs.add_argument("process")
+    logs.add_argument("--tail", type=int, default=100)
+    keys = commands.add_parser("keys").add_subparsers(dest="key_operation", required=True)
+    keys.add_parser("rotate").add_argument("name")
     # Internal controller entry point; not part of the public interface.
     helper = commands.add_parser("_router-run", help=argparse.SUPPRESS)
     helper.add_argument("directory")
     helper.add_argument("rendered")
     helper.add_argument("token")
+    launch = commands.add_parser("_up-router", help=argparse.SUPPRESS)
+    launch.add_argument("spec")
     args = parser.parse_args(argv)
     try:
-        if args.command in ("up", "down"):
+        if args.command in ("up", "down") and args.profile is None:
             print("Phase 1a")
+        elif args.command == "install":
+            cluster = _cluster(args.config)
+            orchestrate = _module("telar.orchestrate")
+            _, kind, mids = orchestrate._profile(cluster, args.profile)
+            targets = ["strix-hip-decode-token" if kind == "qwen-replicas" else "strix-deepseek41-serve"]
+            _json({"release_id": orchestrate.install(cluster, args.build_on or mids[0], targets, profile=args.profile)})
+        elif args.command == "up":
+            supplied = [args.approval_ref is not None, args.approval_lease is not None, args.approval_end is not None]
+            approval = None
+            if any(supplied):
+                if not all(supplied):
+                    raise ValueError("approval requires --approval-ref, --approval-lease, and --approval-end")
+                end = datetime.fromisoformat(args.approval_end.replace("Z", "+00:00"))
+                if end.tzinfo is None:
+                    raise ValueError("--approval-end must include a timezone")
+                approval = {"ref": args.approval_ref, "lease_s": args.approval_lease, "end_epoch": end.timestamp()}
+            cluster = _cluster(args.config)
+            _json(_module("telar.orchestrate").up(cluster, args.profile, router=args.router,
+                  nodes=args.node, devices=args.device, deadline_s=args.deadline, approval=approval))
+        elif args.command == "down":
+            _json(_module("telar.orchestrate").down(args.profile))
+        elif args.command == "status":
+            _json(_module("telar.orchestrate").status(args.profile))
+        elif args.command == "logs":
+            _json(_module("telar.orchestrate").logs(args.profile, args.process, args.tail))
+        elif args.command == "keys":
+            _module("telar.secrets").rotate(args.name)
+            _json({"name": args.name, "rotated": True})
+        elif args.command == "_up-router":
+            _module("telar.orchestrate").local_router_run(args.spec)
         elif args.command == "config":
-            _module("telar.config").load(args.path)
+            _cluster(args.path)
             _json({"valid": True})
         elif args.command == "render":
-            cluster = _module("telar.config").load(args.config)
+            cluster = _cluster(args.config)
             renderer = _module("telar.render")
             rendered = renderer.render_router(cluster, args.profile)
             renderer.validate_router(rendered)
