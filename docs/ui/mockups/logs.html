@@ -1,0 +1,32 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Logs</title><link rel="stylesheet" href="ds.css"></head>
+<body data-page="logs"><div class="app"><aside class="side"></aside><div class="main"><div class="mtop"></div>
+<header class="top"><h1>Logs</h1><span class="sp"></span><span class="sample">Sample data</span><button class="btn">Download bundle</button></header>
+<main class="content">
+  <div class="row" style="gap:10px">
+    <div class="seg"><span class="on">All</span><span>Router</span><span>Rank 0</span><span>Rank 1</span><span>RTX prefill</span><span class="hide-n">Portal</span></div>
+    <div class="seg"><span>Events</span><span class="on">Events + warnings</span><span class="hide-n">Everything</span></div>
+    <input class="inp" placeholder="Filter text…" style="min-width:220px">
+    <span class="sp" style="flex:1"></span><span class="pill p-ok">Following</span>
+  </div>
+  <div class="banner warn"><span class="pill p-warn">2 warnings</span><span style="flex:1;font-size:13px">halo-2 driver status reported a USB4 link-training warning on cable B at 04:06:51 and 04:09:13. The pair kept running; no request failed.</span><button class="btn sm">Show</button></div>
+  <section class="card"><h2>Live log <span class="sub">events are parsed from each process's stdout / stderr; secrets are redacted</span></h2>
+<div class="log"><span class="ts">04:00:12.104</span>  portal     lease tlr-ds41-7a2 requested on halo-1 (pair turn)
+<span class="ts">04:00:12.981</span>  portal     lease granted · layout-state 1 on both nodes · checks passed
+<span class="ts">04:00:13.210</span>  rank1      starting strix-deepseek41-serve · release r-3f9c21
+<span class="ts">04:00:13.402</span>  rank0      starting strix-deepseek41-serve · release r-3f9c21
+<span class="ts">04:01:46.880</span>  rank0      connected (usb4gpu → host path, layout 1)
+<span class="ts">04:01:47.335</span>  rank0      <span class="ev">READY</span> rank=0 http=:18431 slots=4 context=32768
+<span class="ts">04:01:47.336</span>  rank1      <span class="ev">READY</span> rank=1
+<span class="ts">04:01:48.020</span>  rtx        <span class="ev">READY</span> 127.0.0.1:8095 · RTX PRO 6000 (GPU-…a91c) · cap 64 GiB
+<span class="ts">04:01:48.402</span>  router     listening on 127.0.0.1:18600 · replicas up 1/1 · prefill policy auto
+<span class="ts">04:06:51.553</span>  halo-2     <span class="wn">WARN usb4stream-describe: cable B training warning</span>
+<span class="ts">04:09:13.017</span>  halo-2     <span class="wn">WARN usb4stream-describe: cable B training warning</span>
+<span class="ts">04:11:58.660</span>  router     request 7f3c client closed after 0 tokens (replica rank0)
+<span class="ts">04:12:10.004</span>  router     prefill offload:rtx 31 870 tokens · import ok
+<span class="ts">04:12:31.120</span>  router     prefill offload:rtx 8 214 tokens · import ok</div></section>
+  <section class="card"><h2>Recent failures <span class="sub">kept across restarts</span></h2>
+    <table><tr><th>When</th><th>Process</th><th>Event</th><th>Reason</th><th></th></tr>
+      <tr><td class="mono">yesterday 23:41</td><td>rank 0</td><td><span class="pill p-err">POISONED</span></td><td>peer timeout after 120 s (rank 1 not started)</td><td class="n"><button class="btn sm">Open bundle</button></td></tr>
+      <tr><td class="mono">yesterday 23:20</td><td>portal</td><td><span class="pill p-warn">STOPPED deadline</span></td><td>GPU turn ended · drained 3 requests</td><td class="n"><button class="btn sm">Open bundle</button></td></tr></table></section>
+</main></div></div><script src="shell.js"></script></body></html>

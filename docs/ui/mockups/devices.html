@@ -1,0 +1,56 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Devices</title><link rel="stylesheet" href="ds.css"></head>
+<body data-page="devices"><div class="app"><aside class="side"></aside><div class="main"><div class="mtop"></div>
+<header class="top"><h1>Devices</h1><span class="muted hide-n">3 machines online · 1 waiting to pair</span><span class="sp"></span><span class="sample">Sample data</span><button class="btn pri">Add by address</button><button class="btn hide-n">Pair new machine <span class="later">later</span></button></header>
+<main class="content">
+  <div class="banner info"><svg width="22" height="22" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" style="color:var(--info);flex:none"><circle cx="10" cy="10" r="8"/><path d="M10 6v5M10 14h.01"/></svg>
+    <div style="flex:1"><span class="later">later phase</span> <b>halo-3</b> (Linux · 1 accelerator) is announcing on the LAN. <span class="t2">It cannot run anything until you pair it with the one-time code shown on that machine.</span></div>
+    <button class="btn sm">Ignore</button><button class="btn sm pri">Pair…</button></div>
+
+  <div class="grid g4 kpis">
+    <div class="card kpi"><div class="lbl">Machines</div><div class="val">3<small>online</small></div><div class="dl muted">+1 discovered, unpaired</div></div>
+    <div class="card kpi"><div class="lbl">Accelerators in use</div><div class="val">3<small>of 4</small></div><div class="dl muted">RTX 4090 excluded by policy</div></div>
+    <div class="card kpi"><div class="lbl">GPU memory headroom</div><div class="val">97<small>GB free</small></div><div class="dl muted">min per device: 26.8 GB (halo-2)</div></div>
+    <div class="card kpi"><div class="lbl">Links</div><div class="val">4<small>healthy</small></div><div class="dl muted">USB4 pair: 2 cables · 4 streams</div></div>
+  </div>
+
+  <div class="grid g3">
+    <!-- workstation -->
+    <section class="card dev">
+      <div class="hd"><div class="osi">WIN</div><div style="flex:1"><div class="row between"><span class="nm">workstation</span><span class="pill p-ok">Online</span></div>
+        <div class="meta">Windows 11 Pro · x86-64, 16 cores · 128 GB RAM · 1.4 TB free · seen 1 s ago</div></div></div>
+      <div class="row"><span class="tag acc">Portal</span><span class="tag acc">Router :18600</span><span class="tag acc">RTX prefill service</span></div>
+      <div class="accel"><div class="an">NVIDIA RTX PRO 6000 Blackwell <span class="tag">96 GB VRAM</span><span class="pill p-ok" style="margin-left:auto">In use</span></div>
+        <div class="mrow"><span class="muted">VRAM</span><div class="meter"><i style="width:43%"></i></div><span class="v">41.3 / 96 GB</span></div>
+        <div class="mrow"><span class="muted">GPU</span><div class="meter"><i class="b" style="width:37%"></i></div><span class="v">37 % · 54 °C · 212 W</span></div>
+        <div class="meta">Driver 581.42 · CUDA 13.0 · PCIe 5.0 x16 · reservation until 07:30</div></div>
+      <div class="accel"><div class="an">NVIDIA GeForce RTX 4090 <span class="tag">24 GB VRAM</span><span class="pill p-off" style="margin-left:auto">Excluded</span></div>
+        <div class="meta">Never selected by policy (CUDA_DEVICE_ORDER=PCI_BUS_ID, RTX PRO pinned by UUID). Idle · 31 °C · 18 W</div></div>
+    </section>
+    <!-- halo-1 -->
+    <section class="card dev">
+      <div class="hd"><div class="osi">LNX</div><div style="flex:1"><div class="row between"><span class="nm">halo-1</span><span class="pill p-ok">Online</span></div>
+        <div class="meta">Ubuntu 26.04.1 LTS · Ryzen AI Max+ 395, 16 cores · 1.1 TB free · seen 2 s ago</div></div></div>
+      <div class="row"><span class="tag acc">DeepSeek pair · rank 0</span><span class="tag">GPU turn 12:41 left</span></div>
+      <div class="accel"><div class="an">Radeon 8060S · gfx1151 <span class="tag">128 GB unified · 113 GB GPU-visible</span></div>
+        <div class="mrow"><span class="muted">GPU memory</span><div class="meter"><i style="width:76%"></i></div><span class="v">86.2 / 113 GB</span></div>
+        <div class="mrow"><span class="muted">GPU</span><div class="meter"><i class="b" style="width:94%"></i></div><span class="v">94 % · 71 °C · 118 W</span></div>
+        <div class="meta">ROCm 10.1 · kernel 7.3.0-rc5 + USB4 stream driver <span class="pill p-ok">loaded</span> · layout 1 (production)</div></div>
+      <dl class="kv"><dt>Host RAM</dt><dd>9.8 GB free of 128 GB (shared with GPU)</dd><dt>Release</dt><dd class="mono">r-3f9c21 · engine 70ec42b · trellis 5acf090</dd></dl>
+    </section>
+    <!-- halo-2 -->
+    <section class="card dev">
+      <div class="hd"><div class="osi">LNX</div><div style="flex:1"><div class="row between"><span class="nm">halo-2</span><span class="pill p-warn">Degraded</span></div>
+        <div class="meta">Ubuntu 26.04.1 LTS · Ryzen AI Max+ 395, 16 cores · 0.9 TB free · seen 2 s ago</div></div></div>
+      <div class="row"><span class="tag acc">DeepSeek pair · rank 1</span><span class="tag">GPU turn 12:41 left</span></div>
+      <div class="accel"><div class="an">Radeon 8060S · gfx1151 <span class="tag">128 GB unified · 113 GB GPU-visible</span></div>
+        <div class="mrow"><span class="muted">GPU memory</span><div class="meter"><i class="w" style="width:76%"></i></div><span class="v">86.2 / 113 GB</span></div>
+        <div class="mrow"><span class="muted">GPU</span><div class="meter"><i class="b" style="width:91%"></i></div><span class="v">91 % · 78 °C · 121 W</span></div>
+        <div class="meta">ROCm 10.1 · kernel 7.3.0-rc5 + USB4 stream driver <span class="pill p-ok">loaded</span> · layout 1 (production)</div></div>
+      <div class="banner warn" style="padding:8px 12px;font-size:12.5px">USB4 cable B: driver status reports a link-training warning. Pair still on the host path.</div>
+    </section>
+  </div>
+  <section class="card"><h2>Discovered, not paired <span class="later">later phase · TensorMeld agent</span><span class="sub">machines announcing on the LAN; nothing runs on them until paired</span></h2>
+    <table><tr><th>Name</th><th>OS</th><th>Accelerators</th><th class="hide-n">Announced from</th><th class="hide-n">Fingerprint</th><th></th></tr>
+    <tr><td><b>halo-3</b></td><td>Linux</td><td>Radeon 8060S · gfx1151 · 128 GB unified</td><td class="hide-n mono">192.0.2.43</td><td class="hide-n mono">SHA256:Kq3f…9xTa</td><td class="n"><button class="btn sm pri">Pair…</button></td></tr></table></section>
+</main></div></div><script src="shell.js"></script></body></html>

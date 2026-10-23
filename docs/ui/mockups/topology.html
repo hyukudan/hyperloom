@@ -1,0 +1,58 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Topology</title><link rel="stylesheet" href="ds.css">
+<style>
+.topo{width:100%;height:auto}
+.topo .box{fill:var(--surface-2);stroke:var(--border-strong)}
+.topo .box.on{stroke:var(--accent)}
+.topo .t{fill:var(--text);font:600 14px var(--f)} .topo .s{fill:var(--text-3);font:12px var(--f)}
+.topo .gpu{fill:var(--surface);stroke:var(--border)} .topo .gt{fill:var(--text-2);font:12px var(--f)}
+.topo .eth{stroke:var(--text-3);stroke-width:2;fill:none}
+.topo .usb{stroke:var(--s2);stroke-width:4;fill:none}
+.topo .usbw{stroke:var(--warn);stroke-width:4;fill:none;stroke-dasharray:7 5}
+.topo .lbl{fill:var(--text-2);font:12px var(--f)} .topo .lb{fill:var(--surface);stroke:var(--border)}
+.topo .role{fill:var(--accent-soft)} .topo .rt{fill:var(--accent-text);font:600 11.5px var(--f)}
+</style></head>
+<body data-page="topology"><div class="app"><aside class="side"></aside><div class="main"><div class="mtop"></div>
+<header class="top"><h1>Topology &amp; links</h1><span class="sp"></span><span class="sample">Sample data</span><button class="btn">Measure Ethernet links</button></header>
+<main class="content">
+  <section class="card topo-map"><h2>Cluster map <span class="sub">machines, accelerators, roles and links</span><span class="r legend"><span><i style="background:var(--text-3)"></i>Ethernet</span><span><i style="background:var(--s2)"></i>USB4 cable</span><span><i style="background:var(--warn)"></i>USB4 with warning</span></span></h2>
+  <svg class="topo" viewBox="0 0 1100 430">
+    <!-- switch -->
+    <rect x="470" y="20" width="160" height="40" rx="8" class="box"/><text x="550" y="45" text-anchor="middle" class="t" style="font-size:13px">LAN switch · 1 GbE</text>
+    <!-- workstation -->
+    <rect x="30" y="110" width="330" height="270" rx="12" class="box on"/>
+    <text x="50" y="140" class="t">workstation</text><text x="50" y="158" class="s">Windows 11 · control machine</text>
+    <rect x="50" y="172" width="290" height="62" rx="8" class="gpu"/><text x="64" y="194" class="gt" style="font-weight:600;fill:var(--text)">RTX PRO 6000 · 96 GB</text><text x="64" y="214" class="gt">VRAM 41.3 GB · GPU 37 %</text>
+    <rect x="50" y="242" width="290" height="50" rx="8" class="gpu" style="opacity:.55"/><text x="64" y="263" class="gt">RTX 4090 · 24 GB</text><text x="64" y="281" class="s">excluded by policy</text>
+    <rect x="50" y="306" width="62" height="24" rx="12" class="role"/><text x="81" y="322" text-anchor="middle" class="rt">Portal</text>
+    <rect x="120" y="306" width="66" height="24" rx="12" class="role"/><text x="153" y="322" text-anchor="middle" class="rt">Router</text>
+    <rect x="194" y="306" width="104" height="24" rx="12" class="role"/><text x="246" y="322" text-anchor="middle" class="rt">RTX prefill</text>
+    <text x="50" y="358" class="s">seen 1 s ago</text>
+    <!-- halo-1 -->
+    <rect x="470" y="150" width="270" height="230" rx="12" class="box"/>
+    <text x="490" y="180" class="t">halo-1</text><text x="490" y="198" class="s">Ubuntu 26.04 · ROCm 10.1 · USB4 driver ✓</text>
+    <rect x="490" y="212" width="230" height="62" rx="8" class="gpu"/><text x="504" y="234" class="gt" style="font-weight:600;fill:var(--text)">Radeon 8060S · 128 GB unified</text><text x="504" y="254" class="gt">86.2 / 113 GB · GPU 94 %</text>
+    <rect x="490" y="290" width="130" height="24" rx="12" class="role"/><text x="555" y="306" text-anchor="middle" class="rt">DeepSeek rank 0</text>
+    <text x="490" y="358" class="s">seen 2 s ago</text>
+    <!-- halo-2 -->
+    <rect x="800" y="150" width="270" height="230" rx="12" class="box"/>
+    <text x="820" y="180" class="t">halo-2</text><text x="820" y="198" class="s">Ubuntu 26.04 · ROCm 10.1 · USB4 driver ✓</text>
+    <rect x="820" y="212" width="230" height="62" rx="8" class="gpu"/><text x="834" y="234" class="gt" style="font-weight:600;fill:var(--text)">Radeon 8060S · 128 GB unified</text><text x="834" y="254" class="gt">86.2 / 113 GB · GPU 91 %</text>
+    <rect x="820" y="290" width="130" height="24" rx="12" class="role"/><text x="885" y="306" text-anchor="middle" class="rt">DeepSeek rank 1</text>
+    <text x="820" y="358" class="s">seen 2 s ago</text>
+    <!-- ethernet -->
+    <path d="M500 60 C 400 80, 250 80, 195 110" class="eth"/><path d="M550 60 L 590 150" class="eth"/><path d="M600 60 C 700 80, 880 90, 935 150" class="eth"/>
+    <rect x="250" y="70" width="130" height="22" rx="6" class="lb"/><text x="315" y="85" text-anchor="middle" class="lbl">1 Gb/s · 0.31 ms</text>
+    <rect x="740" y="80" width="130" height="22" rx="6" class="lb"/><text x="805" y="95" text-anchor="middle" class="lbl">1 Gb/s · 0.29 ms</text>
+    <!-- usb4 -->
+    <path d="M740 230 L 800 230" class="usb"/><path d="M740 335 L 800 335" class="usbw"/>
+    <text x="770" y="222" text-anchor="middle" class="lbl">A</text><text x="770" y="327" text-anchor="middle" class="lbl">B</text>
+  </svg></section>
+  <section class="card"><h2>Links <span class="sub">measured with link-probe (Ethernet) and the USB4 stream driver's status · layout is read-only here</span></h2>
+    <table><tr><th>Link</th><th>Kind</th><th class="n">Bandwidth</th><th class="n">Latency p50 (RTT for link-probe)</th><th class="n hide-n">p99</th><th class="hide-n">Measured</th><th>Health</th></tr>
+      <tr><td>workstation ↔ halo-1</td><td>Ethernet 1 GbE</td><td class="n">112 MB/s</td><td class="n">0.31 ms</td><td class="n hide-n">0.92 ms</td><td class="hide-n">03:55 · link-probe</td><td><span class="pill p-ok">ok</span></td></tr>
+      <tr><td>workstation ↔ halo-2</td><td>Ethernet 1 GbE</td><td class="n">111 MB/s</td><td class="n">0.29 ms</td><td class="n hide-n">0.88 ms</td><td class="hide-n">03:55 · link-probe</td><td><span class="pill p-ok">ok</span></td></tr>
+      <tr><td>halo-1 ↔ halo-2 · cable A</td><td>USB4 · 2 streams · host path</td><td class="n">— (R18)</td><td class="n">— (R18)</td><td class="n hide-n">—</td><td class="hide-n">driver status · now</td><td><span class="pill p-ok">up</span></td></tr>
+      <tr><td>halo-1 ↔ halo-2 · cable B</td><td>USB4 · 2 streams · host path</td><td class="n">— (R18)</td><td class="n">— (R18)</td><td class="n hide-n">—</td><td class="hide-n">driver status · now</td><td><span class="pill p-warn">training warning</span></td></tr><tr><td>USB4 pair · engine exchange</td><td>aggregate of 4 streams</td><td class="n">—</td><td class="n">mean 51 µs</td><td class="n hide-n">—</td><td class="hide-n">engine counters</td><td><span class="pill p-ok">ok</span></td></tr></table>
+    <p class="hint" style="margin:10px 0 0">USB4 layout: <b>layout 1</b> (4 host streams, production). The portal never changes kernel, driver or layout settings.</p></section>
+</main></div></div><script src="shell.js"></script></body></html>

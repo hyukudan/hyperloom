@@ -1,0 +1,31 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Models &amp; placement</title><link rel="stylesheet" href="ds.css"></head>
+<body data-page="models"><div class="app"><aside class="side"></aside><div class="main"><div class="mtop"></div>
+<header class="top"><h1>Models &amp; placement</h1><span class="sp"></span><span class="sample">Sample data</span><button class="btn">Add model files</button></header>
+<main class="content">
+  <section class="card"><h2>Model library <span class="sub">files are never downloaded or converted automatically</span></h2>
+    <table><tr><th>Model</th><th>Quant / packs</th><th class="n">Size</th><th>workstation</th><th>halo-1</th><th>halo-2</th><th class="hide-n">Identity</th></tr>
+      <tr><td><b>DeepSeek V4.1 Flash</b><div class="muted" style="font-size:12px">+ DSpark drafter · vocab</div></td><td>Q2 experts · c-u6 overlay · trellis K4 + K5 head</td><td class="n">385 GB</td>
+        <td><span class="pill p-ok">verified</span></td><td><span class="pill p-ok">verified</span></td><td><span class="pill p-ok">verified</span></td><td class="hide-n mono">sha 67e6…, pinned rev 2040…</td></tr>
+      <tr><td><b>Qwen3.8-Flash-Next</b><div class="muted" style="font-size:12px">+ MTP sidecar · golden · draft vocab</div></td><td>UD-Q4_K_XL merged · MTP distilled Q8_0</td><td class="n">114 GB</td>
+        <td><span class="pill p-off">absent</span></td><td><span class="pill p-ok">verified</span></td><td><span class="pill p-warn">size only</span></td><td class="hide-n mono">sha 8003…, pinned rev 38bb…</td></tr></table>
+    <div class="banner" style="margin-top:12px;padding:10px 14px;font-size:12.5px"><span class="pill p-warn">size only</span><span style="flex:1">halo-2 Qwen files match their sizes but were not hashed yet. Hashing 114 GB takes about 4 min and runs only outside measurement turns.</span><button class="btn sm">Schedule hash</button></div>
+  </section>
+  <section class="card"><h2>What can run on the connected machines <span class="sub">proposals from the TensorMeld planner · expected numbers from qualified receipts</span></h2>
+    <div class="grid g2" style="gap:14px">
+      <div class="accel" style="background:var(--surface)"><div class="row between"><b>DeepSeek pair + RTX prefill</b><span class="pill p-ok">running</span></div>
+        <div class="muted" style="font-size:12.5px;margin:4px 0 10px">rank 0 halo-1 · rank 1 halo-2 · long-prompt prefill on RTX PRO</div>
+        <dl class="kv"><dt>Decode</dt><dd>38 tok/s single · 67 tok/s at 8 streams</dd><dt>TTFT</dt><dd>2.7 s at 2K · 3.6 s at 8K · 7.1 s at 32K</dd><dt>Memory</dt><dd>80 GB per node · 41 GB RTX</dd><dt>Exactness</dt><dd>production identity (receipt P17.5)</dd></dl>
+        <div class="row" style="margin-top:12px;justify-content:flex-end"><button class="btn sm">Details</button><button class="btn sm" disabled>Running</button></div></div>
+      <div class="accel" style="background:var(--surface)"><div class="row between"><b>Qwen3.8-Flash-Next · 2 replicas</b><span class="pill p-info">ready to start</span></div>
+        <div class="muted" style="font-size:12.5px;margin:4px 0 10px">one replica per node · router on workstation</div>
+        <dl class="kv"><dt>Decode</dt><dd>68 tok/s at 1 stream · 167 tok/s at 8</dd><dt>TTFT</dt><dd>0.8–2.4 s p50 (coding chat)</dd><dt>Memory</dt><dd>107 GB per node</dd><dt>Note</dt><dd>stops the DeepSeek pair (cannot share a node)</dd></dl>
+        <div class="row" style="margin-top:12px;justify-content:flex-end"><button class="btn sm">Details</button><button class="btn sm pri">Switch to this…</button></div></div>
+      <div class="accel" style="background:var(--surface)"><div class="row between"><b>DeepSeek pair only</b><span class="pill p-info">ready to start</span></div>
+        <div class="muted" style="font-size:12.5px;margin:4px 0 10px">no RTX · all prefill on the nodes</div>
+        <dl class="kv"><dt>Decode</dt><dd>29 tok/s single · 96 tok/s batch 8</dd><dt>TTFT</dt><dd>4.2 s at 2K · 14.5 s at 8K</dd></dl></div>
+      <div class="accel" style="background:var(--surface);opacity:.75"><div class="row between"><b>DeepSeek split decode (RTX front)</b><span class="pill p-off">not available</span></div>
+        <div class="muted" style="font-size:12.5px;margin:4px 0 10px">needs an engine version with a serving RTX front</div>
+        <dl class="kv"><dt>Measured</dt><dd>62 tok/s DSpark (lab experiment)</dd><dt>Blocked by</dt><dd>component request R14</dd></dl></div>
+    </div></section>
+</main></div></div><script src="shell.js"></script></body></html>

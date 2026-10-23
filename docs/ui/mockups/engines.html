@@ -1,0 +1,50 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Engines</title><link rel="stylesheet" href="ds.css"></head>
+<body data-page="engines"><div class="app"><aside class="side"></aside><div class="main"><div class="mtop"></div>
+<header class="top"><h1>Engines</h1><span class="sp"></span><span class="sample">Sample data</span><button class="btn dan">Stop profile</button><button class="btn">Restart</button></header>
+<main class="content">
+  <section class="card">
+    <div class="row between" style="align-items:flex-start;gap:16px">
+      <div><div class="row"><b style="font-size:16px">DeepSeek V4.1 Flash · pair + RTX prefill</b><span class="pill p-ok">Running</span></div>
+        <div class="muted" style="margin-top:4px">Started 04:00:12 by the portal · release <span class="mono">r-3f9c21</span> on both ranks · identity <span class="mono">P17.5 · trellis quality-gated · RTX prefill fast path</span><div class="row" style="margin-top:8px"><span class="muted" style="font-size:12.5px">Router runs on</span><span class="tag acc">workstation (this machine)</span><span class="muted" style="font-size:12.5px">· linked:</span><span class="tag">halo-1</span><span class="tag">halo-2</span><span class="tag">workstation:rtx-pro</span></div></div></div>
+      <div style="min-width:260px"><div class="row between" style="font-size:12.5px"><span class="t2">Pair GPU turn <span class="mono">tlr-ds41-7a2</span></span><b>12:41 left</b></div>
+        <div class="meter" style="margin-top:6px"><i style="width:37%"></i></div>
+        <div class="hint" style="margin-top:4px">Lab cap 20:00 · drains 60 s before the end · extension needs main's approval</div></div>
+    </div>
+  </section>
+  <section class="card"><h2>Processes</h2>
+    <table><tr><th>Process</th><th>Machine</th><th>State</th><th class="hide-n">Ready after</th><th class="hide-n">Endpoint</th><th class="hide-n">Binary</th><th></th></tr>
+      <tr><td><b>Router</b> <span class="muted">TensorMeld serve-replicas</span></td><td>workstation</td><td><span class="pill p-ok">ready</span></td><td class="hide-n">0.4 s</td><td class="hide-n mono">127.0.0.1:18600</td><td class="hide-n mono">tensormeld 27d3bfe</td><td class="n"><button class="btn sm">Logs</button></td></tr>
+      <tr><td><b>Rank 0</b> <span class="muted">strix-deepseek41-serve</span></td><td>halo-1</td><td><span class="pill p-ok">ready</span></td><td class="hide-n">94 s</td><td class="hide-n mono">:18431</td><td class="hide-n mono">sha 9e49…762c</td><td class="n"><button class="btn sm">Logs</button></td></tr>
+      <tr><td><b>Rank 1</b> <span class="muted">strix-deepseek41-serve</span></td><td>halo-2</td><td><span class="pill p-ok">ready</span></td><td class="hide-n">93 s</td><td class="hide-n mono">peer of rank 0</td><td class="hide-n mono">sha 9e49…762c</td><td class="n"><button class="btn sm">Logs</button></td></tr>
+      <tr><td><b>RTX prefill</b> <span class="muted">strix-cuda-ds41-prefill-service</span></td><td>workstation · RTX PRO</td><td><span class="pill p-ok">ready</span></td><td class="hide-n">41 s</td><td class="hide-n mono">127.0.0.1:8095</td><td class="hide-n mono">sha 51c0…a7e1</td><td class="n"><button class="btn sm">Logs</button></td></tr></table>
+  </section>
+  <div class="grid g2">
+    <section class="card"><h2>Parameters <span class="sub">apply on next start · validated against the engine's schema</span><span class="r"><span class="pill p-warn">1 change vs production</span></span></h2>
+      <div class="grid g2" style="gap:14px">
+        <div class="field"><label>Context length</label><input class="inp" value="32768"><span class="hint">Profile value 32768 (qualified for RTX prefill) · options 4096, 8192, 32768</span></div>
+        <div class="field"><label>Slots</label><input class="inp" value="4"><span class="hint">Production 4 · range 1–8</span></div>
+        <div class="field"><label>Default max tokens</label><input class="inp chg" value="2048"><span class="hint">Production 1024 · changed, applies on next start</span></div>
+        <div class="field"><label>Peer timeout</label><input class="inp" value="120 s"><span class="hint">Production 120 s</span></div>
+        <div class="field"><label>Router policy</label><div class="seg" role="radiogroup" aria-label="Router policy"><span role="radio" aria-checked="false">nodes</span><span class="on" role="radio" aria-checked="true">auto</span></div><span class="hint">auto = route long prompts to the RTX when faster</span></div>
+        <div class="field"><label>Max in flight per replica</label><input class="inp" value="4"><span class="hint">Production 4</span></div>
+      </div>
+      <div class="banner" style="margin-top:16px;padding:10px 14px"><svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" style="color:var(--text-3)"><rect x="4" y="9" width="12" height="8" rx="2"/><path d="M7 9V6a3 3 0 016 0v3"/></svg>
+        <div style="flex:1;font-size:12.5px"><b>Advanced</b> <span class="muted">· algorithm switches are offered per engine version once qualified. Numerics, model identity, transport and USB4 layout are never editable here.</span></div><button class="btn sm" disabled>Show</button></div>
+      <div class="row" style="margin-top:14px;justify-content:flex-end"><button class="btn">Reset to production</button><button class="btn pri">Save · restart required</button></div>
+    </section>
+    <section class="card"><h2>Effective configuration <span class="sub">what the processes run with now</span></h2>
+      <table><tr><th>Setting</th><th>Value</th><th>Source</th></tr>
+        <tr><td>Transport</td><td class="mono">usb4gpu → host path (layout 1)</td><td><span class="tag">production</span></td></tr>
+        <tr><td>Prefill path</td><td class="mono">device</td><td><span class="tag">production</span></td></tr>
+        <tr><td>Draft</td><td class="mono">DSpark MXFP4 · vocab auto</td><td><span class="tag">production</span></td></tr>
+        <tr><td>Weights</td><td class="mono">Q2 experts · c-u6 overlay · trellis K4 / K5 head</td><td><span class="tag">production</span></td></tr>
+        <tr><td>Context</td><td class="mono">32768</td><td><span class="tag">profile ds41-rtx</span></td></tr>
+        <tr><td>RTX VRAM cap</td><td class="mono">64 GiB (reservation)</td><td><span class="tag acc">reservation</span></td></tr></table>
+      <h2 style="margin-top:18px">Change history <span class="sub">audit log · who, what, old → new</span></h2>
+      <table><tr><th>When</th><th>Who</th><th>Change</th><th></th></tr>
+        <tr><td class="mono">03:58</td><td>operator</td><td>router policy nodes → auto</td><td class="n"><button class="btn sm">Roll back</button></td></tr>
+        <tr><td class="mono">03:51</td><td>main</td><td>RTX reservation granted (64 GiB, until 07:30)</td><td class="n"><span class="tag">not rollbackable</span></td></tr></table>
+    </section>
+  </div>
+</main></div></div><script src="shell.js"></script></body></html>

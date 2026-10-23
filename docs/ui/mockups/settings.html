@@ -1,0 +1,31 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Settings &amp; pairing</title><link rel="stylesheet" href="ds.css"></head>
+<body data-page="settings"><div class="app"><aside class="side"></aside><div class="main"><div class="mtop"></div>
+<header class="top"><h1>Settings &amp; pairing</h1><span class="sp"></span><span class="sample">Sample data</span></header>
+<main class="content">
+  <div class="grid g2">
+    <section class="card"><h2>Pair halo-3 <span class="later">later phase · TensorMeld agent</span><span class="sub">step 2 of 3</span></h2>
+      <ol style="margin:0 0 14px;padding-left:18px;color:var(--text-2);font-size:13px;line-height:1.7">
+        <li>On halo-3, run <span class="mono">telar-node pair</span>. It shows a one-time code and its key fingerprint.</li>
+        <li><b style="color:var(--text)">Type the code here and check that the fingerprint matches.</b></li>
+        <li>The portal and halo-3 exchange keys; halo-3 then accepts commands only from this portal.</li></ol>
+      <div class="field"><label for="otc">One-time code (valid 5 min, single use)</label><input id="otc" class="inp code" value="482 913" style="font-size:24px;letter-spacing:.2em;max-width:240px"></div>
+      <dl class="kv" style="margin-top:14px"><dt>Announced name</dt><dd>halo-3</dd><dt>Key fingerprint</dt><dd class="mono" style="word-break:break-all">SHA256:Kq3f8Lw2mB7rX0cVd4N1sPq9yT6uJ2hE5gA8kZp1u9xTa</dd><dt>Role allowed</dt><dd><div class="seg"><span class="on">GPU worker</span><span>Observer only</span></div></dd></dl>
+      <div class="row" style="margin-top:16px;justify-content:flex-end"><button class="btn">Cancel</button><button class="btn pri">Pair halo-3</button></div>
+      <p class="hint" style="margin:12px 0 0">No machine runs anything before it is paired. Discovery only announces; it never grants access.</p></section>
+    <section class="card"><h2>Trusted machines</h2>
+      <table><tr><th>Machine</th><th>Paired</th><th class="hide-n">Host key</th><th>Access</th><th></th></tr>
+        <tr><td><b>workstation</b><div class="muted" style="font-size:12px">this portal</div></td><td>10-20</td><td class="hide-n mono">…b71e</td><td><span class="tag">control</span></td><td></td></tr>
+        <tr><td><b>halo-1</b></td><td>10-20</td><td class="hide-n mono">…04cf</td><td><span class="tag">GPU worker</span></td><td class="n"><button class="btn sm dan">Disconnect</button></td></tr>
+        <tr><td><b>halo-2</b></td><td>10-20</td><td class="hide-n mono">…9d12</td><td><span class="tag">GPU worker</span></td><td class="n"><button class="btn sm dan">Disconnect</button></td></tr></table>
+      <p class="hint" style="margin:8px 0 0">Access today is ssh with a pinned host key. Disconnect removes telar from the machine and unpins its key; revoking an agent enrollment comes with the TensorMeld agent.</p><h2 style="margin-top:18px">Secrets</h2>
+      <dl class="kv"><dt>Storage</dt><dd>Windows Credential Manager (DPAPI) · nodes: files 0600</dd><dt>API keys</dt><dd>3 · rotated 10-22 <button class="btn sm" style="margin-left:6px">Rotate</button></dd><dt>Shown</dt><dd>never in the UI or logs; on command lines only for the CUDA prefill service until R12</dd></dl></section>
+  </div>
+  <div class="grid g2">
+    <section class="card"><h2>Lab rules <span class="sub">this cluster is a shared lab</span></h2>
+      <dl class="kv"><dt>GPU access on nodes</dt><dd>only through the lab GPU-turn queue · labels <span class="mono">tlr-*</span></dd><dt>Turn limit</dt><dd>20 min · drain 60 s before · longer only with an approval reference</dd><dt>USB4 layout</dt><dd>required: layout 1 · never changed by the portal</dd><dt>RTX PRO</dt><dd>reservation <b>until 07:30</b> · VRAM cap 64 GiB · host floor 20 GB</dd><dt>RTX 4090</dt><dd>never used</dd><dt>Builds / hashing</dt><dd>only when no pair turn is active</dd></dl></section>
+    <section class="card"><h2>Configuration <span class="sub">one versioned file · schema telar/cluster-v1</span></h2>
+      <dl class="kv"><dt>File</dt><dd class="mono">%APPDATA%\telar\cluster.json</dd><dt>Version</dt><dd>14 · saved 03:58 by operator</dd><dt>Validation</dt><dd><span class="pill p-ok">valid</span> · router config accepted by TensorMeld's parser</dd></dl>
+      <div class="row" style="margin-top:14px"><button class="btn">View history</button><button class="btn">Export (redacted)</button><button class="btn">Import…</button></div></section>
+  </div>
+</main></div></div><script src="shell.js"></script></body></html>
