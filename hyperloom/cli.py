@@ -330,6 +330,8 @@ def main(argv=None):
     up.add_argument("--approval-end")
     down = commands.add_parser("down")
     down.add_argument("profile", nargs="?")
+    down.add_argument("--force", action="store_true")
+    commands.add_parser("endpoint").add_argument("profile")
     status = commands.add_parser("status")
     status.add_argument("profile", nargs="?")
     logs = commands.add_parser("logs")
@@ -343,6 +345,9 @@ def main(argv=None):
     hosts.add_argument("--config", type=Path, default=config_path())
     keys = commands.add_parser("keys").add_subparsers(dest="key_operation", required=True)
     keys.add_parser("rotate").add_argument("name")
+    export = keys.add_parser("export")
+    export.add_argument("profile")
+    export.add_argument("--out", type=Path, required=True)
     # Internal controller entry point; not part of the public interface.
     helper = commands.add_parser("_router-run", help=argparse.SUPPRESS)
     helper.add_argument("directory")
@@ -350,6 +355,9 @@ def main(argv=None):
     helper.add_argument("token")
     launch = commands.add_parser("_up-router", help=argparse.SUPPRESS)
     launch.add_argument("spec")
+    watch = commands.add_parser("_up-watch", help=argparse.SUPPRESS)
+    watch.add_argument("path")
+    watch.add_argument("token")
     args = parser.parse_args(argv)
     try:
         if args.command in ("up", "down") and args.profile is None:
@@ -374,7 +382,9 @@ def main(argv=None):
             _json(_module("hyperloom.orchestrate").up(cluster, args.profile, router=args.router,
                   nodes=args.node, devices=args.device, deadline_s=args.deadline, approval=approval))
         elif args.command == "down":
-            _json(_module("hyperloom.orchestrate").down(args.profile))
+            _json(_module("hyperloom.orchestrate").down(args.profile, force=args.force))
+        elif args.command == "endpoint":
+            _json(_module("hyperloom.orchestrate").endpoint(args.profile))
         elif args.command == "status":
             _json(_module("hyperloom.orchestrate").status(args.profile))
         elif args.command == "logs":
@@ -382,8 +392,13 @@ def main(argv=None):
         elif args.command == "hosts":
             _json(_hosts(args))
         elif args.command == "keys":
-            _module("hyperloom.secrets").rotate(args.name)
-            _json({"name": args.name, "rotated": True})
+            if args.key_operation == "export":
+                _json(_module("hyperloom.orchestrate").export_key(args.profile, args.out))
+            else:
+                _module("hyperloom.secrets").rotate(args.name)
+                _json({"name": args.name, "rotated": True})
+        elif args.command == "_up-watch":
+            _module("hyperloom.orchestrate").up_watch(args.path, args.token)
         elif args.command == "_up-router":
             _module("hyperloom.orchestrate").local_router_run(args.spec)
         elif args.command == "config":

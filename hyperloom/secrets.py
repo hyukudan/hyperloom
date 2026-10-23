@@ -75,7 +75,7 @@ def _private(path):
         kernel.LocalFree(descriptor)
 
 
-def _write(path, data, *, replace=True):
+def _write(path, data, *, replace=True, exists_ok=True):
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=".key-", dir=path.parent)
     temporary = Path(temporary)
@@ -90,7 +90,8 @@ def _write(path, data, *, replace=True):
             try:
                 os.link(temporary, path)
             except FileExistsError:
-                pass
+                if not exists_ok:
+                    raise
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -131,3 +132,10 @@ def path_for_router(name):
     path = runtime_dir() / (_name(name) + "-" + random.token_hex(8) + ".key")
     _write(path, value.encode("ascii"))
     return path
+
+
+def export(name, destination):
+    value = get(name)
+    if value is None:
+        raise ValueError("no saved router client key; run up first")
+    _write(Path(destination), value.encode("ascii"), replace=False, exists_ok=False)

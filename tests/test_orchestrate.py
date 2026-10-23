@@ -5,9 +5,13 @@ import importlib.util
 import io
 import json
 import os
+import signal
 from pathlib import Path, PurePosixPath
 import socket
+import subprocess
+import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import Mock, patch
@@ -73,6 +77,7 @@ class OrchestrationTests(unittest.TestCase):
             patch.object(secrets, "_directory", return_value=self.directory / "stored"),
             patch.object(orch.remote, "Remote", side_effect=lambda machine, known: FakeRemote(machine, self.calls, self.leases, self.fail)),
             patch.object(orch.render, "render_processes", side_effect=self.processes),
+            patch.object(orch, "_start_up_watch"),
             patch.object(orch, "_start_local_router", side_effect=self.local),
             patch.object(orch, "_stop_local_router", side_effect=lambda router: self.calls.append(("local", "router-stop", {}))),
         ]
@@ -87,7 +92,7 @@ class OrchestrationTests(unittest.TestCase):
                             {}, "qwen-stderr" if kind == "qwen-replicas" else "ds41-json")
                 for index, mid in enumerate(mids)]
 
-    def local(self, profile, rendered, keys):
+    def local(self, profile, rendered, keys, **kwargs):
         self.calls.append(("local", "router-start", {"rendered": rendered, "keys": keys}))
         return {"machine": "local", "directory": str(self.directory), "endpoint": rendered["listen"]}
 
@@ -172,6 +177,136 @@ class OrchestrationTests(unittest.TestCase):
         self.calls.clear()
         orch.down("qwen-replicas")
         self.assertEqual([verb for _, verb, _ in self.calls].count("cancel"), 1)
+
+    def test_down_while_up_waits_persists_and_cancels_all_queued_leases(self):
+        wait = orch._wait_ready
+
+        def queued(client, root, lease, **kwargs):
+            saved = orch._read(orch._state_path("qwen-replicas"))
+            self.assertEqual({r["lease"] for r in saved["leases"]}, set(self.leases))
+            for row in self.leases.values():
+                row["state"] = "queued"
+            self.assertEqual(orch.down("qwen-replicas")["state"], "stop-requested")
+            return wait(client, root, lease, **kwargs)
+
+        with patch.object(orch, "_wait_ready", side_effect=queued):
+            with self.assertRaisesRegex(orch.OrchestrationError, "stop requested"):
+                orch.up(self.cluster, "qwen-replicas")
+        self.assertEqual([verb for _, verb, _ in self.calls].count("cancel"), 2)
+        self.assertTrue(all(r["state"] == "stopped" for r in self.leases.values()))
+        self.assertFalse(orch._state_path("qwen-replicas").exists())
+        self.assertNotIn("router-start", [verb for _, verb, _ in self.calls])
+
+    def test_down_during_lease_acceptance_cleans_late_reply(self):
+        original = FakeRemote.call
+
+        def accept(client, verb, payload, timeout=60):
+            result = original(client, verb, payload, timeout)
+            if verb == "lease" and len(self.leases) == 2:
+                self.assertEqual(len(orch._read(orch._state_path("qwen-replicas"))["leases"]), 1)
+                orch.down("qwen-replicas")
+            return result
+
+        with patch.object(FakeRemote, "call", accept):
+            with self.assertRaisesRegex(orch.OrchestrationError, "stop requested"):
+                orch.up(self.cluster, "qwen-replicas")
+        self.assertTrue(all(r["state"] == "stopped" for r in self.leases.values()))
+
+    def test_polling_wait_observes_down_from_another_thread(self):
+        accepted, finished = threading.Event(), threading.Event()
+        errors = []
+        original = FakeRemote.call
+
+        def queued(client, verb, payload, timeout=60):
+            result = original(client, verb, payload, timeout)
+            if verb == "lease":
+                self.leases[result["lease"]]["state"] = "queued"
+            if verb == "status":
+                accepted.set()
+            return result
+
+        def start():
+            try:
+                orch.up(self.cluster, "qwen-replicas")
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                finished.set()
+
+        with patch.object(FakeRemote, "call", queued):
+            worker = threading.Thread(target=start)
+            worker.start()
+            try:
+                self.assertTrue(accepted.wait(5))
+                orch.down("qwen-replicas")
+                self.assertTrue(finished.wait(5))
+            finally:
+                orch._state_path("qwen-replicas").with_suffix(".stop").touch()
+                worker.join(5)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("stop requested", str(errors[0]))
+        self.assertTrue(all(r["state"] == "stopped" for r in self.leases.values()))
+
+    def test_signals_request_same_cleanup_and_restore_handlers(self):
+        names = [name for name in ("SIGINT", "SIGTERM", "SIGBREAK") if hasattr(signal, name)]
+        for name in names:
+            sig = getattr(signal, name)
+            previous = signal.getsignal(sig)
+
+            def interrupt(*args, **kwargs):
+                signal.getsignal(sig)(sig, None)
+                kwargs["check"]()
+
+            with self.subTest(signal=name), patch.object(orch, "_wait_ready", side_effect=interrupt):
+                with self.assertRaisesRegex(orch.OrchestrationError, "stop requested"):
+                    orch.up(self.cluster, "qwen-replicas")
+            self.assertEqual(signal.getsignal(sig), previous)
+            self.assertFalse(orch._state_path("qwen-replicas").exists())
+        self.assertTrue(all(r["state"] == "stopped" for r in self.leases.values()))
+
+    def test_force_down_recovers_state_with_leftover_lock_file_and_is_idempotent(self):
+        orch.up(self.cluster, "qwen-replicas")
+        self.assertTrue(orch._state_path("qwen-replicas").with_suffix(".lock").exists())
+        self.assertEqual(orch.down("qwen-replicas", force=True)["state"], "stopped")
+        self.assertEqual(orch.down("qwen-replicas", force=True)["state"], "stopped")
+
+    def test_local_router_receives_earliest_lease_deadline(self):
+        deadline = time.time() + 30
+        original = FakeRemote.call
+
+        def ready(client, verb, payload, timeout=60):
+            result = original(client, verb, payload, timeout)
+            if verb == "lease":
+                self.leases[result["lease"]]["deadline"] = deadline + len(self.leases)
+            return result
+
+        with patch.object(FakeRemote, "call", ready), patch.object(orch, "_start_local_router", side_effect=self.local) as start:
+            orch.up(self.cluster, "qwen-replicas")
+        self.assertEqual(start.call_args.kwargs["ownership"]["deadline"], deadline + 1)
+
+    def test_endpoint_and_export_cli_use_router_client_key_without_echo(self):
+        for router in ("local", "halo-1"):
+            orch.up(self.cluster, "qwen-replicas", router=router)
+            key_name = orch._secret_name("qwen-replicas", "router")
+            key = secrets.get(key_name)
+            out = self.directory / (router + ".key")
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(cli.main(["endpoint", "qwen-replicas"]), 0)
+                self.assertEqual(cli.main(["keys", "export", "qwen-replicas", "--out", str(out)]), 0)
+            self.assertEqual(out.read_text(), key)
+            self.assertIn(key_name, output.getvalue())
+            self.assertIn("127.0.0.1" if router == "local" else "192.0.2.10", output.getvalue())
+            self.assertNotIn(key, output.getvalue())
+            with self.assertRaises(FileExistsError):
+                orch.export_key("qwen-replicas", out)
+            self.assertEqual(out.read_text(), key)
+            orch.down("qwen-replicas")
+
+    def test_force_down_cli(self):
+        with patch.object(orch, "down", return_value={}) as down, redirect_stdout(io.StringIO()):
+            self.assertEqual(cli.main(["down", "--force", "qwen-replicas"]), 0)
+        down.assert_called_once_with("qwen-replicas", force=True)
 
     def test_remote_router_has_node_local_keys_and_no_gpu_turn(self):
         orch.up(self.cluster, "qwen-replicas", router="halo-1")
@@ -322,6 +457,122 @@ class OrchestrationTests(unittest.TestCase):
 
 
 class LocalRouterTests(unittest.TestCase):
+    def test_watchdog_cli_starts_before_leases_and_exits_after_handoff(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "up-profile.json"
+            state = {"token": "fixture-token", "phase": "starting"}
+            orch._write(path, state)
+            lock = orch.procs.InstanceLock(path.with_suffix(".lock")).acquire()
+            helper = None
+            try:
+                helper = orch._start_up_watch(path, state["token"])
+                self.assertIsNone(helper.poll())
+                state["phase"] = "running"
+                orch._write(path, state)
+                helper.wait(timeout=5)
+                self.assertEqual(helper.returncode, 0)
+                self.assertEqual(orch._read(path), state)
+            finally:
+                lock.close()
+                if helper is not None:
+                    if helper.poll() is None:
+                        helper.kill()
+                        helper.wait(timeout=5)
+                    orch._controllers.remove(helper)
+
+    def test_watchdog_retries_failed_cleanup_and_preserves_ownership_until_success(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "up-profile.json"
+            state = {"token": "fixture-token", "phase": "starting"}
+            orch._write(path, state)
+
+            def retry(snapshot):
+                self.assertEqual(orch._read(path), state)
+                if cleanup.call_count == 1:
+                    raise OSError("fixture unreachable node")
+
+            with patch.object(orch, "_down_state", side_effect=retry) as cleanup, patch.object(orch.time, "sleep"):
+                orch.up_watch(path, state["token"])
+            self.assertEqual(cleanup.call_count, 2)
+            self.assertFalse(path.exists())
+
+    def test_router_stops_at_deadline_and_when_all_replica_leases_stop(self):
+        for stopped in (False, True):
+            with self.subTest(replicas_stopped=stopped), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                key = directory / "client.key"
+                key.write_text("synthetic-key")
+                spec = directory / "spec.json"
+                orch._write(spec, {"rendered": {"listen": {"address": "127.0.0.1", "port": 1}},
+                                   "keys": [str(key)], "deadline": time.time() + (60 if stopped else -1),
+                                   "ownership": {"leases": [{"role": "engine"}]}})
+                child = Mock()
+                child.alive.return_value = True
+                with patch.object(orch.procs, "LocalChild", return_value=child), patch.object(
+                        orch, "_replicas_stopped", return_value=stopped), patch.object(
+                        orch, "_http_json", side_effect=OSError), patch.object(orch.signal, "signal"):
+                    orch.local_router_run(spec)
+                child.stop.assert_called_once_with(5)
+                self.assertFalse(key.exists())
+                self.assertFalse(spec.exists())
+                self.assertEqual(orch._read(directory / "state.json"), {"state": "stopped"})
+
+    def test_replica_monitor_requires_every_owned_engine_to_be_terminal(self):
+        state = {"known_hosts": "synthetic-known-hosts", "machines": {"halo-1": {"install_root": "/opt/hyperloom"}},
+                 "leases": [{"role": "engine", "machine": "halo-1", "lease": "one"},
+                            {"role": "engine", "machine": "halo-1", "lease": "two"}]}
+        for second in ("queued", "ready", "stopped", "failed", "aborted", "cancelled", None):
+            client = Mock()
+            client.call.return_value = {"leases": [{"lease": "one", "state": "stopped"},
+                                                   {"lease": "two", "state": second}]}
+            with self.subTest(second=second), patch.object(orch, "_client", return_value=client):
+                self.assertEqual(orch._replicas_stopped(state), second in ("stopped", "failed", "aborted", "cancelled"))
+        with patch.object(orch, "_client", side_effect=orch.remote.RemoteError("fixture unavailable")):
+            self.assertFalse(orch._replicas_stopped(state))
+
+    def test_hard_killed_waiting_up_is_cleaned_by_detached_watchdog(self):
+        fixture = Path(__file__).parent / "fixtures/orchestrate_lifecycle.py"
+        with tempfile.TemporaryDirectory(prefix="hyperloom killed controller ") as temporary:
+            directory = Path(temporary)
+            with (directory / "owner.log").open("wb") as log:
+                owner = subprocess.Popen([sys.executable, str(fixture), str(directory), "owner"], stdout=log, stderr=log)
+            try:
+                end = time.monotonic() + 15
+                while not (directory / "waiting").exists() and time.monotonic() < end:
+                    if owner.poll() is not None:
+                        self.fail((directory / "owner.log").read_text())
+                    time.sleep(0.05)
+                self.assertTrue((directory / "waiting").exists())
+                owner.kill()  # TerminateProcess on Windows; SIGKILL on Linux.
+                owner.wait(timeout=5)
+                end = time.monotonic() + 15
+                while (directory / "run/up-qwen-replicas.json").exists() and time.monotonic() < end:
+                    time.sleep(0.05)
+                self.assertFalse((directory / "run/up-qwen-replicas.json").exists(),
+                                 (directory / "watch.log").read_text())
+                self.assertTrue(all(row["state"] == "stopped" for row in orch._read(directory / "leases.json").values()))
+            finally:
+                if owner.poll() is None:
+                    owner.kill()
+                    owner.wait(timeout=5)
+                # Allow the watchdog's log handle to close before temp cleanup on Windows.
+                time.sleep(0.2)
+
+    @unittest.skipUnless(os.name == "nt", "Windows console-close callback")
+    def test_console_close_runs_cleanup_and_unregisters_handler(self):
+        import ctypes
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "up-profile.json"
+            orch._write(path, {"fixture": True})
+            kernel = Mock()
+            with patch.object(ctypes, "WinDLL", return_value=kernel), patch.object(orch, "_down_state") as cleanup:
+                with orch._up_handlers(path):
+                    callback = kernel.SetConsoleCtrlHandler.call_args.args[0]
+                    self.assertTrue(callback(2))
+                    self.assertTrue(path.with_suffix(".stop").exists())
+                    cleanup.assert_called_once_with({"fixture": True})
+                self.assertEqual(kernel.SetConsoleCtrlHandler.call_args.args[1], False)
+
     def test_persistent_local_router_stop_removes_plaintext_and_releases_port(self):
         with tempfile.TemporaryDirectory(prefix="hyperloom local router ") as temporary:
             directory = Path(temporary)

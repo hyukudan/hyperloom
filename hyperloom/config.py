@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import ipaddress
 import json
 import math
@@ -26,6 +26,8 @@ class Machine:
     install_root: str
     lab_mode: bool
     devices: list[dict]
+    lab_dir: str | None = None
+    peer_ssh: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -224,7 +226,7 @@ def parse(obj: dict) -> Cluster:
     local_count = device_count = 0
     for m in rows:
         record(m, "machine", ("id", "os", "access", "http_address", "install_root"),
-               ("ssh_target", "ssh_port", "lab_mode", "devices"))
+               ("ssh_target", "ssh_port", "lab_mode", "devices", "lab_dir", "peer_ssh"))
         mid = identifier(m["id"], "machine.id")
         if mid in machines:
             raise ConfigError("duplicate machine id")
@@ -254,10 +256,26 @@ def parse(obj: dict) -> Cluster:
             if "excluded" in device:
                 boolean(device["excluded"], "device.excluded")
         device_count += len(devices)
+        lab = m.get("lab_dir")
+        if "lab_dir" in m:
+            absolute(lab, "machine.lab_dir", "linux")
+            if ".." in PurePosixPath(lab).parts or "\\" in lab:
+                raise ConfigError("machine.lab_dir: expected absolute POSIX path without '..'")
+        peers = m.get("peer_ssh", {})
+        record(peers, "machine.peer_ssh", optional=peers if isinstance(peers, dict) else ())
+        for peer, alias in peers.items():
+            identifier(peer, "machine.peer_ssh machine id")
+            text(alias, "machine.peer_ssh alias")
+            if (alias.startswith("-") or not re.fullmatch(r"[\w.@:\[\]-]+", alias, flags=re.ASCII)
+                    or alias.count("@") > 1):
+                raise ConfigError("machine.peer_ssh: invalid SSH alias")
         machines[mid] = Machine(mid, m["os"], m["access"], address(m["http_address"], "http_address"),
                                 target, integer(m.get("ssh_port", 22), "ssh_port", 1, 65535),
                                 absolute(m["install_root"], "install_root", m["os"]),
-                                boolean(m.get("lab_mode", True), "lab_mode"), devices)
+                                boolean(m.get("lab_mode", True), "lab_mode"), devices, lab, peers)
+    for machine in machines.values():
+        if any(peer not in machines for peer in machine.peer_ssh):
+            raise ConfigError("machine.peer_ssh: unknown machine id")
     if local_count > 1 or device_count > 128:
         raise ConfigError("cluster: at most one local machine and 128 devices")
     assets = record(obj["assets"], "assets", optional=machines)

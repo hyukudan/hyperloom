@@ -74,6 +74,7 @@ class NodeTests(unittest.TestCase):
         self.write("/opt/rocm/core-10.1/.info/version", "10.1.0\n")
         for name in ("cmake", "ninja", "git", "amdclang++", "dpkg-query", "mokutil"):
             self.command(name)
+        self.command("dpkg-query", "amdrocm10.1-gfx1151\t10.1.0-3\n")
         self.write("/sys/class/kfd/kfd/topology/nodes/0/properties", "gfx_target_version 0\n")
         self.write("/sys/class/kfd/kfd/topology/nodes/1/properties", "gfx_target_version 110501\n")
         result = self.inspector.inspect("doctor")
@@ -87,7 +88,7 @@ class NodeTests(unittest.TestCase):
         commands = [[Path(argv[0]).name, *argv[1:]] for argv in result["commands"]]
         self.assertEqual(commands, [["cmake", "--version"], ["ninja", "--version"],
                                     ["git", "--version"], ["amdclang++", "--version"],
-                                    ["dpkg-query", "-W", "-f=${Version}", "rocm-core"],
+                                    ["dpkg-query", "-W", "-f=${Package}\t${Version}\n"],
                                     ["mokutil", "--sb-state"]])
         self.assertTrue(checks["secure_boot"]["informational"])
         for argv, kwargs in self.invocations:
@@ -100,6 +101,47 @@ class NodeTests(unittest.TestCase):
         checks = self.inspector.doctor()
         self.assertEqual(checks["compiler"]["value"], "Synthetic compiler 1")
         self.assertEqual(checks["rocm_package_version"]["value"], "10.1")
+
+    def test_rocm_dpkg_matches_lab_and_core_packages_only(self):
+        self.command("dpkg-query", "unrelated\t1\namdrocm10.1-gfx1151\t10.1.0-3\nrocm-core\t10.1.0\n")
+        result = self.inspector.doctor()["rocm_package_version"]
+        self.assertEqual(result["value"], {"amdrocm10.1-gfx1151": "10.1.0-3", "rocm-core": "10.1.0"})
+        for output in ("", "unrelated\t1", "amdrocm10.1-gfx1151", "rocm-core 1 extra"):
+            with self.subTest(output=output):
+                self.command("dpkg-query", output)
+                self.assertEqual(self.inspector.doctor()["rocm_package_version"]["status"], "unavailable")
+
+    def test_usb4_lab_and_versioned_streams_report_count_and_openability(self):
+        streams = {"0-2.0/data0": {"device": "/dev/tbstream0", "configfs": {}, "openable": True},
+                   "0-2.0/data1": {"device": {"openable": False}, "configfs": {}}}
+        for document in (streams, {"version": 2, "topology": {"streams": streams}},
+                         {"version": 2, "topology": [dict(row, id=sid) for sid, row in streams.items()]}):
+            with self.subTest(document=document):
+                self.command("usb4stream-describe", json.dumps(document))
+                result = self.inspector.doctor()["usb4"]
+                self.assertEqual(result["describe"]["value"], document)
+                summary = result["streams"]["value"]
+                self.assertEqual(summary["count"], 2)
+                self.assertEqual(summary["openable"], ["0-2.0/data0"])
+                self.assertEqual(summary["openability"]["value"], {"0-2.0/data0": True, "0-2.0/data1": False})
+
+    def test_usb4_openability_unknown_is_reported_without_guessing(self):
+        self.command("usb4stream-describe", json.dumps({"0-2.0/data0": {"device": "/dev/tbstream0", "configfs": {}}}))
+        result = self.inspector.doctor()["usb4"]["streams"]["value"]
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["openability"]["status"], "unavailable")
+        self.assertIn("0-2.0/data0", result["openability"]["why"])
+
+    def test_usb4_rejects_objects_outside_either_contract(self):
+        for document in ({"unexpected": {}}, {"0-2.0/data0": {}}, {"0-2.0/data0": []},
+                         {"0-2.0/data0": {"device": 1, "configfs": {}}},
+                         {"version": 1, "topology": "bad"}, {"version": True, "topology": {}},
+                         {"version": 1, "topology": {"0-2.0/data0": {"openable": "yes"}}}):
+            with self.subTest(document=document):
+                self.command("usb4stream-describe", json.dumps(document))
+                result = self.inspector.doctor()["usb4"]
+                self.assertEqual(result["describe"]["status"], "unavailable")
+                self.assertEqual(result["streams"]["status"], "unavailable")
 
     def test_usb4_json_no_arguments_module_devices_layout(self):
         describe = {"version": 1, "topology": {"warnings": ["synthetic cable absent"]}}

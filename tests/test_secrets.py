@@ -68,6 +68,25 @@ class SecretTests(unittest.TestCase):
         self.assertEqual(secrets.get("replica"), first)
         self.assertEqual([p.name for p in (self.directory / "stored").iterdir()], ["replica"])
 
+    def test_export_refuses_existing_file_and_symlink_and_requires_saved_key(self):
+        destination = self.directory / "export.key"
+        with self.assertRaisesRegex(ValueError, "no saved"):
+            secrets.export("replica", destination)
+        self.assertFalse(destination.exists())
+        value = secrets.ensure("replica")
+        secrets.export("replica", destination)
+        self.assertEqual(destination.read_text(), value)
+        if os.name != "nt":
+            self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o600)
+            link = self.directory / "link.key"
+            link.symlink_to(destination)
+            with self.assertRaises(FileExistsError):
+                secrets.export("replica", link)
+        with self.assertRaises(FileExistsError):
+            secrets.export("replica", destination)
+        self.assertEqual(destination.read_text(), value)
+        self.assertFalse(list(self.directory.glob(".key-*")))
+
     @unittest.skipUnless(os.name == "nt", "Windows DPAPI user scope")
     def test_dpapi_round_trip_and_corruption(self):
         plaintext = b"fixture secret bytes"

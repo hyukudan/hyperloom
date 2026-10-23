@@ -44,6 +44,58 @@ def ok(value):
     return {"status": "ok", "value": value}
 
 
+STREAM_ID = re.compile(r"[0-9]+-[0-9]+(?:\.[0-9]+)*/[A-Za-z0-9_.-]+")
+
+
+def usb_streams(value):
+    """Validate both describe contracts without opening or changing a stream."""
+    if not isinstance(value, dict):
+        raise ValueError("USB4 description must be an object")
+    streams = {}
+    if "version" in value or "topology" in value:
+        if (not isinstance(value.get("version"), (str, int)) or isinstance(value.get("version"), bool)
+                or not isinstance(value.get("topology"), (dict, list))):
+            raise ValueError("USB4 description requires version and topology")
+
+        def visit(obj):
+            if isinstance(obj, dict):
+                sid = obj.get("id", obj.get("stream_id"))
+                if isinstance(sid, str) and STREAM_ID.fullmatch(sid):
+                    streams[sid] = obj
+                for key, item in obj.items():
+                    if STREAM_ID.fullmatch(key):
+                        if not isinstance(item, dict):
+                            raise ValueError("USB4 stream must be an object")
+                        streams[key] = item
+                    else:
+                        visit(item)
+            elif isinstance(obj, list):
+                for item in obj:
+                    visit(item)
+
+        visit(value["topology"])
+    else:
+        for sid, row in value.items():
+            if (not STREAM_ID.fullmatch(sid) or not isinstance(row, dict)
+                    or not isinstance(row.get("device"), (str, dict))
+                    or not isinstance(row.get("configfs"), (str, dict))):
+                raise ValueError("USB4 description requires stream ids with device/configfs fields")
+        streams = value
+    openable, unknown = [], []
+    for sid, row in streams.items():
+        device = row.get("device")
+        flag = row.get("openable", device.get("openable") if isinstance(device, dict) else None)
+        if flag is not None and type(flag) is not bool:
+            raise ValueError("USB4 openable must be a boolean")
+        if flag is True:
+            openable.append(sid)
+        elif flag is None:
+            unknown.append(sid)
+    return {"count": len(streams), "openable": sorted(openable),
+            "openability": unavailable("description does not report openability for: " + ", ".join(sorted(unknown)))
+            if unknown else ok({sid: sid in openable for sid in sorted(streams)})}
+
+
 def pairs(items):
     obj = {}
     for key, value in items:
@@ -192,7 +244,14 @@ class Inspector:
         checks["rocm_root"] = self.exists("/opt/rocm/core-10.1")
         checks["rocm_version"] = self.read("/opt/rocm/core-10.1/.info/version")
         if self.executable("dpkg-query"):
-            package = self.command("dpkg-query", "-W", "-f=${Version}", "rocm-core")
+            package = self.command("dpkg-query", "-W", "-f=${Package}\t${Version}\n")
+            if package["status"] == "ok":
+                versions = {}
+                for line in package["value"].splitlines():
+                    columns = line.split()
+                    if len(columns) == 2 and re.match(r"^(amdrocm|rocm-core)", columns[0]):
+                        versions[columns[0]] = columns[1]
+                package = ok(versions) if versions else unavailable("no amdrocm or rocm-core packages installed")
         else:
             package = self.command("rpm", "-q", "--queryformat", "%{VERSION}", "rocm-core")
         checks["rocm_package_version"] = package
@@ -204,14 +263,18 @@ class Inspector:
             checks["disk"] = unavailable("disk space unavailable")
         devices = self.glob("/dev/tbstream*")
         describe = self.command("usb4stream-describe", json_value=True)
+        streams = unavailable("USB4 description unavailable")
         if describe["status"] == "ok":
-            value = describe["value"]
-            if not isinstance(value, dict) or "version" not in value or "topology" not in value:
-                describe = unavailable("USB4 description requires version and topology")
+            try:
+                streams = ok(usb_streams(describe["value"]))
+            except (ValueError, RecursionError) as exc:
+                describe = unavailable(str(exc))
+                streams = unavailable(str(exc))
         checks["usb4"] = {
             "module": self.exists("/sys/module/thunderbolt_stream"),
             "devices": ok(devices) if devices else unavailable("no tbstream devices"),
             "describe": describe,
+            "streams": streams,
             "layout": self.read("/run/usb4stream-layout.json", json_value=True)}
         checks["lab"] = self.lab()
         checks["secure_boot"] = self.command("mokutil", "--sb-state")

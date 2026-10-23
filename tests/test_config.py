@@ -15,6 +15,35 @@ def example():
 
 
 class ConfigTests(unittest.TestCase):
+    def test_lab_fields_share_one_schema_for_parse_load_and_cli(self):
+        from contextlib import redirect_stdout
+        import io
+        from hyperloom import cli, orchestrate
+        obj = example()
+        obj["machines"][1].update(lab_dir="/opt/lab", peer_ssh={"halo-2": "operator@halo-2"})
+        parsed = parse(obj)
+        self.assertEqual(parsed.machines["halo-1"].lab_dir, "/opt/lab")
+        self.assertEqual(parsed.machines["halo-1"].peer_ssh, {"halo-2": "operator@halo-2"})
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cluster.json"
+            path.write_text(json.dumps(obj), encoding="utf-8")
+            self.assertEqual(load(path), parsed)
+            self.assertEqual(orchestrate.load_cluster(path), parsed)
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(cli.main(["config", "validate", str(path)]), 0)
+
+    def test_lab_fields_reject_invalid_paths_peers_and_aliases(self):
+        bad = [("lab_dir", value) for value in (None, "relative", "/opt/../lab", "D:\\lab", "/opt\\lab", "/opt/lab\n")]
+        bad += [("peer_ssh", value) for value in (None, [], {"unknown": "halo-2"},
+                {"halo-2": "-bad"}, {"halo-2": "halo-2 extra"}, {"halo-2": "halo-2\n"},
+                {"halo-2": "halo-2\x00"}, {"halo-2": 2}, {"halo-2": ""},
+                {"halo-2": "halo-2;command"}, {"halo-2": "operator@@halo-2"})]
+        for key, value in bad:
+            obj = example()
+            obj["machines"][1][key] = value
+            with self.subTest(key=key, value=value), self.assertRaises(ConfigError):
+                parse(obj)
+
     def test_example_and_machine_interface(self):
         cluster = load(ROOT / "examples/cluster.example.json")
         self.assertEqual(len(cluster.machines), 3)

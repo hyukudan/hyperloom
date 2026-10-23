@@ -139,10 +139,19 @@ POSIX-only parts are skipped on Windows, and the pure logic is tested everywhere
 - `hyperloom install PROFILE [--build-on MACHINE]`
 - `hyperloom up PROFILE [--router local|MACHINE] [--node ID ...] [--device MACHINE:DEVICE ...] [--deadline S] [--approval-ref TEXT --approval-lease S --approval-end ISO]`
 - `hyperloom down PROFILE`
+- `hyperloom down --force PROFILE` recovers saved leases after a controller crash, including when an old lock file remains. Both forms can stop a still-waiting `up`: they write a stop marker, cancel queued leases and stop running ones without waiting for the `up` lock.
 - `hyperloom status [PROFILE]`
+- `hyperloom endpoint PROFILE` prints the saved router URL and its client key name (never the key).
 - `hyperloom logs PROFILE PROCESS [--tail N]`
 - `hyperloom keys rotate NAME`
+- `hyperloom keys export PROFILE --out FILE` exports the saved router client key as plaintext for a client. The router requires this key even on loopback. Run `up` first to create the key; export refuses to overwrite an existing file or symlink. The export has a protected user-only DACL on Windows and mode `0600` on POSIX. Clients send it as `Authorization: Bearer <key>`; keep the exported file private.
 - `--node`/`--device` default to the profile's machines. A declared machine that is not in the config, or is unreachable, fails before any lease.
+
+Machine `lab_dir` and `peer_ssh` are shared `hyperloom/cluster-v1` fields, accepted by `config validate` and all loaders. `lab_dir` is an absolute POSIX path without `..`; `peer_ssh` maps known machine IDs to node-side SSH aliases.
+
+Every accepted lease ID is saved before readiness polling. A waiting `up` polls the stop marker and cleans its owned resources on cancellation, SIGINT, SIGTERM, SIGBREAK or Windows console close. A detached watcher retries cleanup if the starting controller is forcibly terminated. Failed cleanup retains the ownership state for `down --force` to retry; the OS lock file is left in place because its lock is released by process exit. An unavailable node can only be cleaned once it is reachable again.
+
+The local router inherits the earliest engine lease deadline and stops when that deadline passes or all owned replica leases report terminal states. A failed status query does not imply that a replica stopped; the deadline still bounds the router's lifetime. Router stop removes its temporary plaintext keys.
 
 ## Integration notes (worker I)
 

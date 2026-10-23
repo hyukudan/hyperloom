@@ -1,6 +1,7 @@
 """Control-machine builds, bounded engine leases, and router lifecycle."""
 
 from copy import deepcopy
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict
 import json
 import math
@@ -10,6 +11,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 from types import SimpleNamespace
 from urllib.request import ProxyHandler, build_opener
@@ -102,47 +104,134 @@ def _versions():
 
 
 def load_cluster(path, config_module=None):
-    """Accept Phase 1a connection fields while preserving Phase 0 validation."""
+    """Load the shared cluster-v1 schema."""
     if config_module is None:
         from . import config as config_module
+    return config_module.load(path)
+
+
+def _check_stop(path):
+    if path.with_suffix(".stop").exists():
+        raise OrchestrationError("profile stop requested")
+
+
+def _pause(seconds, check):
+    end = time.monotonic() + seconds
+    while True:
+        check()
+        remaining = end - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(0.1, remaining))
+
+
+@contextmanager
+def _up_handlers(path):
+    previous = {}
+    console = None
+
+    def request(*_):
+        path.with_suffix(".stop").touch()
+
     try:
-        return config_module.load(path)
-    except ValueError:
-        if not hasattr(config_module, "read_json"):
-            raise
-    raw = config_module.read_json(path)
-    if (not isinstance(raw, dict) or not isinstance(raw.get("machines"), list)
-            or any(not isinstance(row, dict) or "id" not in row for row in raw["machines"])
-            or not isinstance(raw.get("profiles"), dict)
-            or any(not isinstance(settings, dict) for settings in raw["profiles"].values())):
-        raise ValueError("cluster requires machines and profiles objects")
-    base = deepcopy(raw)
-    extra = {}
-    for row in base.get("machines", []):
-        config_module.identifier(row["id"], "machine.id")
-        metadata = {}
-        if "lab_dir" in row:
-            lab = row.pop("lab_dir")
-            if lab is not None:
-                config_module.absolute(lab, "machine.lab_dir", "linux")
-                if ".." in PurePosixPath(lab).parts:
-                    raise ValueError("lab_dir cannot contain parent traversal")
-            metadata["lab_dir"] = lab
-        if "peer_ssh" in row:
-            peers = row.pop("peer_ssh")
-            if not isinstance(peers, dict):
-                raise ValueError("peer_ssh must map machine ids to node-side ssh aliases")
-            for alias in peers.values():
-                remote._target(alias)
-            metadata["peer_ssh"] = peers
-        extra[row["id"]] = metadata
-    cluster = config_module.parse(base)
-    for mid, metadata in extra.items():
-        if any(peer not in cluster.machines for peer in metadata.get("peer_ssh", {})):
-            raise ValueError(f"{mid}: peer_ssh names an unknown machine")
-    cluster.raw.clear()
-    cluster.raw.update(deepcopy(raw))
-    return cluster
+        if threading.current_thread() is threading.main_thread():
+            for name in ("SIGINT", "SIGTERM", "SIGBREAK"):
+                if hasattr(signal, name):
+                    sig = getattr(signal, name)
+                    previous[sig] = signal.signal(sig, request)
+        if os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+            callback = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
+
+            def close_console(event):
+                if event not in (0, 1, 2, 5, 6):
+                    return False
+                request()
+                if event in (2, 5, 6):
+                    # Windows gives console-close handlers only a short window.
+                    # The detached watcher retries if this cleanup is interrupted.
+                    try:
+                        if path.exists():
+                            _down_state(_read(path))
+                    except Exception:
+                        pass
+                return True
+
+            console = callback(close_console)
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.SetConsoleCtrlHandler.argtypes = [callback, wintypes.BOOL]
+            kernel.SetConsoleCtrlHandler.restype = wintypes.BOOL
+            if not kernel.SetConsoleCtrlHandler(console, True):
+                raise ctypes.WinError(ctypes.get_last_error())
+        yield
+    finally:
+        if console is not None:
+            kernel.SetConsoleCtrlHandler(console, False)
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
+def _detached(argv, log):
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(repo_root())
+    options = {"start_new_session": True}
+    if os.name == "nt":
+        startup = subprocess.STARTUPINFO()
+        startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startup.wShowWindow = 0
+        options = {"creationflags": subprocess.CREATE_NEW_CONSOLE, "startupinfo": startup}
+    with log.open("wb") as stream:
+        helper = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=stream, stderr=stream, env=env, **options)
+    _controllers.append(helper)
+    return helper
+
+
+def _start_up_watch(path, token):
+    helper = _detached([str(Path(sys.executable).absolute()), "-m", "hyperloom", "_up-watch",
+                        str(path), token], path.with_suffix(".watch.log"))
+    end = time.monotonic() + 10
+    ready = path.with_suffix(".watch-ready")
+    while time.monotonic() < end:
+        if ready.exists() and _read(ready).get("token") == token:
+            ready.unlink(missing_ok=True)
+            return helper
+        if helper.poll() is not None:
+            raise OrchestrationError("cleanup watcher failed; see " + str(path.with_suffix(".watch.log")))
+        time.sleep(0.05)
+    helper.kill()
+    helper.wait(timeout=5)
+    raise OrchestrationError("cleanup watcher did not start")
+
+
+def up_watch(path, token):
+    """Recover a starting profile after an uncatchable controller termination."""
+    path = Path(path)
+    _write(path.with_suffix(".watch-ready"), {"token": token})
+    while path.exists():
+        state = _read(path)
+        if state.get("token") != token or state.get("phase") != "starting":
+            return
+        lock = procs.InstanceLock(path.with_suffix(".lock"))
+        try:
+            lock.acquire()
+        except procs.ProcessError:
+            time.sleep(0.1)
+            continue
+        try:
+            if path.exists():
+                state = _read(path)
+                if state.get("token") == token and state.get("phase") == "starting":
+                    path.with_suffix(".stop").touch()
+                    try:
+                        _down_state(state)
+                    except Exception:
+                        time.sleep(1)
+                        continue
+                    path.unlink(missing_ok=True)
+            return
+        finally:
+            lock.close()
 
 
 def _wait_job(client, root, job, timeout=3600):
@@ -234,17 +323,19 @@ def _leases(result):
     return leases
 
 
-def _wait_ready(client, root, lease, timeout=600, queue_timeout=3600, poll_s=2.0):
+def _wait_ready(client, root, lease, timeout=600, queue_timeout=3600, poll_s=2.0, check=lambda: None):
     """Wait while the lease is queued for its GPU turn (up to queue_timeout), then up to timeout for readiness.
     Each poll is one ssh round trip, so poll every couple of seconds, not faster."""
     queued_until = time.monotonic() + queue_timeout
     ready_until = None
     while True:
+        check()
         rows = _leases(_call(client, "status", {"root": root}))
         row = next((row for row in rows if row.get("lease", row.get("id")) == lease), {})
         state = row.get("state")
         if state == "ready":
-            return
+            check()
+            return row
         if state in ("failed", "aborted", "stopped", "cancelled"):
             raise OrchestrationError(f"{client.machine.id}: lease {lease}: {row.get('reason', state)}")
         now = time.monotonic()
@@ -255,7 +346,7 @@ def _wait_ready(client, root, lease, timeout=600, queue_timeout=3600, poll_s=2.0
             ready_until = ready_until or now + timeout
             if now > ready_until:
                 raise OrchestrationError(f"{client.machine.id}: lease readiness timed out")
-        time.sleep(poll_s)
+        _pause(poll_s, check)
 
 
 def _url(endpoint, suffix):
@@ -333,13 +424,23 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
     path = _state_path(profile)
     lock = procs.InstanceLock(path.with_suffix(".lock")).acquire()
     state = {"profile": profile, "leases": [], "router": None,
-             "known_hosts": str(_known_hosts()), "machines": {}}
+             "known_hosts": str(_known_hosts()), "machines": {},
+             "token": uuid.uuid4().hex, "phase": "starting", "keys": []}
     keys = []
     local_values = {}
+    owned = False
+    handlers = ExitStack()
     try:
         if path.exists():
             raise OrchestrationError("profile has saved running state; run down before up")
+        path.with_suffix(".stop").unlink(missing_ok=True)
+        owned = True
+        handlers.enter_context(_up_handlers(path))
+        _write(path, state)
+        _start_up_watch(path, state["token"])
         clients = {mid: _client(cluster.machines[mid]) for mid in dict.fromkeys(declared)}
+        state["machines"] = {mid: asdict(cluster.machines[mid]) for mid in clients}
+        _write(path, state)
         for mid, client in clients.items():
             machine = cluster.machines[mid]
             state["machines"][mid] = asdict(machine)
@@ -394,13 +495,16 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
         rendered = render.render_router(selected, profile)
         # Persist each returned lease immediately, including while it is queued.
         def start(mid, payload, role):
+            _check_stop(path)
             result = _call(clients[mid], "lease", payload)
             record = {"machine": mid, "lease": result["lease"], "role": role,
                       "processes": [proc["name"] for proc in payload["processes"]],
                       "process_machines": {proc["name"]: mid if proc["machine"] == "local" else mids[1]
                                            for proc in payload["processes"]}}
             state["leases"].append(record)
+            state["keys"] = keys
             _write(path, state)
+            _check_stop(path)
             return record
 
         def process(spec, location):
@@ -425,13 +529,18 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
                        "processes": [process(processes[index], "local")] if kind == "qwen-replicas" else
                        [process(spec, "local" if i == 0 else "peer") for i, spec in enumerate(processes)]}
             start(mid, payload, "engine")
+        deadlines = []
         for lease in state["leases"]:
-            _wait_ready(clients[lease["machine"]], cluster.machines[lease["machine"]].install_root, lease["lease"])
+            ready = _wait_ready(clients[lease["machine"]], cluster.machines[lease["machine"]].install_root,
+                                lease["lease"], check=lambda: _check_stop(path))
+            deadlines.append(ready.get("deadline") or time.time() + deadline_s)
+        state["deadline"] = min(deadlines)
+        _check_stop(path)
         if router == "local":
             for key, value in local_values.items():
                 secrets._write(Path(key), value.encode("ascii"))
             render.validate_router(rendered)
-            state["router"] = _start_local_router(profile, rendered, keys)
+            state["router"] = _start_local_router(profile, rendered, keys, ownership=state)
         else:
             machine = cluster.machines[router]
             commit = _versions()["components"]["tensormeld"]["commit"]
@@ -458,11 +567,14 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
             record = start(router, payload, "router")
             state["router"] = dict(record, endpoint=rendered["listen"])
             _write(path, state)
-            _wait_ready(clients[router], machine.install_root, record["lease"], timeout=40)
+            _wait_ready(clients[router], machine.install_root, record["lease"], timeout=40,
+                        check=lambda: _check_stop(path))
+        _check_stop(path)
+        state["phase"] = "running"
         _write(path, state)
         return state
     except BaseException:
-        if state["leases"] or state["router"]:
+        if owned:
             try:
                 _down_state(state)
                 path.unlink(missing_ok=True)
@@ -472,12 +584,27 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
             Path(key).unlink(missing_ok=True)
         raise
     finally:
+        handlers.close()
         lock.close()
 
 
 def _secret_name(profile, suffix):
     import hashlib
     return "key-" + hashlib.sha256((profile + ":" + suffix).encode()).hexdigest()[:32]
+
+
+def export_key(profile, destination):
+    name = _secret_name(_identifier(profile), "router")
+    secrets.export(name, destination)
+    return {"key_name": name, "out": str(destination)}
+
+
+def endpoint(profile):
+    state = _read(_state_path(profile))
+    if not state.get("router"):
+        raise OrchestrationError("profile router has not started")
+    return {"url": _url(state["router"]["endpoint"], ""),
+            "key_name": _secret_name(profile, "router")}
 
 
 def _node_name(mid):
@@ -487,29 +614,25 @@ def _node_name(mid):
     return re.sub(r"[^a-z0-9-]", "-", mid.lower())[:20] + "-" + hashlib.sha256(mid.encode()).hexdigest()[:8]
 
 
-def _start_local_router(profile, rendered, keys):
+def _start_local_router(profile, rendered, keys, *, ownership=None):
     directory = secrets.runtime_dir() / ("router-" + uuid.uuid4().hex)
     directory.mkdir(parents=True)
     spec = directory / "spec.json"
-    _write(spec, {"rendered": rendered, "keys": keys, "profile": profile})
-    argv = [str(Path(sys.executable).absolute()), "-m", "hyperloom", "_up-router", str(spec)]
-    env = dict(os.environ)
-    env["PYTHONPATH"] = str(repo_root())
-    options = {"start_new_session": True}
-    if os.name == "nt":
-        startup = subprocess.STARTUPINFO()
-        startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startup.wShowWindow = 0
-        options = {"creationflags": subprocess.CREATE_NEW_CONSOLE, "startupinfo": startup}
-    with (directory / "controller.log").open("wb") as log:
-        helper = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=log, env=env, **options)
+    _write(spec, {"rendered": rendered, "keys": keys, "profile": profile,
+                  "ownership": ownership, "deadline": (ownership or {}).get("deadline", time.time() + 1140)})
     record = {"machine": "local", "directory": str(directory), "endpoint": rendered["listen"]}
+    if ownership is not None:
+        ownership["router"] = record
+        _write(_state_path(profile), ownership)
+    argv = [str(Path(sys.executable).absolute()), "-m", "hyperloom", "_up-router", str(spec)]
+    helper = _detached(argv, directory / "controller.log")
     try:
         end = time.monotonic() + 20
         while time.monotonic() < end:
+            if ownership is not None:
+                _check_stop(_state_path(profile))
             ready = directory / "state.json"
             if ready.exists() and _read(ready).get("state") == "ready":
-                _controllers.append(helper)
                 return record
             if helper.poll() is not None:
                 raise OrchestrationError("local router failed; see " + str(directory / "controller.log"))
@@ -554,7 +677,14 @@ def local_router_run(spec_path):
         child.start()
         end = time.monotonic() + 15
         ready = False
+        next_check = 0
         while child.alive() and not interrupted and not (directory / "stop").exists():
+            if time.time() >= spec["deadline"]:
+                break
+            if spec.get("ownership") and time.monotonic() >= next_check:
+                if _replicas_stopped(spec["ownership"]):
+                    break
+                next_check = time.monotonic() + 2
             if not ready:
                 try:
                     status = _http_json(rendered["listen"])
@@ -579,6 +709,24 @@ def local_router_run(spec_path):
             config.unlink(missing_ok=True)
             path.unlink(missing_ok=True)
             _write(directory / "state.json", {"state": "stopped"})
+
+
+def _replicas_stopped(state):
+    engines = [lease for lease in state["leases"] if lease["role"] == "engine"]
+    if not engines:
+        return False
+    try:
+        for lease in engines:
+            mid = lease["machine"]
+            machine = state["machines"][mid]
+            rows = _leases(_call(_client(SimpleNamespace(**machine), state["known_hosts"]),
+                                 "status", {"root": machine["install_root"]}, timeout=2))
+            row = next((row for row in rows if row.get("lease", row.get("id")) == lease["lease"]), None)
+            if row is None or row.get("state") not in ("stopped", "failed", "aborted", "cancelled"):
+                return False
+        return True
+    except (OSError, remote.RemoteError, OrchestrationError):
+        return False
 
 
 def _stop_local_router(router):
@@ -628,6 +776,8 @@ def _down_state(state):
         try:
             rows = _leases(_call(clients[mid], "status", {"root": root}))
             current = next((row for row in rows if row.get("lease", row.get("id")) == lease["lease"]), {})
+            if current.get("state") in ("stopped", "failed", "aborted", "cancelled"):
+                continue
             _call(clients[mid], "cancel" if current.get("state") == "queued" else "stop",
                   {"root": root, "lease": lease["lease"]})
             end = time.monotonic() + 40
@@ -644,15 +794,33 @@ def _down_state(state):
             errors.append(str(exc))
     if errors:
         raise OrchestrationError("; ".join(errors))
+    for key in state.get("keys", []):
+        Path(key).unlink(missing_ok=True)
 
 
-def down(profile):
+def down(profile, force=False):
     path = _state_path(profile)
-    lock = procs.InstanceLock(path.with_suffix(".lock")).acquire()
+    # This marker is separate from the atomically replaced ownership document.
+    # It survives concurrent up writes and also covers a lease call in flight.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.with_suffix(".stop").touch()
+    if path.exists():
+        try:
+            state = _read(path)
+        except FileNotFoundError:
+            state = None  # The waiting controller may have just completed cleanup.
+        if state is not None:
+            _down_state(state)
+    # Never remove ownership while up can still append an accepted lease.
+    lock = procs.InstanceLock(path.with_suffix(".lock"))
+    try:
+        lock.acquire()
+    except procs.ProcessError:
+        return {"profile": profile, "state": "stop-requested"}
     try:
         if path.exists():
             _down_state(_read(path))
-            path.unlink()
+            path.unlink(missing_ok=True)
         return {"profile": profile, "state": "stopped"}
     finally:
         lock.close()
