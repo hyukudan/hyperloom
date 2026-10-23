@@ -8,6 +8,7 @@ import signal
 import socket
 import subprocess
 import threading
+from .winproc import has_console, no_window
 
 
 class ProcessError(RuntimeError):
@@ -152,8 +153,11 @@ class LocalChild:
         self._lock.acquire()
         try:
             self._check_port()
-            options = {"start_new_session": True} if os.name != "nt" else {
-                "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | 0x4}
+            # Share the parent's console so CTRL_BREAK reaches the child; without a console (e.g. pythonw),
+            # give the child a hidden one instead of letting Windows open a visible window.
+            options = {"start_new_session": True} if os.name != "nt" else (
+                {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | 0x4} if has_console()
+                else no_window(subprocess.CREATE_NEW_PROCESS_GROUP | 0x4))
             if os.name == "nt":
                 self._job = _WindowsJob()
             self.process = subprocess.Popen(self.argv, env=self.env, stdin=subprocess.DEVNULL,

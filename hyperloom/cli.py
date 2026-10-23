@@ -16,6 +16,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 import uuid
 
 from .paths import repo_root
+from .winproc import no_window
 
 
 _controllers = []
@@ -135,11 +136,9 @@ def _router_start(args):
         [str(repo_root()), router_env.get("PYTHONPATH", "")])
     options = {"start_new_session": True}
     if os.name == "nt":
-        # Keep a console for CTRL_BREAK delivery without opening a visible window.
-        startup = subprocess.STARTUPINFO()
-        startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startup.wShowWindow = 0
-        options = {"creationflags": subprocess.CREATE_NEW_CONSOLE, "startupinfo": startup}
+        # A hidden console of its own (never shown, even with Windows Terminal as the default host);
+        # the router child shares it, so CTRL_BREAK from this helper still reaches it.
+        options = no_window()
     with (directory / "controller.log").open("wb") as log:
         helper = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                                   env=controller_env, **options)
@@ -270,7 +269,7 @@ def _doctor(args):
     if not script.is_file():
         raise RuntimeError("node/hyperloom-node is unavailable; complete the hyperloom installation")
     result = subprocess.run([str(Path(sys.executable).absolute()), str(script), "doctor"],
-                            input="{}", text=True, capture_output=True, timeout=60)
+                            input="{}", text=True, capture_output=True, timeout=60, **no_window())
     if result.returncode:
         raise RuntimeError("local doctor failed: " + result.stderr.strip())
     _json(json.loads(result.stdout))

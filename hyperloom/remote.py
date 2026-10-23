@@ -19,6 +19,7 @@ import threading
 import time
 
 from .paths import repo_root
+from .winproc import no_window
 
 
 MAX_JSON = 256 * 1024
@@ -111,7 +112,7 @@ def _stop(child):
             try:
                 subprocess.run(["taskkill", "/PID", str(child.pid), "/T", "/F"],
                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL, timeout=5, check=False)
+                               stderr=subprocess.DEVNULL, timeout=5, check=False, **no_window())
             except (OSError, subprocess.TimeoutExpired):
                 pass
     else:
@@ -142,7 +143,7 @@ def _run(argv, data=b"", timeout=30, cancel_event=None, limit=MAX_JSON):
         raise RemoteError("remote operation cancelled")
     try:
         child = subprocess.Popen(argv, executable=executable, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                 stderr=subprocess.PIPE, start_new_session=os.name != "nt")
+                                 stderr=subprocess.PIPE, start_new_session=os.name != "nt", **no_window())
     except OSError as exc:
         raise RemoteError("could not start OpenSSH command") from exc
     output = [bytearray(), bytearray()]

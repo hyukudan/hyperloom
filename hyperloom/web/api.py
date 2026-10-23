@@ -31,6 +31,7 @@ from hyperloom import __version__, cli, config, orchestrate, remote, render, sec
 from hyperloom.adapters import engine, router
 from hyperloom.paths import repo_root
 from hyperloom.stats import Window
+from hyperloom.winproc import no_window
 
 
 SCREENS = frozenset(("devices", "topology", "models", "profiles", "stats", "logs", "settings"))
@@ -305,7 +306,8 @@ class API:
             raise ValueError("later phase · TensorMeld agent")
         result = subprocess.run([str(Path(sys.executable).absolute()),
                                  str(repo_root() / "node" / "hyperloom-node"), verb],
-                                input=json.dumps(payload), text=True, encoding="utf-8", capture_output=True, timeout=15)
+                                input=json.dumps(payload), text=True, encoding="utf-8", capture_output=True, timeout=15,
+                                **no_window())
         if result.returncode:
             raise ValueError("local " + verb + " failed")
         return json.loads(result.stdout)
@@ -316,7 +318,7 @@ class API:
             return None
         result = subprocess.run([str(Path(sys.executable).absolute()), "-m", "tensormeld", "probe"],
                                 env={**cli._router_env(), "PYTHONIOENCODING": "utf-8"},
-                                text=True, encoding="utf-8", capture_output=True, timeout=15)
+                                text=True, encoding="utf-8", capture_output=True, timeout=15, **no_window())
         if result.returncode:
             raise ValueError("tensormeld probe unavailable")
         data = json.loads(result.stdout)
@@ -329,7 +331,7 @@ class API:
                 result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
                     "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); "
                     "(Get-CimInstance Win32_Processor | Select-Object -First 1).Name"],
-                    text=True, encoding="utf-8", capture_output=True, timeout=5)
+                    text=True, encoding="utf-8", capture_output=True, timeout=5, **no_window())
                 if result.returncode == 0 and result.stdout.strip():
                     data["cpu_model"] = result.stdout.strip()
             except (OSError, subprocess.SubprocessError):
@@ -337,7 +339,8 @@ class API:
         # nvidia-smi is a passive status query; never create a GPU context.
         try:
             result = subprocess.run(["nvidia-smi", "--query-gpu=uuid,name,utilization.gpu,memory.total,memory.used,temperature.gpu,power.draw",
-                                     "--format=csv,noheader,nounits"], capture_output=True, text=True, encoding="utf-8", timeout=5)
+                                     "--format=csv,noheader,nounits"], capture_output=True, text=True, encoding="utf-8", timeout=5,
+                                    **no_window())
             readings = list(csv.reader(result.stdout.splitlines())) if result.returncode == 0 else []
             devices = [d for d in data.get("devices", []) if d.get("vendor") == "nvidia"]
             for device in devices:
@@ -918,12 +921,11 @@ class API:
 
     def _run_detached(self, action, args):
         """Run one CLI mutation in its own detached process and return its JSON result."""
-        flags = {}
-        if os.name == "nt":
-            flags["creationflags"] = (subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
-                                      | getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000))
-        else:
-            flags["start_new_session"] = True
+        # Own hidden console (CREATE_NO_WINDOW), not a console-less detached process: every ssh/scp such a process
+        # starts would open a visible window. Break away from the portal's job so the CLI job
+        # survives the portal.
+        flags = {"start_new_session": True} if os.name != "nt" else no_window(
+            subprocess.CREATE_NEW_PROCESS_GROUP | getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000))
         argv = self._cli_argv(action, args)
         try:
             child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,

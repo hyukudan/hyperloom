@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from urllib.request import ProxyHandler, build_opener
 import uuid
 
+from .winproc import no_window
 from . import procs, remote, render, secrets
 from .paths import repo_root
 
@@ -177,10 +178,9 @@ def _detached(argv, log):
     env["PYTHONPATH"] = str(repo_root())
     options = {"start_new_session": True}
     if os.name == "nt":
-        startup = subprocess.STARTUPINFO()
-        startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startup.wShowWindow = 0
-        options = {"creationflags": subprocess.CREATE_NEW_CONSOLE, "startupinfo": startup}
+        # A hidden console of its own (never shown, even with Windows Terminal as the default host);
+        # the router child shares it, so CTRL_BREAK from this helper still reaches it.
+        options = no_window()
     with log.open("wb") as stream:
         helper = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=stream, stderr=stream, env=env, **options)
     _controllers.append(helper)
