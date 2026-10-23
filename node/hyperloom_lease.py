@@ -350,6 +350,21 @@ def peer_call(spec, verb, payload):
     return reply
 
 
+def usb4_layout_id(layout):
+    """Derive the layout id from /run/usb4stream-layout.json. A file that names its layout wins; otherwise the
+    per-stream records decide: layout "1" (production) = every data stream present with gpu_direct == 0."""
+    named = layout.get("layout", layout.get("layout_id")) if isinstance(layout, dict) else None
+    if named is not None:
+        return str(named)
+    streams = [v for k, v in layout.items() if "/data" in k and isinstance(v, dict)] if isinstance(layout, dict) else []
+    if len(streams) < 4:
+        return "unknown"
+    direct = [int((s.get("config") or {}).get("gpu_direct", -1)) for s in streams]
+    if all(d == 0 for d in direct):
+        return "1"
+    return "gpu-direct"
+
+
 def layout_check(spec):
     lab = path(spec["lab_dir"])
     holder = (lab / ".gpu-turn" / "holder").read_text().split()
@@ -363,8 +378,8 @@ def layout_check(spec):
     if not words or words[0] != required:
         raise ValueError("lab layout mismatch")
     layout = read_json(USB_LAYOUT)
-    if str(layout.get("layout", layout.get("layout_id"))) != required:
-        raise ValueError("USB4 layout mismatch")
+    if usb4_layout_id(layout) != required:
+        raise ValueError("USB4 layout mismatch: " + usb4_layout_id(layout))
     if spec["kind"] == "pair":
         reply = peer_call(spec, "supervise-internal", {"check_layout": required,
                           "lab_dir": spec.get("peer_lab_dir") or spec["lab_dir"]})
@@ -731,7 +746,7 @@ def run(verb, payload):
                 words = (lab / ".gpu-turn" / "layout-state").read_text().split()
                 layout = read_json(USB_LAYOUT)
                 result["layout_ok"] = bool(words and words[0] == required and
-                    str(layout.get("layout", layout.get("layout_id"))) == required)
+                                           usb4_layout_id(layout) == required)
             else:
                 result.update(supervise(payload["spec_file"]))
         elif verb == "peer-run":

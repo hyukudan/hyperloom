@@ -626,3 +626,22 @@ class LeaseProcessTests(LeaseFixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Usb4LayoutIdTests(unittest.TestCase):
+    """The lab's /run/usb4stream-layout.json holds per-stream records, not a layout name."""
+
+    @staticmethod
+    def streams(direct):
+        keys = ["0-2.0/data0", "0-2.0/data1", "1-2.0/data0", "1-2.0/data1"]
+        doc = {k: {"device": "/dev/tbstream%d" % i, "config": {"gpu_direct": d}} for i, (k, d) in enumerate(zip(keys, direct))}
+        doc.update(version=2, topology={"cables_up": 2})
+        return doc
+
+    def test_derives_production_layout(self):
+        self.assertEqual(lease.usb4_layout_id(self.streams([0, 0, 0, 0])), "1")
+        self.assertEqual(lease.usb4_layout_id(self.streams([0, 1, 0, 1])), "gpu-direct")
+        self.assertEqual(lease.usb4_layout_id({"layout": "1"}), "1")
+        partial = self.streams([0, 0, 0, 0])
+        del partial["1-2.0/data1"]
+        self.assertEqual(lease.usb4_layout_id(partial), "unknown")
