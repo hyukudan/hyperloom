@@ -343,6 +343,8 @@ def main(argv=None):
     up.add_argument("--approval-ref")
     up.add_argument("--approval-lease", type=int)
     up.add_argument("--approval-end")
+    up.add_argument("--diagnostic", action="append", default=None,
+                    help="non-production diagnostic from the preset (repeatable); output goes to the node log/")
     down = commands.add_parser("down")
     down.add_argument("profile", nargs="?")
     down.add_argument("--force", action="store_true")
@@ -424,7 +426,8 @@ def main(argv=None):
                 approval = {"ref": args.approval_ref, "lease_s": args.approval_lease, "end_epoch": end.timestamp()}
             cluster = _cluster(args.config)
             _json(_module("hyperloom.orchestrate").up(cluster, args.profile, router=args.router,
-                  nodes=args.node, devices=args.device, deadline_s=args.deadline, approval=approval))
+                  nodes=args.node, devices=args.device, deadline_s=args.deadline, approval=approval,
+                  diagnostics=args.diagnostic))
         elif args.command == "down":
             _json(_module("hyperloom.orchestrate").down(args.profile, force=args.force))
         elif args.command == "endpoint":

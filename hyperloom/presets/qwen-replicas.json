@@ -277,5 +277,41 @@
         "evidence": "docs/decode-defaults.md, Context n-gram extension: auto by default; gate strix-hip-mtp-decode-options-tests"
       }
     }
+  },
+  "diagnostics": {
+    "prefill-timing": {
+      "description": "Host milliseconds of each prefill phase, block download, scoring and spooling, on stderr.",
+      "env": {
+        "STRIX_PREFILL_TIMING": "1"
+      },
+      "output": "stderr",
+      "source": [
+        "src/known_prefix_prefill_runtime.cpp:51-56@70ec42b9",
+        "src/hip_known_prompt_backend.cpp:105-109@70ec42b9",
+        "src/hip_ple_launcher.hip:2477-2483@70ec42b9",
+        "apps/hip_decode_token_main.cpp:829-833@70ec42b9"
+      ]
+    },
+    "cycle-timing": {
+      "description": "Host time between named decode-cycle marks; totals on stderr at exit.",
+      "env": {
+        "STRIX_CYCLE_TIMING": "1"
+      },
+      "output": "stderr",
+      "source": [
+        "include/strix/host_phase_timing.hpp:12-27@70ec42b9",
+        "src/hip_ple_launcher.hip:2575-2576@70ec42b9"
+      ]
+    },
+    "prompt-batch-log": {
+      "description": "One stderr line per grouped prompt batch (blocks, rows, wall time).",
+      "env": {
+        "STRIX_PROMPT_BATCH_LOG": "1"
+      },
+      "output": "stderr",
+      "source": [
+        "apps/hip_mtp_decode_bridge.hpp:659-665@70ec42b9"
+      ]
+    }
   }
 }
