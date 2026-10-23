@@ -59,8 +59,25 @@ def _tokens(asset):
     return [str(int(x)) for x in ids]
 
 
-def render_processes(cluster, profile_name) -> list[ProcessSpec]:
+def diagnostic_env(data, names, values):
+    """Non-production diagnostic env from the preset's verified table; never replaces production env."""
+    table = data.get("diagnostics", {})
+    env = {}
+    for name in names:
+        if name not in table:
+            raise ConfigError(f"unknown diagnostic for this preset: {name}")
+        for key, value in table[name]["env"].items():
+            if key in data["env"] or key in env:
+                raise ConfigError(f"diagnostic {name}: {key} is already set")
+            env[key] = value.format_map(values)
+    return env
+
+
+def render_processes(cluster, profile_name, *, diagnostics=(), run=None) -> list[ProcessSpec]:
+    """Production render; diagnostics (names from the preset table) add observation-only env under <root>/log."""
     profile, kind, data, mids = _profile(cluster, profile_name)
+    if diagnostics and (run is None or not re.fullmatch(r"[0-9a-f]{8,32}", run)):
+        raise ConfigError("diagnostic runs need a hex run id")
     if "release_id" not in profile:
         raise ConfigError("profile.release_id: required to render an immutable release executable path")
     result = []
@@ -102,6 +119,10 @@ def render_processes(cluster, profile_name) -> list[ProcessSpec]:
             else:
                 argv.extend((flag, str(value)))
         env = {key: value.format_map(values) for key, value in data["env"].items()}
+        if diagnostics:
+            env.update(diagnostic_env(data, diagnostics, {
+                "log_dir": str(PurePosixPath(machine.install_root) / "log"), "run": run,
+                "role": "replica-" + str(rank) if kind == "qwen-replicas" else f"rank{rank}"}))
         result.append(ProcessSpec(mid, "replica" if kind == "qwen-replicas" else f"rank{rank}",
                                   argv, env, "qwen-stderr" if kind == "qwen-replicas" else "ds41-json"))
     return result

@@ -268,6 +268,11 @@ def validate_spec(payload, now=None):
     if any(proc["machine"] == "peer" for proc in spec["processes"]):
         if kind != "pair" or not spec.get("peer_ssh") or not spec.get("peer_root"):
             raise ValueError("peer processes require a pair with peer_ssh and peer_root")
+    diagnostic = spec.get("diagnostic")
+    if diagnostic is not None and (not isinstance(diagnostic, list) or not 1 <= len(diagnostic) <= 16
+                                   or any(not isinstance(name, str) or not re.fullmatch(r"[a-z0-9-]{1,40}", name)
+                                          for name in diagnostic)):
+        raise ValueError("diagnostic must list 1..16 diagnostic names")
     if spec.get("layout_required") not in {None, "1"}:
         raise ValueError("only production layout 1 is supported")
     if spec.get("layout_required") and not spec.get("lab_dir"):
@@ -308,6 +313,8 @@ def start_lease(payload):
              "deadline_s": spec["deadline_s"], "approval": spec.get("approval"), "reason": None}
     if spec.get("profile") is not None:
         state["profile"] = text(spec["profile"], "profile")
+    if spec.get("diagnostic"):
+        state.update(production=False, diagnostic=spec["diagnostic"])
     write_json(record_path(root, lease), state)
     boot = Path(__file__).resolve().with_name("hyperloom-node")
     command = [str(boot), "supervise-internal", str(filename)]

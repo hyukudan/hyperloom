@@ -66,5 +66,30 @@
         4096
       ]
     }
+  },
+  "diagnostics": {
+    "rank1-prefill-log": {
+      "description": "Rank 1 logs each prefill's token count, next token and logits FNV on stderr (exactness evidence).",
+      "env": {
+        "STRIX_DS41_SERVE_PREFILL_LOG": "1"
+      },
+      "output": "stderr",
+      "source": [
+        "apps/deepseek41_serve_main.cpp:77-78@70ec42b9",
+        "apps/deepseek41_serve_main.cpp:815-819@70ec42b9"
+      ]
+    },
+    "dist-latency-trace": {
+      "description": "Per-thread CLOCK_MONOTONIC marks of the USB4 exchange, buffered in memory and written as CSV at thread exit.",
+      "env": {
+        "STRIX_DIST_LATENCY_TRACE": "{log_dir}/diag-{run}-{role}-dist-latency"
+      },
+      "output": "files {log_dir}/diag-{run}-{role}-dist-latency.t<tid>.csv",
+      "source": [
+        "src/dist_latency_trace.hpp:1-2@70ec42b9",
+        "src/dist_latency_trace.hpp:15-19@70ec42b9",
+        "src/dist_communicator.cpp:159-167@70ec42b9"
+      ]
+    }
   }
 }
