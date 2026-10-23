@@ -30,6 +30,20 @@ CURL = ("--fail", "--location", "--proto", "=https", "--proto-redir", "=https", 
         "--continue-at", "-", "--silent", "--show-error", "--output")
 
 
+def lab_quiet(lab):
+    """Refuse while any GPU turn is held, single or pair: a model-sized download fills the page
+    cache, and reclaim of a serving engine's registered model pages stalls its decode."""
+    install.lab_idle(lab)
+    if lab is None:
+        return
+    try:
+        holder = (install.absolute(lab) / ".gpu-turn" / "holder").read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return
+    if holder:
+        raise ValueError("downloads are refused while a GPU turn is held: " + holder.split()[0])
+
+
 def source_url(item):
     repo, revision, name = (install.text(item.get(k)) for k in ("repo", "revision", "file"))
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*", repo):
@@ -135,7 +149,7 @@ def job_main(spec_path):
 
     def turn():
         try:
-            install.lab_idle(spec.get("lab_dir"))
+            lab_quiet(spec.get("lab_dir"))
         except ValueError as exc:
             return str(exc) + "; partial file kept, rerun to resume"
         return None
@@ -191,7 +205,7 @@ def run(verb, payload):
         if verb == "download-plan":
             result.update(plan(payload, root))
         elif verb == "download":
-            install.lab_idle(payload["lab_dir"])
+            lab_quiet(payload["lab_dir"])
             result.update(start(root, payload))
         else:
             job = install.identifier(payload.get("job"))
