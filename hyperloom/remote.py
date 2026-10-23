@@ -31,7 +31,9 @@ VERBS = frozenset({"version", "doctor", "gpu",
                    "lease", "cancel", "status", "logs", "stop", "put-secret",
                    "peer-run", "supervise-internal",
                    # hyperloom_download (phase 4)
-                   "download-plan", "download", "download-cancel"})
+                   "download-plan", "download", "download-cancel",
+                   # hyperloom_service (phase 4, non-lab only)
+                   "service-install", "service-start", "service-stop", "service-status", "service-remove"})
 
 
 def node_files(directory=None):
