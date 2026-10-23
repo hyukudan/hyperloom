@@ -19,7 +19,7 @@ MAX_FILE = 1024 * 1024
 VERBS = {"version", "doctor", "gpu"}
 # Extension modules shipped beside this file (copied together by bootstrap). Each exposes
 # VERBS (set of names) and run(verb, payload: dict) -> dict; they get the raw JSON payload.
-EXTENSIONS = ("hyperloom_install", "hyperloom_lease")
+EXTENSIONS = ("hyperloom_install", "hyperloom_lease", "hyperloom_service")
 
 
 def extension_for(verb):

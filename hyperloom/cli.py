@@ -345,6 +345,11 @@ def main(argv=None):
     hosts.add_argument("machine")
     hosts.add_argument("--fingerprint", help="SHA256:... confirmed on the machine itself (required for pin)")
     hosts.add_argument("--config", type=Path, default=config_path())
+    service = commands.add_parser("service", help="non-lab systemd --user units (lab_mode: false only)")
+    service.add_argument("operation", choices=("install", "start", "stop", "status", "remove"))
+    service.add_argument("profile")
+    service.add_argument("--enable", action="store_true", help="install: also enable the unit at login")
+    service.add_argument("--config", type=Path, default=config_path())
     keys = commands.add_parser("keys").add_subparsers(dest="key_operation", required=True)
     keys.add_parser("rotate").add_argument("name")
     export = keys.add_parser("export")
@@ -397,6 +402,9 @@ def main(argv=None):
             _json(_module("hyperloom.orchestrate").logs(args.profile, args.process, args.tail))
         elif args.command == "hosts":
             _json(_hosts(args))
+        elif args.command == "service":
+            _json(_module("hyperloom.service").run(_cluster(args.config), args.operation, args.profile,
+                                                   enable=args.enable))
         elif args.command == "keys":
             if args.key_operation == "export":
                 _json(_module("hyperloom.orchestrate").export_key(args.profile, args.out))
