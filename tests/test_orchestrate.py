@@ -184,6 +184,19 @@ class OrchestrationTests(unittest.TestCase):
         orch.down("qwen-replicas")
         self.assertFalse(orch._state_path("qwen-replicas").exists())
 
+    def test_queue_timeout_is_bounded_and_passed_to_the_wait(self):
+        for bad in (59, orch.MAX_QUEUE_S + 1, 1.5):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                orch.up(self.cluster, "qwen-replicas", queue_timeout_s=bad)
+        seen = []
+        real = orch._wait_ready
+        def spy(*args, **kwargs):
+            seen.append(kwargs.get("queue_timeout"))
+            return real(*args, **kwargs)
+        with patch.object(orch, "_wait_ready", side_effect=spy):
+            orch.up(self.cluster, "qwen-replicas", queue_timeout_s=7200)
+        self.assertTrue(seen and all(value == 7200 for value in seen))
+
     def test_down_cancels_queued_leases(self):
         orch.up(self.cluster, "qwen-replicas")
         next(iter(self.leases.values()))["state"] = "queued"

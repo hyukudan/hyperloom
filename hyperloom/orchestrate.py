@@ -333,6 +333,10 @@ def _leases(result):
     return leases
 
 
+# A queued GPU turn waits behind the lab FIFO; busy evenings exceed an hour.
+MAX_QUEUE_S = 6 * 3600
+
+
 def _wait_ready(client, root, lease, timeout=600, queue_timeout=3600, poll_s=2.0, check=lambda: None):
     """Wait while the lease is queued for its GPU turn (up to queue_timeout), then up to timeout for readiness.
     Each poll is one ssh round trip, so poll every couple of seconds, not faster."""
@@ -405,8 +409,10 @@ def _put(client, machine, name, value):
     return str(PurePosixPath(machine.install_root) / "etc/keys" / name)
 
 
-def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s=1140, approval=None):
+def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s=1140, approval=None, queue_timeout_s=3600):
     _approval(deadline_s, approval)
+    if type(queue_timeout_s) is not int or not 60 <= queue_timeout_s <= MAX_QUEUE_S:
+        raise ValueError(f"queue timeout must be 60..{MAX_QUEUE_S} seconds")
     settings, kind, defaults = _profile(cluster, profile)
     mids = list(defaults if nodes is None else nodes)
     for mid in mids:
@@ -546,7 +552,7 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
         deadlines = []
         for lease in state["leases"]:
             ready = _wait_ready(clients[lease["machine"]], cluster.machines[lease["machine"]].install_root,
-                                lease["lease"], check=lambda: _check_stop(path))
+                                lease["lease"], queue_timeout=queue_timeout_s, check=lambda: _check_stop(path))
             deadlines.append(ready.get("deadline") or time.time() + deadline_s)
         state["deadline"] = min(deadlines)
         _check_stop(path)
@@ -582,7 +588,7 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
             state["router"] = dict(record, endpoint=rendered["listen"])
             _write(path, state)
             _wait_ready(clients[router], machine.install_root, record["lease"], timeout=40,
-                        check=lambda: _check_stop(path))
+                        queue_timeout=queue_timeout_s, check=lambda: _check_stop(path))
         _check_stop(path)
         state["phase"] = "running"
         _write(path, state)

@@ -336,6 +336,7 @@ def main(argv=None):
     up.add_argument("--node", action="extend", nargs="+", default=None)
     up.add_argument("--device", action="extend", nargs="+", default=None)
     up.add_argument("--deadline", type=int, default=1140)
+    up.add_argument("--queue-timeout", type=int, default=3600, help="seconds to wait for the GPU turn (60..21600)")
     up.add_argument("--approval-ref")
     up.add_argument("--approval-lease", type=int)
     up.add_argument("--approval-end")
@@ -402,7 +403,8 @@ def main(argv=None):
                 approval = {"ref": args.approval_ref, "lease_s": args.approval_lease, "end_epoch": end.timestamp()}
             cluster = _cluster(args.config)
             _json(_module("hyperloom.orchestrate").up(cluster, args.profile, router=args.router,
-                  nodes=args.node, devices=args.device, deadline_s=args.deadline, approval=approval))
+                  nodes=args.node, devices=args.device, deadline_s=args.deadline, approval=approval,
+                  queue_timeout_s=args.queue_timeout))
         elif args.command == "down":
             _json(_module("hyperloom.orchestrate").down(args.profile, force=args.force))
         elif args.command == "endpoint":
