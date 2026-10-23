@@ -470,10 +470,11 @@ class PosixBuildTests(InstallCase):
             state = self.wait_job(install.run("install", self.payload))
         self.assertEqual(state["state"], "failed")
 
-    def test_help_usage_nonzero_is_accepted(self):
-        with patch.dict(os.environ, {"FAKE_HELP_EXIT": "2"}):
-            state = self.wait_job(install.run("install", self.payload))
-        self.assertEqual(state["state"], "succeeded", state)
+    def test_missing_preset_flag_fails_static_check(self):
+        payload = json.loads(json.dumps(self.payload))
+        payload["recipe"]["required_flags"] = {t: ["--not-in-binary"] for t in payload["recipe"]["targets"]}
+        state = self.wait_job(install.run("install", payload))
+        self.assertEqual(state["state"], "failed", state)
 
     def test_hash_job_good_and_bad(self):
         self.mark()

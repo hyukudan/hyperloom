@@ -246,6 +246,14 @@ def _wait_job(client, root, job, timeout=3600):
     raise OrchestrationError("build job timed out: " + str(job))
 
 
+def _required_flags(kind, targets):
+    """Flags the frozen preset passes to its binary; the node checks they exist in the built binary."""
+    from .config import preset
+    flags = sorted({token for token in preset(kind)["argv"] if token.startswith("--")})
+    binary = preset(kind)["binary"]
+    return {target: flags for target in targets if target == binary}
+
+
 def install(cluster, build_machine, targets, *, profile=None):
     """Build once and verify copies before activating a profile on every node."""
     if profile is not None:
@@ -273,7 +281,9 @@ def install(cluster, build_machine, targets, *, profile=None):
                "recipe": {"configure": versions["toolchains"]["hip_configure"],
                           "targets": list(targets),
                           "ctest_regex": "^strix-(serve-(frontend|deepseek-chat|api)|host-upload)-tests$",
-                          "trellis": kind == "ds41-pair"}}
+                          "trellis": kind == "ds41-pair",
+                          # Checked statically on the node (flag strings in the binary); never executed.
+                          "required_flags": _required_flags(kind, targets)}}
     response = _call(clients[build_machine], "install", payload)
     job = _wait_job(clients[build_machine], payload["root"], response["job"])
     release = job.get("release_id")

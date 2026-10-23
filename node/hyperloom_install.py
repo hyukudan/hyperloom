@@ -187,6 +187,14 @@ def release(root, rid):
     return directory, manifest
 
 
+def static_capabilities(binary, flags):
+    data = Path(binary).read_bytes()
+    if data[:4] != b"\x7fELF":
+        return {"ok": False, "method": "static", "missing": ["<not an ELF executable>"]}
+    missing = [flag for flag in flags if flag.encode("utf-8") not in data]
+    return {"ok": not missing, "method": "static", "checked": len(flags), "missing": missing}
+
+
 def command(argv, **kwargs):
     return subprocess.run(argv, stdin=subprocess.DEVNULL, check=True, **kwargs)
 
@@ -252,8 +260,14 @@ def validate_install(payload):
         if text(item["repo"]).startswith("-"):
             raise ValueError("invalid component repository")
     recipe = payload.get("recipe")
-    if not isinstance(recipe, dict) or set(recipe) != {"configure", "targets", "ctest_regex", "trellis"}:
-        raise ValueError("recipe requires configure, targets, ctest_regex and trellis")
+    if (not isinstance(recipe, dict) or not {"configure", "targets", "ctest_regex", "trellis"} <= set(recipe)
+            or set(recipe) - {"configure", "targets", "ctest_regex", "trellis", "required_flags"}):
+        raise ValueError("recipe requires configure, targets, ctest_regex and trellis (optional required_flags)")
+    flags = recipe.get("required_flags", {})
+    if not isinstance(flags, dict) or any(
+            not isinstance(v, list) or not all(isinstance(f, str) and f.startswith("--") and len(f) < 128 for f in v)
+            for v in flags.values()):
+        raise ValueError("required_flags must map targets to lists of --flags")
     if not isinstance(recipe["configure"], list):
         raise ValueError("configure must be an argv list")
     for arg in recipe["configure"]:
@@ -316,13 +330,13 @@ def build(root, payload, job):
             if binary.is_symlink():
                 raise ValueError("release binaries must be regular files")
             hashes[target] = sha256(binary)
-            check = version([str(binary), "--help"])
-            help_text = check["text"].replace(str(output), "<bin>")
-            ok = check["returncode"] == 0 or (check["returncode"] is not None
-                                             and "usage" in help_text.lower())
-            capabilities[target] = {"ok": ok, "returncode": check["returncode"], "help": help_text}
-            if not ok:
-                raise ValueError("capability check failed: " + target)
+            # Static check only: engine binaries are never executed outside a GPU lease (a serve binary
+            # given an unknown flag can open GPU or USB4 devices). The preset's flags must be present as
+            # strings in the binary.
+            capabilities[target] = static_capabilities(binary, recipe.get("required_flags", {}).get(target, []))
+            if not capabilities[target]["ok"]:
+                raise ValueError("capability check failed: " + target + " missing " +
+                                 ",".join(capabilities[target]["missing"][:8]))
         node = Path(__file__).with_name("hyperloom-node").read_text(encoding="utf-8")
         node_version = re.search(r'^VERSION = "([^"]+)"', node, re.MULTILINE).group(1)
         rocm_file = Path("/opt/rocm/core-10.1/.info/version")

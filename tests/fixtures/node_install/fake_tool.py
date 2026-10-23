@@ -29,8 +29,9 @@ elif tool == "ninja":
     directory = Path(args[args.index("-C") + 1])
     for target in args[args.index("-j6") + 1:]:
         binary = directory / target
-        binary.write_text("#!/bin/sh\necho 'Usage: synthetic target --help'\nexit "
-                          + os.environ.get("FAKE_HELP_EXIT", "0") + "\n")
+        # A synthetic ELF-looking file carrying flag strings; the static check never runs it.
+        flags = os.environ.get("FAKE_FLAGS", "--http-serve --prefill-path").split()
+        binary.write_bytes(b"\x7fELF" + b"\0" * 12 + b"\0".join(f.encode() for f in flags) + b"\0")
         binary.chmod(0o755)
 elif tool == "ctest":
     if "--show-only=json-v1" in args:
