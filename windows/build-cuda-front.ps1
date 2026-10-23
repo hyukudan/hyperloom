@@ -14,8 +14,8 @@ $ErrorActionPreference = 'Stop'
 
 function Fail([string]$Message) { [Console]::Error.WriteLine("build-cuda-front: $Message"); exit 1 }
 
-$configure = @(ConvertFrom-Json $ConfigureJson)
-$targets = @(ConvertFrom-Json $TargetsJson)
+[string[]]$configure = ConvertFrom-Json $ConfigureJson  # PowerShell 5.1 emits a JSON array as one object
+[string[]]$targets = ConvertFrom-Json $TargetsJson
 if ($targets.Count -lt 1) { Fail 'no targets' }
 
 $head = (& git -C $Source rev-parse HEAD).Trim()
