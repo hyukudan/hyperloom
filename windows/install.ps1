@@ -53,11 +53,14 @@ function Test-HyperloomRelease {
     foreach ($entry in $manifest.files.PSObject.Properties) { $expected[$entry.Name] = $entry.Value }
     $rootPath = [System.IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
     $seen = 0
+    $sha = [System.Security.Cryptography.SHA256]::Create()
     foreach ($file in Get-ChildItem -LiteralPath $Root -Recurse -File -Force) {
         $relative = $file.FullName.Substring($rootPath.Length).Replace('\', '/')
         if ($relative -eq 'RELEASE.json' -or $relative.StartsWith('wheels/')) { continue }
         if (-not $expected.ContainsKey($relative)) { throw "File not in RELEASE.json: $relative" }
-        $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        # .NET directly: Get-FileHash is missing when PSModulePath points at another PowerShell.
+        $stream = [System.IO.File]::OpenRead($file.FullName)
+        try { $hash = -join ($sha.ComputeHash($stream) | ForEach-Object { $_.ToString('x2') }) } finally { $stream.Dispose() }
         if ($hash -ne $expected[$relative]) { throw "sha256 mismatch: $relative" }
         $seen++
     }
