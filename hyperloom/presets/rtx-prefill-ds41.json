@@ -60,6 +60,6 @@
       {"tokens": 32768, "source": "prompt-16k.txt", "ids_sha256": "33d4ca98928d421d2be15f6a56074bf2225740c7003098fcb0a94ae0bd9ac846", "state_sha256": "aff3e0c3f3f25e72dccfc744a384f0245492da31de3a6bffe024a719fba237e3", "next_token": 1, "logits_fnv": "df90f8e4f6ae109b", "state_bytes": 32197432}
     ],
     "quality_gate": null,
-    "quality_gate_why": "the exact arm computes the base-model prefill; the pair decodes with the trellis mix-B identity, so offloaded requests run a composed identity that needs its own named quality receipt"
+    "quality_gate_why": "the exact arm computes the base-model prefill; the pair decodes with the trellis mix-B identity, so offloaded requests run a composed identity. Receipt pending: ds41-rtx-exact-v1 under the approved three-test quality criterion vs the pair's own prefill at 2K/8K (main 21:05)"
   }
 }

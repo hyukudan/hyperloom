@@ -566,9 +566,12 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
                                       handoff_api_key=node_values[mids[0]],
                                       free_physical_gib=rtx.memory_status()["free_physical_gib"])
             spec = rtx.ServiceSpec(**dict(spec.__dict__, deadline=min(spec.deadline, state["deadline"])))
-            state["prefill_service"] = {"machine": spec.machine_id, "directory": None, "argv": spec.redacted}
+            # Recorded before the helper exists, so down (or the watchdog) can always find and stop it.
+            state["prefill_service"] = rtx.prepare_service(spec)
             _write(path, state)
-            state["prefill_service"] = rtx.start_service(spec, detached=_detached, check=lambda: _check_stop(path))
+            rtx.launch_service(state["prefill_service"], spec, detached=_detached,
+                               owner={"state_path": str(path), "token": state["token"]},
+                               check=lambda: _check_stop(path))
             _write(path, state)
             _check_stop(path)
         if router == "local":
@@ -803,10 +806,13 @@ def _down_state(state):
     router = state.get("router")
     if router and router["machine"] == "local":
         _stop_local_router(router)
+    errors = []
     service = state.get("prefill_service")
     if service and service.get("directory"):
-        rtx.stop_service(service)
-    errors = []
+        try:
+            rtx.stop_service(service)
+        except Exception as exc:  # still stop the engines; the error is reported below
+            errors.append("prefill service: " + str(exc))
     leases = sorted(state["leases"], key=lambda row: row["role"] != "router")
     for lease in leases:
         mid = lease["machine"]
@@ -903,7 +909,13 @@ def logs(profile, process, tail=100):
             with (directory / (("router" if process == "router" else "service") + "." + stream + ".log")).open("rb") as source:
                 source.seek(0, 2)
                 source.seek(max(0, source.tell() - 32768))
-                result[stream] = "\n".join(source.read().decode("utf-8", errors="replace").splitlines()[-tail:])
+                text = "\n".join(source.read().decode("utf-8", errors="replace").splitlines()[-tail:])
+                if process == "prefill":  # the service takes its keys as literal arguments (R12)
+                    for name in [_secret_name(profile, "prefill")] + [_secret_name(profile, m) for m in state["machines"]]:
+                        value = secrets.get(name)
+                        if value:
+                            text = text.replace(value, "<redacted>")
+                result[stream] = text
         return result
     matches = [row for row in state["leases"] if row["role"] == "router" and process == "router"
                or row["role"] == "engine" and (row["machine"] == process or process in ("rank0", "rank1"))]

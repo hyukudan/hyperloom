@@ -12,6 +12,7 @@ import json
 import math
 import os
 from pathlib import Path, PureWindowsPath
+from types import SimpleNamespace
 import re
 import subprocess
 import sys
@@ -28,6 +29,9 @@ SCHEMA = "hyperloom/prefill-service-v1"
 PRESETS = Path(__file__).with_name("presets")
 GIB = 1 << 30
 WATCH_S = 2.0
+MEMORY_S = 0.5
+MAX_WINDOW_S = 1200  # lab PC-BIG window unless main approves a longer one
+SMI_TIMEOUT_S = 5
 _SECRET = "<redacted>"
 
 
@@ -51,8 +55,11 @@ def service_preset(name):
 
 
 def parse_reservation(value, where="pc.cuda.reservation"):
-    r = record(value, where, ("owner", "approval", "expires_at", "vram_cap_gib", "host_gib", "free_commit_floor_gib"))
+    r = record(value, where, ("owner", "approval", "expires_at", "vram_cap_gib", "host_gib", "free_commit_floor_gib"),
+               ("extended_approval",))
     text(r["owner"], f"{where}.owner")
+    if "extended_approval" in r:
+        text(r["extended_approval"], f"{where}.extended_approval")
     text(r["approval"], f"{where}.approval")
     expires(r["expires_at"], f"{where}.expires_at")
     number(r["vram_cap_gib"], f"{where}.vram_cap_gib", 1, 1024)
@@ -102,6 +109,7 @@ class ServiceSpec:
     free_commit_floor_gib: float
     ready_timeout_s: int
     consistency: dict
+    binary_sha256: str | None = None
 
 
 def redact(argv, flags):
@@ -140,8 +148,13 @@ def check_context(data, positions, decode_context, reserve_tokens):
     if longest < 8192:
         raise ConfigError(f"decode context {decode_context} with reserve {reserve_tokens} offloads at most "
                           f"{longest} tokens; Phase 3a needs at least 8192")
-    return {"service_positions": positions, "decode_context": decode_context, "reserve_tokens": reserve_tokens,
-            "longest_offload": min(positions, longest)}
+    result = {"service_positions": positions, "decode_context": decode_context, "reserve_tokens": reserve_tokens,
+              "longest_offload": min(positions, longest)}
+    if positions > longest:
+        # The router has no per-service length cap: a longer prompt is prefilled, its import is refused (413) and the
+        # router falls back to a local prefill. Recorded here and in the docs until the router can bound it.
+        result["note"] = f"prompts of {longest + 1}..{positions} tokens fail the import and fall back to local prefill"
+    return result
 
 
 def host_gib(data, reservation, free_physical_gib):
@@ -176,6 +189,8 @@ def render_service(cluster, profile_name, *, api_key, handoff_api_key, free_phys
         deadline = expires(reservation["expires_at"], "pc.cuda.reservation.expires_at")
         if deadline <= now + 60:
             raise ConfigError("pc.cuda.reservation has expired (or ends within 60 s)")
+        if deadline > now + MAX_WINDOW_S and "extended_approval" not in reservation:
+            raise ConfigError("pc.cuda.reservation: PC-BIG windows are at most 20 min without an extended_approval")
     for value in (api_key, handoff_api_key):
         if not re.fullmatch(r"[0-9a-f]{64}", value):
             raise ConfigError("service keys must be generated 32-byte hex keys")
@@ -193,10 +208,27 @@ def render_service(cluster, profile_name, *, api_key, handoff_api_key, free_phys
                   commit_floor_gib=f"{floor + 10:g}", api_key=api_key, handoff_api_key=handoff_api_key,
                   pro_uuid=device["uuid"])
     argv = [token.format_map(values) for token in data["argv"]]
-    base = {k: v for k, v in os.environ.items() if not k.upper().startswith(("CUDA_", "NVIDIA_", "PYTHON"))}
-    env = dict(base, **{k: v.format_map(values) for k, v in data["env"].items()})
+    env = dict(child_env(os.environ), **{k: v.format_map(values) for k, v in data["env"].items()})
+    manifest = Path(binary).parent.parent / "MANIFEST.json"
+    sha = None
+    if manifest.is_file():
+        sha = read_json(manifest).get("binaries", {}).get(binary.name)
     return ServiceSpec(data["name"], s["machine"], device["uuid"], int(values["port"]), argv, env,
-                       redact(argv, data["secret_flags"]), deadline, cap, floor, data["ready"]["timeout_s"], consistency)
+                       redact(argv, data["secret_flags"]), deadline, cap, floor, data["ready"]["timeout_s"], consistency,
+                       sha)
+
+
+# Device selection and behaviour switches of the CUDA runtime are never inherited (the preset sets its own);
+# toolkit paths such as CUDA_PATH are kept.
+_ENV_DENY = {"CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER", "CUDA_LAUNCH_BLOCKING", "CUDA_MODULE_LOADING",
+             "CUDA_DEVICE_MAX_CONNECTIONS", "CUDA_FORCE_PTX_JIT", "CUDA_DISABLE_PTX_JIT", "CUDA_AUTO_BOOST",
+             "CUDA_ENABLE_COREDUMP_ON_EXCEPTION", "NVIDIA_VISIBLE_DEVICES", "NVIDIA_TF32_OVERRIDE"}
+_ENV_DENY_PREFIX = ("PYTHON", "CUDA_MPS_", "CUDA_CACHE_", "CUDA_COREDUMP", "STRIX_")
+
+
+def child_env(environ):
+    return {k: v for k, v in environ.items()
+            if k.upper() not in _ENV_DENY and not k.upper().startswith(_ENV_DENY_PREFIX)}
 
 
 def router_service(cluster, profile_name, key_file):
@@ -220,7 +252,7 @@ def router_prefill(cluster, profile_name, key_file):
 
 def _smi(args, run=subprocess.run):
     try:
-        out = run(["nvidia-smi", *args], capture_output=True, text=True, timeout=20, **no_window())
+        out = run(["nvidia-smi", *args], capture_output=True, text=True, timeout=SMI_TIMEOUT_S, **no_window())
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ServiceError(f"nvidia-smi unavailable: {exc}") from exc
     if out.returncode != 0:
@@ -278,41 +310,50 @@ def memory_status():
 
 
 class Watchdog:
-    """The lab PC-BIG policy for one PID: every 2 s, kill it below the free-commit floor, above the VRAM cap, on any
-    GPU other than the PRO, or at the reservation deadline. The rest of the PC keeps working."""
+    """The lab PC-BIG policy for one PID. Memory every 0.5 s, the GPU every 2 s: kill the process below the free-commit
+    floor, above the VRAM cap, on any GPU other than the PRO, or at the deadline. It fails closed: an error inside the
+    watchdog kills the process too. The rest of the PC keeps working."""
 
     def __init__(self, spec, pid, kill, log, *, memory=memory_status, apps=compute_apps, used=device_used_mib,
-                 clock=time.time, interval=WATCH_S):
+                 clock=time.time, interval=WATCH_S, memory_interval=MEMORY_S, gpu=True):
         self.spec, self.pid, self.kill, self.log = spec, pid, kill, log
-        self.memory, self.apps, self.used, self.clock, self.interval = memory, apps, used, clock, interval
+        self.memory, self.apps, self.used, self.clock = memory, apps, used, clock
+        self.interval, self.memory_interval, self.gpu = interval, memory_interval, gpu
         self.reason = None
         self.baseline_mib = None
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
     def start(self):
-        try:
-            self.baseline_mib = self.used(self.spec.pro_uuid)
-        except ServiceError:
-            self.baseline_mib = None
+        if self.gpu:
+            try:
+                self.baseline_mib = self.used(self.spec.pro_uuid)
+            except ServiceError:
+                self.baseline_mib = None
         self._thread.start()
         return self
+
+    def alive(self):
+        return self._thread.is_alive()
 
     def stop(self):
         self._stop.set()
         if self._thread.is_alive() and threading.current_thread() is not self._thread:
             self._thread.join(timeout=10)
 
-    def check(self):
-        """One sample; returns the kill reason or None."""
+    def check_memory(self):
         memory = self.memory()
-        line = {"t": round(self.clock(), 1), "pid": self.pid, **{k: round(v, 2) for k, v in memory.items()}}
-        reason = None
         if memory["free_commit_gib"] < self.spec.free_commit_floor_gib:
-            reason = f"free commit {memory['free_commit_gib']:.1f} GiB below {self.spec.free_commit_floor_gib:g}"
-        elif self.clock() >= self.spec.deadline:
-            reason = "reservation deadline"
-        else:
+            return f"free commit {memory['free_commit_gib']:.1f} GiB below {self.spec.free_commit_floor_gib:g}", memory
+        if self.clock() >= self.spec.deadline:
+            return "deadline", memory
+        return None, memory
+
+    def check(self):
+        """One full sample (memory and GPU); returns the kill reason or None."""
+        reason, memory = self.check_memory()
+        line = {"t": round(self.clock(), 1), "pid": self.pid, **{k: round(v, 2) for k, v in memory.items()}}
+        if reason is None and self.gpu:
             try:
                 mine = [(gpu, used) for gpu, pid, used in self.apps() if pid == self.pid]
                 other = sorted({gpu for gpu, _ in mine if gpu != self.spec.pro_uuid})
@@ -326,22 +367,63 @@ class Watchdog:
                 if reason is None and line.get("vram_mib", 0) > self.spec.vram_cap_gib * 1024:
                     reason = f"VRAM {line['vram_mib']} MiB above the {self.spec.vram_cap_gib:g} GiB cap"
             except ServiceError as exc:
-                line["smi"] = str(exc)[:200]
+                line["smi"] = str(exc)[:200]  # a transient nvidia-smi failure is logged, not fatal
         if reason:
             line["kill"] = reason
         self.log(line)
         return reason
 
     def _run(self):
-        while not self._stop.wait(self.interval):
-            reason = self.check()
+        next_full = 0.0
+        while not self._stop.is_set():
+            try:
+                if time.monotonic() >= next_full:
+                    reason = self.check()
+                    next_full = time.monotonic() + self.interval
+                else:
+                    reason = self.check_memory()[0]
+            except Exception as exc:  # noqa: BLE001 - fail closed
+                reason = f"watchdog error: {type(exc).__name__}: {exc}"
             if reason:
                 self.reason = reason
-                self.kill()
+                try:
+                    self.log({"t": round(self.clock(), 1), "pid": self.pid, "kill": reason})
+                except Exception:  # noqa: BLE001 - the kill matters more than its log line
+                    pass
+                try:
+                    self.kill()
+                except Exception:  # noqa: BLE001 - the helper sees self.reason and stops the Job anyway
+                    pass
                 return
+            self._stop.wait(self.memory_interval)
 
 
 # --- the owned service (a detached CLI helper holds the Job Object, like the local router) ------------------
+
+def _retry(action):
+    """Windows: a reader holding state.json briefly makes replace/read fail with a sharing violation."""
+    for attempt in range(40):
+        try:
+            return action()
+        except PermissionError:
+            if attempt == 39:
+                raise
+            time.sleep(0.05)
+
+
+def _write(path, value):
+    path = Path(path)
+    tmp = path.with_name(path.name + "." + uuid.uuid4().hex[:8] + ".tmp")
+    tmp.write_text(json.dumps(value, indent=2, sort_keys=True), encoding="utf-8")
+    try:
+        _retry(lambda: os.replace(tmp, path))
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _read(path):
+    return _retry(lambda: json.loads(Path(path).read_text(encoding="utf-8")))
+
 
 def _ready_event(path):
     try:
@@ -365,88 +447,159 @@ def _health(port):
         return json.loads(response.read(65536))
 
 
-def _write(path, value):
-    path = Path(path)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(value, indent=2, sort_keys=True), encoding="utf-8")
-    os.replace(tmp, path)
+def _sha256(path):
+    import hashlib
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        while chunk := stream.read(1 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
-def _read(path):
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+def device_lock(pro_uuid):
+    """One heavy PC job (service or CUDA build) per device at a time, across every profile on this machine."""
+    return procs.InstanceLock(secrets.runtime_dir() / f"pcbig-{re.sub(r'[^A-Za-z0-9-]', '', pro_uuid)}.lock")
+
+
+def _owner_alive(owner):
+    """The controller's ownership document still exists and still names this service (B1: a controller that died
+    before recording the service must not leave it running)."""
+    if not owner:
+        return True
+    try:
+        state = _read(owner["state_path"])
+    except (OSError, ValueError):
+        return False
+    return state.get("token") == owner["token"]
+
+
+HEALTH_STRIKES = 3
+HEALTH_INTERVAL_S = 10
+OWNER_INTERVAL_S = 2
 
 
 def service_run(spec_path, *, child_factory=procs.LocalChild, watchdog_factory=Watchdog, verify=verify_pro,
-                health=_health):
-    """Persistent helper: owns the CUDA child (Job Object), its watchdog and the plaintext keys in its spec."""
+                health=_health, lock_factory=device_lock, owner_check=_owner_alive):
+    """Persistent helper: owns the CUDA child (Job Object), its watchdog and the plaintext keys in its spec.
+    Its lifetime lock (helper.lock) tells stop_service whether it is alive; every start step re-checks the stop file."""
     path = Path(spec_path)
     directory = path.parent
-    raw = _read(path)
-    spec = ServiceSpec(**raw["spec"])
-    path.unlink()  # the only copy of the literal keys on disk, now in memory only
+    lifetime = procs.InstanceLock(directory / "helper.lock").acquire()
+    child = watchdog = device = None
+    reason = "stopped"
+    redacted = []
     events = (directory / "watchdog.jsonl").open("a", encoding="utf-8")
 
     def log(line):
         events.write(json.dumps(line) + "\n")
         events.flush()
 
-    child = watchdog = None
-    reason = "stopped"
+    def stopping():
+        return (directory / "stop").exists() or not owner_check(owner)
+
+    owner = None
     try:
-        device = verify(spec.pro_uuid)
-        _write(directory / "state.json", {"state": "loading", "device": device, "argv": spec.redacted})
+        raw = _read(path)
+        path.unlink()  # the only copy of the literal keys on disk, now in memory only
+        spec = ServiceSpec(**raw["spec"])
+        owner, redacted = raw.get("owner"), spec.redacted
+        if stopping():
+            reason = "stop requested before start"
+            return
+        device = lock_factory(spec.pro_uuid).acquire()
+        info = verify(spec.pro_uuid)
+        if not spec.binary_sha256:
+            raise ServiceError("service binary has no release manifest (hyperloom prefill build)")
+        if _sha256(spec.argv[0]) != spec.binary_sha256:
+            raise ServiceError("service binary does not match its release manifest")
+        _write(directory / "state.json", {"state": "loading", "device": info, "argv": redacted})
+        if stopping():
+            reason = "stop requested before start"
+            return
         child = child_factory(spec.argv, spec.env, directory, "service", port=("127.0.0.1", spec.port))
         child.start()
         # The watchdog only terminates the process; this loop sees it and does the orderly stop below.
         watchdog = watchdog_factory(spec, child.process.pid, child.process.kill, log).start()
         end = time.monotonic() + spec.ready_timeout_s
-        ready = None
-        while child.alive() and not (directory / "stop").exists() and watchdog.reason is None:
+        ready, strikes, next_health, next_owner = None, 0, 0.0, 0.0
+        while True:
+            now = time.monotonic()
+            if watchdog.reason:
+                reason = "watchdog: " + watchdog.reason
+                break
+            if not watchdog.alive():
+                reason = "watchdog stopped unexpectedly"
+                break
+            if not child.alive():
+                reason = f"service exited ({child.process.returncode})"
+                break
+            if (directory / "stop").exists():
+                break
+            if now >= next_owner:
+                if not owner_check(owner):
+                    reason = "controller ownership gone"
+                    break
+                next_owner = now + OWNER_INTERVAL_S
             if time.time() >= spec.deadline:
-                reason = "reservation deadline"
+                reason = "deadline"
                 break
             if ready is None:
+                if now >= end:
+                    reason = "readiness timed out"
+                    break
                 event = _ready_event(directory / "service.stdout.log")
                 if event is not None:
                     try:
                         if health(spec.port).get("status") == "ok":
                             ready = event
                             _write(directory / "state.json", {"state": "ready", "pid": child.process.pid,
-                                                              "device": device, "ready": event, "argv": spec.redacted})
+                                                              "device": info, "ready": event, "argv": redacted})
+                            next_health = now + HEALTH_INTERVAL_S
                     except (OSError, ValueError):
                         pass
-                elif time.monotonic() >= end:
-                    reason = "readiness timed out"
+            elif now >= next_health:
+                try:
+                    ok = health(spec.port).get("status") == "ok"
+                except (OSError, ValueError):
+                    ok = False
+                strikes = 0 if ok else strikes + 1
+                if strikes >= HEALTH_STRIKES:
+                    reason = "health failed"
                     break
+                next_health = now + HEALTH_INTERVAL_S
             time.sleep(0.2)
-        else:
-            if watchdog is not None and watchdog.reason:
-                reason = "watchdog: " + watchdog.reason
-            elif child is not None and not child.alive():
-                reason = f"service exited ({child.process.returncode})"
     except Exception as exc:  # noqa: BLE001 - recorded for the controller
         reason = f"{type(exc).__name__}: {exc}"
     finally:
+        path.unlink(missing_ok=True)
         if watchdog is not None:
             watchdog.stop()
         if child is not None:
             child.stop(10)
         events.close()
-        _write(directory / "state.json", {"state": "stopped", "reason": reason, "argv": spec.redacted})
+        _write(directory / "state.json", {"state": "stopped", "reason": reason, "argv": redacted})
+        if device is not None:
+            device.close()
+        lifetime.close()
 
 
-def start_service(spec, *, detached, timeout_s=None, check=lambda: None):
-    """Write the helper's spec (user-only directory), start the helper and wait for the service's readiness."""
+def prepare_service(spec):
+    """The helper's directory and the record the controller persists BEFORE anything is launched (B1)."""
     directory = secrets.runtime_dir() / ("prefill-" + uuid.uuid4().hex)
     directory.mkdir(parents=True)
-    payload = {"spec": {k: v for k, v in spec.__dict__.items()}}
+    return {"machine": spec.machine_id, "directory": str(directory), "port": spec.port, "preset": spec.preset,
+            "device": spec.pro_uuid, "argv": spec.redacted}
+
+
+def launch_service(record, spec, *, detached, owner=None, timeout_s=None, check=lambda: None):
+    """Write the helper's private spec, start the helper and wait for the service's readiness. `owner` names the
+    controller's state file and token: the helper stops by itself when they disappear."""
+    directory = Path(record["directory"])
     spec_path = directory / "spec.json"
-    secrets._write(spec_path, json.dumps(payload).encode("utf-8"))
-    record = {"machine": spec.machine_id, "directory": str(directory), "port": spec.port, "preset": spec.preset,
-              "device": spec.pro_uuid, "argv": spec.redacted}
-    helper = detached([str(Path(sys.executable).absolute()), "-m", "hyperloom", "_prefill-run", str(spec_path)],
-                      directory / "controller.log")
+    secrets._write(spec_path, json.dumps({"spec": dict(spec.__dict__), "owner": owner}).encode("utf-8"))
     try:
+        helper = detached([str(Path(sys.executable).absolute()), "-m", "hyperloom", "_prefill-run", str(spec_path)],
+                          directory / "controller.log")
         end = time.monotonic() + (timeout_s or spec.ready_timeout_s + 30)
         while time.monotonic() < end:
             check()
@@ -469,29 +622,34 @@ def start_service(spec, *, detached, timeout_s=None, check=lambda: None):
         spec_path.unlink(missing_ok=True)
 
 
+def start_service(spec, *, detached, owner=None, timeout_s=None, check=lambda: None):
+    return launch_service(prepare_service(spec), spec, detached=detached, owner=owner, timeout_s=timeout_s, check=check)
+
+
 def stop_service(record, timeout_s=30):
+    """Ask the helper to stop and wait for it. A helper that is not running (never started, or dead: its Job Object
+    already ended the service) cannot start later either: it checks the stop file after taking its lifetime lock."""
     directory = Path(record["directory"])
+    directory.mkdir(parents=True, exist_ok=True)
     (directory / "stop").touch()
+    state_path = directory / "state.json"
     end = time.monotonic() + timeout_s
     while time.monotonic() < end:
-        state_path = directory / "state.json"
-        if state_path.exists() and _read(state_path).get("state") == "stopped":
-            return _read(state_path)
-        lock = procs.InstanceLock(directory / "service.lock")
+        lock = procs.InstanceLock(directory / "helper.lock")
         try:
             lock.acquire()
         except procs.ProcessError:
-            pass
-        else:
-            # The helper is gone; its Job Object (kill on close) already ended the service.
-            try:
-                (directory / "spec.json").unlink(missing_ok=True)
+            time.sleep(0.2)
+            continue
+        try:
+            (directory / "spec.json").unlink(missing_ok=True)
+            state = _read(state_path) if state_path.exists() else {}
+            if state.get("state") != "stopped":
                 state = {"state": "stopped", "reason": "helper gone"}
                 _write(state_path, state)
-                return state
-            finally:
-                lock.close()
-        time.sleep(0.2)
+            return state
+        finally:
+            lock.close()
     raise ServiceError("prefill service did not confirm stop")
 
 
@@ -502,7 +660,8 @@ def render_preview(cluster, profile_name):
     spec = render_service(cluster, profile_name, api_key="0" * 64, handoff_api_key="0" * 64,
                           free_physical_gib=memory_status()["free_physical_gib"])
     return {"argv": spec.redacted, "cuda_env": {k: spec.env[k] for k in ("CUDA_DEVICE_ORDER", "CUDA_VISIBLE_DEVICES")},
-            "deadline": spec.deadline, "consistency": spec.consistency}
+            "deadline": spec.deadline if math.isfinite(spec.deadline) else None, "consistency": spec.consistency,
+            "binary_sha256": spec.binary_sha256}
 
 
 def _release_dir(cluster, profile_name):
@@ -510,27 +669,63 @@ def _release_dir(cluster, profile_name):
     return Path(cluster.machines[s["machine"]].install_root) / "cuda" / data["engine_sha"][:12], data
 
 
-def build(cluster, profile_name, source, run=subprocess.run):
-    """CUDA build; in lab mode only inside a granted PC reservation (heavy PC work, like the service itself)."""
+BUILD_MAX_S = 4 * 3600
+
+
+def build(cluster, profile_name, source, *, child_factory=procs.LocalChild, watchdog_factory=Watchdog,
+          lock_factory=device_lock, poll_s=1.0):
+    """CUDA build: heavy PC work (SPEC 5.7). In lab mode only inside a current reservation, under its free-commit
+    watchdog and deadline, in a Job Object (cmake, ninja, cl and nvcc die with it). Builds into a staging directory
+    and publishes it only when the release directory does not exist yet: a release is never rebuilt in place."""
     s, _, _ = _service(cluster, profile_name)
+    machine = cluster.machines[s["machine"]]
+    device = next(d for d in machine.devices if d["id"] == s["device"])
     reservation = cluster.pc.get("cuda", {}).get("reservation")
-    if cluster.machines[s["machine"]].lab_mode and (
-            reservation is None or expires(reservation["expires_at"], "expires_at") <= time.time() + 60):
+    deadline = time.time() + BUILD_MAX_S
+    if reservation is not None:
+        deadline = min(deadline, expires(reservation["expires_at"], "expires_at"))
+    if machine.lab_mode and (reservation is None or deadline <= time.time() + 60):
         raise ServiceError("lab mode: the CUDA build needs a current pc.cuda.reservation")
     if source is None:
         raise ServiceError("build needs --source <engine checkout at the pinned commit>")
     output, data = _release_dir(cluster, profile_name)
-    output.mkdir(parents=True, exist_ok=True)
+    if output.exists():
+        raise ServiceError(f"{output} already exists; a release is never rebuilt in place")
+    staging = output.with_name(output.name + ".staging-" + uuid.uuid4().hex[:8])
+    staging.mkdir(parents=True)
     script = repo_root() / "windows" / "build-cuda-front.ps1"
-    with (output / "build.log").open("wb") as log:
-        result = run(["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script),
-                      "-Source", str(source), "-Output", str(output), "-Commit", data["engine_sha"],
-                      "-ConfigureJson", json.dumps(data["build"]["configure"]),
-                      "-TargetsJson", json.dumps(data["build"]["targets"])],
-                     stdout=log, stderr=subprocess.STDOUT, timeout=4 * 3600, **no_window())
-    if result.returncode != 0:
-        raise ServiceError("CUDA build failed; see " + str(output / "build.log"))
-    return read_json(output / "MANIFEST.json")
+    argv = [str(Path(os.environ.get("SystemRoot", "C:/Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"),
+            "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script),
+            "-Source", str(source), "-Output", str(staging), "-Commit", data["engine_sha"],
+            "-ConfigureJson", json.dumps(data["build"]["configure"]), "-TargetsJson", json.dumps(data["build"]["targets"])]
+    floor = reservation["free_commit_floor_gib"] if reservation else 4
+    limits = SimpleNamespace(pro_uuid=device["uuid"], free_commit_floor_gib=floor, deadline=deadline, vram_cap_gib=0)
+    lock = lock_factory(device["uuid"]).acquire()
+    child = dog = None
+    try:
+        child = child_factory(argv, dict(os.environ), staging, "build")
+        child.start()
+        with (staging / "watchdog.jsonl").open("a", encoding="utf-8") as events:
+            dog = watchdog_factory(limits, child.process.pid, child.process.kill,
+                                   lambda line: (events.write(json.dumps(line) + "\n"), events.flush()), gpu=False).start()
+            while child.alive() and dog.reason is None and dog.alive():
+                time.sleep(poll_s)
+            reason = dog.reason or (None if dog.alive() else "watchdog stopped unexpectedly")
+            dog.stop()
+        code = child.process.wait()
+        if reason:
+            raise ServiceError(f"CUDA build stopped: {reason}; see {staging}")
+        if code != 0:
+            raise ServiceError(f"CUDA build failed ({code}); see {staging / 'build.stdout.log'}")
+        manifest = read_json(staging / "MANIFEST.json")
+    finally:
+        if dog is not None:
+            dog.stop()
+        if child is not None:
+            child.stop(5)
+        lock.close()
+    os.replace(staging, output)  # after the log drains have closed their files
+    return manifest
 
 
 def prompt_ids(directory, entry):
@@ -572,7 +767,21 @@ def _keys(profile_name, suffix):
     return secrets.ensure(orchestrate._secret_name(profile_name, suffix))
 
 
-def fidelity_gate(cluster, profile_name, prompts, request=_request, apps=compute_apps):
+def gpu_memory(run=subprocess.run):
+    """uuid -> used MiB for every NVIDIA GPU (device-level evidence when WDDM lists no per-process rows)."""
+    return {row[0]: int(row[1]) for row in _smi(["--query-gpu=uuid,memory.used", "--format=csv,noheader,nounits"], run)}
+
+
+def visibility(service, apps=compute_apps, memory=gpu_memory):
+    """Acceptance 1. True/False from per-process rows; None (unverified) when the driver lists none, with the
+    device memory of every GPU as the evidence to read beside the service's PRO-pinned environment."""
+    gpus = sorted({gpu for gpu, pid, _ in apps() if pid == service.get("pid")})
+    verdict = None if not gpus else gpus == [service["device"]]
+    return {"only_pro": verdict, "visible_on": gpus, "device_memory_mib": memory(),
+            "why": None if gpus else "no per-process rows from the driver (WDDM); see device_memory_mib"}
+
+
+def fidelity_gate(cluster, profile_name, prompts, request=_request, apps=compute_apps, memory=gpu_memory):
     """The preset's named oracle against the running service: state sha256, next token, logits FNV and state size at
     every oracle length (no handoff), plus the GPUs the process is visible on."""
     _, data, _ = _service(cluster, profile_name)
@@ -590,10 +799,9 @@ def fidelity_gate(cluster, profile_name, prompts, request=_request, apps=compute
         ok &= equal
         rows.append({"tokens": entry["tokens"], "status": status, "equal": equal, "got": got,
                      "seconds": reply.get("seconds")})
-    gpus = sorted({gpu for gpu, pid, _ in apps() if pid == service.get("pid")})
-    only_pro = gpus in ([service["device"]], [])  # WDDM may not list per-process rows at all
-    return {"gate": data["fidelity"]["name"], "pass": ok and only_pro, "rows": rows, "visible_on": gpus,
-            "only_pro": only_pro, "quality_gate": data["fidelity"]["quality_gate"],
+    seen = visibility(service, apps, memory)
+    return {"gate": data["fidelity"]["name"], "pass": ok and seen["only_pro"] is not False, "rows": rows,
+            "visibility": seen, "quality_gate": data["fidelity"]["quality_gate"],
             "quality_gate_why": data["fidelity"]["quality_gate_why"]}
 
 

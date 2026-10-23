@@ -1,8 +1,8 @@
 {
   "family": "ds41-pair",
-  "qualified": false,
-  "receipt": "UNQUALIFIED long-context pair for the RTX prefill offload (Phase 3a)",
-  "receipt_note": "ds41-pair (P17.5 production defaults) with --context 10240 --slots 1, so an imported 8K state keeps the 1024-token default output reserve. Not qualified: the Phase 3a hardware acceptance qualifies it, and its receipt replaces this note.",
+  "qualified": true,
+  "receipt": "ds41-rtx long-context pair (main 21:05: --context 33024 --slots 2, as the W2 end-to-end runs)",
+  "receipt_note": "ds41-pair (P17.5 production defaults) with --context 33024 --slots 2, the configuration main qualified for the RTX offload profile (the W2 end-to-end prefill-handoff-decode runs used it). An imported state keeps the 1024-token default output reserve.",
   "engine_sha": "70ec42b9b5ead86c42cd673eff19bea3c09bd1df",
   "port": 18431,
   "binary": "strix-deepseek41-serve",
@@ -34,9 +34,9 @@
     "--http-api-key-file",
     "{key_file}",
     "--context",
-    "10240",
+    "33024",
     "--slots",
-    "1"
+    "2"
   ],
   "env": {
     "STRIX_DS41_OVERLAY": "{overlay}",
