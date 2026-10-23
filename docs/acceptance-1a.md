@@ -62,3 +62,23 @@
 - Rollback and uninstall have not been run on hardware yet (unit-tested only).
 - A transient "expected one JSON object" reply during the first install poll did not reproduce. The error now shows the first 200 bytes of the reply.
 - Interleaved A/B performance comparison of the two router placements (SPEC §6 1a.5).
+
+## Phase 2 first acceptance: DeepSeek V4.1 Flash pair (preset P17.5 production defaults)
+
+- **Build:** `hyperloom install ds41-pair --build-on halo-1` built strix-trellis and `strix-deepseek41-serve` and ran the host tests. Release `d2c8d71531bc` was pushed to halo-2 with identical shas. The capability check is static (nothing executed).
+- **Start:** `up ds41-pair --router local` took one `gpu-turn-pair.sh` turn (`hl-ds41-*`).
+  - The first attempt **refused to start** on the layout check, because the lab's layout file has per-stream records; this was fixed in c51a1b6.
+  - After the fix, layout 1 was verified on both nodes after acquire, and both ranks were `READY` about 50 s after the turn began.
+  - Both ranks connected over the 4 host streams (`usb4gpu` → host path, layout 1).
+- **Identity:** `/api/status` `trellis_identity` = `ds41-trellis-mix-v1{head=K5,shexp_w13=K4,shexp_w2=K4}:shexp,head (= ds41-trellis-mixB-v1)`, which is the production identity.
+- **Serve through the router on the control machine:**
+
+| Run | Requests OK | Aggregate | Common window |
+|---|---|---|---|
+| bench C1 (2 requests) | 2 of 2 | 25.6 tok/s | — |
+| bench C4 (8 requests) | 8 of 8 | 26.4 tok/s | 72.4 tok/s |
+
+  The aggregate figures are wall-clock and include prefill of 3000-character documents; this is a smoke test, not a performance claim.
+- **Token regression gate:** the same binary launched lab-style (inherited user environment, the same flags and identity) against hyperloom (clean environment), 8 greedy prompts: **all 8 identical (290 tokens)**.
+- **Stop:** `down` → both ranks printed `STOPPED`; the pair turn was 2 min 44 s; no process was left on either node; `usb4stream-describe` shows 4 of 4 streams openable on both nodes afterwards.
+- **Not yet run for the pair:** the router on a node (covered for Qwen), the negative tests (mismatched releases, same-size wrong asset), and interleaved C1/C4 against the lab launch.
