@@ -127,6 +127,19 @@ class OrchestrationTests(unittest.TestCase):
                 orch.up(self.cluster, "qwen-replicas", **kwargs)
         self.assertEqual(self.calls, [])
 
+    def test_launch_records_preserve_release_placement_and_rendered_inputs(self):
+        state = orch.up(self.cluster, "qwen-replicas", nodes=["halo-2"], devices=["halo-2:gpu"])
+        saved = orch._read(orch._state_path("qwen-replicas"))
+        self.assertEqual(saved["release_id"], RELEASE)
+        self.assertEqual(saved["nodes"], ["halo-2"])
+        self.assertEqual(saved["devices"], ["halo-2:gpu"])
+        self.assertIsInstance(saved["started_at"], float)
+        lease_payload = next(payload for _, verb, payload in self.calls if verb == "lease")
+        self.assertEqual(saved["process_specs"][0]["argv"], lease_payload["processes"][0]["argv"])
+        self.assertEqual(saved["process_specs"][0]["env"], lease_payload["processes"][0]["env"])
+        self.assertEqual(saved["rendered_router"], state["rendered_router"])
+        orch.down("qwen-replicas")
+
     def test_partial_start_rolls_back_and_cleans_plaintext(self):
         self.fail.add(("halo-2", "lease"))
         with self.assertRaisesRegex(orch.OrchestrationError, "fixture failure"):

@@ -102,6 +102,21 @@ class NodeTests(unittest.TestCase):
         self.assertEqual(checks["compiler"]["value"], "Synthetic compiler 1")
         self.assertEqual(checks["rocm_package_version"]["value"], "10.1")
 
+    def test_cpu_physical_links_and_gpu_marketing_name_are_passive(self):
+        self.write("/proc/cpuinfo", "processor : 0\nmodel name : Fixture CPU\n")
+        self.write("/sys/class/net/Ethernet/device/vendor", "fixture")
+        self.write("/sys/class/net/Ethernet/operstate", "up")
+        self.write("/sys/class/net/Ethernet/speed", "1000")
+        self.write("/sys/class/net/lo/operstate", "up")
+        self.write("/sys/class/drm/card0/device/vendor", "0x1002")
+        self.write("/sys/class/drm/card0/device/product_name", "Fixture Radeon")
+        doctor = self.inspector.doctor()
+        self.assertEqual(doctor["cpu_model"]["value"], "Fixture CPU")
+        self.assertEqual(doctor["interfaces"]["value"], [{"name": "Ethernet", "physical": True,
+                         "state": "up", "negotiated_mbps": 1000}])
+        self.assertEqual(self.inspector.gpu()["amd"]["value"][0]["product_name"]["value"], "Fixture Radeon")
+        self.assertEqual(self.invocations, [])
+
     def test_rocm_dpkg_matches_lab_and_core_packages_only(self):
         self.command("dpkg-query", "unrelated\t1\namdrocm10.1-gfx1151\t10.1.0-3\nrocm-core\t10.1.0\n")
         result = self.inspector.doctor()["rocm_package_version"]

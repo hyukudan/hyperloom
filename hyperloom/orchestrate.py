@@ -503,6 +503,10 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
             selected.router["listen"] = f"[{host}]:18600" if ":" in host else f"{host}:18600"
         processes = render.render_processes(selected, profile)
         rendered = render.render_router(selected, profile)
+        state.update(release_id=releases[mids[0]], nodes=mids, devices=list(devices or []),
+                     started_at=time.time(), process_specs=[asdict(spec) for spec in processes],
+                     rendered_router=rendered)
+        _write(path, state)
         # Persist each returned lease immediately, including while it is queued.
         def start(mid, payload, role):
             _check_stop(path)

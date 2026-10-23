@@ -1,0 +1,1 @@
+Inspection fixtures reproduce the captured probe/doctor/gpu field shapes, including the flat versioned USB4 records and the legacy zero stream count. Values are synthetic: halo-1, halo-2 and workstation; no lab identities or measurements are retained.

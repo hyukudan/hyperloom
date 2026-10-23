@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="hyperloom-csrf" content="__HYPERLOOM_CSRF__">
+  <meta name="color-scheme" content="light dark">
+  <title>Hyperloom · Devices</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <div class="app">
+    <aside class="side" id="sidebar" aria-label="Portal navigation">
+      <div class="brand"><span class="logo" aria-hidden="true">hl</span>Hyperloom</div>
+      <nav class="nav" id="navigation" aria-label="Screens"></nav>
+      <div class="foot">
+        <div id="control-machine">Control machine · unavailable</div>
+        <div id="version">Hyperloom · local portal</div>
+        <label class="field theme-field" for="theme">Appearance
+          <select class="inp" id="theme">
+            <option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option>
+          </select>
+        </label>
+      </div>
+    </aside>
+    <div class="main">
+      <div class="mtop">
+        <span class="logo" aria-hidden="true">hl</span><b>Hyperloom</b>
+        <span id="mobile-status" class="pill p-off">Loading</span>
+        <button class="btn" id="menu" type="button" aria-label="Open navigation menu" aria-expanded="false" aria-controls="sidebar">Menu</button>
+      </div>
+      <header class="top"><h1 id="page-title">Devices</h1><span id="global-status" class="pill p-off">Loading</span><span class="sp"></span><div class="row" id="page-actions"></div></header>
+      <div id="connection" class="connection" hidden></div>
+      <div id="alerts" class="alerts" aria-live="polite" aria-atomic="true"></div>
+      <section id="job-panel" class="job-panel" aria-label="Action progress" hidden></section>
+      <main id="main" class="content" tabindex="-1" aria-busy="true">
+        <div class="grid g3" aria-label="Loading devices"><div class="card skeleton"></div><div class="card skeleton"></div><div class="card skeleton"></div></div>
+      </main>
+    </div>
+  </div>
+  <dialog id="action-dialog" aria-labelledby="dialog-title" aria-describedby="dialog-effects">
+    <form id="action-form">
+      <div class="row between"><h2 id="dialog-title">Confirm action</h2><button type="button" class="btn" data-close aria-label="Close dialog">Close</button></div>
+      <div id="dialog-fields"></div>
+      <div id="dialog-effects"></div>
+      <p id="dialog-error" class="field-error" aria-live="polite"></p>
+      <div class="row dialog-actions"><button type="button" class="btn" data-close>Cancel</button><button id="dialog-confirm" type="submit" class="btn pri">Confirm</button></div>
+    </form>
+  </dialog>
+  <noscript><p class="banner">Enable JavaScript to read the local portal and use its controls.</p></noscript>
+</body>
+</html>

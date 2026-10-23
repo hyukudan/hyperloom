@@ -237,6 +237,18 @@ class Inspector:
                   "cmake": self.command("cmake", "--version"),
                   "ninja": self.command("ninja", "--version"),
                   "git": self.command("git", "--version")}
+        cpuinfo = self.read("/proc/cpuinfo")
+        cpu = re.search(r"^model name\s*:\s*(.+)$", cpuinfo.get("value") or "", re.M)
+        checks["cpu_model"] = ok(cpu[1]) if cpu else unavailable("CPU model not reported")
+        interfaces = []
+        for path in self.glob("/sys/class/net/*"):
+            if not self.exists(path + "/device").get("value"):
+                continue
+            speed = self.read(path + "/speed", integer=True)
+            interfaces.append({"name": PurePosixPath(path).name, "physical": True,
+                               "state": self.read(path + "/operstate").get("value"),
+                               "negotiated_mbps": speed.get("value")})
+        checks["interfaces"] = ok(interfaces) if interfaces else unavailable("physical NICs not reported")
         compiler = "amdclang++"
         if self.executable(compiler) is None:
             compiler = "c++"
@@ -308,6 +320,7 @@ class Inspector:
             if vendor.get("value") != "0x1002":
                 continue
             item = {"id": PurePosixPath(card).name}
+            item["product_name"] = self.read(device + "/product_name")
             fields = {"vram_used_bytes": "mem_info_vram_used",
                       "vram_total_bytes": "mem_info_vram_total",
                       "gtt_used_bytes": "mem_info_gtt_used",

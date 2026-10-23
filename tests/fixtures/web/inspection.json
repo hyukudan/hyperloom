@@ -1,0 +1,652 @@
+{
+  "halo-1": {
+    "doctor": {
+      "schema": "hyperloom/node-v1",
+      "checks": {
+        "os": {
+          "status": "ok",
+          "value": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\n"
+        },
+        "cpu_model": {
+          "status": "ok",
+          "value": "Ryzen AI Max+ 395"
+        },
+        "disk": {
+          "status": "ok",
+          "value": {
+            "free_bytes": 500000000000
+          }
+        },
+        "gfx_targets": {
+          "status": "ok",
+          "value": [
+            {
+              "target": "gfx1151"
+            }
+          ]
+        },
+        "interfaces": {
+          "status": "ok",
+          "value": [
+            {
+              "name": "Ethernet",
+              "state": "up",
+              "negotiated_mbps": 1000,
+              "physical": true
+            }
+          ]
+        },
+        "rocm_package_version": {
+          "status": "ok",
+          "value": {
+            "amdrocm-core10.1-gfx1151": "10.1.0-3",
+            "rocm-core": "10.1.0-3"
+          }
+        },
+        "usb4": {
+          "module": {
+            "status": "ok",
+            "value": true
+          },
+          "describe": {
+            "status": "ok",
+            "value": {
+              "0-2.0/data0": {
+                "device": "/dev/tbstream0",
+                "config": {
+                  "gpu_direct": 0
+                },
+                "openable": true,
+                "attached": true
+              },
+              "0-2.0/data1": {
+                "device": "/dev/tbstream1",
+                "config": {
+                  "gpu_direct": 0
+                },
+                "openable": true,
+                "attached": true
+              },
+              "1-2.0/data0": {
+                "device": "/dev/tbstream2",
+                "config": {
+                  "gpu_direct": 0
+                },
+                "openable": true,
+                "attached": true
+              },
+              "1-2.0/data1": {
+                "device": "/dev/tbstream3",
+                "config": {
+                  "gpu_direct": 0
+                },
+                "openable": true,
+                "attached": true
+              },
+              "version": 2,
+              "topology": {
+                "host": "halo-1",
+                "cables_total": 2,
+                "cables_up": 2,
+                "cables": [
+                  {
+                    "id": "A",
+                    "state": "up",
+                    "remote": {
+                      "device_name": "halo-2"
+                    },
+                    "link": {
+                      "gbps": 40,
+                      "full_speed": true
+                    },
+                    "streams": [
+                      "0-2.0/data0",
+                      "0-2.0/data1"
+                    ],
+                    "streams_openable": 2
+                  },
+                  {
+                    "id": "B",
+                    "state": "up",
+                    "remote": {
+                      "device_name": "halo-2"
+                    },
+                    "link": {
+                      "gbps": 40,
+                      "full_speed": true
+                    },
+                    "streams": [
+                      "1-2.0/data0",
+                      "1-2.0/data1"
+                    ],
+                    "streams_openable": 2
+                  }
+                ],
+                "warnings": []
+              }
+            }
+          },
+          "layout": {
+            "status": "ok",
+            "value": {
+              "0-2.0/data0": {
+                "device": "/dev/tbstream0",
+                "config": {
+                  "gpu_direct": 0
+                },
+                "openable": true,
+                "attached": true
+              },
+              "0-2.0/data1": {
+                "device": "/dev/tbstream1",
+                "config": {
+                  "gpu_direct": 0
+                },
+                "openable": true,
+                "attached": true
+              },
+              "1-2.0/data0": {
+                "device": "/dev/tbstream2",
+                "config": {
+                  "gpu_direct": 0
+                },
+                "openable": true,
+                "attached": true
+              },
+              "1-2.0/data1": {
+                "device": "/dev/tbstream3",
+                "config": {
+                  "gpu_direct": 0
+                },
+                "openable": true,
+                "attached": true
+              },
+              "version": 2,
+              "topology": {
+                "host": "halo-1",
+                "cables_total": 2,
+                "cables_up": 2,
+                "cables": [
+                  {
+                    "id": "A",
+                    "state": "up",
+                    "remote": {
+                      "device_name": "halo-2"
+                    },
+                    "link": {
+                      "gbps": 40,
+                      "full_speed": true
+                    },
+                    "streams": [
+                      "0-2.0/data0",
+                      "0-2.0/data1"
+                    ],
+                    "streams_openable": 2
+                  },
+                  {
+                    "id": "B",
+                    "state": "up",
+                    "remote": {
+                      "device_name": "halo-2"
+                    },
+                    "link": {
+                      "gbps": 40,
+                      "full_speed": true
+                    },
+                    "streams": [
+                      "1-2.0/data0",
+                      "1-2.0/data1"
+                    ],
+                    "streams_openable": 2
+                  }
+                ],
+                "warnings": []
+              }
+            }
+          },
+          "streams": {
+            "status": "ok",
+            "value": {
+              "count": 0,
+              "openable": []
+            }
+          }
+        }
+      }
+    },
+    "gpu": {
+      "schema": "hyperloom/node-v1",
+      "checks": {
+        "amd": {
+          "status": "ok",
+          "value": [
+            {
+              "id": "card0",
+              "vram_total_bytes": {
+                "status": "ok",
+                "value": 536870912
+              },
+              "vram_used_bytes": {
+                "status": "ok",
+                "value": 200000000
+              },
+              "gtt_total_bytes": {
+                "status": "ok",
+                "value": 125000000000
+              },
+              "gtt_used_bytes": {
+                "status": "ok",
+                "value": 40000000000
+              },
+              "busy_percent": {
+                "status": "ok",
+                "value": 75
+              },
+              "temperature_c": {
+                "status": "ok",
+                "value": {
+                  "hwmon0/temp1_input": {
+                    "status": "ok",
+                    "value": 48
+                  }
+                }
+              },
+              "power_w": {
+                "status": "ok",
+                "value": {
+                  "hwmon0/power1_average": {
+                    "status": "ok",
+                    "value": 72
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "ram": {
+          "status": "ok",
+          "value": {
+            "total_bytes": 131000000000,
+            "available_bytes": 80000000000
+          }
+        },
+        "kernel": {
+          "status": "ok",
+          "value": "7.3.0-rc5"
+        }
+      }
+    }
+  },
+  "halo-2": {
+    "doctor": {
+      "schema": "hyperloom/node-v1",
+      "checks": {
+        "os": {
+          "status": "ok",
+          "value": "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"26.04\"\n"
+        },
+        "cpu_model": {
+          "status": "ok",
+          "value": "Ryzen AI Max+ 395"
+        },
+        "disk": {
+          "status": "ok",
+          "value": {
+            "free_bytes": 500000000000
+          }
+        },
+        "gfx_targets": {
+          "status": "ok",
+          "value": [
+            {
+              "target": "gfx1151"
+            }
+          ]
+        },
+        "interfaces": {
+          "status": "ok",
+          "value": [
+            {
+              "name": "Ethernet",
+              "state": "up",
+              "negotiated_mbps": 1000,
+              "physical": true
+            }
+          ]
+        },
+        "rocm_package_version": {
+          "status": "ok",
+          "value": {
+            "amdrocm-core10.1-gfx1151": "10.1.0-3",
+            "rocm-core": "10.1.0-3"
+          }
+        },
+        "usb4": {
+          "module": {
+            "status": "ok",
+            "value": true
+          },
+          "describe": {
+            "status": "ok",
+            "value": {
+              "0-2.0/data0": {
+                "device": "/dev/tbstream0",
+                "config": {
+                  "gpu_direct": 0
+                },
+                "openable": true,
+                "attached": true
+              },
+              "0-2.0/data1": {
+                "device": "/dev/tbstream1",
+                "config": {
+                  "gpu_direct": 0
+                },
+                "openable": true,
+                "attached": true
+              },
+              "1-2.0/data0": {
+                "device": "/dev/tbstream2",
+                "config": {
+                  "gpu_direct": 0
+                },
+                "openable": true,
+                "attached": true
+              },
+              "1-2.0/data1": {
+                "device": "/dev/tbstream3",
+                "config": {
+                  "gpu_direct": 0
+                },
+                "openable": true,
+                "attached": true
+              },
+              "version": 2,
+              "topology": {
+                "host": "halo-2",
+                "cables_total": 2,
+                "cables_up": 2,
+                "cables": [
+                  {
+                    "id": "A",
+                    "state": "up",
+                    "remote": {
+                      "device_name": "halo-1"
+                    },
+                    "link": {
+                      "gbps": 40,
+                      "full_speed": true
+                    },
+                    "streams": [
+                      "0-2.0/data0",
+                      "0-2.0/data1"
+                    ],
+                    "streams_openable": 2
+                  },
+                  {
+                    "id": "B",
+                    "state": "up",
+                    "remote": {
+                      "device_name": "halo-1"
+                    },
+                    "link": {
+                      "gbps": 20,
+                      "full_speed": false
+                    },
+                    "streams": [
+                      "1-2.0/data0",
+                      "1-2.0/data1"
+                    ],
+                    "streams_openable": 2
+                  }
+                ],
+                "warnings": [
+                  "Cable B trained below Gen3 x2"
+                ]
+              }
+            }
+          },
+          "layout": {
+            "status": "ok",
+            "value": {
+              "0-2.0/data0": {
+                "device": "/dev/tbstream0",
+                "config": {
+                  "gpu_direct": 0
+                },
+                "openable": true,
+                "attached": true
+              },
+              "0-2.0/data1": {
+                "device": "/dev/tbstream1",
+                "config": {
+                  "gpu_direct": 0
+                },
+                "openable": true,
+                "attached": true
+              },
+              "1-2.0/data0": {
+                "device": "/dev/tbstream2",
+                "config": {
+                  "gpu_direct": 0
+                },
+                "openable": true,
+                "attached": true
+              },
+              "1-2.0/data1": {
+                "device": "/dev/tbstream3",
+                "config": {
+                  "gpu_direct": 0
+                },
+                "openable": true,
+                "attached": true
+              },
+              "version": 2,
+              "topology": {
+                "host": "halo-2",
+                "cables_total": 2,
+                "cables_up": 2,
+                "cables": [
+                  {
+                    "id": "A",
+                    "state": "up",
+                    "remote": {
+                      "device_name": "halo-1"
+                    },
+                    "link": {
+                      "gbps": 40,
+                      "full_speed": true
+                    },
+                    "streams": [
+                      "0-2.0/data0",
+                      "0-2.0/data1"
+                    ],
+                    "streams_openable": 2
+                  },
+                  {
+                    "id": "B",
+                    "state": "up",
+                    "remote": {
+                      "device_name": "halo-1"
+                    },
+                    "link": {
+                      "gbps": 20,
+                      "full_speed": false
+                    },
+                    "streams": [
+                      "1-2.0/data0",
+                      "1-2.0/data1"
+                    ],
+                    "streams_openable": 2
+                  }
+                ],
+                "warnings": [
+                  "Cable B trained below Gen3 x2"
+                ]
+              }
+            }
+          },
+          "streams": {
+            "status": "ok",
+            "value": {
+              "count": 0,
+              "openable": []
+            }
+          }
+        }
+      }
+    },
+    "gpu": {
+      "schema": "hyperloom/node-v1",
+      "checks": {
+        "amd": {
+          "status": "ok",
+          "value": [
+            {
+              "id": "card0",
+              "vram_total_bytes": {
+                "status": "ok",
+                "value": 536870912
+              },
+              "vram_used_bytes": {
+                "status": "ok",
+                "value": 200000000
+              },
+              "gtt_total_bytes": {
+                "status": "ok",
+                "value": 125000000000
+              },
+              "gtt_used_bytes": {
+                "status": "ok",
+                "value": 40000000000
+              },
+              "busy_percent": {
+                "status": "ok",
+                "value": 75
+              },
+              "temperature_c": {
+                "status": "ok",
+                "value": {
+                  "hwmon0/temp1_input": {
+                    "status": "ok",
+                    "value": 48
+                  }
+                }
+              },
+              "power_w": {
+                "status": "ok",
+                "value": {
+                  "hwmon0/power1_average": {
+                    "status": "ok",
+                    "value": 72
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "ram": {
+          "status": "ok",
+          "value": {
+            "total_bytes": 131000000000,
+            "available_bytes": 80000000000
+          }
+        },
+        "kernel": {
+          "status": "ok",
+          "value": "7.3.0-rc5"
+        }
+      }
+    }
+  },
+  "workstation": {
+    "doctor": {
+      "schema": "hyperloom/node-v1",
+      "checks": {
+        "os": {
+          "status": "unavailable",
+          "value": null,
+          "why": "not Linux"
+        },
+        "usb4": {
+          "module": {
+            "status": "unavailable",
+            "value": null,
+            "why": "path missing"
+          }
+        },
+        "cpu_model": {
+          "status": "ok",
+          "value": "Workstation CPU"
+        },
+        "disk": {
+          "status": "ok",
+          "value": {
+            "free_bytes": 1500000000000
+          }
+        }
+      }
+    },
+    "gpu": {
+      "schema": "hyperloom/node-v1",
+      "checks": {
+        "amd": {
+          "status": "unavailable",
+          "value": null,
+          "why": "no AMD DRM devices"
+        }
+      }
+    },
+    "probe": {
+      "schema_version": 1,
+      "os": {
+        "system": "Windows",
+        "release": "11"
+      },
+      "host_memory": {
+        "total_bytes": 128000000000,
+        "available_bytes": 64000000000
+      },
+      "devices": [
+        {
+          "vendor": "nvidia",
+          "id": "GPU-fixture-pro",
+          "name": "NVIDIA RTX PRO 6000",
+          "reported_memory_bytes": 96000000000,
+          "reported_free_bytes": 60000000000,
+          "utilization_pct": 37,
+          "temperature_c": 54,
+          "power_w": 211,
+          "driver_version": "581.42"
+        },
+        {
+          "vendor": "nvidia",
+          "name": "NVIDIA GeForce RTX 4090",
+          "reported_memory_bytes": 24000000000,
+          "reported_free_bytes": 24000000000
+        }
+      ],
+      "interfaces": [
+        {
+          "name": "Ethernet",
+          "state": "up",
+          "negotiated_mbps": 1000
+        },
+        {
+          "name": "Loopback Pseudo-Interface 1",
+          "state": "up",
+          "negotiated_mbps": 1000
+        },
+        {
+          "name": "vEthernet (WSL)",
+          "state": "up",
+          "negotiated_mbps": 4294
+        },
+        {
+          "name": "Wi-Fi",
+          "state": "down"
+        }
+      ]
+    }
+  }
+}

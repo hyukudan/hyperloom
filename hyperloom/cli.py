@@ -301,6 +301,9 @@ def _hosts(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="hyperloom")
     commands = parser.add_subparsers(dest="command", required=True)
+    ui = commands.add_parser("ui", help="open the local portal")
+    ui.add_argument("--port", type=int, default=18700)
+    ui.add_argument("--no-browser", action="store_true")
     config = commands.add_parser("config").add_subparsers(dest="operation", required=True)
     config.add_parser("validate").add_argument("path", type=Path)
     render = commands.add_parser("render")
@@ -360,7 +363,11 @@ def main(argv=None):
     watch.add_argument("token")
     args = parser.parse_args(argv)
     try:
-        if args.command in ("up", "down") and args.profile is None:
+        if args.command == "ui":
+            if not 0 <= args.port <= 65535:
+                raise ValueError("ui port must be in 0..65535")
+            _module("hyperloom.web.server").serve(args.port, no_browser=args.no_browser)
+        elif args.command in ("up", "down") and args.profile is None:
             print("Phase 1a")
         elif args.command == "install":
             cluster = _cluster(args.config)
