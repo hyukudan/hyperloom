@@ -1,6 +1,6 @@
 {
   "receipt": "qwen-rep-rfix",
-  "engine_sha": "70ec42b9b5ead86c42cd673eff19bea3c09bd1df",
+  "engine_sha": "9211b07e13c64ab80ae04fcbfcbeab50fe0cbf04",
   "port": 18501,
   "binary": "strix-hip-decode-token",
   "assets": [
