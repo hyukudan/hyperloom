@@ -1,0 +1,235 @@
+{
+  "schema": "telar/cluster-v1",
+  "machines": [
+    {
+      "id": "workstation",
+      "os": "windows",
+      "access": "local",
+      "http_address": "127.0.0.1",
+      "install_root": "C:/telar",
+      "lab_mode": true,
+      "devices": []
+    },
+    {
+      "id": "halo-1",
+      "os": "linux",
+      "access": "ssh",
+      "http_address": "192.0.2.10",
+      "ssh_target": "halo-1",
+      "ssh_port": 22,
+      "install_root": "/opt/telar",
+      "lab_mode": true,
+      "devices": [
+        {
+          "id": "gpu",
+          "type": "amd"
+        }
+      ]
+    },
+    {
+      "id": "halo-2",
+      "os": "linux",
+      "access": "ssh",
+      "http_address": "192.0.2.11",
+      "ssh_target": "halo-2",
+      "ssh_port": 22,
+      "install_root": "/opt/telar",
+      "lab_mode": true,
+      "devices": [
+        {
+          "id": "gpu",
+          "type": "amd"
+        }
+      ]
+    }
+  ],
+  "assets": {
+    "halo-1": {
+      "model": {
+        "path": "/opt/assets/qwen.gguf",
+        "bytes": 0,
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "sidecar": {
+        "path": "/opt/assets/sidecar.gguf",
+        "bytes": 2786568256,
+        "sha256": "5516d3ce407783a424315b6a2a0d8b06341665bb3541b98e5db0fe944add4c3c"
+      },
+      "golden": {
+        "path": "/opt/assets/mtp.golden",
+        "bytes": 0,
+        "sha256": "5db345508f79bda1af87a8c929ea463ca914f17dec3dd3b02273daf6ed7ce413"
+      },
+      "vocab": {
+        "path": "/opt/assets/qwen-vocab",
+        "bytes": 0,
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "calibration_tokens": {
+        "path": "/opt/assets/calibration.tokens",
+        "bytes": 11,
+        "sha256": "90eb475569075c15ab9cc82a9495a1ccd030190d648a280c419ae4cf9c179f16",
+        "control_path": "C:/telar/assets/calibration.tokens"
+      },
+      "ds41_model": {
+        "path": "/opt/assets/ds41.gguf",
+        "bytes": 0,
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "dspark": {
+        "path": "/opt/assets/dspark.gguf",
+        "bytes": 0,
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "ds41_vocab": {
+        "path": "/opt/assets/ds41-vocab",
+        "bytes": 0,
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "overlay": {
+        "path": "/opt/assets/overlay.gguf",
+        "bytes": 0,
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "trellis_k4": {
+        "path": "/opt/assets/ours-K4",
+        "bytes": 0,
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "trellis_k5": {
+        "path": "/opt/assets/ours-K5",
+        "bytes": 0,
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    "halo-2": {
+      "model": {
+        "path": "/opt/assets/qwen.gguf",
+        "bytes": 0,
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "sidecar": {
+        "path": "/opt/assets/sidecar.gguf",
+        "bytes": 2786568256,
+        "sha256": "5516d3ce407783a424315b6a2a0d8b06341665bb3541b98e5db0fe944add4c3c"
+      },
+      "golden": {
+        "path": "/opt/assets/mtp.golden",
+        "bytes": 0,
+        "sha256": "5db345508f79bda1af87a8c929ea463ca914f17dec3dd3b02273daf6ed7ce413"
+      },
+      "vocab": {
+        "path": "/opt/assets/qwen-vocab",
+        "bytes": 0,
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "calibration_tokens": {
+        "path": "/opt/assets/calibration.tokens",
+        "bytes": 11,
+        "sha256": "90eb475569075c15ab9cc82a9495a1ccd030190d648a280c419ae4cf9c179f16",
+        "control_path": "C:/telar/assets/calibration.tokens"
+      },
+      "ds41_model": {
+        "path": "/opt/assets/ds41.gguf",
+        "bytes": 0,
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "dspark": {
+        "path": "/opt/assets/dspark.gguf",
+        "bytes": 0,
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "ds41_vocab": {
+        "path": "/opt/assets/ds41-vocab",
+        "bytes": 0,
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "overlay": {
+        "path": "/opt/assets/overlay.gguf",
+        "bytes": 0,
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "trellis_k4": {
+        "path": "/opt/assets/ours-K4",
+        "bytes": 0,
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "trellis_k5": {
+        "path": "/opt/assets/ours-K5",
+        "bytes": 0,
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    }
+  },
+  "profiles": {
+    "qwen-replicas": {
+      "nodes": [
+        "halo-1",
+        "halo-2"
+      ],
+      "port": 18501,
+      "receipt": "qwen-rep-r3",
+      "overrides": {},
+      "api_key_files": {
+        "halo-1": "/opt/telar/secrets/engine.key",
+        "halo-2": "/opt/telar/secrets/engine.key"
+      },
+      "release_id": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "ds41-pair": {
+      "rank0": "halo-1",
+      "rank1": "halo-2",
+      "port": 18431,
+      "receipt": "P17.5 production defaults",
+      "overrides": {},
+      "api_key_files": {
+        "halo-1": "/opt/telar/secrets/engine.key",
+        "halo-2": "/opt/telar/secrets/engine.key"
+      },
+      "release_id": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  "pc": {
+    "router_listen": "127.0.0.1:18600",
+    "ui_listen": "127.0.0.1:18700",
+    "cuda": {
+      "pro_uuid": "GPU-example",
+      "reservation": null
+    }
+  },
+  "router": {
+    "machine": "local",
+    "policy": "auto",
+    "balance_active_decodes": true,
+    "max_inflight": 8,
+    "replica_api_key_files": {
+      "halo-1": "C:/telar/secrets/halo-1.key",
+      "halo-2": "C:/telar/secrets/halo-2.key"
+    },
+    "node_profile": {
+      "prefill_curve": [
+        [
+          1272,
+          2.7
+        ],
+        [
+          4096,
+          5.0
+        ],
+        [
+          8192,
+          8.5
+        ],
+        [
+          32768,
+          34.0
+        ]
+      ],
+      "restore_s": 0.01
+    },
+    "limits": {
+      "queue_timeout_s": 900,
+      "read_timeout_s": 900
+    }
+  }
+}

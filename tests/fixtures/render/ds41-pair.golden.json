@@ -1,0 +1,68 @@
+[
+  {
+    "machine_id": "halo-1",
+    "role": "rank0",
+    "argv": [
+      "/opt/telar/releases/0000000000000000000000000000000000000000000000000000000000000000/bin/strix-deepseek41-serve",
+      "/opt/assets/ds41.gguf",
+      "--rank",
+      "0",
+      "--transport",
+      "usb4gpu",
+      "--prefill-path",
+      "device",
+      "--dspark",
+      "/opt/assets/dspark.gguf",
+      "--dspark-vocab",
+      "auto:/opt/assets/ds41-vocab",
+      "--http-bind",
+      "192.0.2.10",
+      "--http-port",
+      "18431",
+      "--http-api-key-file",
+      "/opt/telar/secrets/engine.key"
+    ],
+    "env": {
+      "STRIX_DS41_OVERLAY": "/opt/assets/overlay.gguf",
+      "STRIX_DS41_CB4": "1",
+      "STRIX_DS41_TRELLIS": "/opt/assets/ours-K4",
+      "STRIX_DS41_TRELLIS_MIX": "head=/opt/assets/ours-K5",
+      "STRIX_DS41_TRELLIS_SITES": "shexp,head",
+      "STRIX_DS41_TRELLIS_HEADOUT": "1"
+    },
+    "ready": "ds41-json"
+  },
+  {
+    "machine_id": "halo-2",
+    "role": "rank1",
+    "argv": [
+      "/opt/telar/releases/0000000000000000000000000000000000000000000000000000000000000000/bin/strix-deepseek41-serve",
+      "/opt/assets/ds41.gguf",
+      "--rank",
+      "1",
+      "--transport",
+      "usb4gpu",
+      "--prefill-path",
+      "device",
+      "--dspark",
+      "/opt/assets/dspark.gguf",
+      "--dspark-vocab",
+      "auto:/opt/assets/ds41-vocab",
+      "--http-bind",
+      "192.0.2.11",
+      "--http-port",
+      "18431",
+      "--http-api-key-file",
+      "/opt/telar/secrets/engine.key"
+    ],
+    "env": {
+      "STRIX_DS41_OVERLAY": "/opt/assets/overlay.gguf",
+      "STRIX_DS41_CB4": "1",
+      "STRIX_DS41_TRELLIS": "/opt/assets/ours-K4",
+      "STRIX_DS41_TRELLIS_MIX": "head=/opt/assets/ours-K5",
+      "STRIX_DS41_TRELLIS_SITES": "shexp,head",
+      "STRIX_DS41_TRELLIS_HEADOUT": "1"
+    },
+    "ready": "ds41-json"
+  }
+]
