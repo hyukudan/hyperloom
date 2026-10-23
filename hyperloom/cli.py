@@ -340,6 +340,22 @@ def main(argv=None):
     logs.add_argument("profile")
     logs.add_argument("process")
     logs.add_argument("--tail", type=int, default=100)
+    assets = commands.add_parser("assets", help="pinned model sources and user-confirmed downloads")
+    assets_ops = assets.add_subparsers(dest="asset_operation", required=True)
+    asset_sources = assets_ops.add_parser("sources", help="show each asset's pinned source (read-only)")
+    asset_sources.add_argument("profile")
+    asset_sources.add_argument("--config", type=Path, default=config_path())
+    asset_download = assets_ops.add_parser("download", help="show the exact download plan; run it only with --confirm")
+    asset_download.add_argument("profile")
+    asset_download.add_argument("asset")
+    asset_download.add_argument("--machine", required=True)
+    asset_download.add_argument("--confirm", help="the code printed by the plan; nothing runs without it")
+    asset_download.add_argument("--config", type=Path, default=config_path())
+    for name in ("job", "cancel"):
+        asset_job = assets_ops.add_parser(name)
+        asset_job.add_argument("machine")
+        asset_job.add_argument("job")
+        asset_job.add_argument("--config", type=Path, default=config_path())
     hosts = commands.add_parser("hosts", help="scan or pin a machine's ssh host key")
     hosts.add_argument("operation", choices=("scan", "pin"))
     hosts.add_argument("machine")
@@ -395,6 +411,19 @@ def main(argv=None):
             _json(_module("hyperloom.orchestrate").status(args.profile))
         elif args.command == "logs":
             _json(_module("hyperloom.orchestrate").logs(args.profile, args.process, args.tail))
+        elif args.command == "assets":
+            downloads = _module("hyperloom.downloads")
+            cluster = _cluster(args.config)
+            if args.asset_operation == "sources":
+                _json(downloads.sources(cluster, args.profile))
+            elif args.asset_operation in ("job", "cancel"):
+                if args.machine not in cluster.machines:
+                    raise ValueError("unknown machine: " + args.machine)
+                _json(downloads.job(cluster, args.machine, args.job, cancel=args.asset_operation == "cancel"))
+            elif args.confirm is None:
+                _json(downloads.plan(cluster, args.profile, args.asset, args.machine))
+            else:
+                _json(downloads.start(cluster, args.profile, args.asset, args.machine, args.confirm))
         elif args.command == "hosts":
             _json(_hosts(args))
         elif args.command == "keys":
