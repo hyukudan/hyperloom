@@ -1,0 +1,33 @@
+{
+  "schema": "telar/versions-lock-v1",
+  "checked": "2026-10-23",
+  "components": {
+    "tensormeld": {
+      "repo": "https://github.com/hyukudan/tensormeld",
+      "commit": "7165e981eaf31cdd771e7954596f7d8dc180e0dc",
+      "version": "0.2.0a2",
+      "capabilities": ["serve-replicas replica-router-v1", "bench-replicas", "bench-protocol", "plan-hetero", "link-probe", "probe"],
+      "notes": "deploy-pipeline not used (not qualified with real engines, R10)"
+    },
+    "engine": {
+      "repo": "https://github.com/hyukudan/strix-halo-engine-lab",
+      "commit": "70ec42b9b5ead86c42cd673eff19bea3c09bd1df",
+      "ref": "PR #42 head (publish/main-20261023); move to the merge commit when it lands on main",
+      "capabilities": ["strix-hip-decode-token --http-serve", "strix-deepseek41-serve (usb4gpu, --describe-json, /admin/drain, /admin/import-state)", "strix-cuda-ds41-prefill-service"],
+      "qualified_receipts": {"qwen-replicas": "qwen replica campaign r3 prod-c1", "ds41-pair": "P17.5 production defaults"}
+    },
+    "strix-trellis": {
+      "repo": "https://github.com/hyukudan/strix-trellis",
+      "commit": "5acf0905a3586e719081abf735152298c320827c",
+      "license": "Apache-2.0",
+      "consumed_as": "static archive + header (STRIX_DS41_TRELLIS_API=v12)"
+    }
+  },
+  "toolchains": {
+    "control_python": ">=3.11",
+    "node_python": ">=3.10",
+    "rocm": "core 10.1 (/opt/rocm/core-10.1), gfx1151",
+    "cuda": "13.0 (sm_120), MSVC 19.44 (VS 2022 17.14), CMake >= 3.24, Ninja",
+    "hip_configure": ["-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_HIP_ARCHITECTURES=gfx1151", "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++", "-DSTRIX_ENABLE_HIP_RUNTIME=ON", "-DSTRIX_ENABLE_EXPERIMENTAL_Q4K_A8_RUNTIME=ON"]
+  }
+}

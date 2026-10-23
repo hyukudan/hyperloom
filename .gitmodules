@@ -1,0 +1,9 @@
+[submodule "third_party/tensormeld"]
+	path = third_party/tensormeld
+	url = https://github.com/hyukudan/tensormeld.git
+[submodule "third_party/strix-trellis"]
+	path = third_party/strix-trellis
+	url = https://github.com/hyukudan/strix-trellis.git
+[submodule "third_party/engine"]
+	path = third_party/engine
+	url = https://github.com/hyukudan/strix-halo-engine-lab.git
