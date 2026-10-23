@@ -1,0 +1,693 @@
+"""Control-machine builds, bounded engine leases, and router lifecycle."""
+
+from copy import deepcopy
+from dataclasses import asdict
+import json
+import math
+import os
+from pathlib import Path, PurePosixPath
+import re
+import signal
+import subprocess
+import sys
+import time
+from types import SimpleNamespace
+from urllib.request import ProxyHandler, build_opener
+import uuid
+
+from . import procs, remote, render, secrets
+from .paths import repo_root
+
+
+_controllers = []
+
+
+class OrchestrationError(RuntimeError):
+    pass
+
+
+def _identifier(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", value):
+        raise ValueError("invalid profile or machine id")
+    return value
+
+
+def _state_path(profile):
+    return secrets.runtime_dir() / ("up-" + _identifier(profile) + ".json")
+
+
+def _write(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+    try:
+        temporary.write_text(json.dumps(value, indent=2), encoding="utf-8")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _read(path):
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _known_hosts():
+    return secrets._directory().parent / "known_hosts"
+
+
+def _client(machine, known_hosts=None):
+    if machine.access != "ssh":
+        raise OrchestrationError(f"{machine.id}: Phase 1a node work requires ssh access")
+    return remote.Remote(machine, known_hosts or _known_hosts())
+
+
+def _call(client, verb, payload, timeout=60):
+    result = client.call(verb, payload, timeout=timeout)
+    if result.get("error"):
+        raise OrchestrationError(f"{client.machine.id}: {verb}: {result['error']}")
+    return result
+
+
+def _machine_settings(cluster, mid):
+    rows = cluster.raw.get("machines", [])
+    return next((row for row in rows if row["id"] == mid), {})
+
+
+def _lab(cluster, mid):
+    machine = cluster.machines[mid]
+    lab = _machine_settings(cluster, mid).get("lab_dir")
+    if machine.lab_mode and not lab:
+        raise OrchestrationError(f"{mid}: lab_mode requires a configured lab_dir")
+    return lab if machine.lab_mode else None
+
+
+def _peer(cluster, source, target):
+    alias = _machine_settings(cluster, source).get("peer_ssh", {}).get(target)
+    if not alias:
+        raise OrchestrationError(f"{source}: missing node-side peer_ssh for {target}")
+    return alias
+
+
+def _profile(cluster, profile):
+    _identifier(profile)
+    if profile not in cluster.profiles:
+        raise ValueError("unknown profile: " + profile)
+    settings = cluster.profiles[profile]
+    kind = settings.get("preset", profile)
+    mids = settings["nodes"] if kind == "qwen-replicas" else [settings["rank0"], settings["rank1"]]
+    return settings, kind, list(mids)
+
+
+def _versions():
+    return _read(repo_root() / "versions.lock")
+
+
+def load_cluster(path, config_module=None):
+    """Accept Phase 1a connection fields while preserving Phase 0 validation."""
+    if config_module is None:
+        from . import config as config_module
+    try:
+        return config_module.load(path)
+    except ValueError:
+        if not hasattr(config_module, "read_json"):
+            raise
+    raw = config_module.read_json(path)
+    if (not isinstance(raw, dict) or not isinstance(raw.get("machines"), list)
+            or any(not isinstance(row, dict) or "id" not in row for row in raw["machines"])
+            or not isinstance(raw.get("profiles"), dict)
+            or any(not isinstance(settings, dict) for settings in raw["profiles"].values())):
+        raise ValueError("cluster requires machines and profiles objects")
+    base = deepcopy(raw)
+    extra = {}
+    for row in base.get("machines", []):
+        config_module.identifier(row["id"], "machine.id")
+        metadata = {}
+        if "lab_dir" in row:
+            lab = row.pop("lab_dir")
+            if lab is not None:
+                config_module.absolute(lab, "machine.lab_dir", "linux")
+                if ".." in PurePosixPath(lab).parts:
+                    raise ValueError("lab_dir cannot contain parent traversal")
+            metadata["lab_dir"] = lab
+        if "peer_ssh" in row:
+            peers = row.pop("peer_ssh")
+            if not isinstance(peers, dict):
+                raise ValueError("peer_ssh must map machine ids to node-side ssh aliases")
+            for alias in peers.values():
+                remote._target(alias)
+            metadata["peer_ssh"] = peers
+        extra[row["id"]] = metadata
+    cluster = config_module.parse(base)
+    for mid, metadata in extra.items():
+        if any(peer not in cluster.machines for peer in metadata.get("peer_ssh", {})):
+            raise ValueError(f"{mid}: peer_ssh names an unknown machine")
+    cluster.raw.clear()
+    cluster.raw.update(deepcopy(raw))
+    return cluster
+
+
+def _wait_job(client, root, job, timeout=3600):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        state = _call(client, "job", {"root": root, "job": job})
+        if state.get("state") in ("succeeded", "success", "complete", "completed", "done"):
+            return state
+        if state.get("state") in ("failed", "aborted", "cancelled"):
+            raise OrchestrationError("build job failed: " + str(state.get("error", state.get("reason", job))))
+        time.sleep(0.2)
+    raise OrchestrationError("build job timed out: " + str(job))
+
+
+def install(cluster, build_machine, targets, *, profile=None):
+    """Build once and verify copies before activating a profile on every node."""
+    if profile is not None:
+        _, kind, mids = _profile(cluster, profile)
+    else:
+        profiles = [name for name in cluster.profiles if
+                    ("strix-deepseek41-serve" in targets) ==
+                    (cluster.profiles[name].get("preset", name) == "ds41-pair")]
+        mids = list(dict.fromkeys(mid for name in profiles for mid in _profile(cluster, name)[2]))
+        kind = "ds41-pair" if "strix-deepseek41-serve" in targets else "qwen-replicas"
+    if build_machine not in mids:
+        raise ValueError("build machine must belong to the profile")
+    clients = {mid: _client(cluster.machines[mid]) for mid in mids}
+    for mid in mids:
+        _lab(cluster, mid)
+        clients[mid].bootstrap()
+    # Resolve all peer routes before starting any build.
+    peers = {mid: _peer(cluster, build_machine, mid) for mid in mids if mid != build_machine}
+    versions = _versions()
+    payload = {"root": cluster.machines[build_machine].install_root,
+               "lab_dir": _lab(cluster, build_machine),
+               "asset_paths": [asset["path"] for asset in cluster.assets.get(build_machine, {}).values()],
+               "components": {name: {key: row[key] for key in ("repo", "commit")}
+                              for name, row in versions["components"].items()},
+               "recipe": {"configure": versions["toolchains"]["hip_configure"],
+                          "targets": list(targets),
+                          "ctest_regex": "^strix-(serve-(frontend|deepseek-chat|api)|host-upload)-tests$",
+                          "trellis": kind == "ds41-pair"}}
+    response = _call(clients[build_machine], "install", payload)
+    job = _wait_job(clients[build_machine], payload["root"], response["job"])
+    release = job.get("release_id")
+    if not isinstance(release, str) or not re.fullmatch(r"[0-9a-f]{12}", release):
+        raise OrchestrationError("build job did not return a release id")
+    for mid, alias in peers.items():
+        _call(clients[build_machine], "push-release", {
+            "root": payload["root"], "release_id": release, "peer_ssh": alias,
+            "peer_root": cluster.machines[mid].install_root, "peer_lab_dir": _lab(cluster, mid),
+            "peer_asset_paths": [asset["path"] for asset in cluster.assets.get(mid, {}).values()]}, timeout=3600)
+    if profile is not None:
+        previous = {}
+        for mid in mids:
+            leases = _leases(_call(clients[mid], "status", {"root": cluster.machines[mid].install_root}))
+            if any(row.get("state") not in ("stopped", "failed", "aborted", "cancelled") and
+                   row.get("profile", profile) == profile for row in leases):
+                raise OrchestrationError(f"{mid}: stop the profile before activating its release")
+            data = _call(clients[mid], "releases", {"root": cluster.machines[mid].install_root})
+            previous[mid] = data.get("active", {}).get(profile)
+        activated = []
+        try:
+            for mid in mids:
+                _call(clients[mid], "activate", {"root": cluster.machines[mid].install_root,
+                                                "profile": profile, "release_id": release})
+                activated.append(mid)
+        except BaseException as failure:
+            incomplete = []
+            for mid in reversed(activated):
+                if previous[mid]:
+                    try:
+                        _call(clients[mid], "activate", {"root": cluster.machines[mid].install_root,
+                                                        "profile": profile, "release_id": previous[mid]})
+                    except Exception:
+                        incomplete.append(mid)
+                else:
+                    incomplete.append(mid)
+            if incomplete:
+                raise OrchestrationError("activation failed; rollback unconfirmed on " + ", ".join(incomplete)) from failure
+            raise
+    return release
+
+
+def _leases(result):
+    leases = result.get("leases", [])
+    if isinstance(leases, dict):
+        return [dict(row, lease=key) for key, row in leases.items()]
+    return leases
+
+
+def _wait_ready(client, root, lease, timeout=180):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        rows = _leases(_call(client, "status", {"root": root}))
+        row = next((row for row in rows if row.get("lease", row.get("id")) == lease), {})
+        if row.get("state") == "ready":
+            return
+        if row.get("state") in ("failed", "aborted", "stopped", "cancelled"):
+            raise OrchestrationError(f"{client.machine.id}: lease {lease}: {row.get('reason', row['state'])}")
+        time.sleep(0.2)
+    raise OrchestrationError(f"{client.machine.id}: lease readiness timed out")
+
+
+def _url(endpoint, suffix):
+    address, port = endpoint["address"], endpoint["port"]
+    return f"http://{'[' + address + ']' if ':' in address else address}:{port}{suffix}"
+
+
+def _http_json(endpoint, suffix="/api/status"):
+    with build_opener(ProxyHandler({})).open(_url(endpoint, suffix), timeout=2) as response:
+        data = response.read(1024 * 1024 + 1)
+    if len(data) > 1024 * 1024:
+        raise OrchestrationError("router response exceeds 1 MiB")
+    return json.loads(data)
+
+
+def _approval(deadline_s, approval):
+    if type(deadline_s) not in (int, float) or not math.isfinite(deadline_s) or deadline_s <= 0:
+        raise ValueError("deadline must be positive and finite")
+    if approval is not None:
+        if (not isinstance(approval, dict) or not isinstance(approval.get("ref"), str)
+                or not approval["ref"].strip() or type(approval.get("lease_s")) is not int
+                or not math.isfinite(approval["lease_s"]) or approval["lease_s"] < deadline_s + 60
+                or type(approval.get("end_epoch")) not in (int, float)
+                or not math.isfinite(approval["end_epoch"]) or approval["end_epoch"] <= time.time()):
+            raise ValueError("approval needs a reference, sufficient duration, and a future end")
+    elif deadline_s > 1140:
+        raise ValueError("deadline above 1140 seconds requires explicit approval")
+
+
+def _release(client, machine, profile, configured):
+    data = _call(client, "releases", {"root": machine.install_root})
+    release = configured or data.get("active", {}).get(profile)
+    rows = data.get("releases", [])
+    if isinstance(rows, dict):
+        rows = [dict(value, release_id=key) for key, value in rows.items()]
+    row = next((row for row in rows if row.get("release_id", row.get("id")) == release), None)
+    if not release or row is None:
+        raise OrchestrationError(f"{machine.id}: no installed release for {profile}")
+    return release
+
+
+def _put(client, machine, name, value):
+    import base64
+    _call(client, "put-secret", {"root": machine.install_root, "name": name,
+                                 "value_b64": base64.b64encode(value.encode()).decode()})
+    return str(PurePosixPath(machine.install_root) / "etc/keys" / name)
+
+
+def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s=1140, approval=None):
+    _approval(deadline_s, approval)
+    settings, kind, defaults = _profile(cluster, profile)
+    mids = list(defaults if nodes is None else nodes)
+    for mid in mids:
+        if mid not in cluster.machines:
+            raise ValueError("unknown machine: " + mid)
+    if not mids or len(mids) != len(set(mids)) or any(mid not in defaults for mid in mids):
+        raise ValueError("declared nodes must be distinct machines of the profile")
+    if kind == "ds41-pair" and mids != defaults:
+        raise ValueError("pair requires both rank machines in rank order")
+    declared = list(mids)
+    for device in devices or []:
+        try:
+            mid, did = device.split(":", 1)
+            machine = cluster.machines[mid]
+        except (ValueError, KeyError) as exc:
+            raise ValueError("unknown machine or device: " + device) from exc
+        if mid not in mids or not any(d["id"] == did and not d.get("excluded", False) for d in machine.devices):
+            raise ValueError("unknown, excluded, or unsupported profile device: " + device)
+        declared.append(mid)
+    if router != "local":
+        declared.append(router)
+    for mid in declared:
+        if mid not in cluster.machines:
+            raise ValueError("unknown machine: " + mid)
+    path = _state_path(profile)
+    lock = procs.InstanceLock(path.with_suffix(".lock")).acquire()
+    state = {"profile": profile, "leases": [], "router": None,
+             "known_hosts": str(_known_hosts()), "machines": {}}
+    keys = []
+    local_values = {}
+    try:
+        if path.exists():
+            raise OrchestrationError("profile has saved running state; run down before up")
+        clients = {mid: _client(cluster.machines[mid]) for mid in dict.fromkeys(declared)}
+        for mid, client in clients.items():
+            machine = cluster.machines[mid]
+            state["machines"][mid] = asdict(machine)
+            try:
+                lab = _lab(cluster, mid) if mid in mids else _machine_settings(cluster, mid).get("lab_dir")
+                _call(client, "doctor", {"lab_dir": lab}, timeout=60)
+            except (remote.RemoteError, OrchestrationError) as exc:
+                raise OrchestrationError(f"{mid}: doctor failed: {exc}") from exc
+        peer = _peer(cluster, mids[0], mids[1]) if kind == "ds41-pair" else None
+        selected = deepcopy(cluster)
+        if kind == "qwen-replicas":
+            selected.profiles[profile]["nodes"] = mids
+        releases = {}
+        for mid in mids:
+            releases[mid] = _release(clients[mid], cluster.machines[mid], profile, settings.get("release_id"))
+            for asset in cluster.assets.get(mid, {}).values():
+                if asset["bytes"]:
+                    _call(clients[mid], "verify-model", {"path": asset["path"], "bytes": asset["bytes"], "sha256": None})
+        if len(set(releases.values())) != 1:
+            raise OrchestrationError("profile nodes must run the same release id")
+        selected.profiles[profile]["release_id"] = releases[mids[0]]
+        node_values = {}
+        node_paths = {}
+        for mid in mids:
+            name = _secret_name(profile, mid)
+            node_values[mid] = secrets.ensure(name)
+            node_paths[mid] = _put(clients[mid], cluster.machines[mid], name, node_values[mid])
+        selected.profiles[profile]["api_key_files"] = node_paths
+        selected.router["machine"] = router
+        selected.router["replica_api_key_files"] = {}
+        router_key = _secret_name(profile, "router")
+        if router == "local":
+            for mid in mids:
+                key = secrets.runtime_dir() / ("router-" + uuid.uuid4().hex + ".key")
+                keys.append(str(key))
+                local_values[str(key)] = node_values[mid]
+                selected.router["replica_api_key_files"][mid] = str(key)
+            key = secrets.runtime_dir() / ("router-" + uuid.uuid4().hex + ".key")
+            keys.append(str(key))
+            local_values[str(key)] = secrets.ensure(router_key)
+            selected.router["api_key_file"] = str(key)
+            selected.router["listen"] = cluster.pc.get("router_listen", "127.0.0.1:18600")
+        else:
+            machine = cluster.machines[router]
+            for mid in mids:
+                selected.router["replica_api_key_files"][mid] = _put(
+                    clients[router], machine, _secret_name(profile, mid), node_values[mid])
+            selected.router["api_key_file"] = _put(clients[router], machine, router_key, secrets.ensure(router_key))
+            host = machine.http_address
+            selected.router["listen"] = f"[{host}]:18600" if ":" in host else f"{host}:18600"
+        processes = render.render_processes(selected, profile)
+        rendered = render.render_router(selected, profile)
+        # Persist each returned lease immediately, including while it is queued.
+        def start(mid, payload, role):
+            result = _call(clients[mid], "lease", payload)
+            record = {"machine": mid, "lease": result["lease"], "role": role,
+                      "processes": [proc["name"] for proc in payload["processes"]],
+                      "process_machines": {proc["name"]: mid if proc["machine"] == "local" else mids[1]
+                                           for proc in payload["processes"]}}
+            state["leases"].append(record)
+            _write(path, state)
+            return record
+
+        def process(spec, location):
+            machine = cluster.machines[spec.machine_id]
+            # DeepSeek rank 1 has no HTTP listener; its READY event accompanies
+            # the pair's health endpoint on rank 0.
+            health_machine = cluster.machines[mids[0]] if kind == "ds41-pair" else machine
+            port = int(spec.argv[spec.argv.index("--http-port") + 1])
+            return {"name": spec.role if kind == "ds41-pair" else _node_name(spec.machine_id),
+                    "machine": location, "argv": spec.argv, "env": spec.env,
+                    "ready": spec.ready,
+                    "health_url": _url({"address": health_machine.http_address, "port": port}, "/health"),
+                    "key_file": node_paths[spec.machine_id], "ready_timeout_s": 180}
+
+        for index, mid in enumerate(mids if kind == "qwen-replicas" else mids[:1]):
+            payload = {"root": cluster.machines[mid].install_root, "lab_dir": _lab(cluster, mid),
+                       "label": f"tlr-qwen-{_node_name(mid)}-{uuid.uuid4().hex[:4]}" if kind == "qwen-replicas" else f"tlr-ds41-{uuid.uuid4().hex[:4]}",
+                       "kind": "single" if kind == "qwen-replicas" else "pair", "deadline_s": deadline_s,
+                       "approval": approval, "profile": profile, "layout_required": "1" if kind == "ds41-pair" else None,
+                       "peer_ssh": peer, "peer_root": cluster.machines[mids[1]].install_root if peer else None,
+                       "peer_lab_dir": _lab(cluster, mids[1]) if peer else None,
+                       "processes": [process(processes[index], "local")] if kind == "qwen-replicas" else
+                       [process(spec, "local" if i == 0 else "peer") for i, spec in enumerate(processes)]}
+            start(mid, payload, "engine")
+        for lease in state["leases"]:
+            _wait_ready(clients[lease["machine"]], cluster.machines[lease["machine"]].install_root, lease["lease"])
+        if router == "local":
+            for key, value in local_values.items():
+                secrets._write(Path(key), value.encode("ascii"))
+            render.validate_router(rendered)
+            state["router"] = _start_local_router(profile, rendered, keys)
+        else:
+            machine = cluster.machines[router]
+            commit = _versions()["components"]["tensormeld"]["commit"]
+            # The wrapper sets the pinned import path itself: node spec env forbids
+            # PYTHON* variables for engine processes.
+            source = str(PurePosixPath(machine.install_root) / "src" / ("tensormeld-" + commit) / "src")
+            wrapper = ("import os,runpy,sys,tempfile\n"
+                       "if not os.path.isfile(os.path.join(sys.argv[3],'tensormeld','__main__.py')): "
+                       "raise SystemExit('pinned TensorMeld source unavailable')\n"
+                       "fd,path=tempfile.mkstemp(suffix='.json',dir=sys.argv[1])\n"
+                       "os.write(fd,sys.argv[2].encode());os.close(fd)\n"
+                       "os.environ['PYTHONPATH']=sys.argv[3];sys.path.insert(0,sys.argv[3])\n"
+                       "sys.argv=['tensormeld','serve-replicas',path]\n"
+                       "try: runpy.run_module('tensormeld',run_name='__main__')\n"
+                       "finally: os.unlink(path)\n")
+            wrapper = "exec(" + repr(wrapper) + ")"
+            payload = {"root": machine.install_root, "lab_dir": None, "kind": "none",
+                       "label": "tlr-router-" + uuid.uuid4().hex[:4], "deadline_s": deadline_s,
+                       "approval": approval, "layout_required": None, "peer_ssh": None, "peer_root": None,
+                       "processes": [{"name": "router", "machine": "local",
+                           "argv": ["/usr/bin/python3", "-c", wrapper, machine.install_root + "/run", json.dumps(rendered), source],
+                           "env": {},
+                           "ready": "http-health", "health_url": _url(rendered["listen"], "/health"), "ready_timeout_s": 30}]}
+            record = start(router, payload, "router")
+            state["router"] = dict(record, endpoint=rendered["listen"])
+            _write(path, state)
+            _wait_ready(clients[router], machine.install_root, record["lease"], timeout=40)
+        _write(path, state)
+        return state
+    except BaseException:
+        if state["leases"] or state["router"]:
+            try:
+                _down_state(state)
+                path.unlink(missing_ok=True)
+            except Exception:
+                _write(path, state)  # Retain ownership so down can retry cleanup.
+        for key in keys:
+            Path(key).unlink(missing_ok=True)
+        raise
+    finally:
+        lock.close()
+
+
+def _secret_name(profile, suffix):
+    import hashlib
+    return "key-" + hashlib.sha256((profile + ":" + suffix).encode()).hexdigest()[:32]
+
+
+def _node_name(mid):
+    if re.fullmatch(r"[a-z0-9-]{1,29}", mid):
+        return mid
+    import hashlib
+    return re.sub(r"[^a-z0-9-]", "-", mid.lower())[:20] + "-" + hashlib.sha256(mid.encode()).hexdigest()[:8]
+
+
+def _start_local_router(profile, rendered, keys):
+    directory = secrets.runtime_dir() / ("router-" + uuid.uuid4().hex)
+    directory.mkdir(parents=True)
+    spec = directory / "spec.json"
+    _write(spec, {"rendered": rendered, "keys": keys, "profile": profile})
+    argv = [str(Path(sys.executable).absolute()), "-m", "telar", "_up-router", str(spec)]
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(repo_root())
+    options = {"start_new_session": True}
+    if os.name == "nt":
+        startup = subprocess.STARTUPINFO()
+        startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startup.wShowWindow = 0
+        options = {"creationflags": subprocess.CREATE_NEW_CONSOLE, "startupinfo": startup}
+    with (directory / "controller.log").open("wb") as log:
+        helper = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=log, env=env, **options)
+    record = {"machine": "local", "directory": str(directory), "endpoint": rendered["listen"]}
+    try:
+        end = time.monotonic() + 20
+        while time.monotonic() < end:
+            ready = directory / "state.json"
+            if ready.exists() and _read(ready).get("state") == "ready":
+                _controllers.append(helper)
+                return record
+            if helper.poll() is not None:
+                raise OrchestrationError("local router failed; see " + str(directory / "controller.log"))
+            time.sleep(0.1)
+        raise OrchestrationError("local router readiness timed out")
+    except BaseException:
+        (directory / "stop").touch()
+        try:
+            helper.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            helper.kill()
+            helper.wait(timeout=5)
+        raise
+
+
+def local_router_run(spec_path):
+    """Persistent CLI helper owns LocalChild's Job Object and plaintext keys."""
+    path = Path(spec_path)
+    spec = _read(path)
+    directory = path.parent
+    rendered = spec["rendered"]
+    config = directory / "router.json"
+    _write(config, rendered)
+    env = dict(os.environ)
+    source = repo_root() / "third_party/tensormeld/src"
+    if source.is_dir():
+        env["PYTHONPATH"] = str(source)
+    else:
+        env.pop("PYTHONPATH", None)
+    child = procs.LocalChild([str(Path(sys.executable).absolute()), "-m", "tensormeld", "serve-replicas", str(config)],
+                             env, directory, "router", port=(rendered["listen"]["address"], rendered["listen"]["port"]))
+    interrupted = False
+
+    def interrupt(*_):
+        nonlocal interrupted
+        interrupted = True
+
+    for name in ("SIGTERM", "SIGINT", "SIGBREAK"):
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), interrupt)
+    try:
+        child.start()
+        end = time.monotonic() + 15
+        ready = False
+        while child.alive() and not interrupted and not (directory / "stop").exists():
+            if not ready:
+                try:
+                    status = _http_json(rendered["listen"])
+                    if status.get("schema") != "tensormeld/replica-router-status-v1":
+                        raise ValueError("unexpected router status schema")
+                    _write(directory / "state.json", {"state": "ready", "pid": child.process.pid})
+                    ready = True
+                except (OSError, ValueError):
+                    if time.monotonic() >= end:
+                        raise OrchestrationError("router status readiness timed out")
+            time.sleep(0.1)
+        try:
+            _write(directory / "final.json", _http_json(rendered["listen"]))
+        except (OSError, ValueError):
+            pass
+    finally:
+        try:
+            child.stop(5)
+        finally:
+            for key in spec["keys"]:
+                Path(key).unlink(missing_ok=True)
+            config.unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
+            _write(directory / "state.json", {"state": "stopped"})
+
+
+def _stop_local_router(router):
+    directory = Path(router["directory"])
+    (directory / "stop").touch()
+    end = time.monotonic() + 15
+    while time.monotonic() < end:
+        path = directory / "state.json"
+        if path.exists() and _read(path).get("state") == "stopped":
+            for helper in _controllers[:]:
+                if helper.poll() is not None:
+                    _controllers.remove(helper)
+            return
+        lock = procs.InstanceLock(directory / "router.lock")
+        try:
+            lock.acquire()
+        except procs.ProcessError:
+            pass
+        else:
+            # A crashed controller's Job Object has already killed its router.
+            try:
+                spec = directory / "spec.json"
+                if spec.exists():
+                    for key in _read(spec).get("keys", []):
+                        Path(key).unlink(missing_ok=True)
+                    spec.unlink()
+                (directory / "router.json").unlink(missing_ok=True)
+                _write(directory / "state.json", {"state": "stopped"})
+                return
+            finally:
+                lock.close()
+        time.sleep(0.1)
+    raise OrchestrationError("local router did not confirm stop; engines remain owned")
+
+
+def _down_state(state):
+    clients = {mid: _client(SimpleNamespace(**machine), state["known_hosts"])
+               for mid, machine in state["machines"].items()}
+    router = state.get("router")
+    if router and router["machine"] == "local":
+        _stop_local_router(router)
+    errors = []
+    leases = sorted(state["leases"], key=lambda row: row["role"] != "router")
+    for lease in leases:
+        mid = lease["machine"]
+        root = state["machines"][mid]["install_root"]
+        try:
+            rows = _leases(_call(clients[mid], "status", {"root": root}))
+            current = next((row for row in rows if row.get("lease", row.get("id")) == lease["lease"]), {})
+            _call(clients[mid], "cancel" if current.get("state") == "queued" else "stop",
+                  {"root": root, "lease": lease["lease"]})
+            end = time.monotonic() + 40
+            while current and current.get("state") not in ("stopped", "failed", "aborted", "cancelled"):
+                rows = _leases(_call(clients[mid], "status", {"root": root}))
+                current = next((row for row in rows if row.get("lease", row.get("id")) == lease["lease"]), {})
+                if time.monotonic() >= end:
+                    raise OrchestrationError(f"{mid}: lease {lease['lease']} did not stop")
+                if current.get("state") not in ("stopped", "failed", "aborted", "cancelled"):
+                    time.sleep(0.1)
+        except Exception as exc:
+            if lease["role"] == "router":
+                raise OrchestrationError("router did not stop; engine ownership retained: " + str(exc)) from exc
+            errors.append(str(exc))
+    if errors:
+        raise OrchestrationError("; ".join(errors))
+
+
+def down(profile):
+    path = _state_path(profile)
+    lock = procs.InstanceLock(path.with_suffix(".lock")).acquire()
+    try:
+        if path.exists():
+            _down_state(_read(path))
+            path.unlink()
+        return {"profile": profile, "state": "stopped"}
+    finally:
+        lock.close()
+
+
+def status(profile=None):
+    if profile is None:
+        return {path.stem[3:]: status(path.stem[3:]) for path in secrets.runtime_dir().glob("up-*.json")}
+    path = _state_path(profile)
+    if not path.exists():
+        return {"profile": profile, "state": "stopped"}
+    state = _read(path)
+    result = {"profile": profile, "nodes": {}, "router": None}
+    for mid, machine in state["machines"].items():
+        try:
+            result["nodes"][mid] = _call(_client(SimpleNamespace(**machine), state["known_hosts"]), "status", {"root": machine["install_root"]})
+        except (remote.RemoteError, OrchestrationError) as exc:
+            result["nodes"][mid] = {"error": str(exc)}
+    if state.get("router"):
+        try:
+            result["router"] = _http_json(state["router"]["endpoint"])
+        except (OSError, ValueError) as exc:
+            result["router"] = {"error": str(exc)}
+    return result
+
+
+def logs(profile, process, tail=100):
+    if type(tail) is not int or not 1 <= tail <= 65536:
+        raise ValueError("tail must be in 1..65536")
+    state = _read(_state_path(profile))
+    if process == "router" and (state.get("router") or {}).get("machine") == "local":
+        directory = Path(state["router"]["directory"])
+        result = {}
+        for stream in ("stdout", "stderr"):
+            with (directory / ("router." + stream + ".log")).open("rb") as source:
+                source.seek(0, 2)
+                source.seek(max(0, source.tell() - 32768))
+                result[stream] = "\n".join(source.read().decode("utf-8", errors="replace").splitlines()[-tail:])
+        return result
+    matches = [row for row in state["leases"] if row["role"] == "router" and process == "router"
+               or row["role"] == "engine" and (row["machine"] == process or process in ("rank0", "rank1"))]
+    if len(matches) != 1:
+        raise ValueError("choose a machine id, rank0, rank1, or router")
+    lease = matches[0]
+    name = _node_name(process) if process == lease["machine"] else process
+    mid = lease.get("process_machines", {}).get(name, lease["machine"])
+    machine = state["machines"][mid]
+    return _call(_client(SimpleNamespace(**machine), state["known_hosts"]), "logs",
+                 {"root": machine["install_root"], "lease": lease["lease"], "name": name, "tail": tail})
