@@ -276,6 +276,28 @@ def _doctor(args):
     _json(json.loads(result.stdout))
 
 
+def _hosts(args):
+    """Scan never authorizes; pin stores only the key whose fingerprint the operator confirmed."""
+    remote = _module("hyperloom.remote")
+    orchestrate = _module("hyperloom.orchestrate")
+    cluster = _cluster(args.config)
+    if args.machine not in cluster.machines:
+        raise ValueError(f"unknown machine: {args.machine}")
+    machine = cluster.machines[args.machine]
+    candidates = remote.keyscan(machine.http_address, machine.ssh_port)
+    found = [{"algorithm": k.algorithm, "fingerprint": k.sha256_fingerprint} for k in candidates]
+    if args.operation == "scan":
+        return {"machine": machine.id, "address": machine.http_address, "candidates": found}
+    if not args.fingerprint:
+        raise ValueError("pin requires --fingerprint (compare with ssh-keygen -lf on the machine)")
+    match = [k for k in candidates if k.sha256_fingerprint == args.fingerprint]
+    if not match:
+        raise ValueError("no scanned host key has that fingerprint; nothing pinned")
+    # Remote clients key their pinned entry on the machine id (HostKeyAlias).
+    remote.KnownHosts(orchestrate._known_hosts()).pin(machine.id, machine.http_address, machine.ssh_port, match[0])
+    return {"machine": machine.id, "pinned": match[0].sha256_fingerprint, "algorithm": match[0].algorithm}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="hyperloom")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -314,6 +336,11 @@ def main(argv=None):
     logs.add_argument("profile")
     logs.add_argument("process")
     logs.add_argument("--tail", type=int, default=100)
+    hosts = commands.add_parser("hosts", help="scan or pin a machine's ssh host key")
+    hosts.add_argument("operation", choices=("scan", "pin"))
+    hosts.add_argument("machine")
+    hosts.add_argument("--fingerprint", help="SHA256:... confirmed on the machine itself (required for pin)")
+    hosts.add_argument("--config", type=Path, default=config_path())
     keys = commands.add_parser("keys").add_subparsers(dest="key_operation", required=True)
     keys.add_parser("rotate").add_argument("name")
     # Internal controller entry point; not part of the public interface.
@@ -352,6 +379,8 @@ def main(argv=None):
             _json(_module("hyperloom.orchestrate").status(args.profile))
         elif args.command == "logs":
             _json(_module("hyperloom.orchestrate").logs(args.profile, args.process, args.tail))
+        elif args.command == "hosts":
+            _json(_hosts(args))
         elif args.command == "keys":
             _module("hyperloom.secrets").rotate(args.name)
             _json({"name": args.name, "rotated": True})

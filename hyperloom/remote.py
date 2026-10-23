@@ -87,7 +87,8 @@ def _config_path(path):
     value = path.as_posix().replace("%", "%%").replace("\\", "\\\\").replace('"', '\\"')
     if any(ord(c) < 32 for c in value):
         raise RemoteError("invalid known_hosts path")
-    return '"' + value + '"'
+    # Quote only when needed: MSYS-runtime ssh builds mangle embedded quotes from a Windows command line.
+    return '"' + value + '"' if any(c.isspace() for c in value) else value
 
 
 def _write(path, value):
@@ -123,15 +124,13 @@ def _stop(child):
 
 
 def openssh_tool(name):
-    """Resolve ssh/scp/ssh-keyscan from PATH; on Windows fall back to the system OpenSSH, which is often not on PATH."""
-    found = shutil.which(name)
-    if found:
-        return found
+    """Resolve ssh/scp/ssh-keyscan. On Windows prefer the native system OpenSSH: it parses Windows command
+    lines correctly (MSYS-runtime builds on PATH do not) and is often not on PATH. Otherwise use PATH."""
     if os.name == "nt":
         system = ntpath.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "OpenSSH", name + ".exe")
         if os.path.isfile(system):
             return system
-    return name
+    return shutil.which(name) or name
 
 
 def _run(argv, data=b"", timeout=30, cancel_event=None, limit=MAX_JSON):

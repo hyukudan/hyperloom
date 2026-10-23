@@ -29,10 +29,11 @@ def hostkey(fill=b"a"):
 
 
 class OpenSshToolTests(unittest.TestCase):
-    def test_path_wins_then_windows_system_fallback(self):
-        with patch.object(remote.shutil, "which", return_value="/x/ssh"):
+    def test_windows_prefers_native_openssh_else_path(self):
+        with (patch.object(remote.shutil, "which", return_value="/x/ssh"),
+              patch.object(remote.os, "name", "posix")):
             self.assertEqual(remote.openssh_tool("ssh"), "/x/ssh")
-        with (patch.object(remote.shutil, "which", return_value=None),
+        with (patch.object(remote.shutil, "which", return_value="/x/msys/ssh"),
               patch.object(remote.os, "name", "nt"),
               patch.object(remote.os.path, "isfile", return_value=True),
               patch.dict(os.environ, {"SystemRoot": r"C:\Windows"})):
