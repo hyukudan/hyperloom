@@ -36,8 +36,12 @@ function Invoke-TelarPython {
 }
 
 $interpreter = Find-TelarPython
-foreach ($tool in @('git', 'ssh.exe')) {
-    if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { throw "Required command missing: $tool" }
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw 'Required command missing: git' }
+# Windows ships OpenSSH in System32\OpenSSH, which is not always on PATH.
+$sshExe = (Get-Command ssh.exe -ErrorAction SilentlyContinue).Source
+if (-not $sshExe) {
+    $sshExe = Join-Path $env:SystemRoot 'System32\OpenSSH\ssh.exe'
+    if (-not (Test-Path -LiteralPath $sshExe)) { throw 'Required command missing: ssh.exe (enable the Windows OpenSSH client)' }
 }
 if (-not $env:LOCALAPPDATA -or -not $env:APPDATA) { throw 'LOCALAPPDATA and APPDATA must be set.' }
 $repository = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))

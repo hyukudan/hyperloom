@@ -10,6 +10,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -111,14 +112,27 @@ def _stop(child):
         child.kill()
 
 
+def openssh_tool(name):
+    """Resolve ssh/scp/ssh-keyscan from PATH; on Windows fall back to the system OpenSSH, which is often not on PATH."""
+    found = shutil.which(name)
+    if found:
+        return found
+    if os.name == "nt":
+        system = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "OpenSSH", name + ".exe")
+        if os.path.isfile(system):
+            return system
+    return name
+
+
 def _run(argv, data=b"", timeout=30, cancel_event=None, limit=MAX_JSON):
     """Drain bounded pipes while allowing timeout and cooperative cancellation."""
+    executable = openssh_tool(argv[0]) if argv and argv[0] in ("ssh", "scp", "ssh-keyscan") else None
     if not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
         raise RemoteError("timeout must be positive and finite")
     if cancel_event is not None and cancel_event.is_set():
         raise RemoteError("remote operation cancelled")
     try:
-        child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        child = subprocess.Popen(argv, executable=executable, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE, start_new_session=os.name != "nt")
     except OSError as exc:
         raise RemoteError("could not start OpenSSH command") from exc

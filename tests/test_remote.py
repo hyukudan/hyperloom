@@ -28,6 +28,14 @@ def hostkey(fill=b"a"):
                           "SHA256:" + base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip("="))
 
 
+class OpenSshToolTests(unittest.TestCase):
+    def test_path_wins_then_windows_system_fallback(self):
+        with patch.object(remote.shutil, "which", return_value="/x/ssh"):
+            self.assertEqual(remote.openssh_tool("ssh"), "/x/ssh")
+        with patch.object(remote.shutil, "which", return_value=None),                 patch.object(remote.os, "name", "nt"),                 patch.object(remote.os.path, "isfile", return_value=True),                 patch.dict(os.environ, {"SystemRoot": "C:\Windows"}):
+            self.assertTrue(remote.openssh_tool("ssh").lower().endswith("openssh\ssh.exe"))
+
+
 class RemoteTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="telar ssh ")
@@ -50,6 +58,7 @@ class RemoteTests(unittest.TestCase):
         def launch(argv, **kwargs):
             if argv[0] not in {"ssh", "scp", "ssh-keyscan"}:
                 return original(argv, **kwargs)
+            kwargs.pop("executable", None)  # the fake replaces the resolved OpenSSH binary
             child = original([sys.executable, str(FIXTURE), *argv], **kwargs)
             self.children.append(child)
             return child
