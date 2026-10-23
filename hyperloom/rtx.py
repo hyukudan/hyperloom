@@ -652,10 +652,15 @@ def placement_check(cluster, profile_name, request=_request, health=_health, lon
 
 def check(cluster, profile_name):
     """Passive: config, reservation, device identity, memory and the built release. Starts nothing on the GPU."""
-    preview = render_preview(cluster, profile_name)
+    s, _, _ = _service(cluster, profile_name)
+    device = next(d for d in cluster.machines[s["machine"]].devices if d["id"] == s["device"])
+    try:
+        preview = render_preview(cluster, profile_name)
+    except ConfigError as exc:
+        preview = {"blocked": str(exc)}
     output, _ = _release_dir(cluster, profile_name)
     manifest = output / "MANIFEST.json"
-    return {"device": verify_pro(preview["cuda_env"]["CUDA_VISIBLE_DEVICES"]), "memory": memory_status(),
+    return {"device": verify_pro(device["uuid"]), "memory": memory_status(),
             "service": preview, "release": read_json(manifest) if manifest.exists() else None}
 
 
