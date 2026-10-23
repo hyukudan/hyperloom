@@ -1,0 +1,55 @@
+{
+  "schema": "tensormeld/replica-router-status-v1",
+  "status": "ok",
+  "held": false,
+  "waiting": 0,
+  "rejected": 0,
+  "affinity": {
+    "mode": "off",
+    "hits": 0,
+    "yields": 0,
+    "none": 0
+  },
+  "replicas": [
+    {
+      "id": "halo-1",
+      "node": "halo-1",
+      "endpoint": "192.0.2.1:18501",
+      "state": "up",
+      "admitting": true,
+      "inflight": 0,
+      "max_inflight": 8,
+      "assigned": 59,
+      "completed": 59,
+      "failed": 0,
+      "last_health_ms": 0.451,
+      "last_error": ""
+    },
+    {
+      "id": "halo-2",
+      "node": "halo-2",
+      "endpoint": "192.0.2.2:18501",
+      "state": "up",
+      "admitting": true,
+      "inflight": 0,
+      "max_inflight": 8,
+      "assigned": 58,
+      "completed": 58,
+      "failed": 0,
+      "last_health_ms": 0.509,
+      "last_error": ""
+    }
+  ],
+  "prefill": {
+    "policy": "auto",
+    "placements": {
+      "local": 108,
+      "offload": 0,
+      "fallback": 0,
+      "cache": 9
+    },
+    "offload_ms_total": 0.0,
+    "pending_s": {},
+    "services": []
+  }
+}

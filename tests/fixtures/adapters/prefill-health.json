@@ -1,0 +1,9 @@
+{
+  "status": "ok",
+  "busy": true,
+  "queued": 1,
+  "handoff_pending": 0,
+  "served": 4,
+  "batches": 2,
+  "max_positions": 32768
+}

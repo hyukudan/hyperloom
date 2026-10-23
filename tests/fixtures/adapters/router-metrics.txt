@@ -1,0 +1,25 @@
+# TYPE tensormeld_router_waiting gauge
+tensormeld_router_waiting 0
+# TYPE tensormeld_router_rejected_total counter
+tensormeld_router_rejected_total 0
+# TYPE tensormeld_router_affinity_hits_total counter
+tensormeld_router_affinity_hits_total 0
+# TYPE tensormeld_router_affinity_yields_total counter
+tensormeld_router_affinity_yields_total 0
+# TYPE tensormeld_router_affinity_none_total counter
+tensormeld_router_affinity_none_total 0
+# TYPE tensormeld_router_replica_up gauge
+tensormeld_router_replica_up{replica="halo-1",node="halo-1"} 1
+tensormeld_router_replica_up{replica="halo-2",node="halo-2"} 1
+# TYPE tensormeld_router_replica_inflight gauge
+tensormeld_router_replica_inflight{replica="halo-1",node="halo-1"} 0
+tensormeld_router_replica_inflight{replica="halo-2",node="halo-2"} 0
+# TYPE tensormeld_router_replica_assigned_total counter
+tensormeld_router_replica_assigned_total{replica="halo-1",node="halo-1"} 59
+tensormeld_router_replica_assigned_total{replica="halo-2",node="halo-2"} 58
+# TYPE tensormeld_router_replica_completed_total counter
+tensormeld_router_replica_completed_total{replica="halo-1",node="halo-1"} 59
+tensormeld_router_replica_completed_total{replica="halo-2",node="halo-2"} 58
+# TYPE tensormeld_router_replica_failed_total counter
+tensormeld_router_replica_failed_total{replica="halo-1",node="halo-1"} 0
+tensormeld_router_replica_failed_total{replica="halo-2",node="halo-2"} 0

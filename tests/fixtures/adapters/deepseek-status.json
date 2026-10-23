@@ -1,0 +1,89 @@
+{
+  "schema": "strix-serve-status-v1",
+  "model": "deepseek41",
+  "engine": "deepseek41 engine group",
+  "context_tokens": 32768,
+  "uptime_seconds": 90.0,
+  "state": "ready",
+  "queue": {
+    "queued": 0,
+    "running": 0,
+    "completed": 1,
+    "failed": 0,
+    "cancelled": 0
+  },
+  "totals": {
+    "requests": 1,
+    "prompt_tokens": 100,
+    "cached_tokens": 0,
+    "generated_tokens": 20,
+    "busy_seconds": 2.0
+  },
+  "requests": [
+    {
+      "id": "request-1",
+      "route": "completions",
+      "time": 1800000000,
+      "status": "done",
+      "stop_reason": "length",
+      "prompt_tokens": 100,
+      "reused_tokens": 0,
+      "output_tokens": 20,
+      "queue_ms": 2.0,
+      "prefill_ms": 100.0,
+      "decode_ms": 1000.0,
+      "duration_ms": 1102.0,
+      "prefill_tok_s": 1000.0,
+      "decode_tok_s": 20.0,
+      "mtp_cycles": 0,
+      "mtp_accepted": 0,
+      "mtp_proposed": 0
+    }
+  ],
+  "memory": {
+    "weights_bytes": 1000000,
+    "state_bytes_per_slot": 1000,
+    "state_bytes": 2000,
+    "workspace_bytes": 2000,
+    "trellis_bytes": 20000,
+    "trellis_identity": "quality-gated",
+    "device_free_bytes": 10000000,
+    "device_total_bytes": 20000000
+  },
+  "slots": {
+    "total": 2,
+    "busy": 0,
+    "free": 2,
+    "context_tokens": 32768,
+    "pool_positions": 65536,
+    "pool_bytes": 2000,
+    "pool_largest_free": 65536
+  },
+  "batch": {
+    "steps": 10,
+    "rows": 20,
+    "decode_rows": 10,
+    "prompt_rows": 10,
+    "mean_rows_per_step": 2.0,
+    "mean_step_ms": 10.0
+  },
+  "prefill": {
+    "path": "device",
+    "prefills": 1,
+    "prefill_tokens": 100,
+    "cached_tokens": 0,
+    "prefill_seconds": 0.1
+  },
+  "group": {
+    "group_id": "local",
+    "epoch": 0,
+    "rank": 0,
+    "world": 2,
+    "state": "ok",
+    "transport": "usb4gpu",
+    "exchanges": 10,
+    "bytes_sent": 4096,
+    "exchange_seconds": 0.01,
+    "mean_exchange_us": 1000.0
+  }
+}

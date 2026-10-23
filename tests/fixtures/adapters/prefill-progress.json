@@ -1,0 +1,15 @@
+{
+  "status": "failed",
+  "busy": false,
+  "queued": 0,
+  "handoff_pending": 0,
+  "served": 4,
+  "batches": 2,
+  "max_positions": 32768,
+  "position": 0,
+  "total": 100,
+  "elapsed_s": 0.0,
+  "cancel_pending": false,
+  "eta_s": null,
+  "host_free_commit_bytes": null
+}
