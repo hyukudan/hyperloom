@@ -595,6 +595,33 @@ class AcceptanceToolTests(unittest.TestCase):
                 return status, headers, dict(reply, sha256="f" * 64)
             self.assertFalse(gate(request=other_state)["pass"])
 
+    def test_standalone_gate_launches_like_up_and_always_stops(self):
+        calls = []
+
+        def start(spec, detached):
+            calls.append(("start", spec))
+            return {"port": spec.port, "pid": 7, "device": PRO, "directory": "d", "ready": {"event": "READY"}}
+
+        def gate(cluster, profile, prompts, service, key):
+            calls.append(("gate", key))
+            self.assertIn("--api-key", calls[0][1].argv)
+            self.assertEqual(calls[0][1].argv[calls[0][1].argv.index("--api-key") + 1], key)
+            return {"pass": True}
+
+        with mock.patch.object(rtx, "memory_status", lambda: {"free_physical_gib": 100.0, "free_commit_gib": 100.0}):
+            result = rtx.standalone_gate(self.cluster, "ds41-rtx", self.tmp.name, detached=None, start=start,
+                                         stop=lambda record: calls.append(("stop", record["port"])), gate=gate)
+            self.assertNotIn(calls[1][1], json.dumps(result))  # the key never reaches the report
+            self.assertEqual([c[0] for c in calls], ["start", "gate", "stop"])
+
+            def failing(*args, **kw):
+                raise rtx.ServiceError("boom")
+            calls.clear()
+            with self.assertRaises(rtx.ServiceError):
+                rtx.standalone_gate(self.cluster, "ds41-rtx", self.tmp.name, detached=None, start=start,
+                                    stop=lambda record: calls.append(("stop", 1)), gate=failing)
+            self.assertEqual(calls[-1][0], "stop")
+
     def test_placement_long_offloads_short_stays_local(self):
         counts = {"local": 0, "offload": 0, "fallback": 0, "cache": 0}
         served = {"n": 0}

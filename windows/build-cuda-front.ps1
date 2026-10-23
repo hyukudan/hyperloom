@@ -20,8 +20,9 @@ if ($targets.Count -lt 1) { Fail 'no targets' }
 
 $head = (& git -C $Source rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $head -ne $Commit) { Fail "source is at $head, expected $Commit" }
-$dirty = & git -C $Source status --porcelain --untracked-files=no
-if ($dirty) { Fail 'source checkout has local changes' }
+# Line-ending-only differences do not count: a file committed with CRLF under `eol=lf` always shows as modified.
+& git -C $Source diff --quiet --ignore-cr-at-eol HEAD --
+if ($LASTEXITCODE -ne 0) { Fail 'source checkout has local changes' }
 
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
 if (-not (Test-Path $vswhere)) { Fail 'vswhere.exe not found (install Visual Studio 2022 C++ build tools)' }
@@ -53,7 +54,10 @@ foreach ($target in $targets) {
     $exe = Get-ChildItem -Path $build -Recurse -Filter "$target.exe" | Select-Object -First 1
     if (-not $exe) { Fail "built target $target has no executable" }
     Copy-Item -Force $exe.FullName (Join-Path $bin $exe.Name)
-    $binaries[$exe.Name] = (Get-FileHash -Algorithm SHA256 (Join-Path $bin $exe.Name)).Hash.ToLowerInvariant()
+    # .NET directly: Get-FileHash lives in a module that may not load when another PowerShell's module path is inherited.
+    $stream = [System.IO.File]::OpenRead((Join-Path $bin $exe.Name))
+    try { $digest = [System.Security.Cryptography.SHA256]::Create().ComputeHash($stream) } finally { $stream.Dispose() }
+    $binaries[$exe.Name] = -join ($digest | ForEach-Object { $_.ToString('x2') })
 }
 $manifest = [ordered]@{
     schema = 'hyperloom/cuda-release-v1'
@@ -68,5 +72,7 @@ $manifest = [ordered]@{
     }
     binaries = $binaries
 }
-$manifest | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 (Join-Path $Output 'MANIFEST.json')
+# UTF-8 without a BOM (Windows PowerShell's -Encoding utf8 writes one; the JSON readers reject it).
+[System.IO.File]::WriteAllText((Join-Path $Output 'MANIFEST.json'), ($manifest | ConvertTo-Json -Depth 4),
+    (New-Object System.Text.UTF8Encoding $false))
 Write-Output (Join-Path $Output 'MANIFEST.json')

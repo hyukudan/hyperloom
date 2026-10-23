@@ -365,6 +365,8 @@ def main(argv=None):
     prefill.add_argument("--config", type=Path, default=config_path())
     prefill.add_argument("--prompts", type=Path, help="gate/placement: reference prompt file(s) directory")
     prefill.add_argument("--source", type=Path, help="build: engine checkout at the preset's pinned commit")
+    prefill.add_argument("--standalone", action="store_true", help="gate: launch the service alone, gate it, stop it")
+    prefill.add_argument("--attach", type=int, help="gate: an already running service on this loopback port")
     # Internal controller entry point; not part of the public interface.
     helper = commands.add_parser("_prefill-run", help=argparse.SUPPRESS)
     helper.add_argument("spec")
@@ -435,7 +437,8 @@ def main(argv=None):
             _module("hyperloom.rtx").service_run(args.spec)
         elif args.command == "prefill":
             _json(_module("hyperloom.rtx").command(args.operation, _cluster(args.config), args.profile,
-                                                   prompts=args.prompts, source=args.source))
+                                                   prompts=args.prompts, source=args.source,
+                                                   attach=args.attach, standalone=args.standalone))
         elif args.command == "config":
             _cluster(args.path)
             _json({"valid": True})

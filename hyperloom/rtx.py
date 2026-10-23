@@ -712,7 +712,9 @@ def build(cluster, profile_name, source, *, child_factory=procs.LocalChild, watc
     lock = lock_factory(device["uuid"]).acquire()
     child = dog = None
     try:
-        child = child_factory(argv, dict(os.environ), staging, "build")
+        # Windows PowerShell 5.1 must not inherit another PowerShell's module path (its own cmdlets then fail to load).
+        env = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}
+        child = child_factory(argv, env, staging, "build")
         child.start()
         with (staging / "watchdog.jsonl").open("a", encoding="utf-8") as events:
             dog = watchdog_factory(limits, child.process.pid, child.process.kill,
@@ -790,12 +792,14 @@ def visibility(service, apps=compute_apps, memory=gpu_memory):
             "why": None if gpus else "no per-process rows from the driver (WDDM); see device_memory_mib"}
 
 
-def fidelity_gate(cluster, profile_name, prompts, request=_request, apps=compute_apps, memory=gpu_memory):
-    """The preset's named oracle against the running service: state sha256, next token, logits FNV and state size at
-    every oracle length (no handoff), plus the GPUs the process is visible on."""
+def fidelity_gate(cluster, profile_name, prompts, request=_request, apps=compute_apps, memory=gpu_memory,
+                  service=None, key=None):
+    """The preset's named oracle against a service (the profile's running one by default): state sha256, next token,
+    logits FNV and state size at every oracle length (no handoff), plus the GPUs the process is visible on."""
     _, data, _ = _service(cluster, profile_name)
-    _, service = _running(profile_name)
-    key = _keys(profile_name, "prefill")
+    if service is None:
+        _, service = _running(profile_name)
+        key = _keys(profile_name, "prefill")
     rows, ok = [], True
     for entry in data["fidelity"]["oracle"]:
         body = {"tokens": prompt_ids(prompts, entry), "session": f"gate-{entry['tokens']}"}
@@ -808,7 +812,7 @@ def fidelity_gate(cluster, profile_name, prompts, request=_request, apps=compute
         ok &= equal
         rows.append({"tokens": entry["tokens"], "status": status, "equal": equal, "got": got,
                      "seconds": reply.get("seconds")})
-    seen = visibility(service, apps, memory)
+    seen = visibility(service, apps, memory) if service.get("pid") else {"only_pro": None, "why": "attached: no pid"}
     return {"gate": data["fidelity"]["name"], "pass": ok and seen["only_pro"] is not False, "rows": rows,
             "visibility": seen, "quality_gate": data["fidelity"]["quality_gate"],
             "quality_gate_why": data["fidelity"]["quality_gate_why"]}
@@ -882,7 +886,24 @@ def check(cluster, profile_name):
             "service": preview, "release": read_json(manifest) if manifest.exists() else None}
 
 
-def command(operation, cluster, profile_name, *, prompts=None, source=None):
+def standalone_gate(cluster, profile_name, prompts, *, detached, start=start_service, stop=stop_service, gate=None):
+    """Acceptance 1 and 4 without the pair: launch the service exactly as `up` does (same render, helper, Job Object
+    and watchdog; the handoff key is a throwaway, nothing is handed off), run the oracle, stop it."""
+    import secrets as random
+    gate = gate or fidelity_gate
+    key = random.token_hex(32)
+    spec = render_service(cluster, profile_name, api_key=key, handoff_api_key=random.token_hex(32),
+                          free_physical_gib=memory_status()["free_physical_gib"])
+    record = start(spec, detached=detached)
+    try:
+        result = gate(cluster, profile_name, prompts, service=record, key=key)
+        result["launch"] = {"argv": spec.redacted, "ready": record.get("ready"), "binary_sha256": spec.binary_sha256}
+        return result
+    finally:
+        stop(record)
+
+
+def command(operation, cluster, profile_name, *, prompts=None, source=None, attach=None, standalone=False):
     if profile_name not in cluster.profiles:
         raise ConfigError(f"unknown profile: {profile_name}")
     if operation == "check":
@@ -892,5 +913,10 @@ def command(operation, cluster, profile_name, *, prompts=None, source=None):
     if operation == "gate":
         if prompts is None:
             raise ServiceError("gate needs --prompts <directory of the oracle's reference prompt files>")
+        if attach is not None:  # a service launched some other way (the lab's own line), for launch-equivalence
+            return fidelity_gate(cluster, profile_name, prompts, service={"port": attach, "device": None}, key="")
+        if standalone:
+            from .orchestrate import _detached
+            return standalone_gate(cluster, profile_name, prompts, detached=_detached)
         return fidelity_gate(cluster, profile_name, prompts)
     return placement_check(cluster, profile_name)
