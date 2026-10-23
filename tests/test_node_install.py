@@ -16,14 +16,14 @@ from unittest.mock import patch
 
 
 NODE = Path(__file__).resolve().parents[1] / "node"
-spec = importlib.util.spec_from_file_location("node_install_under_test", NODE / "telar_install.py")
+spec = importlib.util.spec_from_file_location("node_install_under_test", NODE / "hyperloom_install.py")
 install = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(install)
 
 
 class InstallCase(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="telar-install-")
+        self.temp = tempfile.TemporaryDirectory(prefix="hyperloom-install-")
         self.addCleanup(self.temp.cleanup)
         self.base = Path(self.temp.name).resolve()
         self.root = self.base / "install space"
@@ -56,9 +56,9 @@ class InstallTests(InstallCase):
 
     def test_marker_created_once(self):
         self.mark()
-        marker = (self.root / ".telar-root").read_text()
+        marker = (self.root / ".hyperloom-root").read_text()
         self.mark()
-        self.assertEqual(marker, (self.root / ".telar-root").read_text())
+        self.assertEqual(marker, (self.root / ".hyperloom-root").read_text())
         self.assertRegex(marker.strip(), r"^[a-f0-9]{32}$")
 
     def test_job_queries_state_and_bounded_log_tail(self):
@@ -84,7 +84,7 @@ class InstallTests(InstallCase):
         install.atomic_json(self.root / "run" / "job-abc.json",
                             {"job": "abc", "state": "failed", "error": "synthetic build failure"})
         (self.root / "log" / "job-abc.log").write_bytes(b"compiler diagnostic\n")
-        result = subprocess.run([sys.executable, str(NODE / "telar-node"), "job"],
+        result = subprocess.run([sys.executable, str(NODE / "hyperloom-node"), "job"],
                                 input=json.dumps({"root": str(self.root), "job": "abc"}),
                                 text=True, capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -128,7 +128,7 @@ class InstallTests(InstallCase):
     def test_uninstall_requires_valid_marker(self):
         self.root.mkdir()
         self.assertIn("error", self.call("uninstall"))
-        (self.root / ".telar-root").write_text("wrong")
+        (self.root / ".hyperloom-root").write_text("wrong")
         self.assertIn("error", self.call("uninstall"))
 
     def test_path_rejections(self):
@@ -207,7 +207,7 @@ class InstallTests(InstallCase):
         (self.root / "log" / "build.log").write_text("log")
         self.assertNotIn("error", self.call("uninstall", keep_logs=True))
         self.assertEqual((self.root / "log" / "build.log").read_text(), "log")
-        self.assertEqual({p.name for p in self.root.iterdir()}, {"log", ".telar-root"})
+        self.assertEqual({p.name for p in self.root.iterdir()}, {"log", ".hyperloom-root"})
 
     def test_lab_pair_refused_before_install(self):
         lab = self.base / "lab"
@@ -290,9 +290,9 @@ class InstallTests(InstallCase):
         rid, _ = self.make_release()
         with patch.object(install, "command") as command:
             for peer in ("-option", "halo-2;bad", "halo-2\n"):
-                self.assertIn("error", self.call("push-release", release_id=rid, peer_ssh=peer, peer_root="/tmp/telar"))
+                self.assertIn("error", self.call("push-release", release_id=rid, peer_ssh=peer, peer_root="/tmp/hyperloom"))
             (self.root / "releases" / rid / "bin" / "strix-server").write_bytes(b"bad")
-            self.assertIn("error", self.call("push-release", release_id=rid, peer_ssh="halo-2", peer_root="/tmp/telar"))
+            self.assertIn("error", self.call("push-release", release_id=rid, peer_ssh="halo-2", peer_root="/tmp/hyperloom"))
             command.assert_not_called()
 
     def test_push_release_rsync_verifies_peer_before_publish(self):
@@ -318,7 +318,7 @@ class InstallTests(InstallCase):
     def test_push_release_mismatch_never_publishes(self):
         rid, _ = self.make_release()
         with patch.object(install.shutil, "which", return_value="rsync"), patch.object(install, "command", return_value=subprocess.CompletedProcess([], 0, stdout="bad  synthetic\n")) as command:
-            result = self.call("push-release", release_id=rid, peer_ssh="halo-2", peer_root="/tmp/telar")
+            result = self.call("push-release", release_id=rid, peer_ssh="halo-2", peer_root="/tmp/hyperloom")
         self.assertIn("sha256 mismatch", result["error"])
         self.assertFalse(any(" && mv -- " in call.args[0][-1] for call in command.call_args_list))
 
@@ -332,7 +332,7 @@ class InstallTests(InstallCase):
                 output = digest + "  synthetic\n"
             return subprocess.CompletedProcess(argv, 0, stdout=output)
         with patch.object(install, "command", side_effect=fake) as command:
-            result = self.call("push-release", release_id=rid, peer_ssh="halo-2", peer_root="/tmp/telar")
+            result = self.call("push-release", release_id=rid, peer_ssh="halo-2", peer_root="/tmp/hyperloom")
         self.assertTrue(result["verified"], result)
         self.assertTrue(all(call.args[0][0] == "ssh" for call in command.call_args_list))
 
@@ -354,7 +354,7 @@ class InstallTests(InstallCase):
         with patch.object(install.shutil, "which", return_value=None), patch.object(install, "command", side_effect=fake), \
                 patch.object(install.subprocess, "Popen", return_value=archive) as popen, \
                 patch.object(install.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as transfer:
-            result = self.call("push-release", release_id=rid, peer_ssh="halo-2", peer_root="/tmp/telar")
+            result = self.call("push-release", release_id=rid, peer_ssh="halo-2", peer_root="/tmp/hyperloom")
         self.assertTrue(result["verified"], result)
         self.assertEqual(popen.call_args.args[0][0], "tar")
         self.assertEqual(transfer.call_args.args[0][0], "ssh")
@@ -441,9 +441,9 @@ class PosixBuildTests(InstallCase):
         state = self.wait_job(install.run("install", self.payload))
         self.assertEqual(state["state"], "succeeded", state)
         peer_home = self.base / "peer home"
-        peer_boot = peer_home / ".telar-boot"
+        peer_boot = peer_home / ".hyperloom-boot"
         peer_boot.mkdir(parents=True)
-        shutil.copyfile(NODE / "telar_install.py", peer_boot / "telar_install.py")
+        shutil.copyfile(NODE / "hyperloom_install.py", peer_boot / "hyperloom_install.py")
         tools = self.base / "tools"
         shutil.copyfile(Path(__file__).with_name("fixtures") / "node_install" / "fake_ssh.py", tools / "ssh")
         (tools / "ssh").chmod(0o755)

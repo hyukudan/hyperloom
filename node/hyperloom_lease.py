@@ -136,7 +136,7 @@ def marked_root(value, lab=None):
             dirs[:] = []  # Installed component sources are expected repositories.
         elif ".git" in dirs or ".git" in files:
             raise ValueError("root contains a repository")
-    marker = inside(root, ".telar-root")
+    marker = inside(root, ".hyperloom-root")
     if marker.is_symlink() or not marker.is_file() or not marker.read_text(encoding="utf-8").strip():
         raise ValueError("marked install root required")
     for name in ("run", "log", "etc"):
@@ -223,7 +223,7 @@ def validate_process(proc):
 
 def validate_spec(payload, now=None):
     spec = dict(payload)
-    if not re.fullmatch(r"tlr-[a-z0-9-]{1,40}", text(spec.get("label"), "label")):
+    if not re.fullmatch(r"hl-[a-z0-9-]{1,40}", text(spec.get("label"), "label")):
         raise ValueError("invalid lease label")
     kind = spec.get("kind")
     if kind not in {"single", "pair", "none"}:
@@ -309,7 +309,7 @@ def start_lease(payload):
     if spec.get("profile") is not None:
         state["profile"] = text(spec["profile"], "profile")
     write_json(record_path(root, lease), state)
-    boot = Path(__file__).resolve().with_name("telar-node")
+    boot = Path(__file__).resolve().with_name("hyperloom-node")
     command = [str(boot), "supervise-internal", str(filename)]
     env = environment({})
     if spec["kind"] != "none":
@@ -339,7 +339,7 @@ def ssh_command(target, command):
 
 def peer_call(spec, verb, payload):
     # Both nodes bootstrap to this fixed home-relative location.
-    command = '"$HOME/.telar-boot/telar-node" ' + verb
+    command = '"$HOME/.hyperloom-boot/hyperloom-node" ' + verb
     result = subprocess.run(ssh_command(spec["peer_ssh"], command),
                             input=json.dumps(payload).encode(), capture_output=True, timeout=10)
     if result.returncode:
@@ -460,7 +460,7 @@ class Child:
             self.files.append(log_path(self.root, self.lease, self.proc["name"], stream).open("ab", buffering=0))
         try:
             if self.peer:
-                argv = ssh_command(self.spec["peer_ssh"], '"$HOME/.telar-boot/telar-node" peer-run')
+                argv = ssh_command(self.spec["peer_ssh"], '"$HOME/.hyperloom-boot/hyperloom-node" peer-run')
             self.process = subprocess.Popen(argv, env=env, start_new_session=True,
                                             stdin=subprocess.PIPE if self.peer else subprocess.DEVNULL,
                                             stdout=self.files[0], stderr=self.files[1], close_fds=True)
@@ -716,7 +716,7 @@ def logs(payload, root):
 
 
 def run(verb, payload):
-    result = {"schema": "telar/node-v1", "verb": verb}
+    result = {"schema": "hyperloom/node-v1", "verb": verb}
     try:
         if verb not in VERBS:
             raise ValueError("unsupported lease verb")
@@ -801,14 +801,14 @@ def entry(verb, spec_file=None):
             payload = decode(sys.stdin.buffer.read(MAX_JSON + 1))
         result = run(verb, payload)
     except (ValueError, OSError, RecursionError) as exc:
-        result = {"schema": "telar/node-v1", "verb": verb, "error": str(exc)}
+        result = {"schema": "hyperloom/node-v1", "verb": verb, "error": str(exc)}
     print(json.dumps(result, allow_nan=False), flush=True)
     return 2 if result.get("error") else 0
 
 
 # The fixed bootstrap dispatcher buffers JSON to EOF. These two private entries
 # need a spec-file argument or a live stdin, so handle them before that buffering.
-if (Path(sys.argv[0]).name == "telar-node" and len(sys.argv) > 1
+if (Path(sys.argv[0]).name == "hyperloom-node" and len(sys.argv) > 1
         and (sys.argv[1] == "peer-run" or (sys.argv[1] == "supervise-internal" and len(sys.argv) == 3))):
     raise SystemExit(entry(sys.argv[1], sys.argv[2] if len(sys.argv) == 3 else None))
 

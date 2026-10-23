@@ -10,7 +10,7 @@ import tempfile
 import time
 import unittest
 
-from telar.procs import InstanceLock, LocalChild, ProcessError
+from hyperloom.procs import InstanceLock, LocalChild, ProcessError
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,7 +37,7 @@ def console_options():
 
 class ProcessTests(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix="telar process tests ")
+        self.temporary = tempfile.TemporaryDirectory(prefix="hyperloom process tests ")
         self.directory = Path(self.temporary.name)
         self.children = []
 
@@ -111,7 +111,7 @@ class ProcessTests(unittest.TestCase):
         )
         # A private hidden console also exercises CTRL_BREAK from non-console test runners.
         parent_code = (
-            "import os,sys,time; from pathlib import Path; from telar.procs import LocalChild; "
+            "import os,sys,time; from pathlib import Path; from hyperloom.procs import LocalChild; "
             f"c=LocalChild([{PYTHON!r},'-u','-c',{code!r}],dict(os.environ),{str(self.directory)!r},'dummy').start(); "
             f"ready=Path({str(ready)!r}); "
             "deadline=time.monotonic()+8\n"
@@ -145,7 +145,7 @@ class ProcessTests(unittest.TestCase):
             f"Path({str(marker)!r}).write_text(json.dumps([os.getpid(),p.pid])); time.sleep(60)"
         )
         parent_code = (
-            "import os,time; from telar.procs import LocalChild; "
+            "import os,time; from hyperloom.procs import LocalChild; "
             f"c=LocalChild([{PYTHON!r},'-c',{child_code!r}],dict(os.environ),"
             f"{str(self.directory)!r},'dummy').start(); time.sleep(60)"
         )

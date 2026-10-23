@@ -406,7 +406,7 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
 
         for index, mid in enumerate(mids if kind == "qwen-replicas" else mids[:1]):
             payload = {"root": cluster.machines[mid].install_root, "lab_dir": _lab(cluster, mid),
-                       "label": f"tlr-qwen-{_node_name(mid)}-{uuid.uuid4().hex[:4]}" if kind == "qwen-replicas" else f"tlr-ds41-{uuid.uuid4().hex[:4]}",
+                       "label": f"hl-qwen-{_node_name(mid)}-{uuid.uuid4().hex[:4]}" if kind == "qwen-replicas" else f"hl-ds41-{uuid.uuid4().hex[:4]}",
                        "kind": "single" if kind == "qwen-replicas" else "pair", "deadline_s": deadline_s,
                        "approval": approval, "profile": profile, "layout_required": "1" if kind == "ds41-pair" else None,
                        "peer_ssh": peer, "peer_root": cluster.machines[mids[1]].install_root if peer else None,
@@ -438,7 +438,7 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
                        "finally: os.unlink(path)\n")
             wrapper = "exec(" + repr(wrapper) + ")"
             payload = {"root": machine.install_root, "lab_dir": None, "kind": "none",
-                       "label": "tlr-router-" + uuid.uuid4().hex[:4], "deadline_s": deadline_s,
+                       "label": "hl-router-" + uuid.uuid4().hex[:4], "deadline_s": deadline_s,
                        "approval": approval, "layout_required": None, "peer_ssh": None, "peer_root": None,
                        "processes": [{"name": "router", "machine": "local",
                            "argv": ["/usr/bin/python3", "-c", wrapper, machine.install_root + "/run", json.dumps(rendered), source],
@@ -481,7 +481,7 @@ def _start_local_router(profile, rendered, keys):
     directory.mkdir(parents=True)
     spec = directory / "spec.json"
     _write(spec, {"rendered": rendered, "keys": keys, "profile": profile})
-    argv = [str(Path(sys.executable).absolute()), "-m", "telar", "_up-router", str(spec)]
+    argv = [str(Path(sys.executable).absolute()), "-m", "hyperloom", "_up-router", str(spec)]
     env = dict(os.environ)
     env["PYTHONPATH"] = str(repo_root())
     options = {"start_new_session": True}

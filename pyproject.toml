@@ -3,20 +3,21 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "telar"
+name = "hyperloom"
 version = "0.1.0"
 description = "Cluster integration and control"
 requires-python = ">=3.11"
 dependencies = []
 
 [project.scripts]
-telar = "telar.cli:main"
+hyperloom = "hyperloom.cli:main"
+hloom = "hyperloom.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["telar*"]
+include = ["hyperloom*"]
 
 [tool.setuptools.package-data]
-telar = ["presets/*.json"]
+hyperloom = ["presets/*.json"]
 
 [tool.setuptools.data-files]
-"share/telar/node" = ["node/telar-node"]
+"share/hyperloom/node" = ["node/hyperloom-node"]

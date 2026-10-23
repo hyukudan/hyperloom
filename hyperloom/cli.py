@@ -23,15 +23,15 @@ _controllers = []
 
 def config_path():
     if os.name == "nt":
-        return Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / "telar" / "cluster.json"
-    return Path.home() / ".config" / "telar" / "cluster.json"
+        return Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / "hyperloom" / "cluster.json"
+    return Path.home() / ".config" / "hyperloom" / "cluster.json"
 
 
 def _module(name):
     try:
         return importlib.import_module(name)
     except ImportError as exc:
-        raise RuntimeError(f"{name} is unavailable; complete the telar installation ({exc})") from exc
+        raise RuntimeError(f"{name} is unavailable; complete the hyperloom installation ({exc})") from exc
 
 
 def _json(obj):
@@ -39,8 +39,8 @@ def _json(obj):
 
 
 def _cluster(path):
-    config = _module("telar.config")
-    return _module("telar.orchestrate").load_cluster(path, config)
+    config = _module("hyperloom.config")
+    return _module("hyperloom.orchestrate").load_cluster(path, config)
 
 
 def _write(path, obj):
@@ -57,7 +57,7 @@ def _runtime():
 
 
 def _active(directory):
-    procs = _module("telar.procs")
+    procs = _module("hyperloom.procs")
     lock = procs.InstanceLock(directory / "router.lock")
     try:
         lock.acquire()
@@ -111,7 +111,7 @@ def _get_json(endpoint, path):
 
 def _router_start(args):
     cluster = _cluster(args.config)
-    renderer = _module("telar.render")
+    renderer = _module("hyperloom.render")
     profiles = list(cluster.profiles)
     profile = args.profile or (profiles[0] if len(profiles) == 1 else None)
     if profile is None:
@@ -127,9 +127,9 @@ def _router_start(args):
     token = uuid.uuid4().hex
     rendered_path = directory / ("router-" + token + ".json")
     rendered_path.write_text(json.dumps(rendered), encoding="utf-8")
-    argv = [str(Path(sys.executable).absolute()), "-m", "telar", "_router-run",
+    argv = [str(Path(sys.executable).absolute()), "-m", "hyperloom", "_router-run",
             str(directory), str(rendered_path), token]
-    # The controller imports telar from this checkout or from the installed package.
+    # The controller imports hyperloom from this checkout or from the installed package.
     controller_env = dict(router_env)
     controller_env["PYTHONPATH"] = os.pathsep.join(
         [str(repo_root()), router_env.get("PYTHONPATH", "")])
@@ -170,7 +170,7 @@ def _router_start(args):
 
 
 def _router_run(args):
-    procs = _module("telar.procs")
+    procs = _module("hyperloom.procs")
     directory, path = Path(args.directory), Path(args.rendered)
     rendered = json.loads(path.read_text(encoding="utf-8"))
     endpoint = _endpoint(rendered)
@@ -263,12 +263,12 @@ def _doctor(args):
         if machine.access != "local":
             if machine.access != "ssh":
                 raise ValueError("agent access is a later phase")
-            remote = _module("telar.remote")
+            remote = _module("hyperloom.remote")
             _json(remote.Remote(machine, config_path().parent / "known_hosts").call("doctor", {}, timeout=60))
             return
-    script = repo_root() / "node" / "telar-node"
+    script = repo_root() / "node" / "hyperloom-node"
     if not script.is_file():
-        raise RuntimeError("node/telar-node is unavailable; complete the telar installation")
+        raise RuntimeError("node/hyperloom-node is unavailable; complete the hyperloom installation")
     result = subprocess.run([str(Path(sys.executable).absolute()), str(script), "doctor"],
                             input="{}", text=True, capture_output=True, timeout=60)
     if result.returncode:
@@ -277,7 +277,7 @@ def _doctor(args):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog="telar")
+    parser = argparse.ArgumentParser(prog="hyperloom")
     commands = parser.add_subparsers(dest="command", required=True)
     config = commands.add_parser("config").add_subparsers(dest="operation", required=True)
     config.add_parser("validate").add_argument("path", type=Path)
@@ -329,7 +329,7 @@ def main(argv=None):
             print("Phase 1a")
         elif args.command == "install":
             cluster = _cluster(args.config)
-            orchestrate = _module("telar.orchestrate")
+            orchestrate = _module("hyperloom.orchestrate")
             _, kind, mids = orchestrate._profile(cluster, args.profile)
             targets = ["strix-hip-decode-token" if kind == "qwen-replicas" else "strix-deepseek41-serve"]
             _json({"release_id": orchestrate.install(cluster, args.build_on or mids[0], targets, profile=args.profile)})
@@ -344,25 +344,25 @@ def main(argv=None):
                     raise ValueError("--approval-end must include a timezone")
                 approval = {"ref": args.approval_ref, "lease_s": args.approval_lease, "end_epoch": end.timestamp()}
             cluster = _cluster(args.config)
-            _json(_module("telar.orchestrate").up(cluster, args.profile, router=args.router,
+            _json(_module("hyperloom.orchestrate").up(cluster, args.profile, router=args.router,
                   nodes=args.node, devices=args.device, deadline_s=args.deadline, approval=approval))
         elif args.command == "down":
-            _json(_module("telar.orchestrate").down(args.profile))
+            _json(_module("hyperloom.orchestrate").down(args.profile))
         elif args.command == "status":
-            _json(_module("telar.orchestrate").status(args.profile))
+            _json(_module("hyperloom.orchestrate").status(args.profile))
         elif args.command == "logs":
-            _json(_module("telar.orchestrate").logs(args.profile, args.process, args.tail))
+            _json(_module("hyperloom.orchestrate").logs(args.profile, args.process, args.tail))
         elif args.command == "keys":
-            _module("telar.secrets").rotate(args.name)
+            _module("hyperloom.secrets").rotate(args.name)
             _json({"name": args.name, "rotated": True})
         elif args.command == "_up-router":
-            _module("telar.orchestrate").local_router_run(args.spec)
+            _module("hyperloom.orchestrate").local_router_run(args.spec)
         elif args.command == "config":
             _cluster(args.path)
             _json({"valid": True})
         elif args.command == "render":
             cluster = _cluster(args.config)
-            renderer = _module("telar.render")
+            renderer = _module("hyperloom.render")
             rendered = renderer.render_router(cluster, args.profile)
             renderer.validate_router(rendered)
             _json({"router": rendered, "processes": [asdict(spec) for spec in
@@ -381,5 +381,5 @@ def main(argv=None):
             _json(state)
         return 0
     except (OSError, ValueError, RuntimeError, KeyError, subprocess.SubprocessError) as exc:
-        print(f"telar: {exc}", file=sys.stderr)
+        print(f"hyperloom: {exc}", file=sys.stderr)
         return 1

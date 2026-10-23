@@ -107,12 +107,12 @@ def checked_root(payload, create=False):
         for directory, dirs, files in os.walk(root, followlinks=False):
             relative = Path(directory).relative_to(root)
             # Fetched sources are expected repositories in an already marked install.
-            if relative.parts and relative.parts[0] == "src" and (root / ".telar-root").is_file():
+            if relative.parts and relative.parts[0] == "src" and (root / ".hyperloom-root").is_file():
                 dirs[:] = []
                 continue
             if ".git" in dirs or ".git" in files:
                 raise ValueError("install root contains a git repository")
-    marker = inside(root, ".telar-root")
+    marker = inside(root, ".hyperloom-root")
     if marker.is_symlink():
         raise ValueError("invalid root marker")
     if not marker.exists():
@@ -304,8 +304,8 @@ def build(root, payload, job):
     output = staging / "bin"
     recipe = payload["recipe"]
     env = dict(os.environ, **RUNTIME_ENV)
-    env["TELAR_CONFIGURE"] = "\n".join(recipe["configure"])
-    env["TELAR_CTEST_REGEX"] = recipe["ctest_regex"]
+    env["HYPERLOOM_CONFIGURE"] = "\n".join(recipe["configure"])
+    env["HYPERLOOM_CTEST_REGEX"] = recipe["ctest_regex"]
     try:
         command(["bash", str(Path(__file__).with_name("build-node.sh")), str(sources["engine"]),
                  str(sources["strix-trellis"]) if recipe["trellis"] else "-",
@@ -323,12 +323,12 @@ def build(root, payload, job):
             capabilities[target] = {"ok": ok, "returncode": check["returncode"], "help": help_text}
             if not ok:
                 raise ValueError("capability check failed: " + target)
-        node = Path(__file__).with_name("telar-node").read_text(encoding="utf-8")
+        node = Path(__file__).with_name("hyperloom-node").read_text(encoding="utf-8")
         node_version = re.search(r'^VERSION = "([^"]+)"', node, re.MULTILINE).group(1)
         rocm_file = Path("/opt/rocm/core-10.1/.info/version")
-        manifest = {"schema": "telar/release-v1", "components": payload["components"],
+        manifest = {"schema": "hyperloom/release-v1", "components": payload["components"],
                     "recipe": recipe, "binaries": hashes, "capabilities": capabilities,
-                    "telar_node_version": node_version, "runtime_env": RUNTIME_ENV,
+                    "hyperloom_node_version": node_version, "runtime_env": RUNTIME_ENV,
                     "toolchains": {"amdclang++": version([shutil.which("amdclang++") or
                                                            "/opt/rocm/core-10.1/bin/amdclang++", "--version"]),
                                    "cmake": version(["cmake", "--version"]),
@@ -416,13 +416,13 @@ def push_release(root, payload):
     peer_policy = {"root": peer_root, "lab_dir": payload.get("peer_lab_dir"),
                    "asset_paths": payload.get("peer_asset_paths", [])}
     prepare = ("import sys; from pathlib import Path; "
-               "sys.path.insert(0, str(Path.home()/'.telar-boot')); "
-               "import telar_install; root=telar_install.checked_root(" + repr(peer_policy) + ", create=True); "
-               "telar_install.fetch_sources(root, " + repr({name: row for name, row in
+               "sys.path.insert(0, str(Path.home()/'.hyperloom-boot')); "
+               "import hyperloom_install; root=hyperloom_install.checked_root(" + repr(peer_policy) + ", create=True); "
+               "hyperloom_install.fetch_sources(root, " + repr({name: row for name, row in
                    manifest.get("components", {}).items() if name == "tensormeld"}) + ")")
     command([*ssh, "python3 -c " + q(prepare)], timeout=600)
     # Reject remote symlink ancestors again before writing the unique staging directory.
-    guard = (f"test -f {q(peer_root + '/.telar-root')} && "
+    guard = (f"test -f {q(peer_root + '/.hyperloom-root')} && "
              f"test \"$(readlink -f -- {q(peer_root)})\" = {q(peer_root)} && "
              f"test ! -L {q(releases)} && test ! -L {q(destination)} && "
              f"mkdir -p -- {q(releases)} && "
@@ -459,7 +459,7 @@ def push_release(root, payload):
 
 
 def run(verb, payload):
-    result = {"schema": "telar/node-v1", "verb": verb}
+    result = {"schema": "hyperloom/node-v1", "verb": verb}
     try:
         if verb not in VERBS or not isinstance(payload, dict):
             raise ValueError("unsupported install request")
@@ -533,7 +533,7 @@ def run(verb, payload):
             # rmtree unlinks symlinks; it never follows them into assets or other roots.
             if keep:
                 for path in root.iterdir():
-                    if path.name in {"log", ".telar-root"}:
+                    if path.name in {"log", ".hyperloom-root"}:
                         continue
                     if path.is_symlink() or not path.is_dir():
                         path.unlink()

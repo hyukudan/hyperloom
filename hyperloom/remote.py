@@ -1,4 +1,4 @@
-"""Pinned OpenSSH transport for the small telar-node JSON protocol."""
+"""Pinned OpenSSH transport for the small hyperloom-node JSON protocol."""
 
 from dataclasses import dataclass
 import base64
@@ -23,13 +23,13 @@ from .paths import repo_root
 
 MAX_JSON = 256 * 1024
 VERBS = frozenset({"version", "doctor", "gpu",
-                   # telar_install (phase 1a)
+                   # hyperloom_install (phase 1a)
                    "install", "job", "releases", "activate", "uninstall", "verify-model", "push-release",
-                   # telar_lease (phase 1a)
+                   # hyperloom_lease (phase 1a)
                    "lease", "cancel", "status", "logs", "stop", "put-secret",
                    "peer-run", "supervise-internal"})
-# Files bootstrap copies into ~/.telar-boot (the node CLI and its extension modules).
-NODE_FILES = ("telar-node", "telar_install.py", "telar_lease.py", "build-node.sh")
+# Files bootstrap copies into ~/.hyperloom-boot (the node CLI and its extension modules).
+NODE_FILES = ("hyperloom-node", "hyperloom_install.py", "hyperloom_lease.py", "build-node.sh")
 
 
 class RemoteError(RuntimeError):
@@ -94,7 +94,7 @@ def _write(path, value):
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="\n",
-                                         dir=path.parent, prefix=".telar-", delete=False) as stream:
+                                         dir=path.parent, prefix=".hyperloom-", delete=False) as stream:
             temporary = Path(stream.name)
             stream.write(value)
         os.replace(temporary, path)
@@ -232,7 +232,7 @@ class KnownHosts:
         except FileNotFoundError:
             return []
         except (OSError, UnicodeError) as exc:
-            raise RemoteError("cannot read telar known_hosts") from exc
+            raise RemoteError("cannot read hyperloom known_hosts") from exc
 
     def pin(self, alias, address, port, hostkey):
         """Persist the exact operator-confirmed key; refuse silent replacement."""
@@ -256,7 +256,7 @@ class KnownHosts:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             _write(self.path, "\n".join(lines) + "\n")
         except OSError as exc:
-            raise RemoteError("cannot write telar known_hosts") from exc
+            raise RemoteError("cannot write hyperloom known_hosts") from exc
 
     def options(self, alias, address, port):
         alias_token, address_token = _token(alias, port), _token(address, port)
@@ -265,9 +265,9 @@ class KnownHosts:
                    for line in self._lines()):
             raise RemoteError("unknown host key; confirm a fingerprint before connecting")
         try:
-            _write(self.config_path, "# Telar: ignore ambient SSH configuration.\n")
+            _write(self.config_path, "# Hyperloom: ignore ambient SSH configuration.\n")
         except OSError as exc:
-            raise RemoteError("cannot write telar ssh config") from exc
+            raise RemoteError("cannot write hyperloom ssh config") from exc
         return ["-F", str(self.config_path),
                 "-o", "UserKnownHostsFile=" + _config_path(self.path),
                 "-o", "StrictHostKeyChecking=yes", "-o", "GlobalKnownHostsFile=none",
@@ -293,7 +293,7 @@ def _json(raw):
             raise ValueError("JSON object required")
         return obj
     except (ValueError, UnicodeError, RecursionError) as exc:
-        raise RemoteError("expected one UTF-8 JSON object from telar-node") from exc
+        raise RemoteError("expected one UTF-8 JSON object from hyperloom-node") from exc
 
 
 class Remote:
@@ -326,13 +326,13 @@ class Remote:
         directory = source if source.is_dir() else source.parent
         sources = [directory / name for name in NODE_FILES]
         if any(not path.is_file() for path in sources):
-            raise RemoteError("telar-node bootstrap files are missing")
-        self._path(self._ssh('umask 077; mkdir -p -- "$HOME/.telar-boot" && '
-                             'printf \'%s\\n\' "$HOME/.telar-boot/telar-node"',
+            raise RemoteError("hyperloom-node bootstrap files are missing")
+        self._path(self._ssh('umask 077; mkdir -p -- "$HOME/.hyperloom-boot" && '
+                             'printf \'%s\\n\' "$HOME/.hyperloom-boot/hyperloom-node"',
                              timeout=timeout, cancel_event=cancel_event))
         options = self.known_hosts.options(self.alias, self.address, self.port)
         _run([scp, *options, "-P", str(self.port), "--", *(str(path.absolute()) for path in sources),
-              f"{self.target}:.telar-boot/"], timeout=timeout, cancel_event=cancel_event)
+              f"{self.target}:.hyperloom-boot/"], timeout=timeout, cancel_event=cancel_event)
         boot = PurePosixPath(self.node_path).parent
         self._ssh("chmod 700 -- " + " ".join(shlex.quote(str(boot / name)) for name in NODE_FILES), timeout=timeout,
                   cancel_event=cancel_event)
@@ -340,7 +340,7 @@ class Remote:
 
     def call(self, verb, payload, timeout=30, *, cancel_event=None):
         if not isinstance(verb, str) or verb not in VERBS:
-            raise RemoteError("unsupported telar-node verb")
+            raise RemoteError("unsupported hyperloom-node verb")
         if not isinstance(payload, dict):
             raise RemoteError("payload must be a JSON object")
         try:
@@ -350,7 +350,7 @@ class Remote:
         if len(data) > MAX_JSON:
             raise RemoteError("payload exceeds the size limit")
         if self.node_path is None:
-            self._path(self._ssh('printf \'%s\\n\' "$HOME/.telar-boot/telar-node"',
+            self._path(self._ssh('printf \'%s\\n\' "$HOME/.hyperloom-boot/hyperloom-node"',
                                  timeout=timeout, cancel_event=cancel_event))
         raw = self._ssh(shlex.quote(self.node_path) + " " + verb, data, timeout, cancel_event)
         return _json(raw)

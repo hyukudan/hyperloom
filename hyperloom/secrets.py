@@ -16,14 +16,14 @@ def _name(name):
 
 def _directory():
     if os.name == "nt":
-        return Path(os.environ.get("APPDATA", Path.home() / "AppData/Roaming")) / "telar/secrets"
-    return Path.home() / ".config/telar/secrets"
+        return Path(os.environ.get("APPDATA", Path.home() / "AppData/Roaming")) / "hyperloom/secrets"
+    return Path.home() / ".config/hyperloom/secrets"
 
 
 def runtime_dir():
     if os.name == "nt":
-        return Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local")) / "telar/run"
-    return Path.home() / ".config/telar/run"
+        return Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local")) / "hyperloom/run"
+    return Path.home() / ".config/hyperloom/run"
 
 
 def _dpapi(data, decrypt=False):

@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from telar import cli
+from hyperloom import cli
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,7 +31,7 @@ class Spec:
 
 class CLITests(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix="telar cli tests ")
+        self.temporary = tempfile.TemporaryDirectory(prefix="hyperloom cli tests ")
         self.directory = Path(self.temporary.name)
         self.cluster = SimpleNamespace(profiles={"qwen-replicas": {}}, machines={})
         self.config = SimpleNamespace(load=Mock(return_value=self.cluster))
@@ -39,7 +39,7 @@ class CLITests(unittest.TestCase):
                                       validate_router=Mock(),
                                       render_processes=Mock(return_value=[Spec(env={})]))
         self.real_module = importlib.import_module
-        self.modules = {"telar.config": self.config, "telar.render": self.render}
+        self.modules = {"hyperloom.config": self.config, "hyperloom.render": self.render}
         self.module_patch = patch.object(cli, "_module", side_effect=lambda name:
                                          self.modules.get(name) or self.real_module(name))
         self.module_patch.start()
@@ -79,7 +79,7 @@ class CLITests(unittest.TestCase):
             status, _, err = self.invoke("config", "validate", "example.json")
         self.module_patch.start()
         self.assertEqual(status, 1)
-        self.assertIn("telar.config is unavailable", err)
+        self.assertIn("hyperloom.config is unavailable", err)
         self.assertNotIn("Traceback", err)
 
     def test_phase_placeholders(self):
@@ -88,10 +88,10 @@ class CLITests(unittest.TestCase):
 
     def test_platform_default_paths(self):
         with patch.object(cli, "os", SimpleNamespace(name="nt", environ={"APPDATA": str(self.directory)})):
-            self.assertEqual(cli.config_path(), self.directory / "telar" / "cluster.json")
+            self.assertEqual(cli.config_path(), self.directory / "hyperloom" / "cluster.json")
         with patch.object(cli, "os", SimpleNamespace(name="posix")), patch.object(
                 cli.Path, "home", return_value=self.directory):
-            self.assertEqual(cli.config_path(), self.directory / ".config" / "telar" / "cluster.json")
+            self.assertEqual(cli.config_path(), self.directory / ".config" / "hyperloom" / "cluster.json")
 
     def test_local_doctor_direct_subprocess(self):
         completed = subprocess.CompletedProcess([], 0, '{"commands":[]}', "")
@@ -109,7 +109,7 @@ class CLITests(unittest.TestCase):
         self.cluster.machines["halo-1"] = machine
         remote = SimpleNamespace(Remote=Mock())
         remote.Remote.return_value.call.return_value = {"commands": []}
-        self.modules["telar.remote"] = remote
+        self.modules["hyperloom.remote"] = remote
         status, out, err = self.invoke("doctor", "halo-1")
         self.assertEqual(status, 0, err)
         self.assertEqual(json.loads(out), {"commands": []})
@@ -184,17 +184,17 @@ class CLITests(unittest.TestCase):
                                  "-File", str(windows / "install.ps1"), "-WhatIf"],
                                 env=env, capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(str(local / "telar" / "venv"), result.stdout)
+        self.assertIn(str(local / "hyperloom" / "venv"), result.stdout)
         self.assertIn("--no-index", result.stdout)
         self.assertIn("--find-links", result.stdout)
         self.assertIn('"-e"', result.stdout)
         self.assertIn("checkout with spaces", result.stdout)
-        self.assertIn("-m telar ui", result.stdout)
+        self.assertIn("-m hyperloom ui", result.stdout)
         self.assertFalse(local.exists())
         self.assertFalse(roaming.exists())
 
     def test_module_entry_point(self):
-        result = subprocess.run([sys.executable, "-m", "telar", "up"], cwd=ROOT,
+        result = subprocess.run([sys.executable, "-m", "hyperloom", "up"], cwd=ROOT,
                                 capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "Phase 1a")

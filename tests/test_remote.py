@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from telar import remote
+from hyperloom import remote
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "ssh" / "fake_ssh.py"
@@ -41,7 +41,7 @@ class OpenSshToolTests(unittest.TestCase):
 
 class RemoteTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="telar ssh ")
+        self.temp = tempfile.TemporaryDirectory(prefix="hyperloom ssh ")
         self.addCleanup(self.temp.cleanup)
         self.directory = Path(self.temp.name)
         self.log = self.directory / "calls.jsonl"
@@ -50,9 +50,9 @@ class RemoteTests(unittest.TestCase):
         self.machine = SimpleNamespace(id="halo-1", http_address="192.0.2.1",
                                        ssh_target="operator@halo-1", ssh_port=2222)
         self.client = remote.Remote(self.machine, self.known)
-        self.env = patch.dict(os.environ, {"TELAR_FAKE_KEY": self.key.key_b64,
-                                          "TELAR_FAKE_LOG": str(self.log),
-                                          "TELAR_FAKE_MODE": "ok"})
+        self.env = patch.dict(os.environ, {"HYPERLOOM_FAKE_KEY": self.key.key_b64,
+                                          "HYPERLOOM_FAKE_LOG": str(self.log),
+                                          "HYPERLOOM_FAKE_MODE": "ok"})
         self.env.start()
         self.addCleanup(self.env.stop)
         original = subprocess.Popen
@@ -84,7 +84,7 @@ class RemoteTests(unittest.TestCase):
 
     def test_keyscan_empty_and_malformed(self):
         for mode in ("empty", "malformed_scan"):
-            with self.subTest(mode=mode), patch.dict(os.environ, TELAR_FAKE_MODE=mode):
+            with self.subTest(mode=mode), patch.dict(os.environ, HYPERLOOM_FAKE_MODE=mode):
                 with self.assertRaises(remote.RemoteError):
                     remote.keyscan("192.0.2.1", 2222)
 
@@ -149,7 +149,7 @@ class RemoteTests(unittest.TestCase):
         self.assertIn("StrictHostKeyChecking=yes", scp)
         self.assertIn("HostKeyAlias=[halo-1]:2222", scp)
         self.assertEqual(scp[-5:-1], [str((source / name).absolute()) for name in remote.NODE_FILES])
-        self.assertEqual(scp[-1], "operator@halo-1:.telar-boot/")
+        self.assertEqual(scp[-1], "operator@halo-1:.hyperloom-boot/")
         boot = remote.PurePosixPath(self.client.node_path).parent
         self.assertEqual(shlex.split(calls[2]["argv"][-1]),
                          ["chmod", "700", "--", *(str(boot / name) for name in remote.NODE_FILES)])
@@ -158,7 +158,7 @@ class RemoteTests(unittest.TestCase):
         self.pin()
         source = self.directory / "incomplete"
         source.mkdir()
-        (source / "telar-node").write_text("fixture", encoding="utf-8")
+        (source / "hyperloom-node").write_text("fixture", encoding="utf-8")
         with self.assertRaisesRegex(remote.RemoteError, "bootstrap files"):
             self.client.bootstrap(source, timeout=3)
         self.mock_popen.assert_not_called()
@@ -169,7 +169,7 @@ class RemoteTests(unittest.TestCase):
         source.mkdir()
         for name in remote.NODE_FILES:
             (source / name).write_text("fixture", encoding="utf-8")
-        with patch.dict(os.environ, TELAR_FAKE_KEY=hostkey(b"b").key_b64):
+        with patch.dict(os.environ, HYPERLOOM_FAKE_KEY=hostkey(b"b").key_b64):
             with self.assertRaises(remote.RemoteError):
                 self.client.bootstrap(source, timeout=3)
         self.assertEqual(len(self.calls()), 1)
@@ -203,22 +203,22 @@ class RemoteTests(unittest.TestCase):
 
     def test_bad_replies_and_connection_failure(self):
         self.pin()
-        self.client.node_path = "/opt/telar/telar-node"
+        self.client.node_path = "/opt/hyperloom/hyperloom-node"
         for mode in ("eof", "malformed", "wrongtype", "duplicate", "nonutf8", "badexit"):
-            with self.subTest(mode=mode), patch.dict(os.environ, TELAR_FAKE_MODE=mode):
+            with self.subTest(mode=mode), patch.dict(os.environ, HYPERLOOM_FAKE_MODE=mode):
                 with self.assertRaises(remote.RemoteError):
                     self.client.call("gpu", {}, 3)
 
     def test_bounded_stdout_and_stderr(self):
         self.pin()
         for mode in ("huge", "stderr_huge"):
-            with self.subTest(mode=mode), patch.dict(os.environ, TELAR_FAKE_MODE=mode):
+            with self.subTest(mode=mode), patch.dict(os.environ, HYPERLOOM_FAKE_MODE=mode):
                 with self.assertRaisesRegex(remote.RemoteError, "size limit"):
                     self.client.call("gpu", {}, 3)
 
     def test_timeout_kills_child_and_closes_threads(self):
         self.pin()
-        with patch.dict(os.environ, TELAR_FAKE_MODE="sleep"):
+        with patch.dict(os.environ, HYPERLOOM_FAKE_MODE="sleep"):
             with self.assertRaisesRegex(remote.RemoteError, "timed out"):
                 self.client.call("gpu", {}, 0.2)
         self.assertFalse(any(t.name.startswith("Thread-") and t.is_alive()
@@ -230,7 +230,7 @@ class RemoteTests(unittest.TestCase):
     def test_timeout_kills_ssh_descendant_too(self):
         self.pin()
         child_log = self.directory / "descendant.json"
-        with patch.dict(os.environ, TELAR_FAKE_MODE="descendant", TELAR_FAKE_CHILD_LOG=str(child_log)):
+        with patch.dict(os.environ, HYPERLOOM_FAKE_MODE="descendant", HYPERLOOM_FAKE_CHILD_LOG=str(child_log)):
             with self.assertRaisesRegex(remote.RemoteError, "timed out"):
                 self.client.call("doctor", {}, 1)
         self.assertTrue(child_log.exists(), "fixture did not start the descendant")
@@ -259,7 +259,7 @@ class RemoteTests(unittest.TestCase):
         timer = threading.Timer(0.2, cancelled.set)
         timer.start()
         try:
-            with patch.dict(os.environ, TELAR_FAKE_MODE="sleep"):
+            with patch.dict(os.environ, HYPERLOOM_FAKE_MODE="sleep"):
                 with self.assertRaisesRegex(remote.RemoteError, "cancelled"):
                     self.client.call("doctor", {}, 3, cancel_event=cancelled)
         finally:
@@ -274,7 +274,7 @@ class RemoteTests(unittest.TestCase):
             original_sleep(seconds)
             raise KeyboardInterrupt
 
-        with patch.dict(os.environ, TELAR_FAKE_MODE="sleep"):
+        with patch.dict(os.environ, HYPERLOOM_FAKE_MODE="sleep"):
             with patch.object(remote.time, "sleep", side_effect=interrupt):
                 with self.assertRaises(KeyboardInterrupt):
                     self.client.call("gpu", {}, 3)

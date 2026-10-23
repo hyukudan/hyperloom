@@ -3,7 +3,7 @@
     "machine_id": "halo-1",
     "role": "rank0",
     "argv": [
-      "/opt/telar/releases/000000000000/bin/strix-deepseek41-serve",
+      "/opt/hyperloom/releases/000000000000/bin/strix-deepseek41-serve",
       "/opt/assets/ds41.gguf",
       "--rank",
       "0",
@@ -20,7 +20,7 @@
       "--http-port",
       "18431",
       "--http-api-key-file",
-      "/opt/telar/secrets/engine.key"
+      "/opt/hyperloom/secrets/engine.key"
     ],
     "env": {
       "STRIX_DS41_OVERLAY": "/opt/assets/overlay.gguf",
@@ -36,7 +36,7 @@
     "machine_id": "halo-2",
     "role": "rank1",
     "argv": [
-      "/opt/telar/releases/000000000000/bin/strix-deepseek41-serve",
+      "/opt/hyperloom/releases/000000000000/bin/strix-deepseek41-serve",
       "/opt/assets/ds41.gguf",
       "--rank",
       "1",
@@ -53,7 +53,7 @@
       "--http-port",
       "18431",
       "--http-api-key-file",
-      "/opt/telar/secrets/engine.key"
+      "/opt/hyperloom/secrets/engine.key"
     ],
     "env": {
       "STRIX_DS41_OVERLAY": "/opt/assets/overlay.gguf",

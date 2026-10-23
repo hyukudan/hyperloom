@@ -20,7 +20,7 @@ from unittest.mock import Mock, patch
 
 REPO = Path(__file__).resolve().parents[1]
 FIXTURES = Path(__file__).parent / "fixtures" / "node_lease"
-loader = importlib.util.spec_from_file_location("lease_under_test", REPO / "node" / "telar_lease.py")
+loader = importlib.util.spec_from_file_location("lease_under_test", REPO / "node" / "hyperloom_lease.py")
 lease = importlib.util.module_from_spec(loader)
 loader.loader.exec_module(lease)
 
@@ -32,11 +32,11 @@ class LeaseFixture(unittest.TestCase):
         self.base = Path(self.tmp.name).resolve()
         self.root = self.base / "root"
         self.root.mkdir()
-        (self.root / ".telar-root").write_text("synthetic-root-id")
+        (self.root / ".hyperloom-root").write_text("synthetic-root-id")
         self.lab = self.base / "lab"
         self.lab.mkdir()
         (self.lab / ".gpu-turn").mkdir()
-        self.spec = {"root": str(self.root), "lab_dir": str(self.lab), "label": "tlr-qwen-test",
+        self.spec = {"root": str(self.root), "lab_dir": str(self.lab), "label": "hl-qwen-test",
                      "kind": "single", "processes": [{"name": "engine", "machine": "local",
                      "argv": [str(Path(sys.executable).resolve())], "env": {},
                      "ready": "qwen-stderr", "health_url": "http://127.0.0.1:18501/health"}]}
@@ -47,12 +47,12 @@ class LeaseLogicTests(LeaseFixture):
         self.assertEqual(lease.validate_spec(self.spec)["deadline_s"], 1140)
 
     def test_valid_labels(self):
-        for label in ("tlr-a", "tlr-qwen-halo-1-1234", "tlr-" + "a" * 40):
+        for label in ("hl-a", "hl-qwen-halo-1-1234", "hl-" + "a" * 40):
             self.spec["label"] = label
             self.assertEqual(lease.validate_spec(self.spec)["label"], label)
 
     def test_invalid_labels(self):
-        for label in ("qwen-test", "tlr-", "tlr-UPPER", "tlr-a_b", "tlr-" + "a" * 41, "tlr-a\n"):
+        for label in ("qwen-test", "hl-", "hl-UPPER", "hl-a_b", "hl-" + "a" * 41, "hl-a\n"):
             self.spec["label"] = label
             with self.subTest(label=label), self.assertRaises(ValueError):
                 lease.validate_spec(self.spec)
@@ -247,11 +247,11 @@ class LeaseLogicTests(LeaseFixture):
                 argv = start.call_args.args[0]
                 env = start.call_args.kwargs["env"]
                 if kind == "none":
-                    self.assertEqual(Path(argv[0]).name, "telar-node")
+                    self.assertEqual(Path(argv[0]).name, "hyperloom-node")
                 else:
                     self.assertEqual(Path(argv[0]).name, "gpu-turn-pair.sh" if kind == "pair" else "gpu-turn.sh")
                     self.assertEqual(argv[1], self.spec["label"])
-                    self.assertEqual(Path(argv[2]).name, "telar-node")
+                    self.assertEqual(Path(argv[2]).name, "hyperloom-node")
                     self.assertEqual(argv[3], "supervise-internal")
                 self.assertEqual(env.get("GPU_TURN_MAX"), "1200" if kind == "single" and approved else None)
                 self.assertTrue(start.call_args.kwargs["start_new_session"])
@@ -310,7 +310,7 @@ class LeaseLogicTests(LeaseFixture):
 
     def test_layout_checks_after_holder(self):
         turn = self.lab / ".gpu-turn"
-        (turn / "holder").write_text("tlr-qwen-test since synthetic")
+        (turn / "holder").write_text("hl-qwen-test since synthetic")
         (turn / "layout-state").write_text("1 -")
         usb = self.base / "usb.json"
         usb.write_text('{"layout":"1"}')
@@ -327,7 +327,7 @@ class LeaseLogicTests(LeaseFixture):
 
     def test_pair_layout_checks_peer(self):
         turn = self.lab / ".gpu-turn"
-        (turn / "holder").write_text("PAIR tlr-qwen-test (local) since synthetic")
+        (turn / "holder").write_text("PAIR hl-qwen-test (local) since synthetic")
         (turn / "layout-state").write_text("1 -")
         usb = self.base / "usb.json"
         usb.write_text('{"layout":1}')
@@ -351,7 +351,7 @@ class LeaseProcessTests(LeaseFixture):
         super().setUp()
         self.boot = self.base / "boot"
         self.boot.mkdir()
-        for name in ("telar-node", "telar_lease.py"):
+        for name in ("hyperloom-node", "hyperloom_lease.py"):
             shutil.copyfile(REPO / "node" / name, self.boot / name)
             (self.boot / name).chmod(0o700)
         for name in ("gpu-turn.sh", "gpu-turn-pair.sh"):
@@ -361,7 +361,7 @@ class LeaseProcessTests(LeaseFixture):
         self.addCleanup(self.cleanup_leases)
 
     def node(self, verb, payload):
-        result = subprocess.run([sys.executable, str(self.boot / "telar-node"), verb],
+        result = subprocess.run([sys.executable, str(self.boot / "hyperloom-node"), verb],
                                 input=json.dumps(payload), capture_output=True, text=True, timeout=15)
         reply = json.loads(result.stdout)
         self.assertNotIn("error", reply, reply)
@@ -425,7 +425,7 @@ class LeaseProcessTests(LeaseFixture):
         lease_id = self.start()
         state = self.wait_state(lease_id, {"ready"})
         invocation = lease.read_json(self.lab / ".gpu-turn" / "invocation.json")
-        self.assertEqual(invocation["argv"][0], "tlr-qwen-test")
+        self.assertEqual(invocation["argv"][0], "hl-qwen-test")
         self.assertEqual(invocation["argv"][2], "supervise-internal")
         self.assertNotIn("GPU_TURN_MAX", invocation["env"])
         spec_file = Path(invocation["argv"][3])
@@ -531,7 +531,7 @@ class LeaseProcessTests(LeaseFixture):
     def test_peer_dead_man_stdin_eof(self):
         proc = self.engine(adapter="ds41", grandchild=True)
         payload = {"root": str(self.root), "lease": "peer-test", "process": proc}
-        helper = subprocess.Popen([sys.executable, str(self.boot / "telar-node"), "peer-run"],
+        helper = subprocess.Popen([sys.executable, str(self.boot / "hyperloom-node"), "peer-run"],
                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
             helper.stdin.write(json.dumps(payload).encode() + b"\n")
@@ -561,7 +561,7 @@ class LeaseProcessTests(LeaseFixture):
         proc = self.engine(adapter="ds41", grandchild=True)
         payload = {"root": str(self.root), "lease": "peer-deadline", "process": proc,
                    "deadline": time.time() + 2}
-        helper = subprocess.Popen([sys.executable, str(self.boot / "telar-node"), "peer-run"],
+        helper = subprocess.Popen([sys.executable, str(self.boot / "hyperloom-node"), "peer-run"],
                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
             helper.stdin.write(json.dumps(payload).encode() + b"\n")
@@ -587,7 +587,7 @@ class LeaseProcessTests(LeaseFixture):
         shutil.copyfile(FIXTURES / "fake_ssh.py", fake_ssh)
         peer_root = self.base / "peer-root"
         peer_root.mkdir()
-        (peer_root / ".telar-root").write_text("synthetic-root-id")
+        (peer_root / ".hyperloom-root").write_text("synthetic-root-id")
         spec = dict(self.spec, peer_root=str(peer_root), peer_ssh="halo-2")
         rank0 = self.engine(name="rank0", adapter="ds41")
         local_lease = self.start(processes=[rank0], kind="none", lab_dir=None)

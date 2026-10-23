@@ -16,10 +16,10 @@
   const badges={devices:'<span class="pill p-info badge">1 new</span>',logs:'<span class="pill p-warn badge">2</span>'};
   const nav=items.map(([k,t])=>`<a class="${k===page?'on':''}" href="${k}.html${location.hash}"><svg class="ic" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${I[k]}</svg>${t}${badges[k]||''}</a>`).join('');
   const side=document.querySelector('.side');
-  if(side) side.innerHTML=`<div class="brand"><div class="logo">tl</div>Telar</div><nav class="nav">${nav}</nav>
-    <div class="foot"><div class="row between"><span>Control</span><span class="pill p-ok">workstation</span></div><div style="margin-top:6px">telar 0.1.0 · lab mode</div></div>`;
+  if(side) side.innerHTML=`<div class="brand"><div class="logo">hl</div>Hyperloom</div><nav class="nav">${nav}</nav>
+    <div class="foot"><div class="row between"><span>Control</span><span class="pill p-ok">workstation</span></div><div style="margin-top:6px">hyperloom 0.1.0 · lab mode</div></div>`;
   const m=document.querySelector('.mtop');
-  if(m) m.innerHTML=`<div class="logo">tl</div><b>${(items.find(i=>i[0]===page)||['',''])[1]}</b><span style="flex:1"></span><span class="pill p-ok">Running</span><svg width="22" height="22" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h14M3 10h14M3 14h14"/></svg>`;
+  if(m) m.innerHTML=`<div class="logo">hl</div><b>${(items.find(i=>i[0]===page)||['',''])[1]}</b><span style="flex:1"></span><span class="pill p-ok">Running</span><svg width="22" height="22" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h14M3 10h14M3 14h14"/></svg>`;
 })();
 function cssv(n){return getComputedStyle(document.documentElement).getPropertyValue(n).trim()}
 // line chart: series=[{data:[...],color:'--s1',fill:true,dash:false}], opts {h,max,min,ylabels:[...],xlabels:[...]}

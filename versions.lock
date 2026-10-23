@@ -1,5 +1,5 @@
 {
-  "schema": "telar/versions-lock-v1",
+  "schema": "hyperloom/versions-lock-v1",
   "checked": "2026-10-23",
   "components": {
     "tensormeld": {

@@ -1,7 +1,7 @@
 import unittest
 
-from telar.adapters import engine
-from telar.stats import Window
+from hyperloom.adapters import engine
+from hyperloom.stats import Window
 
 
 def request(index, stamp, value):

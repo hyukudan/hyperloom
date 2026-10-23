@@ -1,4 +1,4 @@
-# UI-SPEC — `telar` portal
+# UI-SPEC — `hyperloom` portal
 
 Status: design for main/user review (2026-10-23); sections 9-11 answer Sol review 2 (../SPEC-review-sol-2.md). Author: the product design session (Opus). Builder: Sol workers, following SPEC.md §2.4 and this file.
 
@@ -36,7 +36,7 @@ Status: design for main/user review (2026-10-23); sections 9-11 answer Sol revie
 | 7 | **Settings & pairing** | pairing flow, trusted machines and revocation, secrets storage and rotation, lab rules, config file / versions / import–export | `img/settings-*.png` |
 
 **Global chrome**
-- **Left sidebar** (collapses to a top bar with a menu under 760 px). It holds the brand, the seven screens, badges (new machines, warnings), the control machine and the telar version / lab mode.
+- **Left sidebar** (collapses to a top bar with a menu under 760 px). It holds the brand, the seven screens, badges (new machines, warnings), the control machine and the hyperloom version / lab mode.
 - **Page header:** title, context tags (active profile, "Production preset · exact"), and the primary actions on the right.
 - **Global status** is shown in the narrow top bar as "Running / Stopped / Degraded".
 
@@ -59,10 +59,10 @@ Status: design for main/user review (2026-10-23); sections 9-11 answer Sol revie
 - **"Discovered, not paired" table:** name, OS, accelerators, announced-from address, key fingerprint, and a Pair button.
 - **Why:** it answers "what do I have and is it healthy" in one glance, and the per-device minimum headroom shows the binding constraint.
 - **Data sources:**
-  - `telar-node gpu` / `doctor` (sysfs, hwmon, `usb4stream-describe`, `uname`, ROCm version);
+  - `hyperloom-node gpu` / `doctor` (sysfs, hwmon, `usb4stream-describe`, `uname`, ROCm version);
   - `tensormeld probe` (OS, RAM, NVIDIA devices; request TM-R3 adds UUID/PCI, CPU model, AMD memory);
   - `nvidia-smi -i <uuid>` on the PC;
-  - roles come from `telar`'s own lease/process state.
+  - roles come from `hyperloom`'s own lease/process state.
 
 ### 3.2 Topology & links
 - **Shows:**
@@ -133,7 +133,7 @@ Status: design for main/user review (2026-10-23); sections 9-11 answer Sol revie
 
 ### 3.7 Settings & pairing
 - **Pairing wizard (3 steps):**
-  1. On the new machine, `telar-node pair` shows a one-time code and its key fingerprint.
+  1. On the new machine, `hyperloom-node pair` shows a one-time code and its key fingerprint.
   2. The operator types the code in the portal, compares the fingerprint, and picks the role: GPU worker or observer only.
   3. Keys are exchanged, and the machine then accepts commands only from this portal.
   - "Discovery only announces; it never grants access."
@@ -205,10 +205,10 @@ Status: design for main/user review (2026-10-23); sections 9-11 answer Sol revie
 
 ## 8. Build notes for Sol
 - **Stack:**
-  - stdlib `http.server` serving `telar/web/static/` (one `index.html`, `app.css` derived from `ds.css`, `app.js`);
+  - stdlib `http.server` serving `hyperloom/web/static/` (one `index.html`, `app.css` derived from `ds.css`, `app.js`);
   - vanilla JS with hash routing (`#/devices`, `#/stats`, …);
   - **no CDN, no npm, no build step**; the portal works offline.
-- **API:** `GET /telar/api/{devices,topology,models,profiles,stats,logs,settings}` returns JSON. Mutations are `POST` with JSON plus the `X-Telar-CSRF` header; Host and Origin are checked (SPEC §2.4).
+- **API:** `GET /hyperloom/api/{devices,topology,models,profiles,stats,logs,settings}` returns JSON. Mutations are `POST` with JSON plus the `X-Hyperloom-CSRF` header; Host and Origin are checked (SPEC §2.4).
   - Each widget maps to one field in those documents.
   - Missing data comes back as `null` with a `why` string, and the UI renders "unavailable · <why>".
 - **Fidelity:** the built screens must match the mockups in layout, components and states. Pixel-exact is not required, but the reviewer compares side by side at 1440 and 390 px in both themes.
@@ -222,18 +222,18 @@ Every widget renders from exactly one source. "Request" means the widget stays h
 | Screen / widget | Source (schema / endpoint) | Derivation / window | Request |
 |---|---|---|---|
 | Devices: OS, RAM, NICs, NVIDIA name / memory / driver | `tensormeld probe` (`schema_version 1`) | as reported | TM-R14 for UUID / PCI / index, CPU model, CUDA version |
-| Devices: CPU model, disk free, AMD VRAM/GTT, ROCm, kernel, USB4 driver, layout | `telar-node doctor` / `gpu` (`/proc/cpuinfo`, `statvfs`, sysfs `mem_info_*`, ROCm package version, `uname -r`, `/sys/module/thunderbolt_stream`, `/run/usb4stream-layout.json`) | passive reads | — |
+| Devices: CPU model, disk free, AMD VRAM/GTT, ROCm, kernel, USB4 driver, layout | `hyperloom-node doctor` / `gpu` (`/proc/cpuinfo`, `statvfs`, sysfs `mem_info_*`, ROCm package version, `uname -r`, `/sys/module/thunderbolt_stream`, `/run/usb4stream-layout.json`) | passive reads | — |
 | Devices: GPU %, temperature, power | NVIDIA `nvidia-smi -i <uuid>`; AMD hwmon + `gpu_busy_percent` | 2 s poll | — (unavailable if the sysfs node is missing) |
-| Devices: roles, GPU-turn countdown | telar lease state (`run/<lease>.json`, deadline from the lease spec) | countdown = deadline − server time; never derived from browser polling | — |
+| Devices: roles, GPU-turn countdown | hyperloom lease state (`run/<lease>.json`, deadline from the lease spec) | countdown = deadline − server time; never derived from browser polling | — |
 | Topology: Ethernet bandwidth / RTT | `tensormeld link-probe` receipt (`link-probe-v1`: `rtt_us_p50`/`p99` at the stated payload, `bulk.bytes_per_s`) | dated receipt, labelled RTT | — |
 | Topology: USB4 cable state / warnings | `usb4stream-describe` JSON (`version`, `topology`) | current state only | R11 (versioned contract) |
 | Topology / Stats: USB4 per-cable rate and latency, retrain history | — | — | **R18** (engine/driver per-stream counters and latency histogram) |
 | Stats: USB4 exchange mean | engine `/api/status` exchange totals (`deepseek41_serve_main.cpp` exchange counters) | mean over window | — |
-| Models: presence / verified | telar asset manifest + `telar-node verify-model` | sha256 or size-only | — |
-| Models: proposals | telar **profile adapter** over `plan-hetero` output (SPEC §13.5) | qualified profiles only; receipt numbers labelled "receipt", model estimates labelled "estimate" | R17, TM-R15 |
+| Models: presence / verified | hyperloom asset manifest + `hyperloom-node verify-model` | sha256 or size-only | — |
+| Models: proposals | hyperloom **profile adapter** over `plan-hetero` output (SPEC §13.5) | qualified profiles only; receipt numbers labelled "receipt", model estimates labelled "estimate" | R17, TM-R15 |
 | Engines: processes, state, ready-after, sha | `supervise` events (READY / POISONED / STOPPED, start time, exe sha) | — | — |
-| Engines: effective configuration | telar rendered argv/env + preset provenance today; component `/config` later | — | E-C2/E-C3 |
-| Engines: change history / rollback | telar config versions (audit log) | — | — |
+| Engines: effective configuration | hyperloom rendered argv/env + preset provenance today; component `/config` later | — | E-C2/E-C3 |
+| Engines: change history / rollback | hyperloom config versions (audit log) | — | — |
 | Stats: throughput | engine `/metrics` `strix_generated_tokens_total` | rate over 10 s windows, reset-aware; "completed" | — |
 | Stats: TTFT | engine `/api/status` recent requests `queue_ms + prefill_ms` | p50/p95 over the last N=50 requests, with n shown; "engine-side" | client TTFT only from bench receipts; router first-byte via R7 (labelled "router first byte") |
 | Stats: queue | engine `/metrics` `strix_queue_{waiting,running}`; router `/api/status` `waiting` | latest | — |
@@ -242,9 +242,9 @@ Every widget renders from exactly one source. "Request" means the widget stays h
 | Stats: step breakdown | engine `/api/status` step summary | critical-path accounting per step | **R16 / E-C5** |
 | Stats: memory headroom | DeepSeek `/api/status` device free/total; AMD sysfs; `nvidia-smi` | latest | — |
 | Stats: recent requests (route column) | engine `/api/status` recent (completed only) + router request correlation | join by request id | **R7** (router request log with ids); until then the route column is hidden |
-| Logs | `supervise` captured stdout/stderr + telar actions | parsed events | — |
-| Settings: trusted machines | telar pinned host keys (MVP); agent enrollments later | — | TM-R10..R12 |
-| Settings: secrets | telar DPAPI store (ctypes `CryptProtectData`) / node 0600 files | — | — |
+| Logs | `supervise` captured stdout/stderr + hyperloom actions | parsed events | — |
+| Settings: trusted machines | hyperloom pinned host keys (MVP); agent enrollments later | — | TM-R10..R12 |
+| Settings: secrets | hyperloom DPAPI store (ctypes `CryptProtectData`) / node 0600 files | — | — |
 
 ## 10. Capability matrix by phase (what the built UI enables)
 
@@ -265,7 +265,7 @@ Disabled controls always name their blocker (phase or request id).
 
 ## 11. Additional rules from the second review
 
-- **Rollback:** only `telar` configuration versions roll back. Reservations, GPU-turn approvals, pairings and secrets are not configuration and cannot be rolled back. Every restore is revalidated against current permissions, assets, qualification and leases. **Stop and cancel never wait behind a confirmation dialog or a running job.**
+- **Rollback:** only `hyperloom` configuration versions roll back. Reservations, GPU-turn approvals, pairings and secrets are not configuration and cannot be rolled back. Every restore is revalidated against current permissions, assets, qualification and leases. **Stop and cancel never wait behind a confirmation dialog or a running job.**
 - **Accessibility (adds to §7):**
   - contrast tokens meet AA (light `--text-3 #646c7b`, status colours darkened; dark primary buttons use dark text);
   - native labelled controls (`<label for>`, radio groups for segmented controls);
@@ -281,4 +281,4 @@ Disabled controls always name their blocker (phase or request id).
   - Topology becomes the link list (the map is hidden);
   - logs wrap and scroll.
 - **Stale / resume:** after a background tab resumes, or on reconnect, the UI fetches authoritative state before it re-enables any mutation. Lease expiry is enforced server-side by `supervise`, independently of the browser.
-- **Sample data coherence:** mockup fixtures come from one configuration (context 32768 for the RTX profile, so the 8K/32K requests fit). Identity is shown as the qualified identity ("P17.5 · trellis quality-gated · RTX prefill fast path"), never as a blanket "exact".
+- **Sample data coherence:** mockup fixtures come from one configuration (context 32768 for the RTX profile, so the 8K/32K requests fit). Identity is shown as the qualified identity ("P17.5 · trellis quality-gated · RTX prefill exact arm"), never as a blanket "exact".

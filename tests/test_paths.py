@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from telar import paths
+from hyperloom import paths
 
 
 class RepositoryPathsTests(unittest.TestCase):

@@ -15,7 +15,7 @@ export HIP_PATH=/opt/rocm/core-10.1
 configure=()
 while IFS= read -r flag; do
     [[ -z "$flag" ]] || configure+=("$flag")
-done <<< "${TELAR_CONFIGURE:-}"
+done <<< "${HYPERLOOM_CONFIGURE:-}"
 if [[ "$trellis" != - ]]; then
     cmake -S "$trellis" -B "$build/trellis" -G Ninja \
         -DCMAKE_BUILD_TYPE=Release -DSTRIX_TRELLIS_ENABLE_HIP=ON \
@@ -26,7 +26,7 @@ if [[ "$trellis" != - ]]; then
         "-DSTRIX_DS41_TRELLIS_INCLUDE_DIR=$trellis/include")
 fi
 cmake -S "$engine" -B "$build/engine" -G Ninja "${configure[@]}"
-regex=${TELAR_CTEST_REGEX:?a named host-only ctest subset is required}
+regex=${HYPERLOOM_CTEST_REGEX:?a named host-only ctest subset is required}
 ctest --test-dir "$build/engine" --show-only=json-v1 -R "$regex" > "$build/tests.json"
 # CTest provides the executable paths, so only the selected host test targets are built.
 python3 - "$build/tests.json" > "$build/test-targets" <<'PY'

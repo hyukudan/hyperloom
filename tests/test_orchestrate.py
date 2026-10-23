@@ -12,9 +12,9 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 
-from telar import cli, orchestrate as orch, secrets
-from telar.config import Cluster, Machine
-from telar.render import ProcessSpec
+from hyperloom import cli, orchestrate as orch, secrets
+from hyperloom.config import Cluster, Machine
+from hyperloom.render import ProcessSpec
 
 
 RELEASE = "a" * 12
@@ -22,7 +22,7 @@ RELEASE = "a" * 12
 
 def cluster_fixture(pair=False):
     machines = {mid: Machine(mid, "linux", "ssh", "192.0.2." + str(index + 10), mid, 22,
-                              "/opt/telar/" + mid, True, [{"id": "gpu"}])
+                              "/opt/hyperloom/" + mid, True, [{"id": "gpu"}])
                 for index, mid in enumerate(("halo-1", "halo-2"))}
     profile = "ds41-pair" if pair else "qwen-replicas"
     settings = {"rank0": "halo-1", "rank1": "halo-2"} if pair else {"nodes": list(machines)}
@@ -63,7 +63,7 @@ class FakeRemote:
 
 class OrchestrationTests(unittest.TestCase):
     def setUp(self):
-        temporary = tempfile.TemporaryDirectory(prefix="telar orchestration ")
+        temporary = tempfile.TemporaryDirectory(prefix="hyperloom orchestration ")
         self.addCleanup(temporary.cleanup)
         self.directory = Path(temporary.name)
         self.calls, self.leases, self.fail = [], {}, set()
@@ -83,7 +83,7 @@ class OrchestrationTests(unittest.TestCase):
     def processes(self, cluster, profile):
         _, kind, mids = orch._profile(cluster, profile)
         return [ProcessSpec(mid, "replica" if kind == "qwen-replicas" else f"rank{index}",
-                            ["/opt/telar/" + mid + "/releases/" + RELEASE + "/bin/engine", "--http-port", "18501"],
+                            ["/opt/hyperloom/" + mid + "/releases/" + RELEASE + "/bin/engine", "--http-port", "18501"],
                             {}, "qwen-stderr" if kind == "qwen-replicas" else "ds41-json")
                 for index, mid in enumerate(mids)]
 
@@ -102,7 +102,7 @@ class OrchestrationTests(unittest.TestCase):
         payloads = [payload for _, verb, payload in self.calls if verb == "lease"]
         for payload in payloads:
             self.assertEqual(payload["kind"], "single")
-            self.assertRegex(payload["label"], r"^tlr-qwen-halo-[12]-[0-9a-f]{4}$")
+            self.assertRegex(payload["label"], r"^hl-qwen-halo-[12]-[0-9a-f]{4}$")
             self.assertEqual(payload["deadline_s"], 1140)
         self.assertTrue(orch._state_path("qwen-replicas").exists())
         self.calls.clear()
@@ -180,12 +180,12 @@ class OrchestrationTests(unittest.TestCase):
         process = payload["processes"][0]
         config = json.loads(process["argv"][4])
         self.assertEqual(config["listen"]["address"], "192.0.2.10")
-        self.assertEqual(config["api_key_file"].split("/")[:4], ["", "opt", "telar", "halo-1"])
-        self.assertTrue(all(row["api_key_file"].startswith("/opt/telar/halo-1/") for row in config["replicas"]))
+        self.assertEqual(config["api_key_file"].split("/")[:4], ["", "opt", "hyperloom", "halo-1"])
+        self.assertTrue(all(row["api_key_file"].startswith("/opt/hyperloom/halo-1/") for row in config["replicas"]))
         self.assertIn("tensormeld-", process["argv"][-1])
         self.assertIn("PYTHONPATH", process["argv"][2])
         self.assertEqual(process["ready"], "http-health")
-        module_path = Path(__file__).resolve().parents[1] / "node/telar_lease.py"
+        module_path = Path(__file__).resolve().parents[1] / "node/hyperloom_lease.py"
         if module_path.exists():
             spec = importlib.util.spec_from_file_location("lease_contract", module_path)
             module = importlib.util.module_from_spec(spec)
@@ -266,8 +266,8 @@ class OrchestrationTests(unittest.TestCase):
         client = Mock(machine=self.cluster.machines["halo-1"])
         client.call.return_value = {"job": "abc", "state": "failed", "reason": "synthetic compiler failure", "tail": "diagnostic"}
         with self.assertRaisesRegex(orch.OrchestrationError, "synthetic compiler failure"):
-            orch._wait_job(client, "/opt/telar/halo-1", "abc")
-        client.call.assert_called_once_with("job", {"root": "/opt/telar/halo-1", "job": "abc"}, timeout=60)
+            orch._wait_job(client, "/opt/hyperloom/halo-1", "abc")
+        client.call.assert_called_once_with("job", {"root": "/opt/hyperloom/halo-1", "job": "abc"}, timeout=60)
 
     def test_activation_failure_restores_previous_release(self):
         self.fail.add(("halo-2", "activate"))
@@ -308,7 +308,7 @@ class OrchestrationTests(unittest.TestCase):
     def test_cli_arguments_and_rotation_never_print_key(self):
         output, error = io.StringIO(), io.StringIO()
         with patch.object(orch, "up", return_value={"state": "fixture"}) as up, patch(
-                "telar.config.load", return_value=self.cluster), redirect_stdout(output), redirect_stderr(error):
+                "hyperloom.config.load", return_value=self.cluster), redirect_stdout(output), redirect_stderr(error):
             result = cli.main(["up", "qwen-replicas", "--node", "halo-1", "halo-2", "--device", "halo-1:gpu",
                                "--deadline", "1200", "--approval-ref", "coord ACK fixture", "--approval-lease", "1260",
                                "--approval-end", "2099-01-01T00:00:00Z"])
@@ -323,7 +323,7 @@ class OrchestrationTests(unittest.TestCase):
 
 class LocalRouterTests(unittest.TestCase):
     def test_persistent_local_router_stop_removes_plaintext_and_releases_port(self):
-        with tempfile.TemporaryDirectory(prefix="telar local router ") as temporary:
+        with tempfile.TemporaryDirectory(prefix="hyperloom local router ") as temporary:
             directory = Path(temporary)
             with socket.socket() as probe:
                 probe.bind(("127.0.0.1", 0))

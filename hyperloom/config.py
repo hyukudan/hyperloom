@@ -215,8 +215,8 @@ def _router(raw, machines):
 def parse(obj: dict) -> Cluster:
     obj = deepcopy(obj)
     record(obj, "cluster", ("schema", "machines", "assets", "profiles"), ("router", "pc"))
-    if obj["schema"] != "telar/cluster-v1":
-        raise ConfigError("cluster.schema: expected telar/cluster-v1")
+    if obj["schema"] != "hyperloom/cluster-v1":
+        raise ConfigError("cluster.schema: expected hyperloom/cluster-v1")
     rows = obj["machines"]
     if not isinstance(rows, list) or not 1 <= len(rows) <= 64:
         raise ConfigError("machines: expected 1..64 machines")

@@ -4,8 +4,8 @@ import math
 from pathlib import Path
 import unittest
 
-from telar.adapters import AdapterError
-from telar.adapters import engine, prefill, prom, router
+from hyperloom.adapters import AdapterError
+from hyperloom.adapters import engine, prefill, prom, router
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "adapters"

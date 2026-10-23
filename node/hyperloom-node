@@ -19,7 +19,7 @@ MAX_FILE = 1024 * 1024
 VERBS = {"version", "doctor", "gpu"}
 # Extension modules shipped beside this file (copied together by bootstrap). Each exposes
 # VERBS (set of names) and run(verb, payload: dict) -> dict; they get the raw JSON payload.
-EXTENSIONS = ("telar_install", "telar_lease")
+EXTENSIONS = ("hyperloom_install", "hyperloom_lease")
 
 
 def extension_for(verb):
@@ -279,7 +279,7 @@ class Inspector:
     def inspect(self, verb):
         checks = (self.doctor() if verb == "doctor" else self.gpu() if verb == "gpu"
                   else {"version": ok(VERSION), "python": ok(platform.python_version())})
-        return {"schema": "telar/node-v1", "verb": verb,
+        return {"schema": "hyperloom/node-v1", "verb": verb,
                 "commands": self.commands, "checks": checks}
 
 
@@ -316,7 +316,7 @@ def main(argv=None):
         result = inspector.inspect(args.verb)
         exit_code = 0
     except (ValueError, OSError, UnicodeError, RecursionError) as exc:
-        result = {"schema": "telar/node-v1", "verb": args.verb, "commands": [],
+        result = {"schema": "hyperloom/node-v1", "verb": args.verb, "commands": [],
                   "error": str(exc)}
         exit_code = 2
     sys.stdout.write(json.dumps(result, ensure_ascii=True, allow_nan=False) + "\n")
@@ -334,7 +334,7 @@ def run_extension(module, verb):
         result = module.run(verb, payload)
         exit_code = 0 if not result.get("error") else 2
     except (ValueError, OSError, UnicodeError, RecursionError) as exc:
-        result = {"schema": "telar/node-v1", "verb": verb, "error": str(exc)}
+        result = {"schema": "hyperloom/node-v1", "verb": verb, "error": str(exc)}
         exit_code = 2
     sys.stdout.write(json.dumps(result, ensure_ascii=True, allow_nan=False) + "\n")
     return exit_code

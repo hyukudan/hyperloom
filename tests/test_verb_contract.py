@@ -5,14 +5,14 @@ from pathlib import Path
 import runpy
 import unittest
 
-from telar import orchestrate, remote
+from hyperloom import orchestrate, remote
 
 
 class VerbContractTests(unittest.TestCase):
     def test_orchestrator_transport_and_node_verbs_agree(self):
         node = Path(__file__).resolve().parents[1] / "node"
-        supported = set(runpy.run_path(str(node / "telar-node"))["VERBS"])
-        for name in ("telar_install", "telar_lease"):
+        supported = set(runpy.run_path(str(node / "hyperloom-node"))["VERBS"])
+        for name in ("hyperloom_install", "hyperloom_lease"):
             spec = importlib.util.spec_from_file_location(name + "_contract", node / (name + ".py"))
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)

@@ -5,12 +5,12 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from telar import secrets
+from hyperloom import secrets
 
 
 class SecretTests(unittest.TestCase):
     def setUp(self):
-        temporary = tempfile.TemporaryDirectory(prefix="telar secrets ")
+        temporary = tempfile.TemporaryDirectory(prefix="hyperloom secrets ")
         self.addCleanup(temporary.cleanup)
         self.directory = Path(temporary.name)
         for name, result in (("_directory", self.directory / "stored"),

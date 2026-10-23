@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from telar.config import ConfigError, load, parse
+from hyperloom.config import ConfigError, load, parse
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -100,14 +100,14 @@ class ConfigTests(unittest.TestCase):
             parse(obj)
 
     def test_absolute_paths_for_correct_host_os(self):
-        for index, path in ((0, "relative"), (0, "C:relative"), (1, "relative"), (1, "C:/telar")):
+        for index, path in ((0, "relative"), (0, "C:relative"), (1, "relative"), (1, "C:/hyperloom")):
             with self.subTest(index=index, path=path):
                 obj = example()
                 obj["machines"][index]["install_root"] = path
                 with self.assertRaises(ConfigError):
                     parse(obj)
         obj = example()
-        obj["machines"][0]["install_root"] = "C:/path with spaces/telar"
+        obj["machines"][0]["install_root"] = "C:/path with spaces/hyperloom"
         parse(obj)
 
     def test_duplicate_or_missing_references(self):
@@ -124,7 +124,7 @@ class ConfigTests(unittest.TestCase):
                 parse(obj)
 
     def test_types_versions_and_bounds(self):
-        cases = [((), "schema", "telar/cluster-v2"), ((), "machines", []),
+        cases = [((), "schema", "hyperloom/cluster-v2"), ((), "machines", []),
                  (("machines", 1), "ssh_port", True), (("machines", 1), "lab_mode", "true"),
                  (("machines", 1), "os", "other"), (("machines", 1), "access", "other"),
                  (("router",), "max_inflight", 65), (("router",), "balance_active_decodes", 1),

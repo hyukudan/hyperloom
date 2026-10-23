@@ -1,12 +1,12 @@
 {
-  "schema": "telar/cluster-v1",
+  "schema": "hyperloom/cluster-v1",
   "machines": [
     {
       "id": "workstation",
       "os": "windows",
       "access": "local",
       "http_address": "127.0.0.1",
-      "install_root": "C:/telar",
+      "install_root": "C:/hyperloom",
       "lab_mode": true,
       "devices": []
     },
@@ -17,7 +17,7 @@
       "http_address": "192.0.2.10",
       "ssh_target": "halo-1",
       "ssh_port": 22,
-      "install_root": "/opt/telar",
+      "install_root": "/opt/hyperloom",
       "lab_mode": true,
       "devices": [
         {
@@ -33,7 +33,7 @@
       "http_address": "192.0.2.11",
       "ssh_target": "halo-2",
       "ssh_port": 22,
-      "install_root": "/opt/telar",
+      "install_root": "/opt/hyperloom",
       "lab_mode": true,
       "devices": [
         {
@@ -69,7 +69,7 @@
         "path": "/opt/assets/calibration.tokens",
         "bytes": 11,
         "sha256": "90eb475569075c15ab9cc82a9495a1ccd030190d648a280c419ae4cf9c179f16",
-        "control_path": "C:/telar/assets/calibration.tokens"
+        "control_path": "C:/hyperloom/assets/calibration.tokens"
       },
       "ds41_model": {
         "path": "/opt/assets/ds41.gguf",
@@ -127,7 +127,7 @@
         "path": "/opt/assets/calibration.tokens",
         "bytes": 11,
         "sha256": "90eb475569075c15ab9cc82a9495a1ccd030190d648a280c419ae4cf9c179f16",
-        "control_path": "C:/telar/assets/calibration.tokens"
+        "control_path": "C:/hyperloom/assets/calibration.tokens"
       },
       "ds41_model": {
         "path": "/opt/assets/ds41.gguf",
@@ -171,8 +171,8 @@
       "receipt": "qwen-rep-rfix",
       "overrides": {},
       "api_key_files": {
-        "halo-1": "/opt/telar/secrets/engine.key",
-        "halo-2": "/opt/telar/secrets/engine.key"
+        "halo-1": "/opt/hyperloom/secrets/engine.key",
+        "halo-2": "/opt/hyperloom/secrets/engine.key"
       },
       "release_id": "000000000000"
     },
@@ -183,8 +183,8 @@
       "receipt": "P17.5 production defaults",
       "overrides": {},
       "api_key_files": {
-        "halo-1": "/opt/telar/secrets/engine.key",
-        "halo-2": "/opt/telar/secrets/engine.key"
+        "halo-1": "/opt/hyperloom/secrets/engine.key",
+        "halo-2": "/opt/hyperloom/secrets/engine.key"
       },
       "release_id": "000000000000"
     }
@@ -203,8 +203,8 @@
     "balance_active_decodes": true,
     "max_inflight": 8,
     "replica_api_key_files": {
-      "halo-1": "C:/telar/secrets/halo-1.key",
-      "halo-2": "C:/telar/secrets/halo-2.key"
+      "halo-1": "C:/hyperloom/secrets/halo-1.key",
+      "halo-2": "C:/hyperloom/secrets/halo-2.key"
     },
     "node_profile": {
       "prefill_curve": [

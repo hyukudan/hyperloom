@@ -10,8 +10,8 @@ from types import SimpleNamespace
 import unittest
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "node" / "telar-node"
-loader = SourceFileLoader("telar_node_test", str(SCRIPT))
+SCRIPT = Path(__file__).resolve().parents[1] / "node" / "hyperloom-node"
+loader = SourceFileLoader("hyperloom_node_test", str(SCRIPT))
 spec = importlib.util.spec_from_loader(loader.name, loader)
 node = importlib.util.module_from_spec(spec)
 loader.exec_module(node)
@@ -19,7 +19,7 @@ loader.exec_module(node)
 
 class NodeTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="telar node ")
+        self.temp = tempfile.TemporaryDirectory(prefix="hyperloom node ")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.invocations = []
@@ -52,7 +52,7 @@ class NodeTests(unittest.TestCase):
         result = self.run_cli()
         self.assertEqual(result.returncode, 0, result.stderr)
         obj = json.loads(result.stdout)
-        self.assertEqual(obj["schema"], "telar/node-v1")
+        self.assertEqual(obj["schema"], "hyperloom/node-v1")
         self.assertEqual(obj["verb"], "version")
         self.assertEqual(obj["commands"], [])
         self.assertEqual(obj["checks"]["version"]["value"], "0.1.0")
@@ -127,12 +127,12 @@ class NodeTests(unittest.TestCase):
         script = "#!/bin/sh\n# synthetic lab script\n"
         for name in ("gpu-turn.sh", "gpu-turn-pair.sh", "layout-watch2.sh"):
             self.write("/opt/lab space Ω/" + name, script)
-        for name, value in (("holder", "PAIR tlr-ds41-pair-test"),
+        for name, value in (("holder", "PAIR hl-ds41-pair-test"),
                             ("maintenance", "planned"), ("layout-state", "1")):
             self.write("/opt/lab space Ω/.gpu-turn/" + name, value)
         before = {p.relative_to(self.root): p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
         result = self.inspector.lab()["value"]
-        self.assertEqual(result["holder"]["value"], "PAIR tlr-ds41-pair-test")
+        self.assertEqual(result["holder"]["value"], "PAIR hl-ds41-pair-test")
         digest = hashlib.sha256(script.encode()).hexdigest()
         for check in result["script_sha256"].values():
             self.assertEqual(check, {"status": "ok", "value": digest})

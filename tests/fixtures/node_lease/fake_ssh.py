@@ -8,6 +8,6 @@ import sys
 target = sys.argv[sys.argv.index("--") + 1]
 if target != "halo-2":
     raise SystemExit(2)
-boot = Path(__file__).resolve().parent / "peer-boot" / "telar-node"
+boot = Path(__file__).resolve().parent / "peer-boot" / "hyperloom-node"
 verb = shlex.split(sys.argv[-1])[-1]
 os.execv(sys.executable, [sys.executable, str(boot), verb])
