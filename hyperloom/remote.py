@@ -292,7 +292,8 @@ def _json(raw):
             raise ValueError("JSON object required")
         return obj
     except (ValueError, UnicodeError, RecursionError) as exc:
-        raise RemoteError("expected one UTF-8 JSON object from hyperloom-node") from exc
+        head = raw[:200].decode("utf-8", errors="replace")
+        raise RemoteError(f"expected one UTF-8 JSON object from hyperloom-node; got: {head!r}") from exc
 
 
 class Remote:

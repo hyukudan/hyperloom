@@ -234,17 +234,28 @@ def _leases(result):
     return leases
 
 
-def _wait_ready(client, root, lease, timeout=180):
-    end = time.monotonic() + timeout
-    while time.monotonic() < end:
+def _wait_ready(client, root, lease, timeout=600, queue_timeout=3600, poll_s=2.0):
+    """Wait while the lease is queued for its GPU turn (up to queue_timeout), then up to timeout for readiness.
+    Each poll is one ssh round trip, so poll every couple of seconds, not faster."""
+    queued_until = time.monotonic() + queue_timeout
+    ready_until = None
+    while True:
         rows = _leases(_call(client, "status", {"root": root}))
         row = next((row for row in rows if row.get("lease", row.get("id")) == lease), {})
-        if row.get("state") == "ready":
+        state = row.get("state")
+        if state == "ready":
             return
-        if row.get("state") in ("failed", "aborted", "stopped", "cancelled"):
-            raise OrchestrationError(f"{client.machine.id}: lease {lease}: {row.get('reason', row['state'])}")
-        time.sleep(0.2)
-    raise OrchestrationError(f"{client.machine.id}: lease readiness timed out")
+        if state in ("failed", "aborted", "stopped", "cancelled"):
+            raise OrchestrationError(f"{client.machine.id}: lease {lease}: {row.get('reason', state)}")
+        now = time.monotonic()
+        if state in (None, "queued"):
+            if now > queued_until:
+                raise OrchestrationError(f"{client.machine.id}: lease {lease} still queued for its GPU turn")
+        else:
+            ready_until = ready_until or now + timeout
+            if now > ready_until:
+                raise OrchestrationError(f"{client.machine.id}: lease readiness timed out")
+        time.sleep(poll_s)
 
 
 def _url(endpoint, suffix):
@@ -402,7 +413,7 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
                     "machine": location, "argv": spec.argv, "env": spec.env,
                     "ready": spec.ready,
                     "health_url": _url({"address": health_machine.http_address, "port": port}, "/health"),
-                    "key_file": node_paths[spec.machine_id], "ready_timeout_s": 180}
+                    "key_file": node_paths[spec.machine_id], "ready_timeout_s": 600}
 
         for index, mid in enumerate(mids if kind == "qwen-replicas" else mids[:1]):
             payload = {"root": cluster.machines[mid].install_root, "lab_dir": _lab(cluster, mid),
