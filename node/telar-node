@@ -17,6 +17,23 @@ VERSION = "0.1.0"
 MAX_JSON = 256 * 1024
 MAX_FILE = 1024 * 1024
 VERBS = {"version", "doctor", "gpu"}
+# Extension modules shipped beside this file (copied together by bootstrap). Each exposes
+# VERBS (set of names) and run(verb, payload: dict) -> dict; they get the raw JSON payload.
+EXTENSIONS = ("telar_install", "telar_lease")
+
+
+def extension_for(verb):
+    here = str(Path(__file__).resolve().parent)
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    for name in EXTENSIONS:
+        try:
+            module = __import__(name)
+        except ImportError:
+            continue
+        if verb in getattr(module, "VERBS", ()):
+            return module
+    return None
 
 
 def unavailable(why):
@@ -267,6 +284,11 @@ class Inspector:
 
 
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] not in VERBS:
+        module = extension_for(argv[0])
+        if module is not None:
+            return run_extension(module, argv[0])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("verb", choices=sorted(VERBS))
     parser.add_argument("--root", help="redirect absolute filesystem reads into a fixture tree")
@@ -296,6 +318,23 @@ def main(argv=None):
     except (ValueError, OSError, UnicodeError, RecursionError) as exc:
         result = {"schema": "telar/node-v1", "verb": args.verb, "commands": [],
                   "error": str(exc)}
+        exit_code = 2
+    sys.stdout.write(json.dumps(result, ensure_ascii=True, allow_nan=False) + "\n")
+    return exit_code
+
+
+def run_extension(module, verb):
+    try:
+        raw = b"" if sys.stdin.isatty() else sys.stdin.buffer.read(MAX_JSON + 1)
+        if len(raw) > MAX_JSON:
+            raise ValueError("payload exceeds the size limit")
+        payload = decode_json(raw.decode("utf-8")) if raw else {}
+        if not isinstance(payload, dict):
+            raise ValueError("payload must be a JSON object")
+        result = module.run(verb, payload)
+        exit_code = 0 if not result.get("error") else 2
+    except (ValueError, OSError, UnicodeError, RecursionError) as exc:
+        result = {"schema": "telar/node-v1", "verb": verb, "error": str(exc)}
         exit_code = 2
     sys.stdout.write(json.dumps(result, ensure_ascii=True, allow_nan=False) + "\n")
     return exit_code

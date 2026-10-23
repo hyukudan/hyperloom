@@ -19,7 +19,13 @@ import time
 
 
 MAX_JSON = 256 * 1024
-VERBS = frozenset({"version", "doctor", "gpu"})
+VERBS = frozenset({"version", "doctor", "gpu",
+                   # telar_install (phase 1a)
+                   "install", "releases", "activate", "uninstall", "verify-model", "push-release",
+                   # telar_lease (phase 1a)
+                   "lease", "cancel", "status", "logs", "stop", "put-secret"})
+# Files bootstrap copies into ~/.telar-boot (the node CLI and its extension modules).
+NODE_FILES = ("telar-node", "telar_install.py", "telar_lease.py", "build-node.sh")
 
 
 class RemoteError(RuntimeError):
