@@ -489,3 +489,44 @@ class UpDownTests(unittest.TestCase):
                 orch.up(self.rtx_cluster(), "ds41-rtx")
         self.assertTrue(all(row["state"] == "stopped" for row in self.leases.values()))
         self.assertFalse([c for c in self.calls if c[1] == "router-start"])
+
+
+class RealChildTests(unittest.TestCase):
+    """The helper with the real LocalChild (Job Object on Windows) around a stand-in service process."""
+
+    def test_job_owned_child_ready_health_and_stop(self):
+        import socket
+        import sys
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        fake = Path(__file__).with_name("fixtures") / "prefill" / "fake_service.py"
+        spec = _spec(port=port, argv=[sys.executable, str(fake), "--port", str(port), "--api-key", KEY_A],
+                     ready_timeout_s=30)
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            spec_path = directory / "spec.json"
+            spec_path.write_text(json.dumps({"spec": dict(spec.__dict__)}), encoding="utf-8")
+            thread = threading.Thread(target=rtx.service_run, args=(spec_path,),
+                                      kwargs=dict(watchdog_factory=FakeDog, verify=lambda u: {"uuid": u}))
+            thread.start()
+            end = time.monotonic() + 30
+            state = {}
+            while time.monotonic() < end:
+                if (directory / "state.json").exists():
+                    state = json.loads((directory / "state.json").read_text())
+                    if state["state"] in ("ready", "stopped"):
+                        break
+                time.sleep(0.1)
+            self.assertEqual(state.get("state"), "ready", state)
+            self.assertEqual(rtx._health(port)["status"], "ok")
+            status, _, reply = rtx._request("127.0.0.1", port, "POST", "/v1/prefill", {"tokens": [1, 2]}, KEY_A)
+            self.assertEqual((status, reply["tokens"]), (200, 2))
+            loaded = json.loads((directory / "service.stdout.log").read_text().splitlines()[0])
+            self.assertEqual(loaded["env_device"], PRO)
+            (directory / "stop").touch()
+            thread.join(30)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(json.loads((directory / "state.json").read_text())["state"], "stopped")
+            with self.assertRaises(OSError):
+                rtx._health(port)

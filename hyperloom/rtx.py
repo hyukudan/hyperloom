@@ -397,7 +397,8 @@ def service_run(spec_path, *, child_factory=procs.LocalChild, watchdog_factory=W
         _write(directory / "state.json", {"state": "loading", "device": device, "argv": spec.redacted})
         child = child_factory(spec.argv, spec.env, directory, "service", port=("127.0.0.1", spec.port))
         child.start()
-        watchdog = watchdog_factory(spec, child.process.pid, lambda: child.stop(0), log).start()
+        # The watchdog only terminates the process; this loop sees it and does the orderly stop below.
+        watchdog = watchdog_factory(spec, child.process.pid, child.process.kill, log).start()
         end = time.monotonic() + spec.ready_timeout_s
         ready = None
         while child.alive() and not (directory / "stop").exists() and watchdog.reason is None:
