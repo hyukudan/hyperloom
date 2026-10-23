@@ -297,8 +297,18 @@ def _hosts(args):
     return {"machine": machine.id, "pinned": match[0].sha256_fingerprint, "algorithm": match[0].algorithm}
 
 
+def _version():
+    from . import __version__
+    try:
+        release = json.loads((repo_root() / "RELEASE.json").read_text(encoding="utf-8"))
+        return f"hyperloom {__version__} ({release['name']}, commit {release['commit'][:12]})"
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+        return f"hyperloom {__version__} (checkout)"
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="hyperloom")
+    parser.add_argument("--version", action="version", version=_version())
     commands = parser.add_subparsers(dest="command", required=True)
     ui = commands.add_parser("ui", help="open the local portal")
     ui.add_argument("--port", type=int, default=18700)
