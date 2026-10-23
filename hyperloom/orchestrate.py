@@ -505,7 +505,7 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
         rendered = render.render_router(selected, profile)
         state.update(release_id=releases[mids[0]], nodes=mids, devices=list(devices or []),
                      started_at=time.time(), process_specs=[asdict(spec) for spec in processes],
-                     rendered_router=rendered)
+                     rendered_router=rendered, launch=render.launch_summary(selected, profile))
         _write(path, state)
         # Persist each returned lease immediately, including while it is queued.
         def start(mid, payload, role):
@@ -847,7 +847,7 @@ def status(profile=None):
     if not path.exists():
         return {"profile": profile, "state": "stopped"}
     state = _read(path)
-    result = {"profile": profile, "nodes": {}, "router": None}
+    result = {"profile": profile, "nodes": {}, "router": None, "launch": state.get("launch")}
     for mid, machine in state["machines"].items():
         try:
             result["nodes"][mid] = _call(_client(SimpleNamespace(**machine), state["known_hosts"]), "status", {"root": machine["install_root"]})

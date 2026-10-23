@@ -260,5 +260,22 @@
     "sidecar_bytes": 2786568256,
     "golden_sha256": "5db345508f79bda1af87a8c929ea463ca914f17dec3dd3b02273daf6ed7ce413"
   },
-  "receipt_note": "all-fixes replica campaign (2026-10-22 22:05): D-058 joint windows + D-059 persistence switches, the production replica set"
+  "receipt_note": "all-fixes replica campaign (2026-10-22 22:05): D-058 joint windows + D-059 persistence switches, the production replica set",
+  "advanced": {
+    "mtp_ngram_draft": {
+      "kind": "argv-equals",
+      "target": "--mtp-ngram-draft",
+      "values": [
+        "auto",
+        "off"
+      ],
+      "production": "auto",
+      "effect": "off disables the context n-gram draft extension (auto: +5.8..+7.7 % on document correction, within noise elsewhere); the target verifies every token",
+      "qualification": {
+        "receipt": "D-055 decode defaults campaign",
+        "engine_sha": "70ec42b9b5ead86c42cd673eff19bea3c09bd1df",
+        "evidence": "docs/decode-defaults.md, Context n-gram extension: auto by default; gate strix-hip-mtp-decode-options-tests"
+      }
+    }
+  }
 }

@@ -293,7 +293,7 @@ def parse(obj: dict) -> Cluster:
     profiles = record(obj["profiles"], "profiles", optional=obj["profiles"] if isinstance(obj["profiles"], dict) else ())
     for name, p in profiles.items():
         identifier(name, "profile name")
-        record(p, "profile", optional=("preset", "nodes", "rank0", "rank1", "port", "receipt", "overrides", "api_key_files", "release_id"))
+        record(p, "profile", optional=("preset", "nodes", "rank0", "rank1", "port", "receipt", "overrides", "api_key_files", "release_id", "advanced"))
         kind = p.get("preset", name)
         data = preset(kind)
         if "receipt" in p and p["receipt"] != data["receipt"]:
@@ -321,6 +321,8 @@ def parse(obj: dict) -> Cluster:
         for mid, value in keys.items():
             absolute(value, "profile.api_key_files", machines[mid].os)
         validate_overrides(p.get("overrides", {}), data)
+        from . import knobs
+        knobs.validate(p.get("advanced", {}), data)
     pc = record(obj.get("pc", {}), "pc", optional=("router_listen", "ui_listen", "cuda"))
     for key in ("router_listen", "ui_listen"):
         if key in pc:
