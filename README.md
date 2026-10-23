@@ -101,7 +101,7 @@ hloom --help
       "devices": [ { "id": "gpu", "type": "amd" } ] },
     { "id": "halo-2", … } ],
   "assets":   { "halo-1": { "model": { "path": "…", "bytes": 0, "sha256": "…" }, … }, … },
-  "profiles": { "qwen-replicas": { "nodes": ["halo-1", "halo-2"], "port": 18501, "receipt": "qwen-rep-r3", … },
+  "profiles": { "qwen-replicas": { "nodes": ["halo-1", "halo-2"], "port": 18501, "receipt": "qwen-rep-rfix", … },
                 "ds41-pair":     { "rank0": "halo-1", "rank1": "halo-2", "port": 18431, … } },
   "router":   { "machine": "local", "policy": "auto", "balance_active_decodes": true, "max_inflight": 8 } }
 ```
