@@ -263,7 +263,10 @@ def _doctor(args):
             if machine.access != "ssh":
                 raise ValueError("agent access is a later phase")
             remote = _module("hyperloom.remote")
-            _json(remote.Remote(machine, config_path().parent / "known_hosts").call("doctor", {}, timeout=60))
+            client = remote.Remote(machine, config_path().parent / "known_hosts")
+            # Copies the node tool to ~/.hyperloom-boot (fresh machine, or one left on an older release).
+            client.bootstrap(timeout=60)
+            _json(client.call("doctor", {}, timeout=60))
             return
     script = repo_root() / "node" / "hyperloom-node"
     if not script.is_file():

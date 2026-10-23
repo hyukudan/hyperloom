@@ -113,6 +113,7 @@ class CLITests(unittest.TestCase):
         status, out, err = self.invoke("doctor", "halo-1")
         self.assertEqual(status, 0, err)
         self.assertEqual(json.loads(out), {"commands": []})
+        remote.Remote.return_value.bootstrap.assert_called_once_with(timeout=60)
         remote.Remote.return_value.call.assert_called_once_with("doctor", {}, timeout=60)
 
     def test_unknown_machine_fails_clearly(self):
