@@ -66,5 +66,52 @@
         4096
       ]
     }
+  },
+  "advanced": {
+    "dspark_max_inflight": {
+      "kind": "argv",
+      "target": "--dspark-max-inflight",
+      "values": [
+        4,
+        0
+      ],
+      "production": 4,
+      "effect": "0 drafts at every load (DSpark always on); 4 runs plain steps while more than 4 requests are in flight",
+      "qualification": {
+        "receipt": "P17.1 timing campaign (serve C1..C8)",
+        "engine_sha": "70ec42b9b5ead86c42cd673eff19bea3c09bd1df",
+        "evidence": "docs/ds41-production-defaults.md, Code defaults: serve --dspark-max-inflight (4 keeps C1..C4 +19..+76 % without the C8 TTFT cost)"
+      }
+    },
+    "dspark_ranks": {
+      "kind": "argv",
+      "target": "--dspark-ranks",
+      "values": [
+        2,
+        1
+      ],
+      "production": 2,
+      "effect": "1 keeps the drafter on rank 0 only",
+      "qualification": {
+        "receipt": "P17.1 timing campaign",
+        "engine_sha": "70ec42b9b5ead86c42cd673eff19bea3c09bd1df",
+        "evidence": "docs/ds41-production-defaults.md, Code defaults: serve --dspark-ranks (2, off = 1)"
+      }
+    },
+    "serve_sched": {
+      "kind": "env",
+      "target": "STRIX_DS41_SERVE_SCHED",
+      "values": [
+        "interleave",
+        "off"
+      ],
+      "production": "interleave",
+      "effect": "off: no interleaved prefill under load (8K prompt stalls decode ~13 s instead of <= 1 s; its own TTFT about halves)",
+      "qualification": {
+        "receipt": "P17.1 timing campaign (8K prompt under load)",
+        "engine_sha": "70ec42b9b5ead86c42cd673eff19bea3c09bd1df",
+        "evidence": "docs/ds41-production-defaults.md, Code defaults: STRIX_DS41_SERVE_SCHED"
+      }
+    }
   }
 }

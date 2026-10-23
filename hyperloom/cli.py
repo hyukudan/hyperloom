@@ -439,7 +439,8 @@ def main(argv=None):
             rendered = renderer.render_router(cluster, args.profile)
             renderer.validate_router(rendered)
             _json({"router": rendered, "processes": [asdict(spec) for spec in
-                                                     renderer.render_processes(cluster, args.profile)]})
+                                                     renderer.render_processes(cluster, args.profile)],
+                   "launch": renderer.launch_summary(cluster, args.profile)})
         elif args.command == "doctor":
             _doctor(args)
         elif args.command == "_router-run":

@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 import re
 import sys
 
+from . import knobs
 from .config import ConfigError, listen, preset, validate_overrides
 from .paths import repo_root
 
@@ -30,6 +31,7 @@ def _profile(cluster, name):
     kind = p.get("preset", name)
     data = preset(kind)
     validate_overrides(p.get("overrides", {}), data)
+    knobs.validate(p.get("advanced", {}), data)
     mids = p["nodes"] if kind == "qwen-replicas" else [p["rank0"], p["rank1"]]
     return p, kind, data, mids
 
@@ -102,9 +104,16 @@ def render_processes(cluster, profile_name) -> list[ProcessSpec]:
             else:
                 argv.extend((flag, str(value)))
         env = {key: value.format_map(values) for key, value in data["env"].items()}
+        knobs.apply(argv, env, profile, data)
         result.append(ProcessSpec(mid, "replica" if kind == "qwen-replicas" else f"rank{rank}",
                                   argv, env, "qwen-stderr" if kind == "qwen-replicas" else "ds41-json"))
     return result
+
+
+def launch_summary(cluster, profile_name) -> dict:
+    """Whether a launch is the qualified production line, and which advanced knobs differ."""
+    profile, _, data, _ = _profile(cluster, profile_name)
+    return dict(knobs.summary(profile, data), receipt=data["receipt"], engine_sha=data["engine_sha"])
 
 
 def render_router(cluster, profile_name) -> dict:
