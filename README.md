@@ -43,12 +43,12 @@ flowchart LR
         rtx["RTX PRO 6000, 96 GB<br/>CUDA prefill service"]
     end
 
-    subgraph na["node-a (Strix Halo, Linux)"]
+    subgraph na["halo-1 (Strix Halo, Linux)"]
         hna["hyperloom-node<br/>supervisor"]
         ea["engine<br/>rank 0 or replica"]
     end
 
-    subgraph nb["node-b (Strix Halo, Linux)"]
+    subgraph nb["halo-2 (Strix Halo, Linux)"]
         hnb["hyperloom-node<br/>supervisor"]
         eb["engine<br/>rank 1 or replica"]
     end
@@ -89,30 +89,34 @@ hloom --help
 
 `install.ps1` resolves one interpreter, creates a venv under `%LOCALAPPDATA%\hyperloom\venv` and installs TensorMeld from the pinned submodule. It has no other dependencies and supports `-WhatIf`.
 
-**2. Describe the cluster** in `%APPDATA%\hyperloom\cluster.json` (`~/.config/hyperloom/cluster.json` on Linux). It holds machines, asset paths and profiles, **never secrets** (only key-file paths):
+**2. Describe the cluster** in `%APPDATA%\hyperloom\cluster.json` (`~/.config/hyperloom/cluster.json` on Linux). It holds machines, asset paths with their expected size and sha256, and profiles; it **never holds secrets**, only key-file paths. A complete example is [`examples/cluster.example.json`](examples/cluster.example.json); the shape, abridged:
 
 ```jsonc
 { "schema": "hyperloom/cluster-v1",
   "machines": [
-    { "id": "workstation", "os": "windows", "access": "local" },
-    { "id": "node-a", "os": "linux", "access": "ssh", "http_address": "<private IP>",
-      "ssh_target": "<ssh alias>", "install_root": "/home/<user>/hyperloom", "lab_mode": true },
-    { "id": "node-b", "os": "linux", "access": "ssh", "http_address": "<private IP>",
-      "ssh_target": "<ssh alias>", "install_root": "/home/<user>/hyperloom", "lab_mode": true } ],
-  "profiles": { "qwen-replicas": { "nodes": ["node-a", "node-b"], "receipt": "qwen-rep-r3" },
-                "ds41-pair":     { "rank0": "node-a", "rank1": "node-b" } } }
+    { "id": "workstation", "os": "windows", "access": "local",
+      "http_address": "127.0.0.1", "install_root": "C:/hyperloom" },
+    { "id": "halo-1", "os": "linux", "access": "ssh", "http_address": "192.0.2.10",
+      "ssh_target": "halo-1", "install_root": "/opt/hyperloom", "lab_mode": true,
+      "devices": [ { "id": "gpu", "type": "amd" } ] },
+    { "id": "halo-2", … } ],
+  "assets":   { "halo-1": { "model": { "path": "…", "bytes": 0, "sha256": "…" }, … }, … },
+  "profiles": { "qwen-replicas": { "nodes": ["halo-1", "halo-2"], "port": 18501, "receipt": "qwen-rep-r3", … },
+                "ds41-pair":     { "rank0": "halo-1", "rank1": "halo-2", "port": 18431, … } },
+  "router":   { "machine": "local", "policy": "auto", "balance_active_decodes": true, "max_inflight": 8 } }
 ```
 
 ```powershell
-hloom config validate                 # strict schema check
-hloom render qwen-replicas            # router JSON + exact argv/env per process, validated by TensorMeld's own parser
+hloom config validate "$env:APPDATA\hyperloom\cluster.json"   # strict schema check, unknown keys rejected
+hloom render qwen-replicas     # router JSON + exact argv/env per process, checked by TensorMeld's own parser
+hloom router start             # Phase 0: the rendered router as a local child (Job Object), then status / stop
 ```
 
 **3. Check every machine** (read-only; every command run is listed in the output):
 
 ```powershell
-hloom doctor node-a
-hloom doctor node-b
+hloom doctor halo-1
+hloom doctor halo-2
 ```
 
 The first contact with a machine pins its ssh host key: hyperloom shows the full SHA-256 fingerprint and you confirm it against the machine itself.
@@ -121,16 +125,16 @@ The first contact with a machine pins its ssh host key: hyperloom shows the full
 
 ```powershell
 # Router on this machine (the default), two Qwen replicas
-hloom up qwen-replicas --node node-a --node node-b
+hloom up qwen-replicas --node halo-1 --node halo-2
 
-# DeepSeek pair, router on node-a, RTX prefill on the workstation
-hloom up ds41-rtx --router node-a --node node-a --node node-b --device workstation:rtx-pro
+# DeepSeek pair, router on halo-1, RTX prefill on the workstation
+hloom up ds41-rtx --router halo-1 --node halo-1 --node halo-2 --device workstation:rtx-pro
 
 # The same choices from a file (schema hyperloom/launch-v1)
 hloom up --plan my-launch.json
 
 hloom status
-hloom logs node-a
+hloom logs halo-1
 hloom down
 ```
 
@@ -148,8 +152,8 @@ sequenceDiagram
     participant C as Client
     participant R as Router (TensorMeld)
     participant P as Prefill service (RTX PRO)
-    participant A as Rank 0 (node-a)
-    participant B as Rank 1 (node-b)
+    participant A as Rank 0 (halo-1)
+    participant B as Rank 1 (halo-2)
 
     C->>R: POST /v1/chat/completions (stream)
     Note over R: prefill policy "auto": prompt length vs the<br/>service's measured profile
@@ -236,7 +240,7 @@ stateDiagram-v2
 
 - **Pinned sources.** Nodes fetch each component by SHA and build with a fixed recipe from `versions.lock` (ROCm 10.1, `gfx1151`, Release). The build runs at low priority with a memory cap and is refused while a pair turn is held.
 - **Immutable releases.** A release id is the sha256 of a manifest that covers component SHAs, the configure recipe, toolchain versions, presets and the sha256 of every binary. Processes launch from `releases/<id>/bin/`, never through a moving symlink.
-- **Two-node activation is transactional.** Build on node-a, copy to node-b, verify every binary sha, then activate both or neither, only while the profile is stopped. A pair always runs the same release on both ranks.
+- **Two-node activation is transactional.** Build on halo-1, copy to halo-2, verify every binary sha, then activate both or neither, only while the profile is stopped. A pair always runs the same release on both ranks.
 - **Presets equal receipts.** Rendering a profile with no overrides reproduces the argv and env of its qualified run exactly (tokenized comparison, golden-tested). Any friendlier default is a named, visible override; numerics, model identity, transport and layout are never editable.
 
 ## The portal (mockups)
