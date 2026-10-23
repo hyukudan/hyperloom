@@ -198,6 +198,15 @@ def render_service(cluster, profile_name, *, api_key, handoff_api_key, free_phys
     missing = set(data["assets"]) - assets.keys()
     if missing:
         raise ConfigError(f"{s['machine']}: missing assets {sorted(missing)}")
+    for name in data["assets"]:
+        # Size on every start, like the nodes' assets (a full hash is the assets job's, outside measurement windows).
+        if assets[name]["bytes"]:
+            try:
+                size = os.stat(assets[name]["path"]).st_size
+            except OSError as exc:
+                raise ConfigError(f"{s['machine']}: asset {name} unavailable: {exc}") from exc
+            if size != assets[name]["bytes"]:
+                raise ConfigError(f"{s['machine']}: asset {name} is {size} bytes, the manifest says {assets[name]['bytes']}")
     binary = PureWindowsPath(machine.install_root) / "cuda" / data["engine_sha"][:12] / "bin" / (data["binary"] + ".exe")
     floor = reservation["free_commit_floor_gib"] if reservation else 4
     cap = reservation["vram_cap_gib"] if reservation else 96

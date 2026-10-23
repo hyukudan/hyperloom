@@ -161,6 +161,20 @@ class RenderTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "at most 1 decode replica"):
             rtx.render_service(cluster, "ds41-rtx", api_key=KEY_A, handoff_api_key=KEY_B, free_physical_gib=100.0)
 
+    def test_service_model_size_is_checked_on_every_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model = Path(tmp) / "model.gguf"
+            model.write_bytes(b"x" * 10)
+            obj = rtx_example()
+            obj["assets"]["workstation"]["ds41_model"].update(path=str(model), bytes=10)
+            self.render(obj)
+            obj["assets"]["workstation"]["ds41_model"]["bytes"] = 11
+            with self.assertRaisesRegex(ConfigError, "10 bytes"):
+                self.render(obj)
+            model.unlink()
+            with self.assertRaisesRegex(ConfigError, "unavailable"):
+                self.render(obj)
+
     def test_window_longer_than_20_minutes_needs_an_extended_approval(self):
         with self.assertRaisesRegex(ConfigError, "20 min"):
             self.render(rtx_example(reservation_s=1800))
