@@ -5,7 +5,7 @@
 hyperloom is the integration and control layer that turns three separate projects into one installable system: [TensorMeld](https://github.com/hyukudan/tensormeld) (router, planner, benchmarks), the [Strix Halo engine](https://github.com/hyukudan/strix-halo-engine-lab) (HIP serving apps and a CUDA prefill service) and [strix-trellis](https://github.com/hyukudan/strix-trellis) (trellis-quantized dense kernels). Each component is pinned by commit and driven only through the interfaces it already has: command-line flags, config files, stdout events and its HTTP endpoints. hyperloom adds what was missing between them: pinned builds, one config file, safe start and stop on every machine, a router you can place anywhere, and one view of devices, links, statistics and logs.
 
 > [!IMPORTANT]
-> **Status: design approved, Phase 0 (skeleton, no GPU) in progress.** The CLI below is the specified interface; most commands are not implemented yet. See [Status and roadmap](#status-and-roadmap). This repository is **private**.
+> **Status: Phase 0 done; Phase 1a code written, hardware acceptance pending.** Nothing has been served through hyperloom yet. See [Status and roadmap](#status-and-roadmap). This repository is **private**.
 
 <p align="center">
   <img src="docs/img/devices-desktop.png" alt="Mockup of the Devices screen: a workstation with an RTX PRO 6000 and two Strix Halo nodes, each with memory and usage meters, roles and driver state. Sample data." width="900">
@@ -76,7 +76,7 @@ Everything in the boxes comes from pinned components. hyperloom itself contains 
 ## Quick start
 
 > [!NOTE]
-> This is the **specified** workflow. Phase 0 ships `config validate`, `render`, `doctor`, `router` and the Windows install; `up` / `down` arrive in Phase 1a. `hloom` is a short alias for `hyperloom` everywhere.
+> The Phase 1a CLI is written and unit-tested but **not yet accepted on real hardware**: no GPU acceptance run has happened yet. Plan files (`--plan`) and `--allow-partial` are specified but not implemented. `hloom` is a short alias for `hyperloom` everywhere.
 
 **1. Install on the control machine** (Windows, Python ≥ 3.11, git, OpenSSH client):
 
@@ -121,24 +121,27 @@ hloom doctor halo-2
 
 The first contact with a machine pins its ssh host key: hyperloom shows the full SHA-256 fingerprint and you confirm it against the machine itself.
 
-**4. Bring a profile up**, choosing where the router runs and what to link:
+**4. Install the pinned engine on the nodes, then bring a profile up**, choosing where the router runs and what to link:
 
 ```powershell
+# Build once on halo-1 (CPU only, scheduled outside GPU turns), copy to halo-2, verify every sha, activate both
+hloom install qwen-replicas --build-on halo-1
+
 # Router on this machine (the default), two Qwen replicas
 hloom up qwen-replicas --node halo-1 --node halo-2
 
 # DeepSeek pair, router on halo-1, RTX prefill on the workstation
 hloom up ds41-rtx --router halo-1 --node halo-1 --node halo-2 --device workstation:rtx-pro
 
-# The same choices from a file (schema hyperloom/launch-v1)
-hloom up --plan my-launch.json
+# Planned: the same choices from a file (schema hyperloom/launch-v1)
+# hloom up --plan my-launch.json
 
-hloom status
-hloom logs halo-1
-hloom down
+hloom status qwen-replicas
+hloom logs qwen-replicas router --tail 200
+hloom down qwen-replicas
 ```
 
-**How linking works.** hyperloom links the machines and devices that are both **declared** (by `--node`, `--device` or the plan file) and **reachable** (added, host key pinned, doctor passing). If a declared machine or device is unreachable, `up` fails **before** any GPU lease is taken and names what is missing. The only exception is `--allow-partial`, for profiles that define a degraded form, such as one Qwen replica instead of two. With `--router <machine>`, the router listens on that machine's private address with a key file, because TensorMeld requires one for any non-loopback listen.
+**How linking works.** hyperloom links the machines and devices that are both **declared** (by `--node`, `--device` or the plan file) and **reachable** (added, host key pinned, doctor passing). If a declared machine or device is unreachable, `up` fails **before** any GPU lease is taken and names what is missing. A planned `--allow-partial` will relax this only for profiles that define a degraded form, such as one Qwen replica instead of two. With `--router <machine>`, the router listens on that machine's private address with a key file, because TensorMeld requires one for any non-loopback listen.
 
 ## How it works
 
@@ -231,7 +234,7 @@ stateDiagram-v2
     Cancelled --> [*]: nothing started
 ```
 
-- **Deadline.** The default is the single-turn cap (20 min) minus a 60 s drain margin. A longer lease needs an explicit approval reference (`--approved-lease-s N --approval "<ref>"`) that names the owner, maximum duration and end time; it is logged and shown in the portal, and refused once the approval has expired. hyperloom never writes approvals itself.
+- **Deadline.** The default is the single-turn cap (20 min) minus a 60 s drain margin. A longer lease needs an explicit approval (`--approval-ref "<ref>" --approval-lease <s> --approval-end <time>`) that names the owner, maximum duration and end time; it is logged and shown in the portal, and refused once the approval has expired. hyperloom never writes approvals itself.
 - **Checks after acquiring, not before.** Pair profiles re-check that both nodes are in the production USB4 layout once the turn is held, and abort with nothing started otherwise.
 - **No orphans.** Engines run in their own process groups under `supervise`. Partial starts (rank 1 up, rank 0 failing) are cleaned up on both nodes. `supervise` does not depend on the controller's ssh session: if the CLI dies, the lease runs to its deadline and `hyperloom status` reattaches.
 - **Labels** are `hl-<profile>-<short id>`, from a namespace that provably maps to no layout change on the node side.
@@ -317,8 +320,8 @@ Experts from the published Q2 GGUF; dense layers trellis mix-B over a 6.5-bit ov
 
 | Phase | Scope | Status |
 |---|---|---|
-| **0** | Skeleton, no GPU: submodules and `versions.lock`, `cluster-v1` config, renders validated by TensorMeld's parser, router/engine adapters with fixtures from real outputs, ssh transport with host-key pinning, `hyperloom-node doctor` / `gpu`, Windows install and router child in a Job Object | **in progress** |
-| **1a** | Qwen two replicas + router, CLI: node builds, transactional install, leases and `supervise`, `up` / `status` / `down` / `logs`, failure matrix, token regression gate, router placement measured both ways | next |
+| **0** | Skeleton, no GPU: submodules and `versions.lock`, `cluster-v1` config, renders validated by TensorMeld's parser, router/engine adapters with fixtures from real outputs, ssh transport with host-key pinning, `hyperloom-node doctor` / `gpu`, Windows install and router child in a Job Object | **done** (read-only doctor run on real nodes) |
+| **1a** | Qwen two replicas + router, CLI: node builds, transactional install, leases and `supervise`, `up` / `status` / `down` / `logs`, failure matrix, token regression gate, router placement measured both ways | **code done**, unit-tested; acceptance on hardware pending |
 | **1b** | Thin local portal over 1a: Devices, Engines, Live stats, Logs, Settings (security negative tests first) | planned |
 | **2** | DeepSeek pair: trellis build, production preset, pair leases with the layout check, topology view with link-probe | planned |
 | **2.5** | Placement proposals from `plan-hetero`, filtered to qualified profiles | planned |
