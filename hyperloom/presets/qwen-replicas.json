@@ -296,5 +296,22 @@
         "apps/hip_mtp_decode_bridge.hpp:659-665@9211b07e"
       ]
     }
+  },
+  "advanced": {
+    "mtp_ngram_draft": {
+      "kind": "argv-equals",
+      "target": "--mtp-ngram-draft",
+      "values": [
+        "auto",
+        "off"
+      ],
+      "production": "auto",
+      "effect": "off disables the context n-gram draft extension (auto: +5.8..+7.7 % on document correction, within noise elsewhere); the target verifies every token",
+      "qualification": {
+        "receipt": "D-055 decode defaults campaign",
+        "engine_sha": "70ec42b9b5ead86c42cd673eff19bea3c09bd1df",
+        "evidence": "docs/decode-defaults.md, Context n-gram extension: auto by default; gate strix-hip-mtp-decode-options-tests"
+      }
+    }
   }
 }

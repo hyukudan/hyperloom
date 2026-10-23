@@ -37,7 +37,8 @@ class CLITests(unittest.TestCase):
         self.config = SimpleNamespace(load=Mock(return_value=self.cluster))
         self.render = SimpleNamespace(render_router=Mock(return_value={"schema": "test"}),
                                       validate_router=Mock(),
-                                      render_processes=Mock(return_value=[Spec(env={})]))
+                                      render_processes=Mock(return_value=[Spec(env={})]),
+                                      launch_summary=Mock(return_value={"production": True}))
         self.real_module = importlib.import_module
         self.modules = {"hyperloom.config": self.config, "hyperloom.render": self.render}
         self.module_patch = patch.object(cli, "_module", side_effect=lambda name:
@@ -71,6 +72,7 @@ class CLITests(unittest.TestCase):
         rendered = json.loads(out)
         self.assertEqual(rendered["processes"][0]["machine_id"], "halo-1")
         self.assertEqual(rendered["router"], {"schema": "test"})
+        self.assertEqual(rendered["launch"], {"production": True})
         self.render.validate_router.assert_called_once()
 
     def test_missing_module_error_is_clear(self):
