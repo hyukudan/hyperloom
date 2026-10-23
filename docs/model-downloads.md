@@ -48,6 +48,7 @@ destination or hash needs a new review.
 - An existing destination is never overwritten (`os.link` from the verified partial file, which fails if the name exists).
 - Every file is checked (size and sha256) before it gets its final name. A mismatch deletes the partial file.
 - A failed or interrupted command keeps the partial file, and rerunning the same plan resumes it.
-- In lab mode the job is refused while a PAIR turn is held. If a PAIR turn starts during the download, the download
-  stops (the partial file is kept).
+- In lab mode the job is refused while any GPU turn is held (single or pair), and it stops if one starts during the
+  download (the partial file is kept). A model-sized download fills the page cache, and reclaiming a serving engine's
+  registered model pages stalls its decode. Run downloads when the node is not serving or measuring.
 - Only `https://huggingface.co/` URLs are built, with https-only redirects. There is no free-form shell.

@@ -99,6 +99,9 @@ class NodePlanTests(NodeDownloadCase):
             (self.lab / ".gpu-turn" / "holder").write_text("PAIR sx-1 123\n")
             reply = node.run("download", self.payload(confirm=code))
             self.assertIn("PAIR", reply["error"])
+            (self.lab / ".gpu-turn" / "holder").write_text("SINGLE sx-2 456\n")
+            reply = node.run("download", self.payload(confirm=code))
+            self.assertIn("GPU turn is held: SINGLE", reply["error"])
             popen.assert_not_called()
 
     def test_cancel_only_download_jobs(self):
