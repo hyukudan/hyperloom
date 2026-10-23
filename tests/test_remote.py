@@ -89,6 +89,30 @@ class RemoteTests(unittest.TestCase):
                 with self.assertRaises(remote.RemoteError):
                     remote.keyscan("192.0.2.1", 2222)
 
+    def test_windows_keyscan_falls_back_to_path_tool(self):
+        native, git = r"C:\Windows\System32\OpenSSH\ssh-keyscan.exe", r"C:\Git\usr\bin\ssh-keyscan.exe"
+        line = f"[192.0.2.1]:2222 ssh-ed25519 {self.key.key_b64}\n".encode()
+        with (patch.object(remote.os, "name", "nt"), patch.object(remote, "openssh_tool", return_value=native),
+              patch.object(remote.shutil, "which", return_value=git), patch.object(remote.os.path, "isfile", return_value=True),
+              patch.object(remote, "_run", side_effect=[remote.RemoteError("exit 1"), line]) as run):
+            self.assertEqual(remote.keyscan("192.0.2.1", 2222), [self.key])
+        self.assertEqual(run.call_args.kwargs["executable"], git)
+        # Only Git\cmd on PATH: the tool beside it in usr\bin.
+        which = {"ssh-keyscan": None, "git": r"C:\Git\cmd\git.exe"}.get
+        with (patch.object(remote.os, "name", "nt"), patch.object(remote, "openssh_tool", return_value=native),
+              patch.object(remote.shutil, "which", side_effect=which), patch.object(remote.os.path, "isfile", return_value=True),
+              patch.object(remote, "_run", side_effect=[remote.RemoteError("exit 1"), line]) as run):
+            self.assertEqual(remote.keyscan("192.0.2.1", 2222), [self.key])
+        self.assertEqual(run.call_args.kwargs["executable"], git)
+        # The same binary found on PATH is not retried.
+        with (patch.object(remote.os, "name", "nt"), patch.object(remote, "openssh_tool", return_value=native),
+              patch.object(remote.shutil, "which", side_effect={"ssh-keyscan": native.upper(), "git": None}.get),
+              patch.object(remote.os.path, "isfile", return_value=True),
+              patch.object(remote, "_run", side_effect=remote.RemoteError("exit 1")) as run):
+            with self.assertRaises(remote.RemoteError):
+                remote.keyscan("192.0.2.1", 2222)
+        self.assertEqual(run.call_count, 1)
+
     def test_unknown_key_refused_before_connection(self):
         with self.assertRaisesRegex(remote.RemoteError, "unknown host key"):
             self.client.call("doctor", {}, 2)
