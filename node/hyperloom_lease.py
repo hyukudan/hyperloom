@@ -380,6 +380,11 @@ def layout_check(spec):
     layout = read_json(USB_LAYOUT)
     if usb4_layout_id(layout) != required:
         raise ValueError("USB4 layout mismatch: " + usb4_layout_id(layout))
+    # Fault injection for the wrong-layout acceptance test: an operator-placed file in the install root is checked
+    # in addition to the real record, so it can only make a start fail, never pass a wrong layout.
+    fault = Path(spec["root"]) / "fault" / "usb4-layout.json"
+    if fault.is_file() and usb4_layout_id(read_json(fault)) != required:
+        raise ValueError("USB4 layout mismatch: " + usb4_layout_id(read_json(fault)) + " (fault file)")
     if spec["kind"] == "pair":
         reply = peer_call(spec, "supervise-internal", {"check_layout": required,
                           "lab_dir": spec.get("peer_lab_dir") or spec["lab_dir"]})
