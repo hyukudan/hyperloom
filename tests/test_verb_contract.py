@@ -12,7 +12,7 @@ class VerbContractTests(unittest.TestCase):
     def test_orchestrator_transport_and_node_verbs_agree(self):
         node = Path(__file__).resolve().parents[1] / "node"
         supported = set(runpy.run_path(str(node / "hyperloom-node"))["VERBS"])
-        for name in ("hyperloom_install", "hyperloom_lease"):
+        for name in ("hyperloom_install", "hyperloom_lease", "hyperloom_download"):
             spec = importlib.util.spec_from_file_location(name + "_contract", node / (name + ".py"))
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
