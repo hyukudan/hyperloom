@@ -1,0 +1,329 @@
+"""Pinned OpenSSH transport for the small telar-node JSON protocol."""
+
+from dataclasses import dataclass
+import base64
+import hashlib
+import ipaddress
+import json
+import math
+import os
+from pathlib import Path, PurePosixPath
+import re
+import shlex
+import signal
+import subprocess
+import tempfile
+import threading
+import time
+
+
+MAX_JSON = 256 * 1024
+VERBS = frozenset({"version", "doctor", "gpu"})
+
+
+class RemoteError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class HostKey:
+    algorithm: str
+    key_b64: str
+    sha256_fingerprint: str
+
+
+def _hostkey(algorithm, key_b64):
+    if algorithm not in {"ssh-ed25519", "ecdsa-sha2-nistp256", "ssh-rsa"}:
+        raise RemoteError("unsupported host-key algorithm")
+    try:
+        blob = base64.b64decode(key_b64, validate=True)
+        length = int.from_bytes(blob[:4], "big")
+        if len(blob) < 8 or blob[4:4 + length].decode("ascii") != algorithm:
+            raise ValueError("invalid key blob")
+    except (ValueError, UnicodeError) as exc:
+        raise RemoteError("invalid host key") from exc
+    fingerprint = "SHA256:" + base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip("=")
+    return HostKey(algorithm, key_b64, fingerprint)
+
+
+def _target(value):
+    if (not isinstance(value, str) or not value or value.startswith("-")
+            or not re.fullmatch(r"[\w.@:\[\]-]+", value, flags=re.ASCII)
+            or value.count("@") > 1):
+        raise RemoteError("invalid ssh target or alias")
+    return value
+
+
+def _address(value):
+    try:
+        return str(ipaddress.ip_address(value))
+    except ValueError as exc:
+        raise RemoteError("ssh address must be a numeric IP") from exc
+
+
+def _port(value):
+    if type(value) is not int or not 1 <= value <= 65535:
+        raise RemoteError("invalid ssh port")
+    return value
+
+
+def _token(host, port):
+    return host if port == 22 else f"[{host}]:{port}"
+
+
+def _config_path(path):
+    # -o values use ssh_config syntax even when passed as a single argv token.
+    value = path.as_posix().replace("%", "%%").replace("\\", "\\\\").replace('"', '\\"')
+    if any(ord(c) < 32 for c in value):
+        raise RemoteError("invalid known_hosts path")
+    return '"' + value + '"'
+
+
+def _write(path, value):
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="\n",
+                                         dir=path.parent, prefix=".telar-", delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(value)
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _stop(child):
+    if os.name == "nt":
+        if child.poll() is None:
+            # scp can have an ssh child: terminate the whole local process tree.
+            try:
+                subprocess.run(["taskkill", "/PID", str(child.pid), "/T", "/F"],
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, timeout=5, check=False)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+    else:
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    if child.poll() is None:
+        child.kill()
+
+
+def _run(argv, data=b"", timeout=30, cancel_event=None, limit=MAX_JSON):
+    """Drain bounded pipes while allowing timeout and cooperative cancellation."""
+    if not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
+        raise RemoteError("timeout must be positive and finite")
+    if cancel_event is not None and cancel_event.is_set():
+        raise RemoteError("remote operation cancelled")
+    try:
+        child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, start_new_session=os.name != "nt")
+    except OSError as exc:
+        raise RemoteError("could not start OpenSSH command") from exc
+    output = [bytearray(), bytearray()]
+    overflow = threading.Event()
+
+    def read(stream, result):
+        try:
+            while chunk := stream.read(4096):
+                room = limit - len(result)
+                result.extend(chunk[:max(0, room)])
+                if len(chunk) > room:
+                    overflow.set()
+        finally:
+            stream.close()
+
+    def write():
+        try:
+            child.stdin.write(data)
+            child.stdin.flush()
+        except (BrokenPipeError, OSError):
+            pass
+        finally:
+            child.stdin.close()
+
+    workers = [threading.Thread(target=read, args=(child.stdout, output[0])),
+               threading.Thread(target=read, args=(child.stderr, output[1])),
+               threading.Thread(target=write)]
+    for worker in workers:
+        worker.start()
+    deadline = time.monotonic() + timeout
+    completed = False
+    try:
+        while child.poll() is None or any(worker.is_alive() for worker in workers):
+            if overflow.is_set():
+                raise RemoteError("OpenSSH output exceeds the size limit")
+            if cancel_event is not None and cancel_event.is_set():
+                raise RemoteError("remote operation cancelled")
+            if time.monotonic() >= deadline:
+                raise RemoteError("remote operation timed out")
+            time.sleep(0.01)
+        if overflow.is_set():
+            raise RemoteError("OpenSSH output exceeds the size limit")
+        if child.returncode:
+            # Do not copy remote stderr, which could contain sensitive paths.
+            raise RemoteError(f"OpenSSH command failed (exit {child.returncode})")
+        completed = True
+        return bytes(output[0])
+    finally:
+        if not completed:
+            _stop(child)
+        child.wait()
+        for worker in workers:
+            worker.join(timeout=2)
+
+
+def keyscan(address, port):
+    """Return candidates only; scanning never authorizes a key or bootstraps."""
+    address, port = _address(address), _port(port)
+    raw = _run(["ssh-keyscan", "-t", "ed25519,ecdsa,rsa", "-p", str(port), address])
+    result = []
+    try:
+        for line in raw.decode("utf-8").splitlines():
+            if not line.strip() or line.startswith("#"):
+                continue
+            parts = line.split()
+            if len(parts) != 3:
+                raise RemoteError("malformed keyscan output")
+            key = _hostkey(parts[1], parts[2])
+            if key not in result:
+                result.append(key)
+    except UnicodeError as exc:
+        raise RemoteError("keyscan output is not UTF-8") from exc
+    if not result:
+        raise RemoteError("keyscan returned no host keys")
+    return result
+
+
+class KnownHosts:
+    def __init__(self, path):
+        self.path = Path(path).absolute()
+        self.config_path = self.path.with_name(self.path.name + ".ssh_config")
+
+    def _lines(self):
+        try:
+            return self.path.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
+            return []
+        except (OSError, UnicodeError) as exc:
+            raise RemoteError("cannot read telar known_hosts") from exc
+
+    def pin(self, alias, address, port, hostkey):
+        """Persist the exact operator-confirmed key; refuse silent replacement."""
+        alias, address, port = _target(alias), _address(address), _port(port)
+        expected = _hostkey(hostkey.algorithm, hostkey.key_b64)
+        if expected != hostkey:
+            raise RemoteError("host-key fingerprint mismatch")
+        tokens = {_token(alias, port), _token(address, port)}
+        lines = self._lines()
+        for line in lines:
+            parts = line.split()
+            if not parts or parts[0].startswith("#"):
+                continue
+            if tokens.intersection(parts[0].split(",")):
+                if len(parts) != 3 or parts[1:] != [hostkey.algorithm, hostkey.key_b64]:
+                    raise RemoteError("host key changed; explicit re-pairing required")
+        entry = f"{','.join(sorted(tokens))} {hostkey.algorithm} {hostkey.key_b64}"
+        if entry not in lines:
+            lines.append(entry)
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            _write(self.path, "\n".join(lines) + "\n")
+        except OSError as exc:
+            raise RemoteError("cannot write telar known_hosts") from exc
+
+    def options(self, alias, address, port):
+        alias_token, address_token = _token(alias, port), _token(address, port)
+        if not any(len(parts := line.split()) == 3
+                   and {alias_token, address_token}.issubset(parts[0].split(","))
+                   for line in self._lines()):
+            raise RemoteError("unknown host key; confirm a fingerprint before connecting")
+        try:
+            _write(self.config_path, "# Telar: ignore ambient SSH configuration.\n")
+        except OSError as exc:
+            raise RemoteError("cannot write telar ssh config") from exc
+        return ["-F", str(self.config_path),
+                "-o", "UserKnownHostsFile=" + _config_path(self.path),
+                "-o", "StrictHostKeyChecking=yes", "-o", "GlobalKnownHostsFile=none",
+                "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+                "-o", f"HostKeyAlias={alias_token}", "-o", f"Hostname={address}",
+                "-o", "UpdateHostKeys=no"]
+
+
+def _pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def _json(raw):
+    try:
+        obj = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs,
+                         parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
+        if not isinstance(obj, dict):
+            raise ValueError("JSON object required")
+        return obj
+    except (ValueError, UnicodeError, RecursionError) as exc:
+        raise RemoteError("expected one UTF-8 JSON object from telar-node") from exc
+
+
+class Remote:
+    def __init__(self, machine, known_hosts, ssh="ssh"):
+        self.machine = machine
+        self.known_hosts = known_hosts if isinstance(known_hosts, KnownHosts) else KnownHosts(known_hosts)
+        self.ssh = ssh
+        self.alias = _target(machine.id)
+        self.address = _address(machine.http_address)
+        self.target = _target(machine.ssh_target)
+        self.port = _port(machine.ssh_port)
+        self.node_path = None
+
+    def _ssh(self, command, data=b"", timeout=30, cancel_event=None):
+        options = self.known_hosts.options(self.alias, self.address, self.port)
+        return _run([self.ssh, *options, "-p", str(self.port), "-T", "--", self.target, command],
+                    data, timeout, cancel_event)
+
+    def _path(self, raw):
+        try:
+            path = raw.decode("utf-8").rstrip("\n")
+            if not PurePosixPath(path).is_absolute() or any(ord(c) < 32 for c in path):
+                raise ValueError("invalid remote boot path")
+        except (UnicodeError, ValueError) as exc:
+            raise RemoteError("invalid remote boot path") from exc
+        self.node_path = path
+
+    def bootstrap(self, source=None, timeout=30, *, scp="scp", cancel_event=None):
+        source = Path(source) if source is not None else Path(__file__).resolve().parents[1] / "node" / "telar-node"
+        if not source.is_file():
+            raise RemoteError("telar-node source is missing")
+        self._path(self._ssh('umask 077; mkdir -p -- "$HOME/.telar-boot" && '
+                             'printf \'%s\\n\' "$HOME/.telar-boot/telar-node"',
+                             timeout=timeout, cancel_event=cancel_event))
+        options = self.known_hosts.options(self.alias, self.address, self.port)
+        _run([scp, *options, "-P", str(self.port), "--", str(source.absolute()),
+              f"{self.target}:.telar-boot/telar-node"], timeout=timeout, cancel_event=cancel_event)
+        self._ssh("chmod 700 -- " + shlex.quote(self.node_path), timeout=timeout,
+                  cancel_event=cancel_event)
+        return self.call("version", {}, timeout, cancel_event=cancel_event)
+
+    def call(self, verb, payload, timeout=30, *, cancel_event=None):
+        if not isinstance(verb, str) or verb not in VERBS:
+            raise RemoteError("unsupported telar-node verb")
+        if not isinstance(payload, dict):
+            raise RemoteError("payload must be a JSON object")
+        try:
+            data = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        except (TypeError, ValueError, UnicodeError, RecursionError) as exc:
+            raise RemoteError("payload must be UTF-8 JSON") from exc
+        if len(data) > MAX_JSON:
+            raise RemoteError("payload exceeds the size limit")
+        if self.node_path is None:
+            self._path(self._ssh('printf \'%s\\n\' "$HOME/.telar-boot/telar-node"',
+                                 timeout=timeout, cancel_event=cancel_event))
+        raw = self._ssh(shlex.quote(self.node_path) + " " + verb, data, timeout, cancel_event)
+        return _json(raw)

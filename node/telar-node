@@ -1,0 +1,305 @@
+#!/usr/bin/env python3
+"""Read-only Phase 0 node inspection. Python 3.10+, standard library only."""
+
+import argparse
+import hashlib
+import json
+import math
+from pathlib import Path, PurePosixPath
+import platform
+import re
+import shutil
+import subprocess
+import sys
+
+
+VERSION = "0.1.0"
+MAX_JSON = 256 * 1024
+MAX_FILE = 1024 * 1024
+VERBS = {"version", "doctor", "gpu"}
+
+
+def unavailable(why):
+    return {"status": "unavailable", "value": None, "why": why}
+
+
+def ok(value):
+    return {"status": "ok", "value": value}
+
+
+def pairs(items):
+    obj = {}
+    for key, value in items:
+        if key in obj:
+            raise ValueError("duplicate JSON key")
+        obj[key] = value
+    return obj
+
+
+def decode_json(raw):
+    def number(value):
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            raise ValueError("non-finite JSON number")
+        return parsed
+
+    return json.loads(raw, object_pairs_hook=pairs, parse_float=number,
+                      parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
+
+
+class Inspector:
+    def __init__(self, root=None, lab_dir=None, runner=None):
+        self.root = Path(root).resolve() if root is not None else None
+        self.lab_dir = lab_dir
+        self.commands = []
+        self.runner = runner or subprocess.run
+
+    def path(self, path):
+        if self.root is None:
+            return Path(path)
+        parts = PurePosixPath(path).parts
+        if not PurePosixPath(path).is_absolute() or ".." in parts:
+            raise ValueError("an absolute path without parent traversal is required")
+        mapped = self.root.joinpath(*parts[1:]).resolve()
+        if not mapped.is_relative_to(self.root):
+            raise ValueError("path escapes inspection root")
+        return mapped
+
+    def read(self, path, *, json_value=False, integer=False):
+        try:
+            with self.path(path).open("rb") as stream:
+                raw = stream.read(MAX_FILE + 1)
+            if len(raw) > MAX_FILE:
+                return unavailable("file exceeds read limit")
+            value = raw.decode("utf-8").strip()
+            if json_value:
+                value = decode_json(value)
+            elif integer:
+                value = int(value)
+            return ok(value)
+        except (OSError, ValueError, UnicodeError, RecursionError):
+            return unavailable("file missing, unreadable or malformed")
+
+    def exists(self, path):
+        try:
+            return ok(True) if self.path(path).exists() else unavailable("path missing")
+        except (OSError, ValueError):
+            return unavailable("path unreadable")
+
+    def glob(self, pattern):
+        try:
+            # Keep logical paths in results, independent of the fixture root.
+            base = self.root or Path("/")
+            found = sorted(base.glob(pattern.lstrip("/")))
+            return ["/" + p.relative_to(base).as_posix() for p in found]
+        except (OSError, ValueError):
+            return []
+
+    def executable(self, name):
+        if self.root is None:
+            return shutil.which(name)
+        for directory in ("/usr/bin", "/usr/local/bin", "/bin",
+                          "/opt/rocm/core-10.1/bin"):
+            try:
+                candidate = self.path(directory + "/" + name)
+                if candidate.is_file():
+                    return str(candidate)
+            except (OSError, ValueError):
+                continue
+        return None
+
+    def command(self, name, *args, json_value=False):
+        executable = self.executable(name)
+        if executable is None:
+            return unavailable("command not installed")
+        argv = [executable, *args]
+        self.commands.append(argv)
+        try:
+            result = self.runner(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, timeout=5, check=False)
+            if result.returncode:
+                return unavailable("command failed")
+            if len(result.stdout) > MAX_FILE:
+                return unavailable("command output exceeds read limit")
+            value = result.stdout.decode("utf-8").strip()
+            if json_value:
+                value = decode_json(value)
+            return ok(value)
+        except (OSError, subprocess.TimeoutExpired, ValueError, UnicodeError, RecursionError):
+            return unavailable("command unavailable, timed out or returned malformed output")
+
+    def gfx(self):
+        targets = []
+        for path in self.glob("/sys/class/kfd/kfd/topology/nodes/*/properties"):
+            result = self.read(path)
+            if result["status"] != "ok":
+                continue
+            properties = dict(line.split(None, 1) for line in result["value"].splitlines()
+                              if len(line.split(None, 1)) == 2)
+            target = properties.get("gfx_target_version", "")
+            if target.isdecimal() and int(target):
+                version = int(target)
+                target = f"gfx{version // 10000}{version // 100 % 100}{version % 100:x}"
+            elif not re.fullmatch(r"gfx[0-9a-f]+", target):
+                continue
+            targets.append({"path": path, "target": target})
+        return ok(targets) if targets else unavailable("no passive gfx target in sysfs")
+
+    def lab(self):
+        if self.lab_dir is None:
+            return unavailable("lab_dir is not configured")
+        lab = self.lab_dir.rstrip("/")
+        scripts = {}
+        for name in ("gpu-turn.sh", "gpu-turn-pair.sh", "layout-watch2.sh"):
+            try:
+                with self.path(lab + "/" + name).open("rb") as stream:
+                    raw = stream.read(MAX_FILE + 1)
+                scripts[name] = (ok(hashlib.sha256(raw).hexdigest()) if len(raw) <= MAX_FILE
+                                 else unavailable("script exceeds read limit"))
+            except (OSError, ValueError):
+                scripts[name] = unavailable("script missing or unreadable")
+        return ok({"script_sha256": scripts,
+                   **{name: self.read(lab + "/.gpu-turn/" + name)
+                      for name in ("holder", "maintenance", "layout-state")}})
+
+    def doctor(self):
+        os_release = self.read("/etc/os-release")
+        checks = {"os": os_release, "python": ok(platform.python_version()),
+                  "cmake": self.command("cmake", "--version"),
+                  "ninja": self.command("ninja", "--version"),
+                  "git": self.command("git", "--version")}
+        compiler = "amdclang++"
+        if self.executable(compiler) is None:
+            compiler = "c++"
+        checks["compiler"] = self.command(compiler, "--version")
+        checks["rocm_root"] = self.exists("/opt/rocm/core-10.1")
+        checks["rocm_version"] = self.read("/opt/rocm/core-10.1/.info/version")
+        if self.executable("dpkg-query"):
+            package = self.command("dpkg-query", "-W", "-f=${Version}", "rocm-core")
+        else:
+            package = self.command("rpm", "-q", "--queryformat", "%{VERSION}", "rocm-core")
+        checks["rocm_package_version"] = package
+        checks["gfx_targets"] = self.gfx()
+        try:
+            disk = shutil.disk_usage(self.root or Path("/"))
+            checks["disk"] = ok({"total_bytes": disk.total, "free_bytes": disk.free})
+        except OSError:
+            checks["disk"] = unavailable("disk space unavailable")
+        devices = self.glob("/dev/tbstream*")
+        describe = self.command("usb4stream-describe", json_value=True)
+        if describe["status"] == "ok":
+            value = describe["value"]
+            if not isinstance(value, dict) or "version" not in value or "topology" not in value:
+                describe = unavailable("USB4 description requires version and topology")
+        checks["usb4"] = {
+            "module": self.exists("/sys/module/thunderbolt_stream"),
+            "devices": ok(devices) if devices else unavailable("no tbstream devices"),
+            "describe": describe,
+            "layout": self.read("/run/usb4stream-layout.json", json_value=True)}
+        checks["lab"] = self.lab()
+        checks["secure_boot"] = self.command("mokutil", "--sb-state")
+        checks["secure_boot"]["informational"] = True
+        return checks
+
+    def ram(self):
+        result = self.read("/proc/meminfo")
+        if result["status"] != "ok":
+            return result
+        values = {}
+        for line in result["value"].splitlines():
+            match = re.fullmatch(r"(\w+):\s+(\d+)\s+kB", line)
+            if match:
+                values[match[1]] = int(match[2]) * 1024
+        if "MemTotal" not in values:
+            return unavailable("MemTotal missing from meminfo")
+        return ok({"total_bytes": values["MemTotal"],
+                   "available_bytes": values.get("MemAvailable"),
+                   "free_bytes": values.get("MemFree"),
+                   "used_bytes": (values["MemTotal"] - values["MemAvailable"]
+                                  if "MemAvailable" in values else None)})
+
+    def gpu(self):
+        cards = []
+        for card in self.glob("/sys/class/drm/card*"):
+            if not re.fullmatch(r"card\d+", PurePosixPath(card).name):
+                continue
+            device = card + "/device"
+            vendor = self.read(device + "/vendor")
+            if vendor.get("value") != "0x1002":
+                continue
+            item = {"id": PurePosixPath(card).name}
+            fields = {"vram_used_bytes": "mem_info_vram_used",
+                      "vram_total_bytes": "mem_info_vram_total",
+                      "gtt_used_bytes": "mem_info_gtt_used",
+                      "gtt_total_bytes": "mem_info_gtt_total",
+                      "busy_percent": "gpu_busy_percent"}
+            item.update({name: self.read(device + "/" + filename, integer=True)
+                         for name, filename in fields.items()})
+            for label, pattern, divisor in (("temperature_c", "temp*_input", 1000),
+                                            ("power_w", "power*_average", 1000000)):
+                sensors = {}
+                paths = self.glob(device + "/hwmon/hwmon*/" + pattern)
+                if label == "power_w" and not paths:
+                    paths = self.glob(device + "/hwmon/hwmon*/power*_input")
+                for path in paths:
+                    reading = self.read(path, integer=True)
+                    if reading["status"] == "ok":
+                        reading["value"] /= divisor
+                    sensors[path.split("/hwmon/", 1)[1]] = reading
+                item[label] = ok(sensors) if sensors else unavailable("hwmon sensors missing")
+            cards.append(item)
+        load = self.read("/proc/loadavg")
+        if load["status"] == "ok":
+            try:
+                load = ok([float(value) for value in load["value"].split()[:3]])
+                if len(load["value"]) != 3 or not all(math.isfinite(v) for v in load["value"]):
+                    raise ValueError("load fields missing")
+            except ValueError:
+                load = unavailable("malformed loadavg")
+        return {"amd": ok(cards) if cards else unavailable("no AMD DRM devices"),
+                "ram": self.ram(), "load": load, "kernel": self.command("uname", "-r")}
+
+    def inspect(self, verb):
+        checks = (self.doctor() if verb == "doctor" else self.gpu() if verb == "gpu"
+                  else {"version": ok(VERSION), "python": ok(platform.python_version())})
+        return {"schema": "telar/node-v1", "verb": verb,
+                "commands": self.commands, "checks": checks}
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("verb", choices=sorted(VERBS))
+    parser.add_argument("--root", help="redirect absolute filesystem reads into a fixture tree")
+    parser.add_argument("--lab-dir", help="absolute lab directory (read-only)")
+    args = parser.parse_args(argv)
+    try:
+        # Local CLI calls need no stdin. A remote request always closes stdin.
+        raw = b"" if sys.stdin.isatty() else sys.stdin.buffer.read(MAX_JSON + 1)
+        if len(raw) > MAX_JSON:
+            raise ValueError("payload exceeds the size limit")
+        payload = decode_json(raw.decode("utf-8")) if raw else {}
+        if not isinstance(payload, dict) or set(payload) - {"root", "lab_dir"}:
+            raise ValueError("payload must be an object with only root and lab_dir")
+        root = args.root if args.root is not None else payload.get("root")
+        lab_dir = args.lab_dir if args.lab_dir is not None else payload.get("lab_dir")
+        for name, value in (("root", payload.get("root")), ("lab_dir", payload.get("lab_dir")),
+                            ("root", root), ("lab_dir", lab_dir)):
+            if value is not None and (not isinstance(value, str) or not value
+                                      or any(ord(c) < 32 for c in value)):
+                raise ValueError(name + " must be a path string")
+        if lab_dir is not None and (not PurePosixPath(lab_dir).is_absolute()
+                                    or ".." in PurePosixPath(lab_dir).parts):
+            raise ValueError("lab_dir must be an absolute path without parent traversal")
+        inspector = Inspector(root, lab_dir)
+        result = inspector.inspect(args.verb)
+        exit_code = 0
+    except (ValueError, OSError, UnicodeError, RecursionError) as exc:
+        result = {"schema": "telar/node-v1", "verb": args.verb, "commands": [],
+                  "error": str(exc)}
+        exit_code = 2
+    sys.stdout.write(json.dumps(result, ensure_ascii=True, allow_nan=False) + "\n")
+    return exit_code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
