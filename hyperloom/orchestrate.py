@@ -405,9 +405,14 @@ def _put(client, machine, name, value):
     return str(PurePosixPath(machine.install_root) / "etc/keys" / name)
 
 
-def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s=1140, approval=None):
+def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s=1140, approval=None,
+       diagnostics=None):
     _approval(deadline_s, approval)
     settings, kind, defaults = _profile(cluster, profile)
+    diagnostics = list(dict.fromkeys(diagnostics or ()))
+    unknown = set(diagnostics) - set(render.preset(kind).get("diagnostics", {}))
+    if unknown:
+        raise ValueError("unknown diagnostic for this profile: " + ", ".join(sorted(unknown)))
     mids = list(defaults if nodes is None else nodes)
     for mid in mids:
         if mid not in cluster.machines:
@@ -435,7 +440,8 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
     lock = procs.InstanceLock(path.with_suffix(".lock")).acquire()
     state = {"profile": profile, "leases": [], "router": None,
              "known_hosts": str(_known_hosts()), "machines": {},
-             "token": uuid.uuid4().hex, "phase": "starting", "keys": []}
+             "token": uuid.uuid4().hex, "phase": "starting", "keys": [],
+             "production": not diagnostics, "diagnostic": diagnostics}
     keys = []
     local_values = {}
     owned = False
@@ -501,7 +507,9 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
             selected.router["api_key_file"] = _put(clients[router], machine, router_key, secrets.ensure(router_key))
             host = machine.http_address
             selected.router["listen"] = f"[{host}]:18600" if ":" in host else f"{host}:18600"
-        processes = render.render_processes(selected, profile)
+        # Diagnostic runs are labelled non-production everywhere they are recorded (state, leases, status).
+        processes = render.render_processes(selected, profile, **(
+            {"diagnostics": diagnostics, "run": state["token"][:12]} if diagnostics else {}))
         rendered = render.render_router(selected, profile)
         state.update(release_id=releases[mids[0]], nodes=mids, devices=list(devices or []),
                      started_at=time.time(), process_specs=[asdict(spec) for spec in processes],
@@ -542,6 +550,8 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
                        "peer_lab_dir": _lab(cluster, mids[1]) if peer else None,
                        "processes": [process(processes[index], "local")] if kind == "qwen-replicas" else
                        [process(spec, "local" if i == 0 else "peer") for i, spec in enumerate(processes)]}
+            if diagnostics:
+                payload["diagnostic"] = diagnostics
             start(mid, payload, "engine")
         deadlines = []
         for lease in state["leases"]:
@@ -847,7 +857,8 @@ def status(profile=None):
     if not path.exists():
         return {"profile": profile, "state": "stopped"}
     state = _read(path)
-    result = {"profile": profile, "nodes": {}, "router": None}
+    result = {"profile": profile, "nodes": {}, "router": None,
+              "production": state.get("production", True), "diagnostic": state.get("diagnostic", [])}
     for mid, machine in state["machines"].items():
         try:
             result["nodes"][mid] = _call(_client(SimpleNamespace(**machine), state["known_hosts"]), "status", {"root": machine["install_root"]})
