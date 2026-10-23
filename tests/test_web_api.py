@@ -345,3 +345,18 @@ class TransportTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DetachedCommandLineTests(unittest.TestCase):
+    def test_up_and_down_argv(self):
+        from hyperloom.web.api import API
+        api = API(config_path="C:/cfg/cluster.json", orchestrator=object(), remote_module=object(),
+                  audit_path=tempfile.mkdtemp() + "/audit.jsonl")
+        up = api._cli_argv("up", {"profile": "qwen-replicas", "node": ["halo-1"], "router": "halo-1", "deadline": 600})
+        self.assertEqual(up[1:5], ["-m", "hyperloom", "up", "qwen-replicas"])
+        self.assertIn("--node", up)
+        self.assertEqual(up[up.index("--router") + 1], "halo-1")
+        self.assertEqual(up[up.index("--deadline") + 1], "600")
+        down = api._cli_argv("down", {"profile": "qwen-replicas", "force": True})
+        self.assertEqual(down[3:], ["down", "qwen-replicas", "--force"])
+        self.assertFalse(api.detached)

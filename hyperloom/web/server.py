@@ -4,6 +4,7 @@ import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
+import os
 import secrets
 from urllib.parse import parse_qs, unquote, urlsplit
 import webbrowser
@@ -196,6 +197,8 @@ def create_server(port=18700, *, api=None, static_dir=None):
 
 def serve(port=18700, no_browser=False):
     with create_server(port) as server:
+        # Mutations survive the portal process; test fixtures with patched backends stay in-process.
+        server.api.detached = os.environ.get("HYPERLOOM_UI_INPROCESS") != "1"
         print("Hyperloom portal: " + server.origin, flush=True)
         if not no_browser:
             webbrowser.open(server.origin + "/")

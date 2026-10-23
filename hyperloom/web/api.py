@@ -271,6 +271,9 @@ class API:
                  clock=time.time, audit_path=None):
         self.config_path = Path(config_path) if config_path else cli.config_path()
         self.orchestrate = orchestrator or orchestrate
+        # With the real orchestrator, up/down/install run as detached CLI processes so they finish (and
+        # clean up) even if the portal process exits or is killed mid-job.
+        self.detached = False  # set by serve(); tests keep the in-process path
         self.remote = remote_module or remote
         self.clock = clock
         self.audit_path = Path(audit_path) if audit_path else cli.config_path().parent / "audit.jsonl"
@@ -893,7 +896,52 @@ class API:
             raise APIError("cancel requires job or profile")
         return arguments
 
+    def _cli_argv(self, action, args):
+        argv = [sys.executable, "-m", "hyperloom", action, args["profile"]]
+        if action in ("up", "install"):
+            argv += ["--config", str(Path(args.get("config", self.config_path)))]
+        if action == "install" and args.get("build_on"):
+            argv += ["--build-on", args["build_on"]]
+        if action == "down" and args.get("force"):
+            argv += ["--force"]
+        if action == "up":
+            argv += ["--router", args.get("router", "local"), "--deadline", str(args.get("deadline", 1140))]
+            if args.get("node"):
+                argv += ["--node", *args["node"]]
+            if args.get("device"):
+                argv += ["--device", *args["device"]]
+            for key, flag in (("approval_ref", "--approval-ref"), ("approval_lease", "--approval-lease"),
+                              ("approval_end", "--approval-end")):
+                if key in args:
+                    argv += [flag, str(args[key])]
+        return argv
+
+    def _run_detached(self, action, args):
+        """Run one CLI mutation in its own detached process and return its JSON result."""
+        flags = {}
+        if os.name == "nt":
+            flags["creationflags"] = (subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+                                      | getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000))
+        else:
+            flags["start_new_session"] = True
+        child = subprocess.Popen(self._cli_argv(action, args), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, **flags)
+        out, err = child.communicate()
+        if child.returncode != 0:
+            raise APIError((err or out).decode("utf-8", "replace").strip()[-400:] or f"{action} failed", 500)
+        try:
+            return json.loads(out.decode("utf-8"))
+        except ValueError:
+            return {"output": out.decode("utf-8", "replace")[-2000:]}
+
     def _execute(self, action, args):
+        if self.detached and action in ("up", "down", "install"):
+            if action in ("up", "install"):
+                cluster = self.orchestrate.load_cluster(Path(args.get("config", self.config_path)), config)
+                _, kind, _ = self.orchestrate._profile(cluster, args["profile"])
+                if kind != "qwen-replicas":
+                    raise APIError("later phase · only Qwen replicas are available in Phase 1b")
+            return self._run_detached(action, args)
         if action == "cancel":
             profile = args.get("profile")
             if args.get("job"):

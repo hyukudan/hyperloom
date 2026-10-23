@@ -251,6 +251,7 @@ def fixture_server(args):
                         (socket.socket, "connect", connect), (socket.socket, "bind", bind)]
         for owner, name, value in replacements:
             stack.enter_context(patch.object(owner, name, value))
+        os.environ["HYPERLOOM_UI_INPROCESS"] = "1"  # patched backends: keep jobs in this process
         return cli.main(["ui", "--port", str(args.port), "--no-browser"])
 
 
