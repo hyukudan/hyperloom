@@ -1,0 +1,65 @@
+{
+  "schema": "hyperloom/prefill-service-v1",
+  "name": "rtx-prefill-ds41",
+  "model": "deepseek41",
+  "receipt": "RTX prefill live timing, exact arm (2026-10-22 08:56-09:08)",
+  "receipt_note": "Resident service on the RTX PRO 6000, --exact, positions 32768, host tier sized at load (min(80, free physical - 20) GiB), load excluded, warm, median of 3. The exact arm's state sha256 equals the reference exact service at all four oracle lengths.",
+  "engine_sha": "9211b07e13c64ab80ae04fcbfcbeab50fe0cbf04",
+  "binary": "strix-cuda-ds41-prefill-service",
+  "build": {
+    "configure": ["-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release", "-DSTRIX_CUDA_DS41_ONLY=ON", "-DCMAKE_CUDA_ARCHITECTURES=120", "-DSTRIX_WARNINGS_AS_ERRORS=OFF"],
+    "targets": ["strix-cuda-ds41-prefill-service"]
+  },
+  "decode_presets": ["ds41-pair"],
+  "assets": ["ds41_model"],
+  "port": 8095,
+  "positions": {"default": 32768, "values": [32768]},
+  "host_gib": {"max": 80, "physical_reserve_gib": 20},
+  "argv": [
+    "{binary}", "{ds41_model}",
+    "--host", "127.0.0.1", "--port", "{port}",
+    "--positions", "{positions}",
+    "--vram-cap-gib", "{vram_cap_gib}",
+    "--host-gib", "{host_gib}",
+    "--host-commit-floor-gib", "{commit_floor_gib}",
+    "--host-pin-wait-s", "90",
+    "--exact",
+    "--api-key", "{api_key}",
+    "--handoff-api-key", "{handoff_api_key}"
+  ],
+  "secret_flags": ["--api-key", "--handoff-api-key"],
+  "env": {"CUDA_DEVICE_ORDER": "PCI_BUS_ID", "CUDA_VISIBLE_DEVICES": "{pro_uuid}"},
+  "ready": {"stdout_event": "READY", "health_path": "/health", "timeout_s": 600},
+  "handoff_path": "/admin/import-state",
+  "profile": {
+    "gpu": {"name": "RTX PRO 6000 Blackwell", "vram_gib": 96, "pinned_gib": 73.3, "pcie_gbps": 30.1},
+    "model": "deepseek41",
+    "prefill_curve": [[512, 3.270], [2048, 3.387], [8192, 4.037], [32768, 11.548]],
+    "handoff_curve": [[512, 0.285], [2048, 0.326], [8192, 0.496], [32768, 1.117]],
+    "service_s": 0.06,
+    "import_pause_s": 0.05,
+    "provenance": "measured"
+  },
+  "profile_note": "prefill_curve: exact-arm prefill seconds (live timing). handoff_curve: export + sha256 of the same run, plus the 1 GbE transfer and the pair-side import measured end to end (W2 e2e medians 30/41/88/286 ms and 40/53/109/329 ms).",
+  "decode_profiles": {
+    "ds41-pair": {
+      "node_profile": {"prefill_curve": [[32, 0.239], [128, 0.477], [512, 1.336], [2048, 4.192], [8192, 14.05], [32768, 55.4]], "restore_s": 0.01},
+      "decode_s_per_token": [[1, 0.0351], [8, 0.0834]],
+      "context": {"flag": "--context", "default": 4096, "reserve_flag": "--default-max-tokens", "reserve_default": 1024},
+      "max_decode_replicas": 1,
+      "note": "pair TTFT by uncached length (TTFT report section 4, measured); decode 28.48 tok/s at 1 stream and 95.9 tok/s aggregate at 8 (numbers ledger section 1)"
+    }
+  },
+  "fidelity": {
+    "name": "ds41-rtx-exact-v1",
+    "prompt_rule": "ids = the token ids of a reference prompt file repeated cyclically to the length",
+    "oracle": [
+      {"tokens": 512, "source": "prompt-2k.txt", "ids_sha256": "d0be4f8a913c2257ba3e69092986210ec6548444f9d4a4c561e3ee482d908f30", "state_sha256": "8538951f4e0d389d0460aade64a6c2e9b213cba91b18ea64a05aff5562b99a7a", "next_token": 260, "logits_fnv": "8ea35bd67db2c61b", "state_bytes": 3357496},
+      {"tokens": 2048, "source": "prompt-2k.txt", "ids_sha256": "125ab86c6c94c8bf2573ec29d40ef112511a09d1221049575f1d754b1e8b3614", "state_sha256": "56ecd6e968353dfadbbd1cc7c8d6f3e8a6a63a269955b068ce04b7efac272a3c", "next_token": 10316, "logits_fnv": "2a2e2ab30972258c", "state_bytes": 4733752},
+      {"tokens": 8192, "source": "prompt-8k.txt", "ids_sha256": "2a5171f3faa0d990d79d5e70c9e44aea98a26e6e33adbecb3a2762bb8181ef98", "state_sha256": "50966095d5b0afa53c270a41f21d4d109d8347c1dcab6c0618b853822e120dd5", "next_token": 11118, "logits_fnv": "f38fa56984c92d0d", "state_bytes": 10226488},
+      {"tokens": 32768, "source": "prompt-16k.txt", "ids_sha256": "33d4ca98928d421d2be15f6a56074bf2225740c7003098fcb0a94ae0bd9ac846", "state_sha256": "aff3e0c3f3f25e72dccfc744a384f0245492da31de3a6bffe024a719fba237e3", "next_token": 1, "logits_fnv": "df90f8e4f6ae109b", "state_bytes": 32197432}
+    ],
+    "quality_gate": null,
+    "quality_gate_why": "the exact arm computes the base-model prefill; the pair decodes with the trellis mix-B identity, so offloaded requests run a composed identity that needs its own named quality receipt"
+  }
+}

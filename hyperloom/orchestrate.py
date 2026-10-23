@@ -18,7 +18,7 @@ from urllib.request import ProxyHandler, build_opener
 import uuid
 
 from .winproc import no_window
-from . import assets, procs, remote, render, secrets
+from . import assets, procs, remote, render, rtx, secrets
 from .paths import repo_root
 
 
@@ -95,7 +95,7 @@ def _profile(cluster, profile):
     if profile not in cluster.profiles:
         raise ValueError("unknown profile: " + profile)
     settings = cluster.profiles[profile]
-    kind = settings.get("preset", profile)
+    kind = render.family(settings.get("preset", profile))
     mids = settings["nodes"] if kind == "qwen-replicas" else [settings["rank0"], settings["rank1"]]
     return settings, kind, list(mids)
 
@@ -417,12 +417,17 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
     if kind == "ds41-pair" and mids != defaults:
         raise ValueError("pair requires both rank machines in rank order")
     declared = list(mids)
+    service = settings.get("prefill_service")
+    if service is not None and router != "local":
+        raise ValueError("the RTX prefill service is loopback-only: use --router local")
     for device in devices or []:
         try:
             mid, did = device.split(":", 1)
             machine = cluster.machines[mid]
         except (ValueError, KeyError) as exc:
             raise ValueError("unknown machine or device: " + device) from exc
+        if service is not None and (mid, did) == (service["machine"], service["device"]):
+            continue  # the profile's own prefill device, on this machine
         if mid not in mids or not any(d["id"] == did and not d.get("excluded", False) for d in machine.devices):
             raise ValueError("unknown, excluded, or unsupported profile device: " + device)
         declared.append(mid)
@@ -492,6 +497,11 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
             keys.append(str(key))
             local_values[str(key)] = secrets.ensure(router_key)
             selected.router["api_key_file"] = str(key)
+            if service is not None:
+                key = secrets.runtime_dir() / ("router-" + uuid.uuid4().hex + ".key")
+                keys.append(str(key))
+                local_values[str(key)] = secrets.ensure(_secret_name(profile, "prefill"))
+                selected.router["replica_api_key_files"][service["machine"]] = str(key)
             selected.router["listen"] = cluster.pc.get("router_listen", "127.0.0.1:18600")
         else:
             machine = cluster.machines[router]
@@ -550,6 +560,17 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
             deadlines.append(ready.get("deadline") or time.time() + deadline_s)
         state["deadline"] = min(deadlines)
         _check_stop(path)
+        if service is not None:
+            # After the decode side is READY (its import route is the handoff), before the router admits.
+            spec = rtx.render_service(selected, profile, api_key=secrets.ensure(_secret_name(profile, "prefill")),
+                                      handoff_api_key=node_values[mids[0]],
+                                      free_physical_gib=rtx.memory_status()["free_physical_gib"])
+            spec = rtx.ServiceSpec(**dict(spec.__dict__, deadline=min(spec.deadline, state["deadline"])))
+            state["prefill_service"] = {"machine": spec.machine_id, "directory": None, "argv": spec.redacted}
+            _write(path, state)
+            state["prefill_service"] = rtx.start_service(spec, detached=_detached, check=lambda: _check_stop(path))
+            _write(path, state)
+            _check_stop(path)
         if router == "local":
             for key, value in local_values.items():
                 secrets._write(Path(key), value.encode("ascii"))
@@ -782,6 +803,9 @@ def _down_state(state):
     router = state.get("router")
     if router and router["machine"] == "local":
         _stop_local_router(router)
+    service = state.get("prefill_service")
+    if service and service.get("directory"):
+        rtx.stop_service(service)
     errors = []
     leases = sorted(state["leases"], key=lambda row: row["role"] != "router")
     for lease in leases:
@@ -859,6 +883,11 @@ def status(profile=None):
             result["router"] = _http_json(state["router"]["endpoint"])
         except (OSError, ValueError) as exc:
             result["router"] = {"error": str(exc)}
+    if (state.get("prefill_service") or {}).get("port"):
+        try:
+            result["prefill_service"] = _http_json({"address": "127.0.0.1", "port": state["prefill_service"]["port"]}, "/health")
+        except (OSError, ValueError) as exc:
+            result["prefill_service"] = {"error": str(exc)}
     return result
 
 
@@ -866,11 +895,12 @@ def logs(profile, process, tail=100):
     if type(tail) is not int or not 1 <= tail <= 65536:
         raise ValueError("tail must be in 1..65536")
     state = _read(_state_path(profile))
-    if process == "router" and (state.get("router") or {}).get("machine") == "local":
-        directory = Path(state["router"]["directory"])
+    local = {"router": state.get("router") or {}, "prefill": state.get("prefill_service") or {}}.get(process, {})
+    if local.get("directory") and (process == "prefill" or local.get("machine") == "local"):
+        directory = Path(local["directory"])
         result = {}
         for stream in ("stdout", "stderr"):
-            with (directory / ("router." + stream + ".log")).open("rb") as source:
+            with (directory / (("router" if process == "router" else "service") + "." + stream + ".log")).open("rb") as source:
                 source.seek(0, 2)
                 source.seek(max(0, source.tell() - 32768))
                 result[stream] = "\n".join(source.read().decode("utf-8", errors="replace").splitlines()[-tail:])

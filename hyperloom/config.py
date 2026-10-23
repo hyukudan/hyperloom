@@ -148,9 +148,14 @@ def read_json(path):
 
 
 def preset(name):
-    if name not in ("qwen-replicas", "ds41-pair"):
+    if name not in ("qwen-replicas", "ds41-pair", "ds41-pair-long"):
         raise ConfigError(f"unknown preset: {name}")
     return read_json(PRESETS / f"{name}.json")
+
+
+def family(name):
+    """The engine profile a preset launches (a variant such as ds41-pair-long runs as ds41-pair)."""
+    return preset(name).get("family", name)
 
 
 def validate_overrides(overrides, data):
@@ -293,7 +298,8 @@ def parse(obj: dict) -> Cluster:
     profiles = record(obj["profiles"], "profiles", optional=obj["profiles"] if isinstance(obj["profiles"], dict) else ())
     for name, p in profiles.items():
         identifier(name, "profile name")
-        record(p, "profile", optional=("preset", "nodes", "rank0", "rank1", "port", "receipt", "overrides", "api_key_files", "release_id"))
+        record(p, "profile", optional=("preset", "nodes", "rank0", "rank1", "port", "receipt", "overrides", "api_key_files",
+                                       "release_id", "prefill_service"))
         kind = p.get("preset", name)
         data = preset(kind)
         if "receipt" in p and p["receipt"] != data["receipt"]:
@@ -321,6 +327,11 @@ def parse(obj: dict) -> Cluster:
         for mid, value in keys.items():
             absolute(value, "profile.api_key_files", machines[mid].os)
         validate_overrides(p.get("overrides", {}), data)
+        if "prefill_service" in p:
+            from . import rtx
+            service = rtx.parse_profile_service(p["prefill_service"], machines)
+            if family(kind) not in service["decode_presets"]:
+                raise ConfigError(f"profile.prefill_service: {service['name']} does not hand off to {kind}")
     pc = record(obj.get("pc", {}), "pc", optional=("router_listen", "ui_listen", "cuda"))
     for key in ("router_listen", "ui_listen"):
         if key in pc:
@@ -332,7 +343,8 @@ def parse(obj: dict) -> Cluster:
         if "pro_uuid" in cuda:
             text(cuda["pro_uuid"], "pc.cuda.pro_uuid")
         if cuda.get("reservation") is not None:
-            raise ConfigError("PC reservations are not supported in Phase 0")
+            from . import rtx
+            rtx.parse_reservation(cuda["reservation"])
     router = obj.get("router", {})
     _router(router, machines)
     return Cluster(machines, assets, profiles, router, pc, obj)

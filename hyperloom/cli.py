@@ -359,7 +359,15 @@ def main(argv=None):
     export = keys.add_parser("export")
     export.add_argument("profile")
     export.add_argument("--out", type=Path, required=True)
+    prefill = commands.add_parser("prefill", help="RTX prefill service: device check, CUDA build, fidelity gate")
+    prefill.add_argument("operation", choices=("check", "build", "gate", "placement"))
+    prefill.add_argument("profile")
+    prefill.add_argument("--config", type=Path, default=config_path())
+    prefill.add_argument("--prompts", type=Path, help="gate/placement: reference prompt file(s) directory")
+    prefill.add_argument("--source", type=Path, help="build: engine checkout at the preset's pinned commit")
     # Internal controller entry point; not part of the public interface.
+    helper = commands.add_parser("_prefill-run", help=argparse.SUPPRESS)
+    helper.add_argument("spec")
     helper = commands.add_parser("_router-run", help=argparse.SUPPRESS)
     helper.add_argument("directory")
     helper.add_argument("rendered")
@@ -423,6 +431,11 @@ def main(argv=None):
             _module("hyperloom.orchestrate").up_watch(args.path, args.token)
         elif args.command == "_up-router":
             _module("hyperloom.orchestrate").local_router_run(args.spec)
+        elif args.command == "_prefill-run":
+            _module("hyperloom.rtx").service_run(args.spec)
+        elif args.command == "prefill":
+            _json(_module("hyperloom.rtx").command(args.operation, _cluster(args.config), args.profile,
+                                                   prompts=args.prompts, source=args.source))
         elif args.command == "config":
             _cluster(args.path)
             _json({"valid": True})
@@ -431,8 +444,11 @@ def main(argv=None):
             renderer = _module("hyperloom.render")
             rendered = renderer.render_router(cluster, args.profile)
             renderer.validate_router(rendered)
-            _json({"router": rendered, "processes": [asdict(spec) for spec in
-                                                     renderer.render_processes(cluster, args.profile)]})
+            result = {"router": rendered, "processes": [asdict(spec) for spec in
+                                                        renderer.render_processes(cluster, args.profile)]}
+            if "prefill_service" in cluster.profiles[args.profile]:
+                result["prefill_service"] = _module("hyperloom.rtx").render_preview(cluster, args.profile)
+            _json(result)
         elif args.command == "doctor":
             _doctor(args)
         elif args.command == "_router-run":

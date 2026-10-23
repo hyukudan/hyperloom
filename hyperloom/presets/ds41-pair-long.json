@@ -1,0 +1,63 @@
+{
+  "family": "ds41-pair",
+  "qualified": false,
+  "receipt": "UNQUALIFIED long-context pair for the RTX prefill offload (Phase 3a)",
+  "receipt_note": "ds41-pair (P17.5 production defaults) with --context 10240 --slots 1, so an imported 8K state keeps the 1024-token default output reserve. Not qualified: the Phase 3a hardware acceptance qualifies it, and its receipt replaces this note.",
+  "engine_sha": "70ec42b9b5ead86c42cd673eff19bea3c09bd1df",
+  "port": 18431,
+  "binary": "strix-deepseek41-serve",
+  "assets": [
+    "ds41_model",
+    "dspark",
+    "ds41_vocab",
+    "overlay",
+    "trellis_k4",
+    "trellis_k5"
+  ],
+  "argv": [
+    "{binary}",
+    "{ds41_model}",
+    "--rank",
+    "{rank}",
+    "--transport",
+    "usb4gpu",
+    "--prefill-path",
+    "device",
+    "--dspark",
+    "{dspark}",
+    "--dspark-vocab",
+    "auto:{ds41_vocab}",
+    "--http-bind",
+    "{address}",
+    "--http-port",
+    "{port}",
+    "--http-api-key-file",
+    "{key_file}",
+    "--context",
+    "10240",
+    "--slots",
+    "1"
+  ],
+  "env": {
+    "STRIX_DS41_OVERLAY": "{overlay}",
+    "STRIX_DS41_CB4": "1",
+    "STRIX_DS41_TRELLIS": "{trellis_k4}",
+    "STRIX_DS41_TRELLIS_MIX": "head={trellis_k5}",
+    "STRIX_DS41_TRELLIS_SITES": "shexp,head",
+    "STRIX_DS41_TRELLIS_HEADOUT": "1"
+  },
+  "knobs": {
+    "--default-max-tokens": {
+      "min": 1,
+      "max": 4096
+    },
+    "--peer-timeout": {
+      "min": 1,
+      "max": 3600
+    },
+    "--http-port": {
+      "min": 1,
+      "max": 65535
+    }
+  }
+}

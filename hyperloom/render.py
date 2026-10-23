@@ -10,7 +10,7 @@ from pathlib import Path, PurePosixPath
 import re
 import sys
 
-from .config import ConfigError, listen, preset, validate_overrides
+from .config import ConfigError, family, listen, preset, validate_overrides
 from .paths import repo_root
 
 
@@ -130,7 +130,18 @@ def render_router(cluster, profile_name) -> dict:
                                 "port": _port(profile, data), "max_inflight": settings.get("max_inflight", 8),
                                 "api_key_file": keys[mid]})
     prefill = {"policy": settings.get("policy", "nodes")}
+    if "prefill_service" in profile:
+        # Phase 3a: the service listens on the control machine's loopback, so the router runs there too.
+        from . import rtx
+        if host != "local":
+            raise ConfigError("the RTX prefill service is loopback-only: run the router locally")
+        sid = profile["prefill_service"]["machine"]
+        if sid not in keys:
+            raise ConfigError(f"{sid}: missing router-host-local prefill service key file")
+        prefill = rtx.router_prefill(cluster, profile_name, keys[sid])
     for key in ("node_profile", "decode_s_per_token", "cache"):
+        if key in prefill:
+            continue  # the service preset's measured curves for this decode profile
         if key in settings:
             prefill[key] = deepcopy(settings[key])
         elif key in data.get("router", {}):
