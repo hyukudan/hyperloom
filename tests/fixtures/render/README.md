@@ -1,5 +1,5 @@
 The Qwen golden argv and its 13 explicit environment entries are sanitized from
-the r3 prod-c1 receipt. The preset retains its flag order, values and identity
+the rfix r1-c1 receipt (same argv as r3; env adds the D-058/D-059 production switches). The preset retains its flag order, values and identity
 pins, cross-checked with qwen_cmd.sh and qserve.py. Only paths, endpoints and the
 elided calibration tokens have been substituted. The router curves and cache
 block size come from that run's router-prod.json. No runtime environment is

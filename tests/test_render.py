@@ -31,7 +31,7 @@ class RenderTests(unittest.TestCase):
         actual = render_processes(parse(self.obj), "qwen-replicas")
         self.assertEqual([asdict(p) for p in actual], expected)
         self.assertEqual(actual[0].argv[2:5], ["11", "22", "33"])
-        self.assertEqual(len(actual[0].env), 13)
+        self.assertEqual(len(actual[0].env), 19)  # rfix production replica set
         self.assertEqual(actual[0].argv[actual[0].argv.index("--http-default-max-tokens")+1], "256")
 
     def test_ds41_contract_golden_both_ranks(self):

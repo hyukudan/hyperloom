@@ -14,7 +14,7 @@
       "commit": "70ec42b9b5ead86c42cd673eff19bea3c09bd1df",
       "ref": "PR #42 head (publish/main-20261023); move to the merge commit when it lands on main",
       "capabilities": ["strix-hip-decode-token --http-serve", "strix-deepseek41-serve (usb4gpu, --describe-json, /admin/drain, /admin/import-state)", "strix-cuda-ds41-prefill-service"],
-      "qualified_receipts": {"qwen-replicas": "qwen replica campaign r3 prod-c1", "ds41-pair": "P17.5 production defaults"}
+      "qualified_receipts": {"qwen-replicas": "qwen replica campaign rfix (production replica set, D-058/D-059)", "ds41-pair": "P17.5 production defaults"}
     },
     "strix-trellis": {
       "repo": "https://github.com/hyukudan/strix-trellis",

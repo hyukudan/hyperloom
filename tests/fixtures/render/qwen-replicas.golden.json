@@ -168,7 +168,7 @@
       "/opt/telar/secrets/engine.key"
     ],
     "env": {
-      "STRIX_COHORT_ROWS": "16",
+      "STRIX_COHORT_ROWS": "32",
       "STRIX_COHORT_WIDE": "all",
       "STRIX_DISPATCH_FUSE": "1",
       "STRIX_QKERN_QSA_PERSISTENT": "1",
@@ -180,7 +180,13 @@
       "STRIX_MTP_CONTROLLER": "minp",
       "STRIX_MTP_DRAFT_CACHE": "mixed",
       "STRIX_MTP_CACHE_AUDIT": "0",
-      "STRIX_QWEN_SHARED_DOWN_NARROW": "0"
+      "STRIX_QWEN_SHARED_DOWN_NARROW": "0",
+      "STRIX_QPERSIST_DRAFT_SCORE": "1",
+      "STRIX_QPERSIST_QSA_TAIL": "1",
+      "STRIX_QPERSIST_MTP_CACHE": "1",
+      "STRIX_QPERSIST_GDN_TAIL": "0",
+      "STRIX_MTP_HC_PERSISTENT": "0",
+      "STRIX_MTP_BATCH_JOINT": "1"
     },
     "ready": "qwen-stderr"
   },
@@ -353,7 +359,7 @@
       "/opt/telar/secrets/engine.key"
     ],
     "env": {
-      "STRIX_COHORT_ROWS": "16",
+      "STRIX_COHORT_ROWS": "32",
       "STRIX_COHORT_WIDE": "all",
       "STRIX_DISPATCH_FUSE": "1",
       "STRIX_QKERN_QSA_PERSISTENT": "1",
@@ -365,7 +371,13 @@
       "STRIX_MTP_CONTROLLER": "minp",
       "STRIX_MTP_DRAFT_CACHE": "mixed",
       "STRIX_MTP_CACHE_AUDIT": "0",
-      "STRIX_QWEN_SHARED_DOWN_NARROW": "0"
+      "STRIX_QWEN_SHARED_DOWN_NARROW": "0",
+      "STRIX_QPERSIST_DRAFT_SCORE": "1",
+      "STRIX_QPERSIST_QSA_TAIL": "1",
+      "STRIX_QPERSIST_MTP_CACHE": "1",
+      "STRIX_QPERSIST_GDN_TAIL": "0",
+      "STRIX_MTP_HC_PERSISTENT": "0",
+      "STRIX_MTP_BATCH_JOINT": "1"
     },
     "ready": "qwen-stderr"
   }

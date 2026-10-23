@@ -1,5 +1,5 @@
 {
-  "receipt": "qwen-rep-r3",
+  "receipt": "qwen-rep-rfix",
   "engine_sha": "70ec42b9b5ead86c42cd673eff19bea3c09bd1df",
   "port": 18501,
   "binary": "strix-hip-decode-token",
@@ -174,7 +174,7 @@
     "{key_file}"
   ],
   "env": {
-    "STRIX_COHORT_ROWS": "16",
+    "STRIX_COHORT_ROWS": "32",
     "STRIX_COHORT_WIDE": "all",
     "STRIX_DISPATCH_FUSE": "1",
     "STRIX_QKERN_QSA_PERSISTENT": "1",
@@ -186,7 +186,13 @@
     "STRIX_MTP_CONTROLLER": "minp",
     "STRIX_MTP_DRAFT_CACHE": "mixed",
     "STRIX_MTP_CACHE_AUDIT": "0",
-    "STRIX_QWEN_SHARED_DOWN_NARROW": "0"
+    "STRIX_QWEN_SHARED_DOWN_NARROW": "0",
+    "STRIX_QPERSIST_DRAFT_SCORE": "1",
+    "STRIX_QPERSIST_QSA_TAIL": "1",
+    "STRIX_QPERSIST_MTP_CACHE": "1",
+    "STRIX_QPERSIST_GDN_TAIL": "0",
+    "STRIX_MTP_HC_PERSISTENT": "0",
+    "STRIX_MTP_BATCH_JOINT": "1"
   },
   "knobs": {
     "--http-max-queue": {
@@ -253,5 +259,6 @@
     "sidecar_sha256": "5516d3ce407783a424315b6a2a0d8b06341665bb3541b98e5db0fe944add4c3c",
     "sidecar_bytes": 2786568256,
     "golden_sha256": "5db345508f79bda1af87a8c929ea463ca914f17dec3dd3b02273daf6ed7ce413"
-  }
+  },
+  "receipt_note": "all-fixes replica campaign (2026-10-22 22:05): D-058 joint windows + D-059 persistence switches, the production replica set"
 }

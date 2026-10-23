@@ -168,7 +168,7 @@
         "halo-2"
       ],
       "port": 18501,
-      "receipt": "qwen-rep-r3",
+      "receipt": "qwen-rep-rfix",
       "overrides": {},
       "api_key_files": {
         "halo-1": "/opt/telar/secrets/engine.key",

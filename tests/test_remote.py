@@ -32,8 +32,11 @@ class OpenSshToolTests(unittest.TestCase):
     def test_path_wins_then_windows_system_fallback(self):
         with patch.object(remote.shutil, "which", return_value="/x/ssh"):
             self.assertEqual(remote.openssh_tool("ssh"), "/x/ssh")
-        with patch.object(remote.shutil, "which", return_value=None),                 patch.object(remote.os, "name", "nt"),                 patch.object(remote.os.path, "isfile", return_value=True),                 patch.dict(os.environ, {"SystemRoot": "C:\Windows"}):
-            self.assertTrue(remote.openssh_tool("ssh").lower().endswith("openssh\ssh.exe"))
+        with (patch.object(remote.shutil, "which", return_value=None),
+              patch.object(remote.os, "name", "nt"),
+              patch.object(remote.os.path, "isfile", return_value=True),
+              patch.dict(os.environ, {"SystemRoot": r"C:\Windows"})):
+            self.assertTrue(remote.openssh_tool("ssh").lower().endswith(r"openssh\ssh.exe"))
 
 
 class RemoteTests(unittest.TestCase):
