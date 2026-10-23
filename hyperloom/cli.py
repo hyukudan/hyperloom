@@ -319,6 +319,15 @@ def main(argv=None):
     install.add_argument("profile")
     install.add_argument("--build-on")
     install.add_argument("--config", type=Path, default=config_path())
+    assets = commands.add_parser("assets", help="verify assets or inspect the integrity cache")
+    asset_commands = assets.add_subparsers(dest="operation", required=True)
+    for operation in ("verify", "status"):
+        asset_command = asset_commands.add_parser(operation)
+        asset_command.add_argument("profile")
+        asset_command.add_argument("--config", type=Path, default=config_path())
+        if operation == "verify":
+            asset_command.add_argument("--include-large", action="store_true")
+            asset_command.add_argument("--machine")
     up = commands.add_parser("up")
     # Keep the no-argument Phase 0 probe for existing launchers.
     up.add_argument("profile", nargs="?")
@@ -374,6 +383,13 @@ def main(argv=None):
             _, kind, mids = orchestrate._profile(cluster, args.profile)
             targets = ["strix-hip-decode-token" if kind == "qwen-replicas" else "strix-deepseek41-serve"]
             _json({"release_id": orchestrate.install(cluster, args.build_on or mids[0], targets, profile=args.profile)})
+        elif args.command == "assets":
+            cluster = _cluster(args.config)
+            assets = _module("hyperloom.assets")
+            if args.operation == "verify":
+                _json(assets.verify(cluster, args.profile, include_large=args.include_large, machine=args.machine))
+            else:
+                _json(assets.status(cluster, args.profile))
         elif args.command == "up":
             supplied = [args.approval_ref is not None, args.approval_lease is not None, args.approval_end is not None]
             approval = None

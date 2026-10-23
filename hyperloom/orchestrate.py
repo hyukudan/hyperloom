@@ -18,7 +18,7 @@ from urllib.request import ProxyHandler, build_opener
 import uuid
 
 from .winproc import no_window
-from . import procs, remote, render, secrets
+from . import assets, procs, remote, render, secrets
 from .paths import repo_root
 
 
@@ -464,11 +464,10 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
         if kind == "qwen-replicas":
             selected.profiles[profile]["nodes"] = mids
         releases = {}
+        state["assets"] = assets.inspect(cluster, profile, clients, mids, strict=True)
+        state["asset_cache_note"] = assets.CACHE_NOTE
         for mid in mids:
             releases[mid] = _release(clients[mid], cluster.machines[mid], profile, settings.get("release_id"))
-            for asset in cluster.assets.get(mid, {}).values():
-                if asset["bytes"]:
-                    _call(clients[mid], "verify-model", {"path": asset["path"], "bytes": asset["bytes"], "sha256": None})
         if len(set(releases.values())) != 1:
             raise OrchestrationError("profile nodes must run the same release id")
         selected.profiles[profile]["release_id"] = releases[mids[0]]
@@ -847,7 +846,8 @@ def status(profile=None):
     if not path.exists():
         return {"profile": profile, "state": "stopped"}
     state = _read(path)
-    result = {"profile": profile, "nodes": {}, "router": None}
+    result = {"profile": profile, "nodes": {}, "router": None,
+              "assets": state.get("assets", []), "asset_cache_note": assets.CACHE_NOTE}
     for mid, machine in state["machines"].items():
         try:
             result["nodes"][mid] = _call(_client(SimpleNamespace(**machine), state["known_hosts"]), "status", {"root": machine["install_root"]})
