@@ -469,7 +469,8 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
         for mid in mids:
             releases[mid] = _release(clients[mid], cluster.machines[mid], profile, settings.get("release_id"))
         if len(set(releases.values())) != 1:
-            raise OrchestrationError("profile nodes must run the same release id")
+            raise OrchestrationError("profile nodes must run the same release id: "
+                                     + ", ".join(f"{mid} {rid}" for mid, rid in releases.items()))
         selected.profiles[profile]["release_id"] = releases[mids[0]]
         node_values = {}
         node_paths = {}
