@@ -924,8 +924,15 @@ class API:
                                       | getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000))
         else:
             flags["start_new_session"] = True
-        child = subprocess.Popen(self._cli_argv(action, args), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                 stderr=subprocess.PIPE, **flags)
+        argv = self._cli_argv(action, args)
+        try:
+            child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE, **flags)
+        except PermissionError:
+            # The portal runs inside a job object that forbids breakaway; detach without it.
+            flags["creationflags"] &= ~getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)
+            child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE, **flags)
         out, err = child.communicate()
         if child.returncode != 0:
             raise APIError((err or out).decode("utf-8", "replace").strip()[-400:] or f"{action} failed", 500)
