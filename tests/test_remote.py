@@ -156,7 +156,7 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(scp[scp.index("-P") + 1], "2222")
         self.assertIn("StrictHostKeyChecking=yes", scp)
         self.assertIn("HostKeyAlias=[halo-1]:2222", scp)
-        self.assertEqual(scp[-5:-1], [str((source / name).absolute()) for name in remote.NODE_FILES])
+        self.assertEqual(scp[-1 - len(remote.NODE_FILES):-1], [str((source / name).absolute()) for name in remote.NODE_FILES])
         self.assertEqual(scp[-1], f"operator@halo-1:.hyperloom-boot/{stage}/")
         move = calls[3]["argv"][-1]
         self.assertTrue(move.startswith("cd -- " + shlex.quote(str(boot)) + " && chmod 700 -- "))
