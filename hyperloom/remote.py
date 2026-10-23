@@ -30,9 +30,12 @@ VERBS = frozenset({"version", "doctor", "gpu",
                    "lease", "cancel", "status", "logs", "stop", "put-secret",
                    "peer-run", "supervise-internal",
                    # hyperloom_download (phase 4)
-                   "download-plan", "download", "download-cancel"})
+                   "download-plan", "download", "download-cancel",
+                   # hyperloom_service (phase 4, non-lab only)
+                   "service-install", "service-start", "service-stop", "service-status", "service-remove"})
 # Files bootstrap copies into ~/.hyperloom-boot (the node CLI and its extension modules).
-NODE_FILES = ("hyperloom-node", "hyperloom_install.py", "hyperloom_lease.py", "hyperloom_download.py", "build-node.sh")
+NODE_FILES = ("hyperloom-node", "hyperloom_install.py", "hyperloom_lease.py", "hyperloom_download.py",
+              "hyperloom_service.py", "build-node.sh")
 
 
 class RemoteError(RuntimeError):
