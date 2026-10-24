@@ -63,6 +63,36 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(len(build), 1)
         self.assertIn("engine_commit", dict(build[0][1]))
 
+    def test_build_info_reports_the_running_launch_commits(self):
+        lock = json.loads((Path(__file__).resolve().parents[1] / "versions.lock").read_text(encoding="utf-8"))["components"]
+        launches = {"w5": {"engine_commit": "9" * 40}}
+        samples = prom.parse(metrics_export.collect({"w5": ROUTER, "lockonly": ROUTER, "down": None}, fake_fetch({}),
+                                                    launches=launches))
+        build = {dict(key[1])["profile"]: dict(key[1]) for key in samples if key[0] == "hyperloom_build_info"}
+        self.assertEqual(sorted(build), ["lockonly", "w5"])  # a down profile gets no sample
+        self.assertEqual(build["w5"]["engine_commit"], "9" * 40)
+        self.assertEqual(build["w5"]["tensormeld_commit"], lock["tensormeld"]["commit"])
+        self.assertEqual(build["lockonly"]["engine_commit"], lock["engine"]["commit"])
+        samples = prom.parse(metrics_export.collect({"down": None}, fake_fetch({}), launches={}))
+        build = [dict(key[1]) for key in samples if key[0] == "hyperloom_build_info"]
+        self.assertEqual(len(build), 1)
+        self.assertNotIn("profile", build[0])
+        self.assertEqual(build[0]["engine_commit"], lock["engine"]["commit"])
+
+    def test_launch_commits_from_saved_launch_state(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            run = Path(directory)
+            states = {"manifest": {"launch": {"engine_sha": "1" * 40, "components": {"engine": "2" * 40, "tensormeld": "3" * 40}}},
+                      "older": {"launch": {"engine_sha": "4" * 40}}, "nolaunch": {"router": None}}
+            for name, state in states.items():
+                (run / ("up-" + name + ".json")).write_text(json.dumps(state), encoding="utf-8")
+            (run / "up-broken.json").write_text("{", encoding="utf-8")
+            with mock.patch.object(metrics_export.secrets, "runtime_dir", return_value=run):
+                self.assertEqual(metrics_export.launch_commits(), {
+                    "manifest": {"engine_commit": "2" * 40, "tensormeld_commit": "3" * 40},
+                    "older": {"engine_commit": "4" * 40}})
+
     def test_deepseek_memory_and_identity(self):
         samples = prom.parse(metrics_export.collect({"ds": ROUTER}, fake_fetch(healthy("deepseek-status.json"))))
         one = dict(profile="ds", replica="halo-1", machine="halo-1")

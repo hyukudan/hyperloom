@@ -102,6 +102,23 @@ class RegistryTests(unittest.TestCase):
         with self.assertRaises(ConfigError):
             engines.adapter("other")
 
+    def test_service_units_follow_the_adapter_capability(self):
+        from hyperloom import service
+        self.assertEqual([f for f, row in engines.FAMILIES.items() if "service-unit" in row.capabilities],
+                         ["qwen-replicas"])
+        cluster = parse(cluster_obj())
+        for profile in ("ds41-pair-w5", "minimax-pair"):
+            with self.subTest(profile=profile), self.assertRaisesRegex(orch.OrchestrationError, "lease-only"):
+                service._machines(cluster, profile)
+        # A replica family preset other than qwen-replicas passes the capability check (then lab_mode refuses).
+        with self.assertRaisesRegex(orch.OrchestrationError, "lab_mode is true"):
+            service._machines(cluster, "qwen-replicas-w5")
+        pair = engines.FAMILIES["ds41-pair"]
+        with patch.dict(engines.FAMILIES, {"ds41-pair": SimpleNamespace(**dict(asdict(pair),
+                        capabilities=pair.capabilities + ("service-unit",)))}):
+            with self.assertRaisesRegex(orch.OrchestrationError, "lab_mode is true"):
+                service._machines(cluster, "ds41-pair-w5")
+
     def test_new_preset_pins_and_build_options(self):
         w5 = config.preset("ds41-pair-w5")
         self.assertEqual(engines.components(w5)["strix-trellis"]["commit"], "c95a169523dbf21ec636aab803f29d2c1d8a5eb0")
@@ -571,6 +588,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(rendered["replicas"][0]["address"], "127.0.0.1")
         self.assertEqual(state["launch"]["unpublished_sources"], ["engine"])
         self.assertEqual(state["launch"]["family"], "minimax-pair")
+        self.assertEqual(state["launch"]["components"], {"engine": "a" * 40, "tensormeld": "c" * 40})
         status = orch.status("minimax-pair")
         self.assertEqual(status["unpublished_sources"], ["engine"])
         self.calls.clear()

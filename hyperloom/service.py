@@ -8,7 +8,7 @@ part of a unit: start it with ``hyperloom router start`` (see docs/non-lab-mode.
 from copy import deepcopy
 import time
 
-from . import remote, render
+from . import engines, remote, render
 from .orchestrate import OrchestrationError, _call, _client, _node_name, _profile, _url, prelaunch
 
 
@@ -20,9 +20,9 @@ STOPPED = {"inactive", "failed"}
 
 def _machines(cluster, profile):
     settings, kind, mids = _profile(cluster, profile)
-    if kind != "qwen-replicas":
-        raise OrchestrationError("non-lab service mode supports qwen-replicas only; the DeepSeek pair needs a "
-                                 "peer turn and stays lease-only")
+    if "service-unit" not in engines.adapter(kind).capabilities:
+        raise OrchestrationError(f"non-lab service mode supports qwen-replicas only; {kind} needs a peer turn "
+                                 "and stays lease-only")
     lab = [mid for mid in mids if cluster.machines[mid].lab_mode]
     if lab:
         raise OrchestrationError("non-lab service mode refused: lab_mode is true (the default) on "

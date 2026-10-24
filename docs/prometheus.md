@@ -57,7 +57,7 @@ Labels: `profile`; replicas add `replica` and `machine` (the router's replica id
 
 | Metric | Type | Extra labels | From |
 |---|---|---|---|
-| `hyperloom_build_info` | gauge (1) | `version`, `engine_commit`, `tensormeld_commit` | `versions.lock` |
+| `hyperloom_build_info` | gauge (1) | `version`, `engine_commit`, `tensormeld_commit` | one sample per running profile: its release's manifest commits (older launch records: the preset's engine pin), else `versions.lock`; with no running profile, one sample from `versions.lock` |
 | `hyperloom_source_up` | gauge | `source` | each fetch |
 | `hyperloom_source_scrape_seconds` | gauge | `source` | each fetch |
 | `hyperloom_router_waiting` | gauge | | router `waiting` |

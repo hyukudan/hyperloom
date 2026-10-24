@@ -16,6 +16,8 @@ Fields:
   machine (which authenticates its own LAN listener, SPEC §2.7).
 - trellis: how the strix-trellis component is built and linked (None, ``ds41`` or ``minimax``).
 - label: GPU-turn label prefix (always ``hl-``; SPEC §16.4).
+- capabilities: what the control side may use. ``service-unit`` = the family may run as non-lab systemd --user units
+  (one process per node, no peer turn, a key file on a LAN bind; docs/non-lab-mode.md).
 """
 from __future__ import annotations
 
@@ -46,7 +48,7 @@ class Adapter:
 FAMILIES = {
     "qwen-replicas": Adapter("qwen-replicas", "strix-hip-decode-token", ("strix-hip-decode-token",), "replicas",
                              "qwen-stderr", "/health", "sigterm", "lan", True, None, "hl-qwen", None,
-                             ("http-serve", "key-file", "metrics", "api-status")),
+                             ("http-serve", "key-file", "metrics", "api-status", "service-unit")),
     "ds41-pair": Adapter("ds41-pair", "strix-deepseek41-serve", ("strix-deepseek41-serve",), "pair",
                          "ds41-json", "/health", "admin-drain", "lan", True, "ds41", "hl-ds41", "1",
                          ("http-serve", "key-file", "metrics", "api-status", "admin-drain", "import-state")),

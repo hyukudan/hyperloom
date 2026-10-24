@@ -43,7 +43,7 @@ _ENGINE_COUNTERS = {"completed", "failed", "cancelled", "prompt_tokens", "cached
 _SLOT_COUNTS = ("total", "busy", "free")
 _SLOT_POSITIONS = ("context_tokens", "pool_positions", "pool_largest_free")
 _HELP = {
-    "hyperloom_build_info": "hyperloom version and pinned component commits.",
+    "hyperloom_build_info": "hyperloom version and component commits (a running launch's release, else versions.lock).",
     "hyperloom_source_up": "1 when the telemetry source answered with a supported document.",
     "hyperloom_source_scrape_seconds": "Time taken to fetch and parse the source.",
     "hyperloom_router_waiting": "Requests waiting in the router queue.",
@@ -276,14 +276,54 @@ def _engine_status(out, labels, raw):
     out.add("hyperloom_engine_group_exchange_seconds_total", "counter", labels, group.get("exchange_seconds"))
 
 
-def _build_info(out):
-    labels = {"version": __version__}
+def _lock_commits():
     try:
         components = json.loads((repo_root() / "versions.lock").read_text(encoding="utf-8"))["components"]
-        labels.update(engine_commit=components["engine"]["commit"], tensormeld_commit=components["tensormeld"]["commit"])
+        return {"engine_commit": components["engine"]["commit"], "tensormeld_commit": components["tensormeld"]["commit"]}
     except (OSError, ValueError, KeyError, TypeError, RuntimeError):
-        pass  # Unknown commits are left out rather than invented.
-    out.add("hyperloom_build_info", "gauge", labels, 1)
+        return {}  # Unknown commits are left out rather than invented.
+
+
+def launch_commits():
+    """{profile: {engine_commit, tensormeld_commit}} of each saved launch: the running release's manifest components,
+    else the launched preset's engine pin. Missing values are left out."""
+    result = {}
+    for path in sorted(secrets.runtime_dir().glob("up-*.json")):
+        try:
+            state = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        launch = state.get("launch") if isinstance(state, dict) else None
+        if not isinstance(launch, dict):
+            continue
+        components = launch.get("components") if isinstance(launch.get("components"), dict) else {}
+        row = {}
+        engine_commit = components.get("engine") or launch.get("engine_sha")
+        if isinstance(engine_commit, str):
+            row["engine_commit"] = engine_commit
+        if isinstance(components.get("tensormeld"), str):
+            row["tensormeld_commit"] = components["tensormeld"]
+        if row:
+            result[path.stem[3:]] = row
+    return result
+
+
+def _build_info(out, routers=None, launches=None):
+    """One sample per running profile (its router is up) with its launch's commits, versions.lock for what the
+    launch does not record; with no running profile, one sample from versions.lock."""
+    lock = _lock_commits()
+    profiles = sorted(name for name, endpoint in (routers or {}).items() if isinstance(endpoint, dict))
+    if not profiles:
+        out.add("hyperloom_build_info", "gauge", {"version": __version__, **lock}, 1)
+        return
+    if launches is None:
+        try:
+            launches = launch_commits()
+        except (OSError, RuntimeError):
+            launches = {}
+    for name in profiles:
+        out.add("hyperloom_build_info", "gauge", {"version": __version__, "profile": name,
+                                                  **lock, **launches.get(name, {})}, 1)
 
 
 def _apply(out, apply, labels, outcome):
@@ -297,7 +337,7 @@ def _apply(out, apply, labels, outcome):
     return result, error, elapsed
 
 
-def collect(routers=None, fetch=_get, profile=None, deadline_s=SCRAPE_DEADLINE_S):
+def collect(routers=None, fetch=_get, profile=None, deadline_s=SCRAPE_DEADLINE_S, launches=None):
     """Return the exposition text for {profile: router endpoint or None}.
 
     Routers, then every replica's engine sources, are fetched in parallel against one overall deadline."""
@@ -305,7 +345,7 @@ def collect(routers=None, fetch=_get, profile=None, deadline_s=SCRAPE_DEADLINE_S
     if profile is not None:
         routers = {profile: routers.get(profile)}
     out = Exposition()
-    _build_info(out)
+    _build_info(out, routers, launches)
     fetches = _Fetches(fetch, time.monotonic() + deadline_s)
     jobs = []
     for name, endpoint in sorted(routers.items()):

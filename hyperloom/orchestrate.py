@@ -702,6 +702,10 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
                      rendered_router=rendered, launch=render.launch_summary(selected, profile))
         # Components built from a local bundle (never published) are named on every launch record.
         state["launch"]["unpublished_sources"] = unpublished((release_rows.get(mids[0]) or {}).get("manifest"))
+        # The release's component commits (its manifest), for build info; absent when the node lists none.
+        manifest_components = ((release_rows.get(mids[0]) or {}).get("manifest") or {}).get("components") or {}
+        state["launch"]["components"] = {name: row["commit"] for name, row in manifest_components.items()
+                                         if isinstance(row, dict) and isinstance(row.get("commit"), str)}
         # A non-production advanced knob makes the whole run non-production, like a diagnostic does.
         state["production"] = state["production"] and state["launch"]["production"]
         _write(path, state)
