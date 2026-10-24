@@ -17,7 +17,8 @@ Fields:
 - trellis: how the strix-trellis component is built and linked (None, ``ds41`` or ``minimax``).
 - label: GPU-turn label prefix (always ``hl-``; SPEC §16.4).
 - capabilities: what the control side may use. ``service-unit`` = the family may run as non-lab systemd --user units
-  (one process per node, no peer turn, a key file on a LAN bind; docs/non-lab-mode.md).
+  (one process per node, no peer turn, a key file on a LAN bind; docs/non-lab-mode.md). ``import-state-parked`` = an
+  imported prefill state is parked and used only by a prompt that starts with its tokens (recipe offload routes).
 """
 from __future__ import annotations
 
@@ -51,7 +52,11 @@ FAMILIES = {
                              ("http-serve", "key-file", "metrics", "api-status", "service-unit")),
     "ds41-pair": Adapter("ds41-pair", "strix-deepseek41-serve", ("strix-deepseek41-serve",), "pair",
                          "ds41-json", "/health", "admin-drain", "lan", True, "ds41", "hl-ds41", "1",
-                         ("http-serve", "key-file", "metrics", "api-status", "admin-drain", "import-state")),
+                         # import-state-parked: an import parks in a free slot and is taken only by a prompt that starts
+                         # with its tokens (apps/deepseek41_serve_main.cpp:61-70 at the pinned engine); recipes need it
+                         # for offload routes.
+                         ("http-serve", "key-file", "metrics", "api-status", "admin-drain", "import-state",
+                          "import-state-parked")),
     "minimax-pair": Adapter("minimax-pair", "strix-minimax-serve", ("strix-minimax-serve",), "pair",
                             "minimax-stdout", "/health", "leader-first", "loopback", False, "minimax", "hl-mm", "1",
                             ("http-serve", "metrics")),

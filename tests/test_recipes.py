@@ -1,0 +1,752 @@
+"""Recipes in the orchestrator: stub reader (schema draft 2), selection, deployment decision, probes, saved header
+descriptors, the recipe CLI, `up --recipe`, and the router's selector against the reader (conformance)."""
+from contextlib import redirect_stdout
+from copy import deepcopy
+import importlib.util
+import io
+import dataclasses
+import itertools
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+import time
+import unittest
+from unittest import mock
+
+from hyperloom import cli, modelfiles
+from hyperloom.paths import repo_root
+from hyperloom.recipes import apply, descriptors, facts, launch, probe, reader, session
+from hyperloom.recipes.reader import GIB_BYTES, RecipeError, StaleProfile
+
+FIXTURES = Path(__file__).parent / "fixtures" / "recipes"
+MM = (FIXTURES / "minimax-lab.toml").read_text(encoding="utf-8")
+DS = (FIXTURES / "ds41-lab.toml").read_text(encoding="utf-8")
+GPU = "GPU-00000000-0000-0000-0000-000000000001"
+
+
+def mm(old=None, new=None):
+    return MM if old is None else MM.replace(old, new)
+
+
+def ctx(service=True, capabilities=("import-state-parked",), model="minimax-m3.1-flash"):
+    return apply.Context("mm", model, "pair", ["n1", "n2"], "pc", capabilities=capabilities,
+                         service={"machine": "pc", "device": "pro", "uuid": GPU, "engine": "ds41-rtx-prefill",
+                                  "host_overhead_gib": 4.0} if service else None)
+
+
+INVENTORY = {"cuda": [{"uuid": GPU, "name": "NVIDIA RTX PRO 6000 Blackwell", "memory_gib": 95.6}]}
+FACTS = {"model": "minimax-m3.1-flash",
+         "devices": {GPU: {"name": "NVIDIA RTX PRO 6000 Blackwell", "memory_gib": 95.6, "host_ram_gib": 127.7},
+                     "n1": {"name": "AMD Radeon 8060S", "memory_gib": 120.0, "host_ram_gib": 125.0},
+                     "n2": {"name": "AMD Radeon 8060S", "memory_gib": 120.0, "host_ram_gib": 125.0}},
+         "links": [{"kind": "ethernet", "hosts": ["pc", "n1"], "gbps": 2.5},
+                   {"kind": "ethernet", "hosts": ["pc", "n2"], "gbps": 2.5},
+                   {"kind": "usb4", "hosts": ["n1", "n2"], "gbps": None}]}
+
+
+def availability(**changes):
+    data = {"devices": {GPU: {"available": True}, "n1": {"available": True}, "n2": {"available": True}},
+            "links": {"pc-nodes": {"up": True}, "pair.internal": {"up": True}},
+            "hosts": {"pc": {"free_ram_gib": 100.0, "free_commit_gib": 150.0},
+                      "n1": {"free_ram_gib": 124.0}, "n2": {"free_ram_gib": 124.0}}}
+    data.update(changes)
+    return data
+
+
+# The MiniMax fixture's units groups are a strix-stream placement; hyperloom's service mapping takes only the budget.
+PLAIN = mm('chunk_tokens = 4096\n\n[[routes.placement.rtx.units]]\nid = "layers"\nclass = "blob"\nresident = 32\n'
+           'pinned = 16\nrest = "disk"\n', '')
+
+
+class ReaderTests(unittest.TestCase):
+    def test_fixture_parses_with_defaults(self):
+        recipe = reader.parse(MM, "mm.toml")
+        self.assertEqual([r["id"] for r in recipe["routes"]], ["prefill_long", "prefill_nodes", "decode_pair"])
+        placement = recipe["routes"][0]["placement"]["rtx"]
+        self.assertEqual((placement["staging_buffers"], placement["workspace_gib"]), (4, None))
+        self.assertEqual(recipe["routes"][0]["handoff_route"], "decode_pair")
+        self.assertEqual(reader.parse(json.dumps(reader.load_text(MM)))["routes"], recipe["routes"])  # JSON == TOML
+
+    def test_refusals_name_the_path(self):
+        cases = {
+            'resident = 32': ('residnet = 32', 'routes.prefill_long.placement.rtx.units.layers: unknown key "residnet"'),
+            'name = "minimax-m3.1-flash-lab"': ('name = "minimax-m3.1-flash-lab"\nexact = true', "exactness is not a recipe option"),
+            'when = { prompt_tokens_min = 4096 }': ('when = { prompt_tokens_min = 4096.0 }', "expected an integer"),
+            'handoff_route = "decode_pair"\nlinks': ('handoff_route = "prefill_nodes"\nlinks', "is not a decode route"),
+            'fallback = "prefill_nodes"': ('fallback = "prefill_long"', "expected another route"),
+            'links = ["pc-nodes"]': ('links = []', "links: must connect rtx, pair"),
+            'device_gib = 92.0': ('device_gib = 95.0', "exceeds match.devices.rtx.memory_min_gib"),
+            'host_pinned_gib = 48.0': ('host_pinned_gib = 0.0', "must be > 0 when a unit group uses the pinned tier"),
+            'rest = "disk"': ('rest = "peer"', 'required exactly when rest = "peer"'),
+            'execute = "tp"\nhandoff_route': ('execute = "single"\nhandoff_route', "single does not fit"),
+            'memory_min_gib = 94.0': ('memory_min_gib = inf', "inf and nan"),
+        }
+        for old, (new, message) in cases.items():
+            with self.subTest(new=new), self.assertRaisesRegex(RecipeError, message.replace("(", r"\(").replace(")", r"\)")):
+                self.assertIn(old, MM)
+                reader.parse(mm(old, new))
+
+    def test_catch_all_cycles_and_unknown_references(self):
+        with self.assertRaisesRegex(RecipeError, "must have an empty `when`"):
+            reader.parse(mm('execute = "tp"\nhandoff_route = "decode_pair"\n',
+                            'execute = "tp"\nhandoff_route = "decode_pair"\nwhen = { prompt_tokens_max = 4095 }\n'))
+        with self.assertRaisesRegex(RecipeError, "no decode route"):
+            reader.parse(mm('phase = "decode"', 'phase = "prefill"'))
+        with self.assertRaisesRegex(RecipeError, 'duplicate id "rtx"'):
+            reader.parse(mm('id = "pair"\nkind = "hip"', 'id = "rtx"\nkind = "hip"'))
+        with self.assertRaisesRegex(RecipeError, "not a settable path"):
+            reader.parse(mm('pin = ["routes.prefill_long.when.prompt_tokens_min"]', 'pin = ["routes.prefill_long.phase"]'))
+
+    def test_layers_precedence_pins_and_atomicity(self):
+        overrides = ('schema = "strix-stream/recipe-overrides-v1"\nrecipe = "minimax-m3.1-flash-lab"\n[set]\n'
+                     '"routes.prefill_long.placement.rtx.units.layers.resident" = 33\n')
+        eff = reader.resolve(MM, "mm.toml", profile=(profile_text(set_lines=(
+            '"routes.prefill_long.when.prompt_tokens_min" = 2048', '"routes.prefill_long.placement.rtx.units.layers.resident" = 31')),
+            "p.toml"), overrides=[(overrides, "o.toml")], sets=[reader.parse_set("limits.host_free_ram_floor_gib=6")],
+            probe=identity())
+        self.assertFalse(eff.untuned, eff.refused)
+        long = eff.recipe["routes"][0]
+        self.assertEqual(long["when"]["prompt_tokens_min"], 4096)                          # pinned: profile ignored
+        self.assertEqual(long["placement"]["rtx"]["units"][0]["resident"], 33)             # override beats profile
+        rows = {r["path"]: r for r in reader.explain(eff)["fields"]}
+        resident = rows["routes.prefill_long.placement.rtx.units.layers.resident"]
+        self.assertEqual((resident["layer"], resident["origin"]), ("override", "o.toml"))
+        self.assertEqual([s["layer"] for s in resident["shadowed"]], ["recipe", "profile"])
+        pinned = rows["routes.prefill_long.when.prompt_tokens_min"]
+        self.assertEqual(pinned["shadowed"][0]["why"], "pinned by recipe: routes.prefill_long.when.prompt_tokens_min")
+        self.assertEqual(rows["limits.host_free_ram_floor_gib"]["origin"], "--set")
+        # A budget the profile was tuned with cannot be overridden on top of it (draft 5 §6.1).
+        with self.assertRaisesRegex(RecipeError, "drop the profile or retune"):
+            reader.resolve(MM, profile=(profile_text(set_lines=(
+                '"routes.prefill_long.placement.rtx.units.layers.resident" = 31',)), "p.toml"), probe=identity(),
+                sets=[("routes.prefill_long.placement.rtx.host_pinned_gib", 40.0)])
+        self.assertEqual(reader.resolve(MM, profile=(profile_text(), "p.toml"), probe=identity(),
+                                        sets=[("routes.prefill_long.placement.rtx.host_pinned_gib", 40.0)])
+                         .recipe["routes"][0]["placement"]["rtx"]["host_pinned_gib"], 40.0)   # placement not tuned
+        self.assertEqual(reader.resolve(MM, sets=[("routes.prefill_long.placement.rtx.host_pinned_gib", 40.0)])
+                         .recipe["routes"][0]["placement"]["rtx"]["host_pinned_gib"], 40.0)
+        # A layer that would make the recipe invalid is refused whole.
+        with self.assertRaisesRegex(RecipeError, "--set: refused"):
+            reader.resolve(MM, sets=[("routes.prefill_long.when.prompt_tokens_min", 5000),
+                                     ("routes.prefill_long.when.prompt_tokens_max", 4500)])
+        with self.assertRaisesRegex(RecipeError, "not a settable path"):
+            reader.resolve(MM, sets=[("routes.prefill_long.execute", "tp")])
+
+    def test_stale_profiles_run_untuned(self):
+        cases = [
+            (profile_text(recipe_sha="0" * 64), identity(), "another version of the recipe file"),
+            (profile_text(), None, "no identity"),
+            (profile_text(), identity(workload="decode-chat"), "tuned for workload default"),
+            (profile_text(), identity(drivers="581.02"), "key.drivers.rtx is 580.88, probed 581.02"),
+            (profile_text(), identity(disk=5.0), "6.8 at tuning, 5 now"),
+            (profile_text(), identity(descriptor="1" * 64), "key.descriptors"),
+        ]
+        for text, ident, why in cases:
+            with self.subTest(why=why):
+                eff = reader.resolve(MM, profile=(text, "p.toml"), probe=ident)
+                self.assertTrue(eff.untuned)
+                self.assertIn(why, eff.refused[0])
+                self.assertEqual(eff.recipe["limits"]["host_free_ram_floor_gib"], 8.0)
+        self.assertFalse(reader.resolve(MM, profile=(profile_text(), "p.toml"), probe=identity(disk=6.5)).untuned)
+        with self.assertRaisesRegex(RecipeError, "workload: required"):
+            reader.resolve(MM, profile=(profile_text().replace('workload = "default"\n', ""), "p.toml"), probe=identity())
+        with self.assertRaisesRegex(RecipeError, r"key.drivers: one entry for every set"):
+            reader.resolve(MM, profile=(profile_text().replace(', pair = "6.4.3"', ""), "p.toml"), probe=identity())
+        with self.assertRaisesRegex(RecipeError, 'is for "other"'):
+            reader.resolve(MM, overrides=[('schema = "strix-stream/recipe-overrides-v1"\nrecipe = "other"\n[set]\n', "o")])
+
+
+def profile_text(recipe_sha=None, set_lines=('"limits.host_free_ram_floor_gib" = 4',)):
+    sha = recipe_sha or __import__("hashlib").sha256(MM.encode()).hexdigest()
+    return ('schema = "strix-stream/recipe-profile-v1"\nrecipe = "minimax-m3.1-flash-lab"\n'
+            f'recipe_sha256 = "{sha}"\nsource = "tune"\nworkload = "default"\n'
+            f'[key]\nengine_sha256 = "{"a" * 64}"\nmodel_sha256 = "{"b" * 64}"\n'
+            f'devices = {{ rtx = ["{GPU}"], pair = ["n1", "n2"] }}\n'
+            'drivers = { rtx = "580.88", pair = "6.4.3" }\n'
+            f'descriptors = {{ rtx = ["{"0" * 64}"], pair = ["{"0" * 64}", "{"0" * 64}"] }}\n'
+            '[probe.rtx]\ndisk_read_gbytes_ps = 6.8\nh2d_gbytes_ps = 25.1\n[probe.pair]\ndisk_read_gbytes_ps = 5.9\n'
+            '[set]\n' + "\n".join(set_lines) + "\n")
+
+
+def identity(workload="default", drivers="580.88", disk=6.8, descriptor="0" * 64):
+    return {"engine_sha256": "a" * 64, "model_sha256": "b" * 64, "workload": workload,
+            "binding": {"rtx": [{"id": GPU, "host": "pc"}], "pair": [{"id": "n1", "host": "n1"}, {"id": "n2", "host": "n2"}]},
+            "descriptors": {"rtx": [descriptor], "pair": ["0" * 64, "0" * 64]},
+            "devices": [{"id": GPU, "driver": drivers, "disk_read_gbytes_ps": disk, "h2d_gbytes_ps": 25.0},
+                        {"id": "n1", "driver": "6.4.3", "disk_read_gbytes_ps": 5.9},
+                        {"id": "n2", "driver": "6.4.3", "disk_read_gbytes_ps": 6.0}]}
+
+
+BINDING = {"rtx": [{"id": GPU, "host": "pc"}], "pair": [{"id": "n1", "host": "n1"}, {"id": "n2", "host": "n2"}]}
+SHA = "e" * 64
+
+
+def compiled(recipe, context=None):
+    """Requirements and running credits as hyperloom compiles them (cap model), for the bound fixture devices."""
+    bound = {"binding": BINDING, "roles": {"rtx": "service", "pair": "decode"}, "why": {}}
+    reqs = apply.requirements(recipe, SHA, context or ctx(), bound)
+    running = [apply.running_entry(r, SHA, reqs) for r in ("decode_pair", "prefill_nodes")]
+    return reqs, running
+
+
+def select_state(recipe, tokens=8192, **changes):
+    reqs, running = compiled(recipe)
+    data = {"phase": "prefill", "prompt_tokens": tokens, "context_tokens": tokens + 1024, "batch": 1,
+            "binding": BINDING, "descriptors": {"rtx": ["0" * 64], "pair": ["0" * 64, "0" * 64]},
+            "devices": {GPU: {"available": True}, "n1": {"available": True}, "n2": {"available": True}},
+            "links": {"pc-nodes": {"up": True}, "pair.internal": {"up": True}},
+            "hosts": {"pc": {"free_ram_gib": 70.0}, "n1": {"free_ram_gib": 5.0}, "n2": {"free_ram_gib": 5.0}},
+            "running": running, "requirements": reqs}
+    data.update(changes)
+    return data
+
+
+class SelectTests(unittest.TestCase):
+    def setUp(self):
+        self.recipe = reader.parse(MM)
+
+    def pick(self, **changes):
+        tokens = changes.pop("tokens", 8192)
+        return reader.select(self.recipe, select_state(self.recipe, tokens, **changes), SHA)
+
+    def test_threshold_fallback_and_trace(self):
+        self.assertEqual(self.pick(tokens=4095)["route"], "prefill_nodes")
+        result = self.pick(tokens=4096)
+        self.assertEqual((result["route"], result["handoff_route"], result["charge"]),
+                         ("prefill_long", "decode_pair", {"pc": 53 * GIB_BYTES}))
+        result = self.pick(devices={GPU: {"available": False, "why": "PRO busy"}, "n1": {"available": True},
+                                    "n2": {"available": True}})
+        self.assertEqual(result["route"], "prefill_nodes")
+        self.assertEqual(result["trace"][0]["verdict"], "refused")
+        self.assertIn("PRO busy", result["trace"][0]["why"])
+
+    def test_ram_charge_running_credit_and_plan_binding(self):
+        low = {"hosts": {"pc": {"free_ram_gib": 55.0}}}                     # 48 pinned + 1 staging + 4 overhead + floor
+        self.assertIn("charge 53.0 GiB", self.pick(**low)["trace"][0]["why"])
+        reqs, running = compiled(self.recipe)
+        credited = running + [apply.running_entry("prefill_long", SHA, reqs)]
+        self.assertEqual(self.pick(running=credited, **low)["route"], "prefill_long")
+        stale = [dict(entry, plan_ids=["0" * 64]) for entry in credited]       # credits for other plans count nothing
+        with self.assertRaisesRegex(RecipeError, "no admissible prefill route"):
+            self.pick(running=stale, **low)
+
+    def test_requirements_must_match_recipe_device_and_descriptor(self):
+        reqs, _ = compiled(self.recipe)
+        for change in ({"effective_sha256": "0" * 64}, {"id": "GPU-other"}, {"descriptor_sha256": "1" * 64}):
+            bad = [dict(r, **change) if r["route"] == "prefill_long" else r for r in reqs]
+            result = self.pick(requirements=bad)
+            self.assertEqual(result["route"], "prefill_nodes")
+            self.assertIn("not compiled for this recipe", result["trace"][0]["why"])
+
+    def test_bounds_internal_link_missing_state_session(self):
+        with self.assertRaisesRegex(RecipeError, "context 40000 > max_context_tokens 32768 on rtx.*on pair"):
+            self.pick(context_tokens=40000)
+        with self.assertRaisesRegex(RecipeError, "pair.internal"):
+            self.pick(links={"pc-nodes": {"up": True}})
+        with self.assertRaisesRegex(RecipeError, "missing from the state"):
+            self.pick(devices={})
+        self.assertEqual(self.pick(tokens=4, session_route="prefill_long")["route"], "prefill_long")
+        with self.assertRaisesRegex(RecipeError, "session route"):
+            self.pick(session_route="prefill_long", links={})
+
+
+class ApplyTests(unittest.TestCase):
+    def deploy(self, text=PLAIN, context=None, avail=None, inventory=INVENTORY):
+        recipe = reader.parse(text)
+        context = context or ctx()
+        bound = apply.bind(recipe, context, inventory)
+        return recipe, bound, apply.deploy(recipe, context, bound, avail or availability(), SHA)
+
+    def test_bind_report_and_match_messages(self):
+        recipe = reader.parse(MM)
+        bound = apply.bind(recipe, ctx(), INVENTORY)
+        self.assertEqual(bound["binding"], BINDING)
+        report = apply.probe_report(recipe, bound, FACTS)
+        self.assertEqual([d["id"] for d in report["devices"]], [GPU, "n1", "n2"])
+        self.assertEqual(apply.match(recipe, report, bound), [])
+        small = deepcopy(FACTS)
+        small["devices"][GPU].update(name="NVIDIA GeForce RTX 4090", memory_gib=23.6)
+        small["links"] = small["links"][:1]
+        problems = apply.match(recipe, apply.probe_report(recipe, bound, small), bound)
+        self.assertTrue(any('name does not contain "RTX PRO 6000"' in p and "memory 23.60 GiB < 94" in p for p in problems))
+        self.assertTrue(any("match.links.pc-nodes" in p and "n2" in p for p in problems))
+        with self.assertRaisesRegex(RecipeError, "count 2, but profile mm runs 3"):
+            apply.bind(recipe, apply.Context("mm", "m", "replicas", ["a", "b", "c"], "pc"), INVENTORY)
+
+    def test_disk_minimum_without_measurement_says_how_to_measure(self):
+        recipe = reader.parse(mm('host_ram_min_gib = 120.0', 'host_ram_min_gib = 120.0\ndisk_read_gbytes_ps_min = 5.0'))
+        bound = apply.bind(recipe, ctx(), INVENTORY)
+        problems = apply.match(recipe, apply.probe_report(recipe, bound, FACTS), bound)
+        self.assertIn("recipe probe <profile> --disks", problems[0])
+
+    def test_service_starts_with_mapped_flags_and_running_routes(self):
+        _, _, decision = self.deploy()
+        self.assertEqual(decision["service"], {"start": True, "why": None,
+                                               "flags": {"vram_cap_gib": 92.0, "host_gib": 48.0}})
+        self.assertEqual([r["route"] for r in decision["running"]], ["decode_pair", "prefill_nodes"])
+        long = [r for r in decision["requirements"] if r["route"] == "prefill_long"]
+        self.assertEqual([r["host_bytes"] for r in long], [53 * GIB_BYTES])              # 48 + 1 staging + 4 overhead
+        self.assertEqual(len({r["plan_id"] for r in decision["requirements"]}), len(decision["requirements"]))
+
+    def test_skips_never_start_the_service(self):
+        cases = [
+            (availability(devices={GPU: {"available": False, "why": "RTX PRO busy: 1 job"},
+                                   "n1": {"available": True}, "n2": {"available": True}}), "RTX PRO busy"),
+            (availability(links={"pc-nodes": {"up": False, "why": "n1: no physical interface up"},
+                                 "pair.internal": {"up": True}}), "pc-nodes"),
+            (availability(hosts={"pc": {"free_ram_gib": 55.0, "free_commit_gib": 150.0},
+                                 "n1": {"free_ram_gib": 124.0}, "n2": {"free_ram_gib": 124.0}}), "< floor 8 GiB"),
+        ]
+        for avail, why in cases:
+            with self.subTest(why=why):
+                _, _, decision = self.deploy(avail=avail)
+                self.assertFalse(decision["service"]["start"])
+                self.assertIn(why, decision["service"]["why"])
+                self.assertTrue(next(p for p in decision["prefill"] if p["id"] == "prefill_nodes")["admitted"])
+        _, _, decision = self.deploy(context=ctx(service=False))
+        self.assertEqual(decision["service"]["why"], "the profile has no prefill service")
+
+    def test_refusals_before_launch(self):
+        with self.assertRaisesRegex(RecipeError, "units cannot be applied to the ds41-rtx-prefill service"):
+            self.deploy(MM.replace("chunk_tokens = 4096\n", ""))
+        with self.assertRaisesRegex(RecipeError, "chunk_tokens, units cannot be applied"):
+            self.deploy(MM)
+        with self.assertRaisesRegex(RecipeError, "no parked import contract"):
+            self.deploy(context=ctx(capabilities=()))
+        with self.assertRaisesRegex(RecipeError, "batch predicates on prefill routes"):
+            self.deploy(PLAIN.replace("when = { prompt_tokens_min = 4096 }", "when = { prompt_tokens_min = 4096, batch_max = 2 }"))
+        two = PLAIN.replace('[[routes]]\nid = "decode_pair"', '[[routes]]\nid = "decode_big"\nphase = "decode"\n'
+                            'devices = ["pair"]\nexecute = "tp"\nwhen = { batch_min = 4 }\n'
+                            '[routes.placement.pair]\nmax_context_tokens = 32768\nmax_batch = 8\nstaging_buffers = 8\n'
+                            '\n[[routes]]\nid = "decode_pair"')
+        with self.assertRaisesRegex(RecipeError, "chooses decode by workload"):
+            self.deploy(two)
+        local = PLAIN.replace('handoff_route = "decode_pair"\n\n[routes.placement.pair]\nmax_context_tokens = 32768\n'
+                              'max_batch = 8\n', 'handoff_route = "decode_pair"\n\n[routes.placement.pair]\n'
+                              'max_context_tokens = 32768\nmax_batch = 8\nstaging_mib = 128\n')
+        self.assertNotEqual(local, PLAIN)
+        with self.assertRaisesRegex(RecipeError, "same \"pair\" processes with different placements \\(staging_mib\\)"):
+            self.deploy(local)
+        low = availability(hosts={"pc": {"free_ram_gib": 100.0}, "n1": {"free_ram_gib": 100.0},
+                                  "n2": {"free_ram_gib": 124.0}})
+        with self.assertRaisesRegex(RecipeError, r"no admissible decode route \(decode_pair: host n1"):
+            self.deploy(avail=low)
+        big = PLAIN.replace("max_context_tokens = 32768\nmax_batch = 1\n", "max_context_tokens = 65536\nmax_batch = 1\n")
+        with self.assertRaisesRegex(RecipeError, "max_context_tokens: 65536 > the service's 32768 positions"):
+            self.deploy(big, context=dataclasses.replace(ctx(), limits={"service_positions": 32768}))
+        with self.assertRaisesRegex(RecipeError, "runs one prompt at a time"):
+            self.deploy(PLAIN.replace("max_context_tokens = 32768\nmax_batch = 1\n",
+                                      "max_context_tokens = 32768\nmax_batch = 2\n"))
+
+    def test_route_table_is_the_effective_prefill_routes(self):
+        eff = reader.resolve(PLAIN, sets=[("routes.prefill_long.when.prompt_tokens_min", 3072)])
+        bound = apply.bind(eff.recipe, ctx(), INVENTORY)
+        decision = apply.deploy(eff.recipe, ctx(), bound, availability(), eff.canonical_sha256())
+        table = apply.route_table(eff.to_json(), eff.sha256, bound, decision, "state.json", ctx())
+        self.assertEqual(table["schema"], "tensormeld/prefill-route-table-v1")
+        self.assertEqual([(r["id"], r["place"], r["when"]["prompt_tokens_min"]) for r in table["routes"]],
+                         [("prefill_long", "offload", 3072), ("prefill_nodes", "local", 0)])
+        self.assertEqual(table["routes"][0]["sets"], ["rtx", "pair"])
+        self.assertEqual(table["routes"][0]["links"], ["pc-nodes", "pair.internal"])
+        self.assertEqual(table["routes"][0]["max_context_tokens"], 32768)
+        self.assertEqual(table["routes"][0]["charges"], {"pc": 53.0})
+
+
+class ProbeTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.dir = Path(temporary.name)
+
+    def test_sequential_offsets(self):
+        mib = probe.MIB
+        self.assertEqual(probe._offsets(100 * mib, 8 * mib, 4), [48 * mib, 56 * mib, 64 * mib, 72 * mib])
+        self.assertEqual(len(probe._offsets(20 * mib, 8 * mib, 32)), 2)
+        self.assertEqual(probe._offsets(4 * mib, 8 * mib, 4), [])
+
+    def test_disk_probe_reads_bounded_and_reports_the_method(self):
+        path = self.dir / "model.bin"
+        path.write_bytes(os.urandom(24 * probe.MIB))
+        result = probe.read_bandwidth(path, 16 * probe.MIB)
+        self.assertEqual(result["bytes"], 16 * probe.MIB)
+        self.assertIn(result["method"], ("direct", "buffered"))
+        self.assertGreater(result["gbytes_ps"], 0)
+        with self.assertRaises(probe.ProbeError):
+            probe.read_bandwidth(path, 2 * probe.DISK_PROBE_MAX_BYTES)
+
+    def test_disk_fact_cache_and_buffered_is_no_evidence(self):
+        path = self.dir / "model.bin"
+        path.write_bytes(b"\0" * 16)
+        cache = facts.Cache(self.dir / "cache.json")
+        stat = probe.file_stat(path)
+        missing = probe.disk_fact(cache, "pc", str(path), stat, False, None)
+        self.assertIn("--disks", missing["why"])
+        measured = probe.disk_fact(cache, "pc", str(path), stat, True,
+                                   lambda: {"gbytes_ps": 6.5, "bytes": 1, "seconds": 1, "method": "direct"})
+        self.assertEqual((measured["value"], measured["source"]), (6.5, "probed"))
+        self.assertEqual(probe.disk_fact(cache, "pc", str(path), stat, False, None)["value"], 6.5)
+        os.utime(path, (1, 1))
+        self.assertIsNone(probe.disk_fact(cache, "pc", str(path), probe.file_stat(path), False, None)["value"])
+        buffered = probe.disk_fact(cache, "pc", str(path), stat, True,
+                                   lambda: {"gbytes_ps": 9.0, "bytes": 1, "seconds": 1, "method": "buffered"})
+        self.assertIsNone(buffered["value"])
+        self.assertIn("unverified", buffered["why"])
+
+    def test_node_facts_and_links(self):
+        gpu = {"checks": {"amd": {"status": "ok", "value": [{
+            "product_name": {"status": "ok", "value": "AMD Radeon 8060S"},
+            "vram_total_bytes": {"status": "ok", "value": 512 * probe.MIB},
+            "gtt_total_bytes": {"status": "ok", "value": 120 * probe.GIB}}]},
+            "ram": {"status": "ok", "value": {"total_bytes": 125 * probe.GIB, "available_bytes": 110 * probe.GIB}}}}
+        node = probe.node_device(gpu)
+        self.assertEqual((node["name"]["value"], node["host_free_ram_gib"]["value"]), ("AMD Radeon 8060S", 110.0))
+        self.assertEqual(facts._gtt(gpu), 120.0)
+        doctor = {"checks": {"interfaces": {"status": "ok", "value": [
+            {"name": "eno1", "state": "up", "negotiated_mbps": 2500}, {"name": "eno2", "state": "down"}]},
+            "usb4": {"streams": {"status": "ok", "value": {"count": 4, "openable": ["s0", "s1"]}},
+                     "layout": {"status": "ok", "value": {}}, "devices": {"status": "ok", "value": ["/dev/tbstream0"]}}}}
+        lan, usb4 = probe.node_links(doctor)
+        self.assertEqual((lan["value"], lan["up"], usb4["up"], usb4["streams"]), (2.5, True, True, 2))
+        lan, usb4 = probe.node_links({"checks": {"usb4": {"layout": {"status": "unavailable"}}}})
+        self.assertFalse(lan["up"] or usb4["up"])
+
+    def test_node_evidence_must_name_host_and_path(self):
+        cache = facts.Cache(self.dir / "cache.json")
+        receipt = self.dir / "r.json"
+        receipt.write_text(json.dumps({"disk_read_gbytes_ps": 6.1, "method": "direct", "host": "n1", "path": "/m.gguf"}))
+        self.assertEqual(cache.put_evidence("n1", "/m.gguf", receipt)["method"], "receipt")
+        self.assertEqual(cache.evidence("n1")["disk_read_gbytes_ps"], 6.1)
+        for bad in ({"host": "n2"}, {"method": "buffered"}, {"disk_read_gbytes_ps": 0}):
+            receipt.write_text(json.dumps(dict({"disk_read_gbytes_ps": 6.1, "method": "direct", "host": "n1",
+                                                "path": "/m.gguf"}, **bad)))
+            with self.subTest(bad=bad), self.assertRaises(probe.ProbeError):
+                cache.put_evidence("n1", "/m.gguf", receipt)
+
+
+class GatherTests(unittest.TestCase):
+    def test_unreachable_node_and_busy_pro_are_unavailable_never_invented(self):
+        cluster = fake_cluster()
+        context = ctx()
+
+        def call(mid, verb):
+            if mid == "n2":
+                raise OSError("ssh: connection refused")
+            if verb == "gpu":
+                return {"checks": {"amd": {"status": "ok", "value": [{
+                    "product_name": {"status": "ok", "value": "AMD Radeon 8060S"},
+                    "gtt_total_bytes": {"status": "ok", "value": 120 * probe.GIB}}]},
+                    "ram": {"status": "ok", "value": {"total_bytes": 125 * probe.GIB, "available_bytes": 100 * probe.GIB}}}}
+            return {"checks": {"interfaces": {"status": "ok", "value": [{"name": "e", "state": "up", "negotiated_mbps": 1000}]}}}
+
+        inventory, gathered, raw, notes = facts.gather(
+            cluster, context, call=call, gpus=lambda: INVENTORY["cuda"],
+            memory=lambda: {"total_gib": 127.7, "free_gib": 90.0, "free_commit_gib": 120.0},
+            pro_busy=lambda uuid: "compute processes [4]", now=time.time())
+        self.assertEqual(raw["devices"][GPU]["why"], "RTX PRO busy: compute processes [4]")
+        self.assertEqual(gathered["devices"]["n1"]["memory_gib"], 120.0)
+        self.assertIn("connection refused", raw["devices"]["n2"]["why"])
+        self.assertIsNone(raw["hosts"]["n2"]["free_ram_gib"])
+        self.assertEqual(raw["hosts"]["pc"]["free_ram_gib"], 90.0)
+        recipe = reader.parse(PLAIN)
+        bound = apply.bind(recipe, context, inventory)
+        links = facts.link_state(recipe, bound, raw)
+        self.assertFalse(links["pc-nodes"]["up"])
+
+
+class DescriptorTests(unittest.TestCase):
+    def test_saved_only_never_opens_the_model(self):
+        with tempfile.TemporaryDirectory() as d:
+            model = Path(d) / "m.gguf"
+            model.write_bytes(b"x")
+            store = descriptors.Store(Path(d) / "desc")
+            with mock.patch.object(modelfiles, "read", return_value=({"a": 1}, [modelfiles.Tensor("t", 8, str(model), "F16", (4,))])):
+                store.save(model)
+            with descriptors.saved_only(store), mock.patch("builtins.open", side_effect=AssertionError("opened")):
+                meta, tensors = modelfiles.read(model)
+            self.assertEqual((meta, tensors[0].bytes), ({"a": 1}, 8))
+            os.utime(model, (5, 5))
+            with descriptors.saved_only(store), self.assertRaisesRegex(descriptors.DescriptorError, "changed"):
+                modelfiles.read(model)
+            with descriptors.saved_only(store), self.assertRaisesRegex(descriptors.DescriptorError, "no saved header"):
+                modelfiles.read(Path(d) / "other.gguf")
+
+
+def fake_cluster():
+    from hyperloom.config import Cluster, Machine
+    machines = {"pc": Machine("pc", "windows", "local", "127.0.0.1", None, 22, "C:/hl", True,
+                              [{"id": "rtx-pro", "type": "nvidia", "uuid": GPU}]),
+                "n1": Machine("n1", "linux", "ssh", "192.0.2.10", "n1", 22, "/opt/hl", True, [{"id": "gpu"}]),
+                "n2": Machine("n2", "linux", "ssh", "192.0.2.11", "n2", 22, "/opt/hl", True, [{"id": "gpu"}])}
+    profiles = {"mm": {"preset": "minimax-pair", "rank0": "n1", "rank1": "n2"}}
+    return Cluster(machines, {}, profiles, {}, {}, {"pc": {}})
+
+
+def saved_facts(path, profile="mm", model="minimax-m3.1-flash", **avail):
+    gathered = dict(deepcopy(FACTS), model=model)
+    raw = {"devices": availability()["devices"], "hosts": availability()["hosts"],
+           "lan": {"n1": {"up": True}, "n2": {"up": True}}, "usb4": {"n1": {"up": True}, "n2": {"up": True}}}
+    raw.update(avail)
+    Path(path).write_text(json.dumps(session.facts_record(profile, INVENTORY, gathered, raw, [])))
+    return path
+
+
+class SessionTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.dir = Path(temporary.name)
+        self.cluster = fake_cluster()
+        self.recipe = self.dir / "mm.toml"
+        self.recipe.write_text(PLAIN, encoding="utf-8")
+
+    def test_evaluate_from_saved_facts_without_a_service(self):
+        evaluation = session.evaluate(self.cluster, "mm", self.recipe, session.Layers(),
+                                      session.saved_source(saved_facts(self.dir / "f.json")))
+        self.assertEqual(evaluation.problems, [])
+        self.assertEqual(evaluation.bound["roles"], {"rtx": "idle", "pair": "decode"})
+        self.assertFalse(evaluation.decision["service"]["start"])
+        self.assertEqual(evaluation.summary()["deploy"]["prefill"][0]["why"], "profile mm has no prefill service")
+        with self.assertRaisesRegex(RecipeError, "facts of profile other"):
+            session.evaluate(self.cluster, "mm", self.recipe, session.Layers(),
+                             session.saved_source(saved_facts(self.dir / "g.json", profile="other")))
+
+    def test_diff_is_semantic(self):
+        other = self.dir / "b.toml"
+        other.write_text("# reordered comment\n" + PLAIN.replace("device_gib = 92.0", "device_gib = 90.0"), encoding="utf-8")
+        result = session.diff(session.resolve(self.recipe, session.Layers()), session.resolve(other, session.Layers()))
+        self.assertEqual([r["path"] for r in result["fields"]], ["routes.prefill_long.placement.rtx.device_gib"])
+        same = session.diff(session.resolve(self.recipe, session.Layers()), session.resolve(self.recipe, session.Layers()))
+        self.assertTrue(same["same"])
+
+    def test_pick_most_specific_and_reports_every_candidate(self):
+        recipes = self.dir / "recipes"
+        recipes.mkdir()
+        (recipes / "a.toml").write_text(PLAIN, encoding="utf-8")
+        (recipes / "b.toml").write_text(PLAIN.replace('name = "minimax-m3.1-flash-lab"', 'name = "loose"')
+                                        .replace('name = "RTX PRO 6000"\n', ''), encoding="utf-8")
+        (recipes / "c.toml").write_text("schema = 1", encoding="utf-8")
+        (recipes / "d.toml").write_text(DS, encoding="utf-8")
+        source = session.saved_source(saved_facts(self.dir / "f.json"))
+        chosen, rows = session.pick(self.cluster, "mm", [recipes], session.Layers(), source)
+        self.assertEqual(Path(chosen.path).name, "a.toml")
+        results = {Path(r["path"]).name: r["result"] for r in rows}
+        self.assertEqual(results["b.toml"], "passes")
+        self.assertTrue(results["c.toml"].startswith("invalid"))
+        self.assertEqual(results["d.toml"], 'other model ("deepseek-v4.1-flash")')
+        (recipes / "e.toml").write_text(PLAIN, encoding="utf-8")                      # same name as a.toml
+        chosen, rows = session.pick(self.cluster, "mm", [recipes], session.Layers(), source)
+        self.assertEqual(Path(chosen.path).name, "b.toml")
+        self.assertIn("duplicate recipe name", {Path(r["path"]).name: r["result"] for r in rows}["e.toml"])
+
+    def test_cli_explain_validate_diff(self):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = cli.main(["recipe", "explain", str(self.recipe), "--recipe-set",
+                             "routes.prefill_long.when.prompt_tokens_min=3072"])
+        self.assertEqual(code, 0)
+        fields = {f["path"]: f for f in json.loads(out.getvalue())["fields"]}
+        self.assertEqual(fields["routes.prefill_long.when.prompt_tokens_min"]["layer"], "override")
+        out = io.StringIO()
+        with redirect_stdout(out), mock.patch("hyperloom.cli._cluster", return_value=self.cluster):
+            code = cli.main(["recipe", "explain", str(self.recipe), "mm", "--facts", str(saved_facts(self.dir / "f.json")),
+                             "--prompt-tokens", "9000", "--link-down", "pc-nodes"])
+        self.assertEqual(code, 0)
+        result = json.loads(out.getvalue())
+        self.assertEqual(result["simulated_request"]["route"], "prefill_nodes")
+        err = io.StringIO()
+        with redirect_stdout(io.StringIO()), mock.patch("sys.stderr", err):
+            code = cli.main(["recipe", "validate", str(self.recipe), "--recipe-set", "routes.prefill_long.execute=tp"])
+        self.assertEqual(code, 1)
+        self.assertIn("not a settable path", err.getvalue())
+        bad = deepcopy(FACTS)
+        bad["devices"]["n1"]["memory_gib"] = 64.0
+        record = json.loads(Path(saved_facts(self.dir / "f.json")).read_text())
+        record["facts"] = dict(bad, model="minimax-m3.1-flash")
+        (self.dir / "bad.json").write_text(json.dumps(record))
+        out = io.StringIO()
+        with redirect_stdout(out), mock.patch("hyperloom.cli._cluster", return_value=self.cluster):
+            code = cli.main(["recipe", "validate", str(self.recipe), "mm", "--facts", str(self.dir / "bad.json")])
+        self.assertEqual(code, 1)
+        self.assertIn("memory 64.00 GiB < 110", json.loads(out.getvalue())["match"][0])
+
+
+class LaunchTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.dir = Path(temporary.name)
+
+    def test_up_needs_the_core_or_the_explicit_stub(self):
+        with mock.patch.dict(os.environ, {launch.STUB_ENV: ""}), mock.patch.object(launch.core, "locate", return_value=None):
+            with self.assertRaisesRegex(RecipeError, "needs the strix-stream recipe core"):
+                launch.prepare(fake_cluster(), "mm", launch.Options(str(FIXTURES / "minimax-lab.toml")),
+                               router="local", vram_cap_gib=None, state_dir=self.dir)
+
+    def test_write_route_state(self):
+        service = self.dir / "svc"
+        service.mkdir()
+        (service / "state.json").write_text(json.dumps({"state": "ready"}))
+        spec = {"file": str(self.dir / "route-state.json"), "service_dir": str(service), "uuid": GPU,
+                "nodes": ["n1", "n2"], "pc": "pc", "links": ["pc-nodes"], "reservation_end": time.time() + 600}
+        memory = lambda: {"free_physical_gib": 60.0, "free_commit_gib": 80.0}
+        data = launch.write_route_state(spec, memory=memory)
+        self.assertEqual(json.loads(Path(spec["file"]).read_text()), data)
+        self.assertTrue(data["devices"][GPU]["available"])
+        (service / "state.json").write_text(json.dumps({"state": "stopped"}))
+        self.assertEqual(launch.write_route_state(spec, memory=memory)["devices"][GPU],
+                         {"available": False, "why": "prefill service stopped"})
+        (service / "state.json").write_text(json.dumps({"state": "ready"}))
+        spec["reservation_end"] = time.time() + 30
+        self.assertIn("reservation", launch.write_route_state(spec, memory=memory)["devices"][GPU]["why"])
+
+
+class UpWithRecipeTests(unittest.TestCase):
+    """`up --recipe` on the DS RTX profile (the existing up harness): the service starts or is skipped as decided."""
+
+    def setUp(self):
+        from tests import test_rtx
+        self.harness = test_rtx.UpDownTests("test_order_keys_ownership_and_router_services")
+        self.harness.setUp()
+        self.addCleanup(self.harness.doCleanups)
+        self.calls = self.harness.calls
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.dir = Path(temporary.name)
+        recipe = self.dir / "ds.toml"
+        recipe.write_text(DS, encoding="utf-8")
+        self.options = launch.Options(str(recipe))
+        patches = [mock.patch.dict(os.environ, {launch.STUB_ENV: "1"}),
+                   mock.patch.object(launch.core, "locate", return_value=None),
+                   mock.patch.object(launch.render, "router_policies", return_value=("nodes", "rtx", "auto", "routes")),
+                   mock.patch("hyperloom.render.validate_router"),
+                   mock.patch.object(launch.rtx, "pro_busy", return_value=None)]
+        for patcher in patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.avail = {}
+
+    def source(self, ctx_):
+        gathered = deepcopy(FACTS)
+        gathered["model"] = "deepseek-v4.1-flash"
+        gathered["devices"]["halo-1"] = gathered["devices"].pop("n1")
+        gathered["devices"]["halo-2"] = gathered["devices"].pop("n2")
+        gathered["links"] = [{"kind": "ethernet", "hosts": ["workstation", "halo-1"], "gbps": 2.5},
+                             {"kind": "ethernet", "hosts": ["workstation", "halo-2"], "gbps": 2.5},
+                             {"kind": "usb4", "hosts": ["halo-1", "halo-2"], "gbps": None}]
+        devices = {GPU: {"available": True}, "halo-1": {"available": True}, "halo-2": {"available": True}}
+        devices.update(self.avail)
+        raw = {"devices": devices, "hosts": {"workstation": {"free_ram_gib": 100.0, "free_commit_gib": 150.0},
+                                             "halo-1": {"free_ram_gib": 124.0}, "halo-2": {"free_ram_gib": 124.0}},
+               "lan": {"halo-1": {"up": True}, "halo-2": {"up": True}}, "usb4": {"halo-1": {"up": True}, "halo-2": {"up": True}}}
+        return INVENTORY, gathered, raw, []
+
+    def up(self):
+        from tests import test_rtx
+        orch = self.harness.modules()[0]
+        cluster = self.harness.rtx_cluster()
+        cluster.pc["cuda"] = deepcopy(test_rtx.rtx_example()["pc"]["cuda"])     # the operator's PC-BIG grant
+        with mock.patch("hyperloom.recipes.commands.live_source", return_value=self.source):
+            return orch.up(cluster, "ds41-rtx", recipe=self.options)
+
+    def test_service_starts_with_the_recipe_budget_and_the_routes_policy(self):
+        state = self.up()
+        render_kw = next(p for _, verb, p in self.calls if verb == "service-render")
+        self.assertEqual((render_kw["vram_cap_gib"], render_kw["host_gib_exact"]), (88.0, 48.0))
+        rendered = next(p for _, verb, p in self.calls if verb == "router-start")["rendered"]
+        self.assertEqual(rendered["prefill"]["policy"], "routes")
+        self.assertEqual([r["id"] for r in rendered["prefill"]["routes"]["routes"]], ["prefill_long", "prefill_nodes"])
+        self.assertFalse(state["production"])                                    # stub reader
+        self.assertTrue(state["recipe"]["service"]["start"])
+        orch = self.harness.modules()[0]
+        with mock.patch.object(orch, "_call", return_value={}), mock.patch.object(orch, "_http_json", return_value={}):
+            self.assertEqual(orch.status("ds41-rtx")["recipe"]["recipe"], "ds41-lab")
+
+    def test_pro_busy_skips_the_service_entirely(self):
+        self.avail = {GPU: {"available": False, "why": "RTX PRO busy: compute processes [7]"}}
+        state = self.up()
+        verbs = [verb for _, verb, _ in self.calls]
+        self.assertNotIn("service-render", verbs)
+        self.assertNotIn("service-start", verbs)
+        rendered = next(p for _, verb, p in self.calls if verb == "router-start")["rendered"]
+        self.assertEqual(rendered["prefill"], {"policy": "nodes"})
+        self.assertIn("RTX PRO busy", state["recipe"]["service"]["why"])
+
+    def test_recheck_at_launch_and_after_ready(self):
+        with mock.patch.object(launch.rtx, "pro_busy", return_value="compute processes [9]"):
+            state = self.up()
+        self.assertNotIn("service-start", [verb for _, verb, _ in self.calls])
+        self.assertIn("at launch: RTX PRO busy", state["recipe"]["service"]["why"])
+        orch = self.harness.modules()[0]
+        orch.down("ds41-rtx")
+        self.calls.clear()
+        memory = iter([{"free_physical_gib": 100.0, "free_commit_gib": 150.0}] + [
+            {"free_physical_gib": 6.0, "free_commit_gib": 150.0}] * 10)
+        with mock.patch.object(launch.rtx, "memory_status", side_effect=lambda: next(memory)):
+            state = self.up()
+        verbs = [verb for _, verb, _ in self.calls]
+        self.assertLess(verbs.index("service-start"), verbs.index("service-stop"))
+        self.assertIn("after READY: free RAM 6.0", state["recipe"]["service"]["why"])
+
+
+def _tensormeld_routes():
+    """The router's selector from the pinned TensorMeld, or from HYPERLOOM_TM_SRC (a TensorMeld src dir)."""
+    for root in (os.environ.get("HYPERLOOM_TM_SRC"), str(repo_root() / "third_party" / "tensormeld" / "src")):
+        if root and (Path(root) / "tensormeld" / "prefill_routes.py").is_file():
+            sys.path.insert(0, root)
+            try:
+                return importlib.import_module("tensormeld.prefill_routes")
+            finally:
+                sys.path.remove(root)
+    return None
+
+
+
+
+class ConformanceTests(unittest.TestCase):
+    """The router's per-request selector equals the reader's §7 select on every state of a grid (design §9.1)."""
+
+    def test_router_equals_reader(self):
+        routes = _tensormeld_routes()
+        if routes is None:
+            self.skipTest("TensorMeld without prefill_routes (set HYPERLOOM_TM_SRC to a src dir that has it)")
+        eff = reader.resolve(PLAIN)
+        sha = eff.canonical_sha256()
+        bound = apply.bind(eff.recipe, ctx(), INVENTORY)
+        decision = apply.deploy(eff.recipe, ctx(), bound, availability(), sha)
+        table = routes.RouteTable.parse(apply.route_table(eff.to_json(), eff.sha256, bound, decision, "s.json", ctx()))
+        checked = 0
+        for tokens, context, gpu, n1, link, service_up, stale, free in itertools.product(
+                (0, 4095, 4096, 4097, 30000), (None, 32769, 40000), (True, False), (True, False), (True, False),
+                (True, False), (False, True), (40.0, 70.0)):
+            context = tokens + 1024 if context is None else context
+            devices = {GPU: {"available": gpu}, "n1": {"available": n1}, "n2": {"available": True}}
+            links = {"pc-nodes": {"up": link}, "pair.internal": {"up": True}}
+            hosts = {"pc": {"free_ram_gib": free}}
+            state = None if stale else {"devices": devices, "links": links, "hosts": hosts}
+            try:
+                route, _ = routes.select(table, tokens, context, state, "stale",
+                                         routes.Health(service_up=service_up, replica_up=True))
+                router = route.id
+            except routes.NoRoute:
+                router = None
+            # The reader sees the router's own health as availability (the PRO set needs the service up) and the
+            # service's routes as running while it is up.
+            running = decision["running"] + ([apply.running_entry("prefill_long", sha, decision["requirements"])]
+                                             if service_up else [])
+            reader_state = apply.admission_state(
+                bound, {"devices": {} if stale else dict(devices, **{GPU: {"available": gpu and service_up}}),
+                        "links": {} if stale else links, "hosts": {} if stale else hosts},
+                ctx(), running=running, requirements=decision["requirements"], tokens=tokens, context=context)
+            try:
+                expected = reader.select(eff.recipe, reader_state, sha)["route"]
+            except RecipeError:
+                expected = None
+            self.assertEqual(router, expected, (tokens, context, gpu, n1, link, service_up, stale, free))
+            checked += 1
+        self.assertEqual(checked, 5 * 3 * 2 ** 5 * 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

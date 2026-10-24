@@ -1,0 +1,77 @@
+# Test fixture shaped like the lab's MiniMax recipe (numbers illustrative, not a shipped recipe).
+schema = "strix-stream/recipe-v1"
+name = "minimax-m3.1-flash-lab"
+description = "MiniMax M3.1 Flash: pair TP2 decode, RTX PRO prefill from 4K"
+pin = ["routes.prefill_long.when.prompt_tokens_min"]
+
+[match]
+model = "minimax-m3.1-flash"
+
+[[match.devices]]
+id = "rtx"
+kind = "cuda"
+name = "RTX PRO 6000"
+memory_min_gib = 94.0
+host_ram_min_gib = 120.0
+
+[[match.devices]]
+id = "pair"
+kind = "hip"
+count = 2
+memory_min_gib = 110.0
+internal_link = { kind = "usb4", gbps_min = 0.0 }
+
+[[match.links]]
+id = "pc-nodes"
+between = ["rtx", "pair"]
+kind = "ethernet"
+gbps_min = 1.0
+
+[limits]
+host_free_ram_floor_gib = 8.0
+
+[[routes]]
+id = "prefill_long"
+phase = "prefill"
+devices = ["rtx"]
+execute = "single"
+handoff_route = "decode_pair"
+links = ["pc-nodes"]
+fallback = "prefill_nodes"
+when = { prompt_tokens_min = 4096 }
+x-source = "wave4/mmrtxpf/report.md: 8K 16.1 s vs 45 s on the nodes"
+
+[routes.placement.rtx]
+max_context_tokens = 32768
+max_batch = 1
+device_gib = 92.0
+host_pinned_gib = 48.0
+chunk_tokens = 4096
+
+[[routes.placement.rtx.units]]
+id = "layers"
+class = "blob"
+resident = 32
+pinned = 16
+rest = "disk"
+
+[[routes]]
+id = "prefill_nodes"
+phase = "prefill"
+devices = ["pair"]
+execute = "tp"
+handoff_route = "decode_pair"
+
+[routes.placement.pair]
+max_context_tokens = 32768
+max_batch = 8
+
+[[routes]]
+id = "decode_pair"
+phase = "decode"
+devices = ["pair"]
+execute = "tp"
+
+[routes.placement.pair]
+max_context_tokens = 32768
+max_batch = 8

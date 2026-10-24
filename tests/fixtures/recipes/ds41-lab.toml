@@ -1,0 +1,64 @@
+# Test fixture shaped like the lab's DeepSeek recipe (numbers illustrative, not a shipped recipe).
+schema = "strix-stream/recipe-v1"
+name = "ds41-lab"
+description = "DeepSeek V4.1 Flash: pair TP decode, RTX PRO prefill service for long prompts"
+
+[match]
+model = "deepseek-v4.1-flash"
+
+[[match.devices]]
+id = "rtx"
+kind = "cuda"
+name = "RTX PRO 6000"
+memory_min_gib = 90.0
+host_ram_min_gib = 120.0
+
+[[match.devices]]
+id = "pair"
+kind = "hip"
+count = 2
+memory_min_gib = 100.0
+internal_link = { kind = "usb4" }
+
+[[match.links]]
+id = "pc-nodes"
+between = ["rtx", "pair"]
+kind = "ethernet"
+gbps_min = 1.0
+
+[[routes]]
+id = "prefill_long"
+phase = "prefill"
+devices = ["rtx"]
+execute = "single"
+handoff_route = "decode_pair"
+links = ["pc-nodes"]
+fallback = "prefill_nodes"
+when = { prompt_tokens_min = 2323 }
+
+[routes.placement.rtx]
+max_context_tokens = 32768
+max_batch = 1
+device_gib = 88.0
+host_pinned_gib = 48.0
+
+[[routes]]
+id = "prefill_nodes"
+phase = "prefill"
+devices = ["pair"]
+execute = "tp"
+handoff_route = "decode_pair"
+
+[routes.placement.pair]
+max_context_tokens = 33024
+max_batch = 8
+
+[[routes]]
+id = "decode_pair"
+phase = "decode"
+devices = ["pair"]
+execute = "tp"
+
+[routes.placement.pair]
+max_context_tokens = 33024
+max_batch = 8

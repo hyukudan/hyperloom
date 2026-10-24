@@ -256,7 +256,8 @@ def expand_placement(data, plan):
     return out
 
 
-def render_service(cluster, profile_name, *, api_key, handoff_api_key, free_physical_gib, now=None, vram_cap_gib=None):
+def render_service(cluster, profile_name, *, api_key, handoff_api_key, free_physical_gib, now=None, vram_cap_gib=None,
+                   host_gib_exact=None):
     s, data, kind = _service(cluster, profile_name)
     decode = data["decode_profiles"][kind]
     rule = decode["context"]
@@ -304,6 +305,12 @@ def render_service(cluster, profile_name, *, api_key, handoff_api_key, free_phys
     floor = reservation["free_commit_floor_gib"] if reservation else 4
     cap = effective_cap(reservation, vram_cap_gib)
     host = host_gib(data, reservation or {"host_gib": 4096}, free_physical_gib)
+    if host_gib_exact is not None:
+        # A recipe's pinned host budget is used exactly or refused, never clamped (recipes design 9.7).
+        if host_gib_exact > host:
+            raise ConfigError(f"recipe host_pinned_gib {host_gib_exact:g} is above what this start allows ({host:g} "
+                              "GiB: the preset's maximum, the reservation and free RAM)")
+        host = host_gib_exact
     values = {name: item["path"] for name, item in assets.items()}
     # Planned only when the operator asks for a cap (`up --vram-cap-gib`), on every such start; without it the
     # qualified launch line is unchanged (lead decision, review of d5c3e0f).
@@ -312,7 +319,7 @@ def render_service(cluster, profile_name, *, api_key, handoff_api_key, free_phys
         plan = plan_placement(data, values.get(data.get("placement", {}).get("model_asset")), cap, host, positions)
     values.update(binary=str(binary), port=str(s.get("port", data["port"])),
                   positions=str(positions),
-                  vram_cap_gib=f"{cap:g}", host_gib=str(host),
+                  vram_cap_gib=f"{cap:g}", host_gib=f"{host:g}",
                   commit_floor_gib=f"{floor + 10:g}", api_key=api_key, handoff_api_key=handoff_api_key,
                   pro_uuid=device["uuid"])
     argv = [token.format_map(values) for token in expand_placement(data, plan)]

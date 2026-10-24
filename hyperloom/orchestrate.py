@@ -583,7 +583,7 @@ def prelaunch(cluster, profile, settings, kind, clients, mids):
 
 
 def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s=1140, approval=None, queue_timeout_s=3600,
-       diagnostics=None, vram_cap_gib=None):
+       diagnostics=None, vram_cap_gib=None, recipe=None):
     _approval(deadline_s, approval)
     if type(queue_timeout_s) is not int or not 60 <= queue_timeout_s <= MAX_QUEUE_S:
         raise ValueError(f"queue timeout must be 60..{MAX_QUEUE_S} seconds")
@@ -608,6 +608,15 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
                          f"run the router on rank 0 with --router {mids[0]}")
     declared = list(mids)
     service = settings.get("prefill_service")
+    launch = None
+    if recipe is not None:
+        from .recipes import launch as recipe_launch
+        if mids != list(defaults):
+            raise ValueError("--recipe binds the profile's own nodes: drop --node")
+        launch = recipe_launch.prepare(cluster, profile, recipe, router=router, vram_cap_gib=vram_cap_gib,
+                                       state_dir=_state_path(profile).parent)
+        if not launch.service_start:
+            service = None  # every prefill stays on the nodes (the why is recorded); no PRO lease, no start
     if service is not None and router != "local":
         raise ValueError("the RTX prefill service is loopback-only: use --router local")
     if vram_cap_gib is not None and service is None:
@@ -633,7 +642,9 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
     state = {"profile": profile, "leases": [], "router": None,
              "known_hosts": str(_known_hosts()), "machines": {},
              "token": uuid.uuid4().hex, "phase": "starting", "keys": [],
-             "production": not diagnostics, "diagnostic": diagnostics}
+             "production": not diagnostics and (launch is None or launch.production), "diagnostic": diagnostics}
+    if launch is not None:
+        state["recipe"] = launch.record()
     keys = []
     local_values = {}
     owned = False
@@ -661,6 +672,8 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
         selected = deepcopy(cluster)
         if not pair:
             selected.profiles[profile]["nodes"] = mids
+        if launch is not None and service is None:
+            selected.profiles[profile].pop("prefill_service", None)
         prepared = prelaunch(cluster, profile, settings, kind, clients, mids)
         state["assets"] = prepared["assets"]
         state["asset_cache_note"] = assets.CACHE_NOTE
@@ -699,6 +712,9 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
         processes = render.render_processes(selected, profile, **(
             {"diagnostics": diagnostics, "run": state["token"][:12]} if diagnostics else {}))
         rendered = render.render_router(selected, profile)
+        if launch is not None:
+            key_file = selected.router["replica_api_key_files"].get(service["machine"]) if service else None
+            rendered["prefill"] = recipe_launch.router_prefill(launch, selected, profile, key_file)
         state.update(release_id=prepared["release_id"], nodes=mids, devices=list(devices or []),
                      started_at=time.time(), process_specs=[asdict(spec) for spec in processes],
                      rendered_router=rendered, launch=render.launch_summary(selected, profile))
@@ -758,12 +774,20 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
             deadlines.append(ready.get("deadline") or time.time() + deadline_s)
         state["deadline"] = min(deadlines)
         _check_stop(path)
-        if service is not None:
+        skip = None
+        if service is not None and launch is not None:
+            skip = recipe_launch.recheck_before_service(launch, selected)
+            if skip is not None:
+                state["recipe"]["service"].update(start=False, why="at launch: " + skip)
+                _write(path, state)
+        if service is not None and skip is None:
             # After the decode side is READY (its import route is the handoff), before the router admits.
-            spec = rtx.render_service(selected, profile, api_key=secrets.ensure(_secret_name(profile, "prefill")),
-                                      handoff_api_key=node_values[mids[0]],
-                                      free_physical_gib=rtx.memory_status()["free_physical_gib"],
-                                      vram_cap_gib=vram_cap_gib)
+            with recipe_launch.planning(selected) if launch is not None else ExitStack():
+                spec = rtx.render_service(
+                    selected, profile, api_key=secrets.ensure(_secret_name(profile, "prefill")),
+                    handoff_api_key=node_values[mids[0]], free_physical_gib=rtx.memory_status()["free_physical_gib"],
+                    vram_cap_gib=launch.vram_cap_gib if launch is not None else vram_cap_gib,
+                    host_gib_exact=launch.host_gib if launch is not None else None)
             spec = rtx.ServiceSpec(**dict(spec.__dict__, deadline=min(spec.deadline, state["deadline"])))
             # Recorded before the helper exists, so down (or the watchdog) can always find and stop it.
             state["prefill_service"] = rtx.prepare_service(spec)
@@ -773,11 +797,23 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
                                check=lambda: _check_stop(path))
             _write(path, state)
             _check_stop(path)
+            low = recipe_launch.recheck_after_ready(launch, selected) if launch is not None else None
+            if low is not None:
+                # Allocations done but memory below its floors: stop the service; the nodes keep every prefill.
+                rtx.stop_service(state["prefill_service"])
+                state["recipe"]["service"].update(start=False, why="after READY: " + low)
+                _write(path, state)
         if router == "local":
             for key, value in local_values.items():
                 secrets._write(Path(key), value.encode("ascii"))
             render.validate_router(rendered)
-            state["router"] = _start_local_router(profile, rendered, keys, ownership=state)
+            route_state = None
+            if launch is not None:
+                reservation = cluster.pc.get("cuda", {}).get("reservation")
+                route_state = recipe_launch.route_state_spec(
+                    launch, state.get("prefill_service") if state["recipe"]["service"]["start"] else None,
+                    rtx.reservation_end(reservation, time.time()) if reservation else None)
+            state["router"] = _start_local_router(profile, rendered, keys, ownership=state, route_state=route_state)
         else:
             machine = cluster.machines[router]
             commit = _versions()["components"]["tensormeld"]["commit"]
@@ -851,11 +887,15 @@ def _node_name(mid):
     return re.sub(r"[^a-z0-9-]", "-", mid.lower())[:20] + "-" + hashlib.sha256(mid.encode()).hexdigest()[:8]
 
 
-def _start_local_router(profile, rendered, keys, *, ownership=None):
+def _start_local_router(profile, rendered, keys, *, ownership=None, route_state=None):
     directory = secrets.runtime_dir() / ("router-" + uuid.uuid4().hex)
     directory.mkdir(parents=True)
     spec = directory / "spec.json"
-    _write(spec, {"rendered": rendered, "keys": keys, "profile": profile,
+    if route_state is not None:
+        # Fresh before the router's first request; the helper refreshes it every second.
+        from .recipes import launch as recipe_launch
+        recipe_launch.write_route_state(route_state)
+    _write(spec, {"rendered": rendered, "keys": keys, "profile": profile, "route_state": route_state,
                   "ownership": ownership, "deadline": (ownership or {}).get("deadline", time.time() + 1140)})
     record = {"machine": "local", "directory": str(directory), "endpoint": rendered["listen"]}
     if ownership is not None:
@@ -910,6 +950,8 @@ def local_router_run(spec_path):
     for name in ("SIGTERM", "SIGINT", "SIGBREAK"):
         if hasattr(signal, name):
             signal.signal(getattr(signal, name), interrupt)
+    route_state = spec.get("route_state")
+    next_state = 0
     try:
         child.start()
         end = time.monotonic() + 15
@@ -918,6 +960,13 @@ def local_router_run(spec_path):
         while child.alive() and not interrupted and not (directory / "stop").exists():
             if time.time() >= spec["deadline"]:
                 break
+            if route_state is not None and time.monotonic() >= next_state:
+                from .recipes import launch as recipe_launch
+                try:
+                    recipe_launch.write_route_state(route_state)
+                except (OSError, ValueError):
+                    pass  # a missed write ages the state; the router fails closed when it goes stale
+                next_state = time.monotonic() + 1
             if spec.get("ownership") and time.monotonic() >= next_check:
                 if _replicas_stopped(spec["ownership"]):
                     break
@@ -1080,6 +1129,8 @@ def status(profile=None):
               "assets": state.get("assets", []), "asset_cache_note": assets.CACHE_NOTE, "launch": state.get("launch"),
               "unpublished_sources": (state.get("launch") or {}).get("unpublished_sources", []),
               "production": state.get("production", True), "diagnostic": state.get("diagnostic", [])}
+    if "recipe" in state:
+        result["recipe"] = state["recipe"]
     for mid, machine in state["machines"].items():
         try:
             result["nodes"][mid] = _call(_client(SimpleNamespace(**machine), state["known_hosts"]), "status", {"root": machine["install_root"]})

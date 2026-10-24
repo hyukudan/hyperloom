@@ -445,6 +445,12 @@ def main(argv=None):
                          "guard it there")
     up.add_argument("--diagnostic", action="append", default=None,
                     help="non-production diagnostic from the preset (repeatable); output goes to the node log/")
+    up.add_argument("--recipe", help="a recipe file, or auto: the most specific recipe that fits this hardware")
+    up.add_argument("--recipe-profile", type=Path, help="the autotuner's profile for the recipe (refused when stale)")
+    up.add_argument("--recipe-overrides", type=Path, action="append", help="a recipe overrides file (repeatable)")
+    up.add_argument("--recipe-set", action="append", metavar="PATH=VALUE", help="one recipe override (repeatable)")
+    up.add_argument("--recipe-dir", type=Path, action="append", help="--recipe auto: also search this directory")
+    up.add_argument("--recipe-workload", help="the workload class this run serves (default: default)")
     down = commands.add_parser("down")
     down.add_argument("profile", nargs="?")
     down.add_argument("--force", action="store_true")
@@ -507,6 +513,51 @@ def main(argv=None):
     vplan.add_argument("--ring-slots", type=int, default=0,
                        help="desc-v1: stream slots per ring (0: the descriptor's, else the default)")
     vplan.add_argument("--dynamic-slots", type=int, default=0, help="desc-v1: dynamic slots per layer")
+    recipe = commands.add_parser("recipe", help="recipes: probe the hardware, validate, explain, diff, auto-pick")
+    recipe_commands = recipe.add_subparsers(dest="operation", required=True)
+
+    def layered(command):
+        command.add_argument("--recipe-profile", type=Path, help="the autotuner's profile (refused when stale)")
+        command.add_argument("--recipe-overrides", type=Path, action="append", help="an overrides file (repeatable)")
+        command.add_argument("--recipe-set", action="append", metavar="PATH=VALUE", help="one override (repeatable)")
+        command.add_argument("--recipe-workload", default="default",
+                             help="the workload class this run serves (a profile tuned for another one is stale)")
+        command.add_argument("--config", type=Path, default=config_path())
+
+    recipe_probe = recipe_commands.add_parser("probe", help="the profile's hardware facts (read-only)")
+    recipe_probe.add_argument("profile")
+    recipe_probe.add_argument("--disks", action="store_true",
+                              help="measure the model disk's read bandwidth now (direct I/O, <= 256 MiB, <= 2 s)")
+    recipe_probe.add_argument("--descriptors", action="store_true",
+                              help="read and save the model's file headers for planning (explicit header read)")
+    recipe_probe.add_argument("--evidence", action="append", metavar="NODE=RECEIPT",
+                              help="a node's measured disk bandwidth from a receipt file (repeatable)")
+    recipe_probe.add_argument("--out", type=Path, help="save the facts for offline validate/explain --facts")
+    recipe_probe.add_argument("--config", type=Path, default=config_path())
+    for name, text in (("validate", "schema, hardware match and the up decision"),
+                       ("explain", "every field's value and origin, the routes, and what up would do")):
+        command = recipe_commands.add_parser(name, help=text)
+        command.add_argument("file", type=Path)
+        command.add_argument("profile", nargs="?")
+        command.add_argument("--facts", type=Path, help="a saved `recipe probe --out` file instead of live probes")
+        layered(command)
+        if name == "explain":
+            command.add_argument("--all", action="store_true", help="also the fields left at their defaults")
+            command.add_argument("--prompt-tokens", type=int, help="simulate the route of a request this long")
+            command.add_argument("--unavailable", action="append", metavar="DEVICE_ID", help="what-if: device down")
+            command.add_argument("--link-down", action="append", metavar="LINK_ID", help="what-if: link down")
+            command.add_argument("--free-ram", action="append", metavar="HOST=GIB", help="what-if: host free RAM")
+    recipe_diff = recipe_commands.add_parser("diff", help="field-level difference of two effective recipes")
+    recipe_diff.add_argument("a", type=Path)
+    recipe_diff.add_argument("b", type=Path)
+    recipe_diff.add_argument("--a-set", action="append", metavar="PATH=VALUE")
+    recipe_diff.add_argument("--b-set", action="append", metavar="PATH=VALUE")
+    recipe_diff.add_argument("--config", type=Path, default=config_path())
+    recipe_pick = recipe_commands.add_parser("pick", help="the recipe `up --recipe auto` would choose, and why")
+    recipe_pick.add_argument("profile")
+    recipe_pick.add_argument("--dir", action="append", type=Path, help="also search this directory (repeatable)")
+    recipe_pick.add_argument("--facts", type=Path)
+    layered(recipe_pick)
     # Internal controller entry point; not part of the public interface.
     helper = commands.add_parser("_prefill-run", help=argparse.SUPPRESS)
     helper.add_argument("spec")
@@ -569,9 +620,22 @@ def main(argv=None):
                     raise ValueError("--approval-end must include a timezone")
                 approval = {"ref": args.approval_ref, "lease_s": args.approval_lease, "end_epoch": end.timestamp()}
             cluster = _cluster(args.config)
+            recipe = None
+            if args.recipe is not None:
+                recipes = _module("hyperloom.recipes.launch")
+                reader = _module("hyperloom.recipes.reader")
+                layers = _module("hyperloom.recipes.session").Layers(
+                    profile=args.recipe_profile, overrides=list(args.recipe_overrides or []),
+                    sets=[reader.parse_set(s) for s in args.recipe_set or []],
+                    workload=args.recipe_workload or "default")
+                recipe = recipes.Options(args.recipe, layers, list(args.recipe_dir or []))
+            elif any((args.recipe_profile, args.recipe_overrides, args.recipe_set, args.recipe_dir, args.recipe_workload)):
+                raise ValueError("--recipe-profile/--recipe-overrides/--recipe-set/--recipe-dir/--recipe-workload need "
+                                 "--recipe")
             _json(_module("hyperloom.orchestrate").up(cluster, args.profile, router=args.router,
                   nodes=args.node, devices=args.device, deadline_s=args.deadline, approval=approval,
-                  queue_timeout_s=args.queue_timeout, diagnostics=args.diagnostic, vram_cap_gib=args.vram_cap_gib))
+                  queue_timeout_s=args.queue_timeout, diagnostics=args.diagnostic, vram_cap_gib=args.vram_cap_gib,
+                  recipe=recipe))
         elif args.command == "down":
             _json(_module("hyperloom.orchestrate").down(args.profile, force=args.force))
         elif args.command == "endpoint":
@@ -613,6 +677,11 @@ def main(argv=None):
                                                    vram_cap_gib=args.vram_cap_gib))
         elif args.command == "vramplan":
             _json(_vramplan(args))
+        elif args.command == "recipe":
+            result, ok = _module("hyperloom.recipes.commands").run(_cluster, args)
+            _json(result)
+            if not ok:
+                return 1
         elif args.command == "config":
             _cluster(args.path)
             _json({"valid": True})

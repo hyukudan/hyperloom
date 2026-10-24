@@ -200,6 +200,16 @@ def render_router(cluster, profile_name) -> dict:
     return obj
 
 
+def router_policies():
+    """The prefill policies the pinned TensorMeld router parser accepts (recipes need "routes")."""
+    source = str(repo_root() / "third_party" / "tensormeld" / "src")
+    sys.path.insert(0, source)
+    try:
+        return tuple(importlib.import_module("tensormeld.replica_router").PREFILL_POLICIES)
+    finally:
+        sys.path.remove(source)
+
+
 def validate_router(obj):
     """Run the pinned parser, including its real key-file checks; no network or GPU."""
     source = str(repo_root() / "third_party" / "tensormeld" / "src")
