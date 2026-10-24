@@ -68,7 +68,7 @@ with the prefix. The full SHA then goes into the release manifest.
 |---|---|---|---|---|
 | `qwen-replicas`, `ds41-pair`, `ds41-pair-long` | (unchanged) | lock 9211b07e | lock 5acf0905 (v12) | lock `hip_configure` |
 | `qwen-replicas-w5` | qwen-replicas | integrate/qwen-w5 96123427 | (unused) | lock `hip_configure` |
-| `ds41-pair-w5` | ds41-pair | integrate/ds41-w5 16841fe5 | c95a1695 (RC2 + `strix_weights_device_span`) | lock `hip_configure`, `STRIX_DS41_TRELLIS_API=dense_r1`, trellis `-DSTRIX_TRELLIS_ENABLE_EXPERIMENTAL_TP=ON` |
+| `ds41-pair-w5` | ds41-pair | integrate/ds41-w5 cab238d6 | c95a1695 (RC2 + `strix_weights_device_span`) | lock `hip_configure`, `STRIX_DS41_TRELLIS_API=dense_r1`, trellis `-DSTRIX_TRELLIS_ENABLE_EXPERIMENTAL_TP=ON` |
 | `minimax-pair` | minimax-pair | minimax/engine 862a2f0d | prefix `92cfd46e` (qualification-v03 tree) | own configure: HIP runtime + `STRIX_FAMILY_MINIMAX=ON`, trellis tree at `STRIX_MINIMAX_TRELLIS_DIR` |
 
 The original presets keep their recipe byte for byte, and therefore their release ids. The node recipe gains the
@@ -124,7 +124,7 @@ All three are qualified from the named receipt. Paths, addresses and ports are a
 
 - **`ds41-pair-w5`:**
   - Argv: the ds41-pair production line (`--transport usb4gpu --prefill-path device --dspark --dspark-vocab auto:`).
-  - Env: the identity from `docs/ds41-production-defaults.md` at 16841fe5: overlay, `CB4=1`, `TRELLIS=K4`,
+  - Env: the identity from `docs/ds41-production-defaults.md` at cab238d6: overlay, `CB4=1`, `TRELLIS=K4`,
     `TRELLIS_MIX=head=K5`, `TRELLIS_SITES=all`, `TRELLIS_DENSE_FULL=1`, `TRELLIS_HEADOUT=1`.
   - Every integrate/ds41-w5 code default is on when unset, so none is set.
   - Receipt: the integrate/ds41-w5 combined confirmation (wave4/dsint/report.md).
