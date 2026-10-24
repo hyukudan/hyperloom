@@ -620,6 +620,66 @@ class LaunchTests(unittest.TestCase):
                 launch.prepare(fake_cluster(), "mm", launch.Options(str(FIXTURES / "minimax-lab.toml")),
                                router="local", vram_cap_gib=None, state_dir=self.dir)
 
+    def test_core_output_is_bounded_utf8_json_objects(self):
+        def runner(out=b"", err=b"", code=0):
+            def run(argv, **kw):
+                kw["stdout"].write(out)
+                kw["stderr"].write(err)
+                return mock.Mock(returncode=code)
+            return run
+        exe = str(self.dir / "ss-recipe.exe")
+        self.assertEqual(core.Core(exe, run=runner(b'{"a": 1}')).call(["x"]), {"a": 1})
+        cases = [(runner(b"[1]"), "not a JSON object"), (runner(b'"x"'), "not a JSON object"),
+                 (runner(b"\xff\xfe"), "not UTF-8"), (runner(b"x" * (core.MAX_OUTPUT + 1)), "exceeds"),
+                 (runner(err="ss-recipe: refusé".encode(), code=1), "refusé"),
+                 (runner(err=b"\xff", code=1), "not UTF-8"), (runner(b"{", code=0), "no JSON")]
+        for run, why in cases:
+            with self.assertRaisesRegex(RecipeError, why):
+                core.Core(exe, run=run).call(["x"])
+
+    def test_core_executable_must_be_an_absolute_program(self):
+        exe = self.dir / ("ss-recipe.exe" if os.name == "nt" else "ss-recipe")
+        exe.write_bytes(b"")
+        exe.chmod(0o755)
+        bat = self.dir / "ss-recipe.bat"
+        bat.write_bytes(b"")
+        with mock.patch.dict(os.environ, {"HYPERLOOM_SS_RECIPE": str(exe)}):
+            self.assertEqual(core.locate(), str(exe))
+        for bad in ("ss-recipe.exe", str(self.dir / "missing.exe")) + ((str(bat),) if os.name == "nt" else ()):
+            with mock.patch.dict(os.environ, {"HYPERLOOM_SS_RECIPE": bad}):
+                self.assertIsNone(core.locate(), bad)
+        # PATH: relative entries (the current directory) are never searched.
+        cwd = os.getcwd()
+        os.chdir(self.dir)
+        try:
+            with mock.patch.dict(os.environ, {"HYPERLOOM_SS_RECIPE": "", "PATH": os.pathsep.join([".", ""])}):
+                self.assertIsNone(core.locate())
+            with mock.patch.dict(os.environ, {"HYPERLOOM_SS_RECIPE": "", "PATH": str(self.dir)}):
+                self.assertEqual(core.locate(), str(exe))
+        finally:
+            os.chdir(cwd)
+
+    def test_layer_ranges_and_lists_are_bounded(self):
+        for value in ("[[0, 1000000000000]]", "[5000]", "[" + ", ".join(map(str, range(5000))) + "]"):
+            text = PLAIN.replace('host_pinned_gib = 48.0\n', 'host_pinned_gib = 48.0\n\n[[routes.placement.rtx.units]]\n'
+                                 f'id = "layers"\nclass = "blob"\nlayers = {value}\nresident = 1\n', 1)
+            self.assertNotEqual(text, PLAIN)
+            started = time.monotonic()
+            with self.assertRaises(RecipeError):
+                reader.resolve(text)
+            self.assertLess(time.monotonic() - started, 2.0)
+
+    def test_receipts_must_be_finite(self):
+        receipt = self.dir / "r.json"
+        receipt.write_text('{"host": "n1", "path": "/m", "method": "direct", "disk_read_gbytes_ps": Infinity}')
+        with self.assertRaisesRegex(probe.ProbeError, "finite"):
+            facts.Cache(self.dir / "facts.json").put_evidence("n1", "/m", receipt)
+
+    def test_idle_cuda_members_are_never_available(self):
+        spec = dict(self.spec(None), idle=["GPU-4090"])
+        out = launch.write_route_state(spec, memory=lambda: {"free_physical_gib": 60.0, "free_commit_gib": 80.0})
+        self.assertFalse(out["devices"]["GPU-4090"]["available"])
+
     def spec(self, service_dir):
         return {"file": str(self.dir / "route-state.json"), "service_dir": service_dir, "uuids": [GPU],
                 "nodes": ["n1", "n2"], "pc": "pc", "links": ["pc-nodes"], "internal": ["pair.internal"],
@@ -728,6 +788,7 @@ class UpWithRecipeTests(unittest.TestCase):
                    mock.patch.object(launch.core, "locate", return_value=None),
                    mock.patch.object(launch.render, "router_policies", return_value=("nodes", "rtx", "auto", "routes")),
                    mock.patch("hyperloom.render.validate_router"),
+                   mock.patch.object(launch.render, "check_route_table", side_effect=_check_table),
                    mock.patch.object(launch.rtx, "pro_busy", return_value=None),
                    mock.patch.object(launch, "plan_service", side_effect=self.plan)]
         for patcher in patches:
@@ -860,6 +921,18 @@ def _tensormeld_routes():
     return None
 
 
+
+
+def _check_table(table):
+    """The router's own table parser when a TensorMeld with routes is reachable (HYPERLOOM_TM_SRC), else accept."""
+    routes = _tensormeld_routes()
+    if routes is None:
+        return None
+    try:
+        routes.RouteTable.parse(table)
+    except Exception as exc:  # noqa: BLE001 - its ValidationError comes from the isolated import
+        return str(exc)
+    return None
 
 
 def _core():

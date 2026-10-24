@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 import time
 
@@ -278,8 +279,8 @@ class Cache(probe.DiskCache):
             raise probe.ProbeError(f"{receipt_path}: names {receipt['host']}:{receipt['path']}, not "
                                    f"{machine}:{model_path}")
         value = receipt["disk_read_gbytes_ps"]
-        if type(value) not in (int, float) or not value > 0:
-            raise probe.ProbeError(f"{receipt_path}: disk_read_gbytes_ps must be > 0")
+        if type(value) not in (int, float) or not math.isfinite(value) or not value > 0:
+            raise probe.ProbeError(f"{receipt_path}: disk_read_gbytes_ps must be a finite number > 0")
         data = self._load()
         key = f"evidence|{machine}|{model_path}"
         data[key] = {"disk_read_gbytes_ps": float(value), "method": "receipt", "receipt": str(receipt_path),

@@ -998,8 +998,8 @@ def local_router_run(spec_path):
                 try:
                     result = _call(_client(SimpleNamespace(**machine), route_state["known_hosts"]), "gpu", {}, timeout=5)
                     polled[mid] = {"free_ram_gib": recipe_launch.node_ram(result), "at": time.time()}
-                except (OSError, remote.RemoteError, OrchestrationError, ValueError):
-                    pass  # no fresh answer: the node goes unavailable when its last one ages out (fail closed)
+                except Exception:  # noqa: BLE001 - any bad answer: the node ages out (fail closed), the thread lives
+                    pass
 
     poller = threading.Thread(target=poll_nodes, daemon=True) if route_state else None
     try:

@@ -141,6 +141,10 @@ def prepare(cluster, profile, options, *, router, vram_cap_gib, state_dir, sourc
     table = apply.route_table(evaluation.effective.to_json(), evaluation.effective.file_sha256, evaluation.bound,
                               decision, Path(state_dir) / "route-state.json", evaluation.context,
                               service_started=service["start"])
+    # The pinned router's own parser, before any lease (the table is refused here, not after the service started).
+    why = render.check_route_table(table)
+    if why is not None:
+        raise RecipeError("the pinned TensorMeld router refuses the route table: " + why)
     return Launch(evaluation, production and not evaluation.effective.untuned, service["start"], service["why"],
                   cap, host, table, plan)
 
@@ -221,10 +225,11 @@ def router_prefill(launch, cluster, profile, key_file):
 def route_state_spec(launch, service_record, reservation_end, state):
     """What the router helper needs to write the route state every second, including how to reach the nodes."""
     e = launch.evaluation
-    cuda = [m["id"] for s, members in e.bound["binding"].items() if e.bound["roles"][s] != "decode" for m in members]
+    cuda = [m["id"] for s, members in e.bound["binding"].items() if e.bound["roles"][s] == "service" for m in members]
+    idle = [m["id"] for s, members in e.bound["binding"].items() if e.bound["roles"][s] == "idle" for m in members]
     disk = sorted({m for r in launch.table["routes"] for m in r["disk_members"]})
     return {"file": launch.table["state"]["file"], "service_dir": service_record["directory"] if service_record else None,
-            "uuids": cuda, "nodes": list(e.context.nodes), "pc": e.context.pc,
+            "uuids": cuda, "idle": idle, "nodes": list(e.context.nodes), "pc": e.context.pc,
             "disk": {m: state.get("disk_paths", {}).get(m) for m in disk},
             "links": [l["id"] for l in e.effective.recipe["match"]["links"]],
             "internal": [f"{d['id']}.internal" for d in e.effective.recipe["match"]["devices"]
@@ -264,6 +269,8 @@ def write_route_state(spec, *, memory=None, now=None, nodes=None, replicas=None)
         available, why = False, "reservation ends within 60 s"
     status = (memory or rtx.memory_status)()
     devices = {uuid: {"available": available, **({"why": why} if why else {})} for uuid in spec["uuids"]}
+    for uuid in spec.get("idle", []):
+        devices[uuid] = {"available": False, "why": "not run by this deployment"}
     for member, model in (spec.get("disk") or {}).items():
         # The member's planned file tier reads its model file: available while the file is there.
         devices.setdefault(member, {"available": False, "why": "not bound"})["disk_available"] = bool(

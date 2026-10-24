@@ -341,7 +341,16 @@ def parse(obj: dict) -> Cluster:
                 raise ConfigError(f"profile.prefill_service: {service['name']} does not hand off to {kind}")
         from . import knobs
         knobs.validate(p.get("advanced", {}), data)
-    pc = record(obj.get("pc", {}), "pc", optional=("router_listen", "ui_listen", "cuda"))
+    pc = record(obj.get("pc", {}), "pc", optional=("router_listen", "ui_listen", "cuda", "recipe_dirs", "recipe_core"))
+    # Recipes (hyperloom/recipes): the operator's recipe directories and the strix-stream core executable.
+    if "recipe_dirs" in pc:
+        if not isinstance(pc["recipe_dirs"], list) or len(pc["recipe_dirs"]) > 16:
+            raise ConfigError("pc.recipe_dirs: expected a list of at most 16 absolute directories")
+        for index, directory in enumerate(pc["recipe_dirs"]):
+            if not Path(text(directory, f"pc.recipe_dirs[{index}]")).is_absolute():
+                raise ConfigError(f"pc.recipe_dirs[{index}]: expected an absolute path")
+    if "recipe_core" in pc and not Path(text(pc["recipe_core"], "pc.recipe_core")).is_absolute():
+        raise ConfigError("pc.recipe_core: expected an absolute path")
     for key in ("router_listen", "ui_listen"):
         if key in pc:
             endpoint = listen(pc[key], f"pc.{key}")

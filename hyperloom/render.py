@@ -210,6 +210,22 @@ def router_policies():
         sys.path.remove(source)
 
 
+def check_route_table(table):
+    """None when the pinned TensorMeld parses the prefill route table, else why not (no network or GPU)."""
+    source = str(repo_root() / "third_party" / "tensormeld" / "src")
+    sys.path.insert(0, source)
+    try:
+        routes = importlib.import_module("tensormeld.prefill_routes")
+        schema = importlib.import_module("tensormeld.schema")
+        try:
+            routes.RouteTable.parse(table)
+        except schema.ValidationError as exc:
+            return str(exc)
+        return None
+    finally:
+        sys.path.remove(source)
+
+
 def validate_router(obj):
     """Run the pinned parser, including its real key-file checks; no network or GPU."""
     source = str(repo_root() / "third_party" / "tensormeld" / "src")

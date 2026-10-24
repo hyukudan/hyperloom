@@ -20,6 +20,7 @@ PROFILE_SCHEMA = "strix-stream/recipe-profile-v1"
 OVERRIDES_SCHEMA = "strix-stream/recipe-overrides-v1"
 MAX_BYTES = 16 * 1024 * 1024
 MAX_GIB = 1048576.0
+MAX_INDEX = 4096          # layer indices and list entries (a range never expands past it)
 EXACT_KEYS = ("exact", "exactness", "bit_exact")
 NAME = re.compile(r"[A-Za-z0-9._-]{1,64}")
 ID = re.compile(r"[a-z0-9_-]{1,32}")
@@ -143,25 +144,26 @@ def _value(kind, value, where):
             return value
         raise RecipeError(f'{where}: expected an integer >= 0 or "fill"')
     if tag == "list":
-        if not isinstance(value, list) or any(type(v) is not int or v < 0 for v in value):
-            raise RecipeError(f"{where}: expected an array of integers >= 0")
+        if not isinstance(value, list) or len(value) > MAX_INDEX or any(type(v) is not int or v < 0 for v in value):
+            raise RecipeError(f"{where}: expected an array of at most {MAX_INDEX} integers >= 0")
         if len(set(value)) != len(value):
             raise RecipeError(f"{where}: entries must be distinct")
         return list(value)
     if tag == "layers":
-        if not isinstance(value, list):
-            raise RecipeError(f"{where}: expected an array of layer indices and [first, last] ranges")
+        if not isinstance(value, list) or len(value) > MAX_INDEX:
+            raise RecipeError(f"{where}: expected an array of at most {MAX_INDEX} layer indices and [first, last] ranges")
         out, covered = [], set()
         for i, item in enumerate(value):
-            if type(item) is int and item >= 0:
+            if type(item) is int and 0 <= item < MAX_INDEX:
                 span = {item}
                 out.append(item)
-            elif (isinstance(item, list) and len(item) == 2 and all(type(v) is int and v >= 0 for v in item)
+            elif (isinstance(item, list) and len(item) == 2 and all(type(v) is int and 0 <= v < MAX_INDEX for v in item)
                   and item[0] <= item[1]):
                 span = set(range(item[0], item[1] + 1))
                 out.append(list(item))
             else:
-                raise RecipeError(f"{where}[{i}]: expected a layer index or [first, last] with first <= last")
+                raise RecipeError(f"{where}[{i}]: expected a layer index < {MAX_INDEX} or [first, last] with "
+                                  "first <= last")
             if span & covered:
                 raise RecipeError(f"{where}[{i}]: overlaps an earlier entry")
             covered |= span
