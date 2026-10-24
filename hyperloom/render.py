@@ -64,12 +64,14 @@ def _tokens(asset):
 def diagnostic_env(data, names, values):
     """Non-production diagnostic env from the preset's verified table; never replaces production env."""
     table = data.get("diagnostics", {})
+    # Advanced knob env belongs to the launch, not to an observation switch.
+    knob_env = {knob["target"] for knob in data.get("advanced", {}).values() if knob["kind"] == "env"}
     env = {}
     for name in names:
         if name not in table:
             raise ConfigError(f"unknown diagnostic for this preset: {name}")
         for key, value in table[name]["env"].items():
-            if key in data["env"] or key in env:
+            if key in data["env"] or key in env or key in knob_env:
                 raise ConfigError(f"diagnostic {name}: {key} is already set")
             env[key] = value.format_map(values)
     return env
