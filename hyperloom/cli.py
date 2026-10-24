@@ -372,8 +372,53 @@ def _version():
         return f"hyperloom {__version__} (checkout)"
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(prog="hyperloom")
+def up_command(args, *, orchestrate=None, load_cluster=None):
+    """`hyperloom up PROFILE ...` from its parsed arguments; the portal's in-process path calls this too."""
+    orchestrate = orchestrate or _module("hyperloom.orchestrate")
+    supplied = [args.approval_ref is not None, args.approval_lease is not None, args.approval_end is not None]
+    approval = None
+    if any(supplied):
+        if not all(supplied):
+            raise ValueError("approval requires --approval-ref, --approval-lease, and --approval-end")
+        end = datetime.fromisoformat(args.approval_end.replace("Z", "+00:00"))
+        if end.tzinfo is None:
+            raise ValueError("--approval-end must include a timezone")
+        approval = {"ref": args.approval_ref, "lease_s": args.approval_lease, "end_epoch": end.timestamp()}
+    cluster = (load_cluster or _cluster)(args.config)
+    recipe = None
+    if args.recipe_inputs is not None:
+        if args.recipe is not None or any((args.recipe_profile, args.recipe_overrides, args.recipe_set, args.recipe_dir,
+                                           args.recipe_workload, args.node, args.device, args.diagnostic,
+                                           args.vram_cap_gib)) or args.router != "local":
+            raise ValueError("--recipe-inputs launches a planned snapshot as it is: no --recipe*, --node, --device, "
+                             "--diagnostic, --vram-cap-gib or --router")
+        service = _module("hyperloom.recipes.service")
+        service.use_config(args.config)
+        cluster, intent, recipe = service.options_from_inputs(args.recipe_inputs, args.profile)
+        args.profile, args.deadline, args.queue_timeout = intent["profile"], intent["deadline_s"], intent["queue_timeout_s"]
+    elif args.recipe is not None:
+        reader = _module("hyperloom.recipes.reader")
+        layers = _module("hyperloom.recipes.session").Layers(
+            profile=args.recipe_profile, overrides=list(args.recipe_overrides or []),
+            sets=[reader.parse_set(s) for s in args.recipe_set or []],
+            workload=args.recipe_workload or "default")
+        service = _module("hyperloom.recipes.service")
+        service.use_config(args.config)
+        cluster, intent, recipe = service.up_options(
+            cluster, args.recipe, args.profile, layers=layers, dirs=list(args.recipe_dir or []),
+            intent={"router": args.router, "deadline_s": args.deadline, "queue_timeout_s": args.queue_timeout})
+        args.profile = intent["profile"]
+    elif any((args.recipe_profile, args.recipe_overrides, args.recipe_set, args.recipe_dir, args.recipe_workload)):
+        raise ValueError("--recipe-profile/--recipe-overrides/--recipe-set/--recipe-dir/--recipe-workload need "
+                         "--recipe")
+    return orchestrate.up(cluster, args.profile, router=args.router, nodes=args.node, devices=args.device,
+                          deadline_s=args.deadline, approval=approval, queue_timeout_s=args.queue_timeout,
+                          diagnostics=args.diagnostic, vram_cap_gib=args.vram_cap_gib, recipe=recipe)
+
+
+def build_parser(parser_class=argparse.ArgumentParser):
+    """The command line; the portal API parses its argv with the same parser (one code path)."""
+    parser = parser_class(prog="hyperloom")
     parser.add_argument("--version", action="version", version=_version())
     commands = parser.add_subparsers(dest="command", required=True)
     ui = commands.add_parser("ui", help="open the local portal")
@@ -445,12 +490,15 @@ def main(argv=None):
                          "guard it there")
     up.add_argument("--diagnostic", action="append", default=None,
                     help="non-production diagnostic from the preset (repeatable); output goes to the node log/")
-    up.add_argument("--recipe", help="a recipe file, or auto: the most specific recipe that fits this hardware")
+    up.add_argument("--recipe", help="a recipe id (e.g. qwen3.8-flash-next.lab; then the profile may be omitted), a "
+                                     "recipe file, or auto: the most specific recipe that fits this hardware")
     up.add_argument("--recipe-profile", type=Path, help="the autotuner's profile for the recipe (refused when stale)")
     up.add_argument("--recipe-overrides", type=Path, action="append", help="a recipe overrides file (repeatable)")
     up.add_argument("--recipe-set", action="append", metavar="PATH=VALUE", help="one recipe override (repeatable)")
     up.add_argument("--recipe-dir", type=Path, action="append", help="--recipe auto: also search this directory")
     up.add_argument("--recipe-workload", help="the workload class this run serves (default: default)")
+    up.add_argument("--recipe-inputs", metavar="DIGEST",
+                    help="launch exactly a recipe snapshot that `hyperloom recipe plan` made (its `inputs` digest)")
     down = commands.add_parser("down")
     down.add_argument("profile", nargs="?")
     down.add_argument("--force", action="store_true")
@@ -562,6 +610,68 @@ def main(argv=None):
     recipe_pick.add_argument("--dir", action="append", type=Path, help="also search this directory (repeatable)")
     recipe_pick.add_argument("--facts", type=Path)
     layered(recipe_pick)
+    recipe_list = recipe_commands.add_parser("list", help="every recipe: built-in examples, configured and user ones")
+    recipe_list.add_argument("--model", help="only the recipes for this model id")
+    recipe_list.add_argument("--config", type=Path, default=config_path())
+    recipe_show = recipe_commands.add_parser("show", help="one recipe: text, routes, settable fields")
+    recipe_show.add_argument("recipe", help="a recipe id or file")
+    recipe_show.add_argument("--config", type=Path, default=config_path())
+    recipe_select = recipe_commands.add_parser("select", help="the recipe each profile serving MODEL would run, and why")
+    recipe_select.add_argument("model")
+    recipe_select.add_argument("--profile", help="only this profile")
+    recipe_select.add_argument("--facts", type=Path)
+    layered(recipe_select)
+    recipe_plan = recipe_commands.add_parser("plan", help="what up --recipe decides before any lease (dry run)")
+    recipe_plan.add_argument("recipe", help="a recipe id, a file or auto")
+    recipe_plan.add_argument("profile")
+    recipe_plan.add_argument("--facts", type=Path)
+    layered(recipe_plan)
+    for name, text in (("active", "the recipe each running profile was launched with, explained"),
+                       ("routes", "per-request route counts (RTX / nodes) and the route state now")):
+        command = recipe_commands.add_parser(name, help=text)
+        command.add_argument("profile", nargs="?")
+        command.add_argument("--config", type=Path, default=config_path())
+    recipe_save = recipe_commands.add_parser("save", help="write a user recipe (validated; the user directory only)")
+    recipe_save.add_argument("id", help="the new recipe id (file stem), e.g. qwen3.8-flash-next.mine")
+    source = recipe_save.add_mutually_exclusive_group(required=True)
+    source.add_argument("--from", dest="from_file", type=Path, help="the recipe text (TOML or JSON; - = stdin)")
+    source.add_argument("--base", help="a recipe id or file to copy with --set values (saved as JSON)")
+    recipe_save.add_argument("--base-sha256", help="with --base: the sha256 of the base as it was edited (required)")
+    recipe_save.add_argument("--set", action="append", metavar="PATH=VALUE",
+                             help="with --base: one value (repeatable; all of them form one overrides layer)")
+    recipe_save.add_argument("--name", help="with --base: the copy's recipe name (default: the id)")
+    recipe_save.add_argument("--replace", metavar="SHA256", help="replace the user recipe that has this sha256")
+    recipe_save.add_argument("--config", type=Path, default=config_path())
+    recipe_delete = recipe_commands.add_parser("delete", help="remove a user recipe")
+    recipe_delete.add_argument("id")
+    recipe_delete.add_argument("--sha256", required=True, help="the sha256 of the file being removed")
+    recipe_delete.add_argument("--config", type=Path, default=config_path())
+    layer_save = recipe_commands.add_parser("save-layer", help="write an overrides layer into the user layers directory")
+    layer_save.add_argument("name", help="the layer's name (file stem)")
+    layer_source = layer_save.add_mutually_exclusive_group(required=True)
+    layer_source.add_argument("--recipe", help="build an overrides layer from --set values for this recipe (id or file)")
+    layer_source.add_argument("--from", dest="from_file", type=Path,
+                              help="a whole overrides or tuning-profile document (TOML or JSON; - = stdin)")
+    layer_save.add_argument("--set", action="append", metavar="PATH=VALUE", help="with --recipe (repeatable)")
+    layer_save.add_argument("--replace", metavar="SHA256", help="replace the layer that has this sha256")
+    layer_save.add_argument("--config", type=Path, default=config_path())
+    deploy = recipe_commands.add_parser("deploy", help="stop the reviewed profiles and launch a planned snapshot")
+    deploy.add_argument("inputs", help="the `inputs` digest `hyperloom recipe plan` printed")
+    deploy.add_argument("--stop", action="append", default=[], metavar="PROFILE",
+                        help="a running profile to stop first (repeatable; must be exactly the running set)")
+    deploy.add_argument("--approval-ref")
+    deploy.add_argument("--approval-lease", type=int)
+    deploy.add_argument("--approval-end")
+    deploy.add_argument("--config", type=Path, default=config_path())
+    receipt = recipe_commands.add_parser("save-receipt", help="store a node disk-read receipt for probe --evidence")
+    receipt.add_argument("name", help="the receipt name (file stem)")
+    receipt.add_argument("--from", dest="from_file", type=Path, required=True, help="the receipt JSON (- = stdin)")
+    receipt.add_argument("--replace", metavar="SHA256", help="replace the receipt that has this sha256")
+    receipt.add_argument("--config", type=Path, default=config_path())
+    layer_delete = recipe_commands.add_parser("delete-layer", help="remove an overrides layer of the user directory")
+    layer_delete.add_argument("name")
+    layer_delete.add_argument("--sha256", required=True, help="the sha256 of the file being removed")
+    layer_delete.add_argument("--config", type=Path, default=config_path())
     # Internal controller entry point; not part of the public interface.
     helper = commands.add_parser("_prefill-run", help=argparse.SUPPRESS)
     helper.add_argument("spec")
@@ -574,13 +684,18 @@ def main(argv=None):
     watch = commands.add_parser("_up-watch", help=argparse.SUPPRESS)
     watch.add_argument("path")
     watch.add_argument("token")
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
     try:
         if args.command == "ui":
             if not 0 <= args.port <= 65535:
                 raise ValueError("ui port must be in 0..65535")
             _module("hyperloom.web.server").serve(args.port, no_browser=args.no_browser)
-        elif args.command in ("up", "down") and args.profile is None:
+        elif args.command in ("up", "down") and args.profile is None and not (
+                getattr(args, "recipe", None) or getattr(args, "recipe_inputs", None)):
             print("Phase 1a")
         elif args.command == "install":
             cluster = _cluster(args.config)
@@ -614,32 +729,7 @@ def main(argv=None):
             else:
                 _json(assets.status(cluster, args.profile))
         elif args.command == "up":
-            supplied = [args.approval_ref is not None, args.approval_lease is not None, args.approval_end is not None]
-            approval = None
-            if any(supplied):
-                if not all(supplied):
-                    raise ValueError("approval requires --approval-ref, --approval-lease, and --approval-end")
-                end = datetime.fromisoformat(args.approval_end.replace("Z", "+00:00"))
-                if end.tzinfo is None:
-                    raise ValueError("--approval-end must include a timezone")
-                approval = {"ref": args.approval_ref, "lease_s": args.approval_lease, "end_epoch": end.timestamp()}
-            cluster = _cluster(args.config)
-            recipe = None
-            if args.recipe is not None:
-                recipes = _module("hyperloom.recipes.launch")
-                reader = _module("hyperloom.recipes.reader")
-                layers = _module("hyperloom.recipes.session").Layers(
-                    profile=args.recipe_profile, overrides=list(args.recipe_overrides or []),
-                    sets=[reader.parse_set(s) for s in args.recipe_set or []],
-                    workload=args.recipe_workload or "default")
-                recipe = recipes.Options(args.recipe, layers, list(args.recipe_dir or []))
-            elif any((args.recipe_profile, args.recipe_overrides, args.recipe_set, args.recipe_dir, args.recipe_workload)):
-                raise ValueError("--recipe-profile/--recipe-overrides/--recipe-set/--recipe-dir/--recipe-workload need "
-                                 "--recipe")
-            _json(_module("hyperloom.orchestrate").up(cluster, args.profile, router=args.router,
-                  nodes=args.node, devices=args.device, deadline_s=args.deadline, approval=approval,
-                  queue_timeout_s=args.queue_timeout, diagnostics=args.diagnostic, vram_cap_gib=args.vram_cap_gib,
-                  recipe=recipe))
+            _json(up_command(args))
         elif args.command == "down":
             _json(_module("hyperloom.orchestrate").down(args.profile, force=args.force))
         elif args.command == "endpoint":
@@ -682,7 +772,13 @@ def main(argv=None):
         elif args.command == "vramplan":
             _json(_vramplan(args))
         elif args.command == "recipe":
-            result, ok = _module("hyperloom.recipes.commands").run(_cluster, args)
+            service = _module("hyperloom.recipes.service")
+            try:
+                result, ok = _module("hyperloom.recipes.commands").run(_cluster, args)
+            except (service.NotFound, service.Conflict) as exc:
+                # Own exit codes so callers (the portal) tell "no such recipe" and "changed / taken" apart.
+                print(f"hyperloom: {exc}", file=sys.stderr)
+                return 3 if isinstance(exc, service.NotFound) else 4
             _json(result)
             if not ok:
                 return 1

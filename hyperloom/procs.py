@@ -115,6 +115,43 @@ if os.name == "nt":
                 self.handle = None
 
 
+if os.name == "nt":
+    def resume_suspended(pid):
+        """Resume the primary thread of a child created with CREATE_SUSPENDED (after assigning it to a job)."""
+        # Popen closes the primary thread handle; reopen it while the child is suspended.
+        class ThreadEntry(ctypes.Structure):
+            _fields_ = [("size", wintypes.DWORD), ("usage", wintypes.DWORD),
+                        ("tid", wintypes.DWORD), ("pid", wintypes.DWORD),
+                        ("base", wintypes.LONG), ("delta", wintypes.LONG),
+                        ("flags", wintypes.DWORD)]
+        _kernel.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        _kernel.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        _kernel.Thread32First.argtypes = [wintypes.HANDLE, ctypes.POINTER(ThreadEntry)]
+        _kernel.Thread32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(ThreadEntry)]
+        snapshot = _kernel.CreateToolhelp32Snapshot(0x4, 0)
+        if snapshot == ctypes.c_void_p(-1).value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            entry = ThreadEntry()
+            entry.size = ctypes.sizeof(entry)
+            found = _kernel.Thread32First(snapshot, ctypes.byref(entry))
+            while found:
+                if entry.pid == pid:
+                    thread = _kernel.OpenThread(0x2, False, entry.tid)
+                    if not thread:
+                        raise ctypes.WinError(ctypes.get_last_error())
+                    try:
+                        if _kernel.ResumeThread(thread) == 0xFFFFFFFF:
+                            raise ctypes.WinError(ctypes.get_last_error())
+                    finally:
+                        _kernel.CloseHandle(thread)
+                    return
+                found = _kernel.Thread32Next(snapshot, ctypes.byref(entry))
+            raise ProcessError("cannot find suspended child thread")
+        finally:
+            _kernel.CloseHandle(snapshot)
+
+
 class LocalChild:
     def __init__(self, argv, env, log_dir, name, *, port=None,
                  max_log_bytes=1024 * 1024, log_backups=3):
@@ -184,38 +221,7 @@ class LocalChild:
             raise
 
     def _resume_windows_child(self):
-        # Popen closes the primary thread handle; reopen it while the child is suspended.
-        class ThreadEntry(ctypes.Structure):
-            _fields_ = [("size", wintypes.DWORD), ("usage", wintypes.DWORD),
-                        ("tid", wintypes.DWORD), ("pid", wintypes.DWORD),
-                        ("base", wintypes.LONG), ("delta", wintypes.LONG),
-                        ("flags", wintypes.DWORD)]
-        _kernel.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
-        _kernel.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
-        _kernel.Thread32First.argtypes = [wintypes.HANDLE, ctypes.POINTER(ThreadEntry)]
-        _kernel.Thread32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(ThreadEntry)]
-        snapshot = _kernel.CreateToolhelp32Snapshot(0x4, 0)
-        if snapshot == ctypes.c_void_p(-1).value:
-            raise ctypes.WinError(ctypes.get_last_error())
-        try:
-            entry = ThreadEntry()
-            entry.size = ctypes.sizeof(entry)
-            found = _kernel.Thread32First(snapshot, ctypes.byref(entry))
-            while found:
-                if entry.pid == self.process.pid:
-                    thread = _kernel.OpenThread(0x2, False, entry.tid)
-                    if not thread:
-                        raise ctypes.WinError(ctypes.get_last_error())
-                    try:
-                        if _kernel.ResumeThread(thread) == 0xFFFFFFFF:
-                            raise ctypes.WinError(ctypes.get_last_error())
-                    finally:
-                        _kernel.CloseHandle(thread)
-                    return
-                found = _kernel.Thread32Next(snapshot, ctypes.byref(entry))
-            raise ProcessError("cannot find suspended child thread")
-        finally:
-            _kernel.CloseHandle(snapshot)
+        resume_suspended(self.process.pid)
 
     def _drain(self, stream, path):
         output = path.open("ab")

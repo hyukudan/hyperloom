@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import hashlib
 import json
+import time
 from pathlib import Path
 
 from . import apply, core, facts, reader
@@ -113,13 +114,17 @@ def saved_source(path):
     def source(ctx):
         if data.get("profile") != ctx.profile:
             raise RecipeError(f"{path}: facts of profile {data.get('profile')}, not {ctx.profile}")
-        return data["inventory"], data["facts"], data["raw"], data.get("notes", []) + [f"facts from {path}"]
+        observed = data.get("observed_at")
+        when = (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(observed)) if type(observed) in (int, float)
+                else "at an unrecorded time")
+        return data["inventory"], data["facts"], data["raw"], data.get("notes", []) + [
+            f"facts from {path}, observed {when} (saved, not live)"]
     return source
 
 
 def facts_record(profile, inventory, gathered, raw, notes):
     return {"schema": FACTS_SCHEMA, "profile": profile, "inventory": inventory, "facts": gathered, "raw": raw,
-            "notes": notes}
+            "notes": notes, "observed_at": time.time()}
 
 
 def simulate(evaluation, tokens, generation=None):
@@ -164,13 +169,15 @@ def _flatten(doc, prefix=""):
 
 
 def candidates(directories):
-    """Every recipe file in the directories (sorted), parsed or with its error; duplicate names are errors."""
-    rows, names = [], {}
+    """Every recipe file in the directories (sorted), parsed or with its error; duplicate names and duplicate ids
+    (file stems, case-folded: the catalog's recipe ids) are errors on every row that has them."""
+    rows, names, stems = [], {}, {}
     for directory in directories:
         directory = Path(directory)
         if not directory.is_dir():
             continue
         for path in sorted(p for p in directory.iterdir() if p.suffix in SUFFIXES and p.is_file()):
+            stems.setdefault(path.stem.casefold(), []).append(str(path))
             try:
                 recipe = reader.parse(read_text(path), path.name)
                 rows.append({"path": str(path), "name": recipe["name"], "model": recipe["match"]["model"],
@@ -183,6 +190,11 @@ def candidates(directories):
             for row in rows:
                 if row["name"] == name:
                     row["error"] = f'duplicate recipe name "{name}" in {", ".join(paths)}'
+    for stem, paths in stems.items():
+        if len(paths) > 1:
+            for row in rows:
+                if row["path"] in paths:
+                    row["error"] = f'duplicate recipe id "{stem}" in {", ".join(paths)}'
     return rows
 
 

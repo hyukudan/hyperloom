@@ -30,6 +30,7 @@ Status: design for main/user review (2026-10-23); sections 9-11 answer Sol revie
 | 1 | **Devices** | every machine with its accelerators, memory, usage, drivers, roles, health and last seen; discovered machines waiting to pair | `img/devices-*.png` |
 | 2 | **Topology & links** | map of machines, roles and links (Ethernet, USB4 cables); measured bandwidth and latency; USB4 layout (read-only) | `img/topology-*.png` |
 | 3 | **Models & placement** | model library with per-machine presence and verification; planner proposals for the connected set with expected numbers; start/switch | `img/models-*.png` |
+| 3b | **Recipes & profiles** | recipe profiles of a model with their trade-offs; field editing with inline validation and explain; hardware check, placement preview, deploy; the running recipe and its routes (§3.8) | built UI (`tests/ui/smoke.py` screenshots) |
 | 4 | **Engines** | running profile, lease/turn countdown, processes and readiness, parameters (basic only) with diff vs production, effective config, change history with rollback | `img/engines-*.png` |
 | 5 | **Live stats** | KPIs, throughput and TTFT charts, per-node step breakdown, memory headroom, link health, recent requests | `img/stats-*.png` |
 | 6 | **Logs** | merged live log with parsed events (READY, POISONED, STOPPED, warnings), filters, recent failures, redacted bundle | `img/logs-*.png` |
@@ -83,6 +84,29 @@ Status: design for main/user review (2026-10-23); sections 9-11 answer Sol revie
   - the exactness identity;
   - conflicts (e.g. "stops the DeepSeek pair; cannot share a node").
 - **Action:** "Switch to this…" opens a confirmation listing what will stop, which leases are needed and how long they last.
+
+### 3.8 Recipes & profiles (`#/recipes`)
+- **Header:** the model and the deployment profile (the configured profiles serving that model). A model no profile
+  serves can be read and edited, not checked or deployed; the controls say so.
+- **Active:** for each profile hyperloom launched: the recipe, production/untuned, the RTX service started or why not,
+  each input as launched and whether it changed or was deleted since; **routes**: requests admitted per route with an
+  RTX/nodes split bar, refusals, failed hand-offs, the per-request records (route, attempts, outcome, status, first
+  byte) when the router keeps them, else "unavailable · needs the router's request log", and the route state's age.
+- **Profiles of the model:** one card per recipe file (built-in / pending / configured / user pill, description, the
+  blocker of a pending one) with trade-off chips (TTFT at 1K/8K/32K, decode, memory, quality cost), each with its
+  basis (measured / derived / projected / target / bound). Only enabled routes' numbers; a copy's numbers say
+  "base, not re-measured".
+- **Selected recipe:** trade-offs table (every prediction with basis, scope and evidence key); hardware check (match
+  problems, the decision per route, refusal reasons) and a simulated request; placement preview (conditional
+  `up.ok` or the refusal, the RTX plan from vramplan, the route table, what is checked at start); fields grouped by
+  route/set with type-aware inputs, range hints, pinned marks, changed highlight, debounced re-check (one overrides
+  layer) with the refusal attached to its field (`aria-describedby`) and each field's layer/origin; layers (tuning
+  profile, overrides in order, save the changes as a layer, add a layer document, delete); source (read-only for
+  built-ins; editable with Check/Save/Delete for user recipes); compare with another recipe.
+- **Actions:** Deploy… (enabled only after a preview that passes and matches the current fields and layers; the dialog
+  lists what stops, what starts, the service decision, and that nothing stops if anything differs), Save as my recipe…
+  (a copy with the changed fields), probes as jobs (probe, read model headers, add a disk receipt, probe with it).
+- Every answer shows its equivalent command line (`hyperloom recipe ...`). API: docs/api.md.
 
 ### 3.4 Engines
 - **Start dialog** (SPEC §16.2): "Router runs on" (default: this machine, or any paired machine) and the machines/devices to link, pre-filled from the profile; unreachable declared machines block the start with their name.
@@ -245,6 +269,9 @@ Every widget renders from exactly one source. "Request" means the widget stays h
 | Logs | `supervise` captured stdout/stderr + hyperloom actions | parsed events | — |
 | Settings: trusted machines | hyperloom pinned host keys (MVP); agent enrollments later | — | TM-R10..R12 |
 | Settings: secrets | hyperloom DPAPI store (ctypes `CryptProtectData`) / node 0600 files | — | — |
+| Recipes: catalog, trade-offs, fields | `GET recipes`, `GET recipes/<id>` (= `hyperloom recipe list/show`) | the recipe files' own `[[x-predicted]]` rows | — |
+| Recipes: check, explain, preview, deploy | `POST recipes/{validate,explain,plan}`, job `recipes/deploy` (= the CLI) | live probes, or a named saved observation | — |
+| Recipes: active and routes | `GET recipes/active`, `GET recipes/routes`: launch record + router `prefill_routes` | admitted counts since the router started; per-request records | TensorMeld `router/recipe-routes-recent` for `recent` |
 
 ## 10. Capability matrix by phase (what the built UI enables)
 
@@ -254,6 +281,7 @@ Every widget renders from exactly one source. "Request" means the widget stays h
 | Discover / pair / revoke enrollment | shown as "later phase", disabled | disabled | ✓ (TM-R10..R13) |
 | Disconnect machine (uninstall + unpin key) | ✓ | ✓ | ✓ |
 | Start / stop / switch profile | Qwen replicas | + DeepSeek pair, + RTX prefill (3a) | + split decode (R14) |
+| Recipes: list, edit, check, preview, deploy any model by recipe | ✓ (recipes branch) | ✓ | ✓ |
 | Basic parameters + audit / rollback | ✓ (file + restart) | ✓ | config-file path per component (E-C*, TM-C*) |
 | Topology map + Ethernet link-probe | list only | ✓ | ✓ |
 | USB4 per-cable telemetry | hidden | hidden until R18 | ✓ |

@@ -9,7 +9,11 @@ import secrets
 from urllib.parse import parse_qs, unquote, urlsplit
 import webbrowser
 
+import select
+import socket
+
 from .api import API, APIError, MUTATIONS, redact
+from . import recipes as recipe_web
 
 
 MAX_BODY = 64 * 1024
@@ -36,6 +40,14 @@ class PortalServer(ThreadingHTTPServer):
         super().__init__(("127.0.0.1", port), Handler)
         self.origin = f"http://127.0.0.1:{self.server_port}"
         self.allowed_hosts = {f"127.0.0.1:{self.server_port}", f"localhost:{self.server_port}"}
+
+
+    def server_close(self):
+        # Recipe children (and their whole process trees) never outlive the portal.
+        runner = getattr(self.api, "recipes", None)
+        if runner is not None:
+            runner.close()
+        super().server_close()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -96,6 +108,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if parsed.path.startswith("/hyperloom/api/"):
                 endpoint = parsed.path[len("/hyperloom/api/"):]
+                if endpoint == "recipes" or endpoint.startswith("recipes/"):
+                    query = parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True) if parsed.query else {}
+                    if any(len(values) != 1 for values in query.values()):
+                        raise APIError("duplicate query argument")
+                    if endpoint in MUTATIONS:
+                        raise APIError("mutation requires POST", 405)
+                    status, document = self.server.api.recipe_get(endpoint, {k: v[0] for k, v in query.items()})
+                    self._send(status, document, head=head)
+                    return
                 if endpoint in MUTATIONS:
                     self._error(405, "mutation requires POST")
                     return
@@ -109,8 +130,9 @@ class Handler(BaseHTTPRequestHandler):
             path = unquote(parsed.path)
             files = {"/": "index.html", "/index.html": "index.html",
                      "/hyperloom/": "index.html", "/hyperloom/index.html": "index.html",
-                     "/app.css": "app.css", "/app.js": "app.js",
-                     "/hyperloom/app.css": "app.css", "/hyperloom/app.js": "app.js"}
+                     "/app.css": "app.css", "/app.js": "app.js", "/recipes.js": "recipes.js",
+                     "/hyperloom/app.css": "app.css", "/hyperloom/app.js": "app.js",
+                     "/hyperloom/recipes.js": "recipes.js"}
             name = files.get(path)
             if name is None:
                 self._error(404, "not found")
@@ -157,15 +179,17 @@ class Handler(BaseHTTPRequestHandler):
             if len(lengths) != 1 or not lengths[0].isascii() or not lengths[0].isdigit():
                 raise APIError("one Content-Length is required", 411)
             size = int(lengths[0])
-            if size > MAX_BODY:
-                raise APIError("body exceeds 64 KiB", 413)
+            target = urlsplit(self.path).path[len("/hyperloom/api/"):]
+            limit = recipe_web.LARGE_BODY_BYTES if target in recipe_web.LARGE_BODY else MAX_BODY
+            if size > limit:
+                raise APIError(f"body exceeds {limit // 1024} KiB", 413)
             if size == 0:
                 raise APIError("JSON object required")
             parsed = urlsplit(self.path)
             if parsed.query or not parsed.path.startswith("/hyperloom/api/"):
                 raise APIError("unknown mutation", 404)
             action = parsed.path[len("/hyperloom/api/"):]
-            if action not in MUTATIONS:
+            if action not in MUTATIONS and action not in recipe_web.POSTS:
                 raise APIError("unknown mutation", 404)
             raw = self.rfile.read(size)
             if len(raw) != size:
@@ -175,6 +199,10 @@ class Handler(BaseHTTPRequestHandler):
             arguments = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs, parse_constant=invalid_constant)
             if not isinstance(arguments, dict):
                 raise APIError("JSON object required")
+            if action in recipe_web.POSTS:
+                status, document = self.server.api.recipe_post(action, arguments, cancelled=self._client_gone)
+                self._send(status, document)
+                return
             self._send(202, self.server.api.mutate(action, arguments))
         except APIError as exc:
             self._error(exc.status, str(exc))
@@ -182,6 +210,14 @@ class Handler(BaseHTTPRequestHandler):
             self._error(400, "invalid JSON or arguments: " + str(exc))
         except (OSError, RuntimeError) as exc:
             self._error(503, str(exc))
+
+    def _client_gone(self):
+        """True once the client closed its connection (a synchronous recipe request is then cancelled)."""
+        try:
+            readable, _, _ = select.select([self.connection], [], [], 0)
+            return bool(readable) and self.connection.recv(1, socket.MSG_PEEK) == b""
+        except (OSError, ValueError):
+            return True
 
     def _method(self):
         if self._host():

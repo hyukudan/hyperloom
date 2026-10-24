@@ -193,3 +193,13 @@ refreshes it.
   stay loopback. Its argv must pass the key (`--api-key-file {key_file}` or `--http-api-key-file {key_file}`);
   without it the preset is refused. Its offload routes also wait for its serve-side hand-off contract and the
   `import-state-parked` capability.
+
+## Portal and catalog
+
+Every `hyperloom recipe` operation is also a portal API call that runs the same command line (docs/api.md), and the
+portal's **Recipes & profiles** page uses them. Recipes are named by id (the file name without extension,
+`qwen3.8-flash-next.lab`) from the catalog: the vendored strix-stream examples (`hyperloom/recipes/examples/`, read-only;
+`pending/` never launches), `pc.recipe_dirs`, and the user directory `<config dir>/recipes/`, the only one
+`hyperloom recipe save` writes. `hyperloom up --recipe ID` (profile optional when one profile serves the recipe's
+model) snapshots every input (recipe, layers, configuration, launch arguments) and launches the snapshot;
+`hyperloom recipe plan` creates the same snapshot and `hyperloom recipe deploy DIGEST` launches exactly it.

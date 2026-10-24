@@ -17,7 +17,7 @@ hloom = "hyperloom.cli:main"
 include = ["hyperloom*"]
 
 [tool.setuptools.package-data]
-hyperloom = ["presets/*.json"]
+hyperloom = ["presets/*.json", "recipes/builtin.json", "recipes/examples/*.toml", "recipes/examples/pending/*.toml"]
 
 [tool.setuptools.data-files]
 "share/hyperloom/node" = ["node/hyperloom-node"]

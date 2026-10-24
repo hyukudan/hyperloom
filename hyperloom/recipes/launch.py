@@ -23,6 +23,11 @@ class Options:
     recipe: str                      # a file path or "auto"
     layers: session.Layers = field(default_factory=session.Layers)
     dirs: list = field(default_factory=list)
+    # The snapshot the launch reads (service.launch_inputs): [{role, original, id, path, sha256}]; with exact_dirs,
+    # `auto` picks among exactly ``dirs`` (snapshotted candidates) instead of the live recipe directories.
+    inputs: list = field(default_factory=list)
+    exact_dirs: bool = False
+    digest: str | None = None
 
 
 @dataclass
@@ -35,16 +40,30 @@ class Launch:
     host_gib: float | None
     table: dict
     plan: dict | None = None
+    layers: session.Layers | None = None
+    inputs: list = field(default_factory=list)
+    digest: str | None = None
 
     def record(self):
-        """What the profile state keeps about the recipe (shown by `hyperloom status`)."""
+        """What the profile state keeps about the recipe (shown by `hyperloom status` and `recipe active`): the
+        decision, the inputs as snapshotted, the layers, and the effective recipe with its explain trace as launched."""
         e = self.evaluation
+        same = lambda a, b: os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))  # noqa: E731
+        chosen = [i for i in self.inputs if i["role"] != "candidate" or same(i["path"], e.path)]
         return dict(e.summary(), production=self.production,
                     service={"start": self.service_start, "why": self.service_why,
                              "vram_cap_gib": self.vram_cap_gib, "host_gib": self.host_gib, "plan": self.plan},
                     route_table={"effective_sha256": self.table["effective_sha256"],
                                  "state_file": self.table["state"]["file"],
-                                 "routes": [{"id": r["id"], "enabled": r["enabled"]} for r in self.table["routes"]]})
+                                 "routes": [{"id": r["id"], "enabled": r["enabled"]} for r in self.table["routes"]]},
+                    inputs=[dict(i, role="recipe") if i["role"] == "candidate" else i for i in chosen],
+                    inputs_digest=self.digest,
+                    layers=None if self.layers is None else {
+                        "profile": str(self.layers.profile) if self.layers.profile else None,
+                        "overrides": [str(o) for o in self.layers.overrides],
+                        "set": [[path, value] for path, value in self.layers.sets],
+                        "workload": self.layers.workload},
+                    effective=e.effective.to_json(), explain=e.effective.trace)
 
 
 def _backend(cluster):
@@ -109,8 +128,8 @@ def prepare(cluster, profile, options, *, router, vram_cap_gib, state_dir, sourc
                           "by it); update third_party/tensormeld")
     source = source or commands.live_source(cluster)
     if options.recipe == "auto":
-        chosen, rows = session.pick(cluster, profile, commands.recipe_dirs(cluster, options.dirs), options.layers,
-                                    source, backend)
+        dirs = options.dirs if options.exact_dirs else commands.recipe_dirs(cluster, options.dirs)
+        chosen, rows = session.pick(cluster, profile, dirs, options.layers, source, backend)
         if chosen is None:
             raise RecipeError("no recipe fits: " + "; ".join(f"{r['path']}: {r['result']}" for r in rows)
                               if rows else "no recipe files in " + ", ".join(map(str, commands.recipe_dirs(cluster))))
@@ -147,7 +166,8 @@ def prepare(cluster, profile, options, *, router, vram_cap_gib, state_dir, sourc
     if why is not None:
         raise RecipeError("the pinned TensorMeld router refuses the route table: " + why)
     return Launch(evaluation, production and not evaluation.effective.untuned, service["start"], service["why"],
-                  cap, host, table, plan)
+                  cap, host, table, plan, options.layers, options.inputs,
+                  options.digest)
 
 
 def verify_launch(launch, selected, profile, processes, release_rows):

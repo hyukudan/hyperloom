@@ -8,6 +8,9 @@ logs.entries/failures, settings.trusted_machines. Missing sources are null.
 POST arguments use CLI names (hyphens become underscores); replies contain
 job/id, state, action, arguments, result, error. Poll /jobs or /jobs/<id>.
 GET logs accepts profile/process/tail. POST cancel accepts job or profile.
+Recipes (web/recipes.py, docs/api.md): GET recipes, recipes/<id>, recipes/active, recipes/routes; synchronous POST
+recipes/{validate,explain,check,diff,pick,select,plan} and recipes/{save,delete,save-layer,delete-layer,save-receipt};
+jobs recipes/probe and recipes/deploy. Each one runs the `hyperloom recipe ...` command line.
 """
 
 from collections import deque
@@ -32,13 +35,14 @@ from hyperloom.adapters import engine, router
 from hyperloom.paths import repo_root
 from hyperloom.stats import Window
 from hyperloom.winproc import no_window
+from hyperloom.web import recipes as recipe_web
 
 
 SCREENS = frozenset(("devices", "topology", "models", "profiles", "stats", "logs", "settings"))
-MUTATIONS = frozenset(("up", "down", "install", "hosts/pin", "doctor", "keys/rotate", "cancel"))
+MUTATIONS = frozenset(("up", "down", "install", "hosts/pin", "doctor", "keys/rotate", "cancel")) | recipe_web.JOBS
 POLL_INTERVAL = 2
 CAPABILITIES = {
-    "up": {"enabled": True, "why": "Qwen replicas only"},
+    "up": {"enabled": True, "why": "Qwen replicas; any model with a recipe"},
     "down": {"enabled": True}, "install": {"enabled": True},
     "hosts/pin": {"enabled": True}, "doctor": {"enabled": True},
     "keys/rotate": {"enabled": True, "why": "engine keys; restart required"},
@@ -313,6 +317,49 @@ class API:
         self._history = deque(maxlen=1800)
         self._counters = {}
         self._recent = {}
+        self.recipes = recipe_web.Runner()
+
+    def _recipe_loader(self, path):
+        return self.orchestrate.load_cluster(path, config)
+
+    def recipe_get(self, endpoint, query):
+        """GET recipes, recipes/<id>, recipes/active, recipes/routes: (status, document); the CLI's own parser and
+        commands.run, in process (they only read files)."""
+        if endpoint in recipe_web.POSTS or endpoint in recipe_web.JOBS:
+            raise APIError(endpoint + " requires POST", 405)
+        from hyperloom.recipes import service
+        service.use_config(self.config_path)
+        try:
+            operation, argv = recipe_web.read_request(endpoint, query, config=self.config_path)
+        except ValueError as exc:
+            raise APIError(str(exc)) from exc
+        return recipe_web.document(operation, argv, recipe_web.in_process(argv, self._recipe_loader), now=self.clock())
+
+    def recipe_post(self, action, arguments, cancelled=lambda: False):
+        """POST recipes/<query or write>: (status, document) of the CLI child; writes are audited."""
+        from hyperloom.recipes import service
+        service.use_config(self.config_path)
+        try:
+            request = recipe_web.Request(action, arguments, config=self.config_path)
+        except ValueError as exc:
+            if action in recipe_web.WRITES:
+                self._audit(action, recipe_web.audit_arguments(arguments), {"state": "refused", "error": str(exc)})
+            raise APIError(str(exc)) from exc
+        try:
+            try:
+                result = self.recipes.run(request.argv, stdin=request.stdin, deadline_s=request.deadline_s,
+                                          cancelled=cancelled)
+            except recipe_web.Busy as exc:
+                raise APIError(str(exc), 503) from exc
+            status, document = recipe_web.document(request.operation, request.command_line_argv(), result,
+                                                   now=self.clock(), cli_files=request.cli_files)
+        finally:
+            request.close()
+        if action in recipe_web.WRITES:
+            self._audit(action, recipe_web.audit_arguments(arguments),
+                        {"state": "succeeded" if document["ok"] else "refused", "exit_code": document["exit_code"],
+                         "error": document["error"], "result": document["result"]})
+        return status, document
 
     def _cluster(self):
         return self.orchestrate.load_cluster(self.config_path, config)
@@ -907,7 +954,10 @@ class API:
                 stream.write(json.dumps(entry, ensure_ascii=True, allow_nan=False) + "\n")
 
     def _arguments(self, action, arguments):
-        allowed = {"up": {"profile", "config", "router", "node", "device", "deadline", "approval_ref", "approval_lease", "approval_end"},
+        if action in recipe_web.JOBS:
+            return self._recipe_job_arguments(action, arguments)
+        allowed = {"up": {"profile", "config", "router", "node", "device", "deadline", "approval_ref", "approval_lease", "approval_end",
+                          "recipe", "recipe_set", "recipe_workload", "recipe_overrides", "recipe_profile", "recipe_inputs"},
                    "down": {"profile", "force"}, "install": {"profile", "config", "build_on"},
                    "hosts/pin": {"machine", "config", "fingerprint"}, "doctor": {"machine", "config"},
                    "keys/rotate": {"name"}, "cancel": {"job", "profile"}}
@@ -916,12 +966,14 @@ class API:
         if not isinstance(arguments, dict) or set(arguments) - allowed[action]:
             raise APIError("unknown arguments")
         arguments = dict(arguments)
-        required = {"up": "profile", "down": "profile", "install": "profile", "hosts/pin": "machine", "keys/rotate": "name"}.get(action)
+        required = {"up": None if arguments.get("recipe") or arguments.get("recipe_inputs") else "profile",
+                    "down": "profile", "install": "profile", "hosts/pin": "machine", "keys/rotate": "name"}.get(action)
         if required and (not isinstance(arguments.get(required), str) or not arguments[required]):
             raise APIError(required + " is required")
         for key, value in arguments.items():
-            if key in ("node", "device"):
-                if not isinstance(value, list) or not value or any(not isinstance(item, str) or not item for item in value):
+            if key in ("node", "device", "recipe_set", "recipe_overrides"):
+                if not isinstance(value, list) or not value or len(value) > 256 or any(
+                        not isinstance(item, str) or not item or item.startswith("-") for item in value):
                     raise APIError(key + " must be a nonempty array of strings")
             elif key == "force":
                 if type(value) is not bool:
@@ -935,9 +987,73 @@ class API:
             raise APIError("fingerprint is required; compare on the machine")
         if action == "cancel" and not (arguments.get("job") or arguments.get("profile")):
             raise APIError("cancel requires job or profile")
+        if action == "up" and (arguments.get("recipe") or arguments.get("recipe_inputs")):
+            try:
+                self._recipe_up_argv(arguments)
+            except ValueError as exc:
+                raise APIError(str(exc)) from exc
         return arguments
 
+    def _recipe_job_arguments(self, action, arguments):
+        from hyperloom.recipes import service
+        service.use_config(self.config_path)
+        try:
+            if action == "recipes/probe":
+                service.argv("probe", arguments, config=self.config_path)
+            else:
+                self._deploy_argv(arguments)
+        except ValueError as exc:
+            raise APIError(str(exc)) from exc
+        return dict(arguments)
+
+    def _deploy_argv(self, args):
+        from hyperloom.recipes import service
+        allowed = {"inputs", "stop", "approval_ref", "approval_lease", "approval_end"}
+        if not isinstance(args, dict) or set(args) - allowed:
+            raise ValueError("unknown arguments")
+        argv = service.argv("deploy", {k: args[k] for k in ("inputs", "stop") if k in args}, config=self.config_path)
+        for key, flag in (("approval_ref", "--approval-ref"), ("approval_lease", "--approval-lease"),
+                          ("approval_end", "--approval-end")):
+            if key in args:
+                if key == "approval_lease" and (type(args[key]) is not int or args[key] <= 0):
+                    raise ValueError("approval_lease must be a positive integer")
+                if key != "approval_lease" and (not isinstance(args[key], str) or not args[key] or args[key].startswith("-")):
+                    raise ValueError(key + " must be a nonempty string")
+                argv[-2:-2] = [flag, str(args[key])]
+        return argv
+
+    def _recipe_up_argv(self, args):
+        """The `hyperloom up` argv of an API up with a recipe (layer files are names in the user layers directory)."""
+        from hyperloom.recipes import service
+        service.use_config(self.config_path)
+        argv = ["up"] + ([args["profile"]] if args.get("profile") else [])
+        argv += ["--config", str(Path(args.get("config", self.config_path))), "--router", args.get("router", "local"),
+                 "--deadline", str(args.get("deadline", 1140))]
+        if args.get("recipe_inputs"):
+            argv += ["--recipe-inputs", args["recipe_inputs"]]
+        else:
+            argv += ["--recipe", args["recipe"]]
+            for item in args.get("recipe_set") or []:
+                argv += ["--recipe-set", item]
+            for item in args.get("recipe_overrides") or []:
+                argv += ["--recipe-overrides", str(service._named("recipe_overrides", item, service.layers_dir(),
+                                                                  service._suffix_of(item)))]
+            if args.get("recipe_profile"):
+                argv += ["--recipe-profile", str(service._named("recipe_profile", args["recipe_profile"],
+                                                                service.layers_dir(), service._suffix_of(args["recipe_profile"])))]
+            if args.get("recipe_workload"):
+                argv += ["--recipe-workload", args["recipe_workload"]]
+        for key, flag in (("approval_ref", "--approval-ref"), ("approval_lease", "--approval-lease"),
+                          ("approval_end", "--approval-end")):
+            if key in args:
+                argv += [flag, str(args[key])]
+        return argv
+
     def _cli_argv(self, action, args):
+        if action == "up" and (args.get("recipe") or args.get("recipe_inputs")):
+            return [sys.executable, "-m", "hyperloom", *self._recipe_up_argv(args)]
+        if action == "recipes/deploy":
+            return [sys.executable, "-m", "hyperloom", *self._deploy_argv(args)]
         argv = [sys.executable, "-m", "hyperloom", action, args["profile"]]
         if action in ("up", "install"):
             argv += ["--config", str(Path(args.get("config", self.config_path)))]
@@ -975,13 +1091,36 @@ class API:
                                      stderr=subprocess.PIPE, **flags)
         out, err = child.communicate()
         if child.returncode != 0:
-            raise APIError((err or out).decode("utf-8", "replace").strip()[-400:] or f"{action} failed", 500)
+            raise APIError((err or out).decode("utf-8", "replace").strip()[-16384:] or f"{action} failed", 500)
         try:
             return json.loads(out.decode("utf-8"))
         except ValueError:
             return {"output": out.decode("utf-8", "replace")[-2000:]}
 
     def _execute(self, action, args):
+        recipe_up = action == "up" and bool(args.get("recipe") or args.get("recipe_inputs"))
+        if action == "recipes/probe":
+            from hyperloom.recipes import service
+            argv = service.argv("probe", args, config=self.config_path)
+            status, document = recipe_web.document("probe", argv, self.recipes.run(
+                argv, deadline_s=recipe_web.HARDWARE_DEADLINE_S), now=self.clock())
+            if not document["ok"]:
+                raise APIError(document["error"] or "probe failed", status)
+            return document
+        if action == "recipes/deploy" and self.detached:
+            return self._run_detached(action, args)
+        if action == "recipes/deploy" or recipe_up:
+            # In process (tests): the CLI's parser and the very function the CLI runs.
+            argv = self._deploy_argv(args) if action == "recipes/deploy" else self._recipe_up_argv(args)
+            parsed = cli.build_parser(recipe_web.RaisingParser).parse_args(argv)
+            if self.detached:
+                return self._run_detached(action, args)
+            if action == "up":
+                return cli.up_command(parsed, orchestrate=self.orchestrate, load_cluster=self._recipe_loader)
+            from hyperloom.recipes import commands, service
+            service.use_config(parsed.config)
+            return service.deploy(parsed.inputs, parsed.stop, orchestrate=self.orchestrate,
+                                  approval=commands._approval(parsed))
         if self.detached and action in ("up", "down", "install"):
             if action in ("up", "install"):
                 cluster = self.orchestrate.load_cluster(Path(args.get("config", self.config_path)), config)

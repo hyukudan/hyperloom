@@ -6,6 +6,7 @@ import base64
 from contextlib import ExitStack
 import hashlib
 import http.client
+import io
 import json
 import os
 from pathlib import Path
@@ -24,9 +25,46 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-ROUTES = ("devices", "topology", "models", "engines", "stats", "logs", "settings")
-TITLES = ("Devices", "Topology & links", "Models & placement", "Engines", "Live stats", "Logs", "Settings & pairing")
+ROUTES = ("devices", "topology", "models", "recipes", "engines", "stats", "logs", "settings")
+TITLES = ("Devices", "Topology & links", "Models & placement", "Recipes & profiles", "Engines", "Live stats", "Logs",
+          "Settings & pairing")
 API = "/hyperloom/api/"
+# A node-only Qwen recipe that fits the fixture's one-node profile (test data, not a lab recipe).
+FIXTURE_RECIPE = """schema = "strix-stream/recipe-v1"
+name = "qwen-fixture-two"
+description = "Fixture: two Qwen node replicas (UI test data)"
+
+[match]
+model = "qwen3.8-flash-next"
+
+[[match.devices]]
+id = "nodes"
+kind = "hip"
+count = 2
+memory_min_gib = 100.0
+
+[limits]
+host_free_ram_floor_gib = 1.0
+
+[[routes]]
+id = "prefill_replicas"
+phase = "prefill"
+devices = ["nodes"]
+execute = "replicas"
+handoff_route = "decode_replicas"
+[routes.placement.nodes]
+max_context_tokens = 12288
+max_batch = 8
+
+[[routes]]
+id = "decode_replicas"
+phase = "decode"
+devices = ["nodes"]
+execute = "replicas"
+[routes.placement.nodes]
+max_context_tokens = 12288
+max_batch = 8
+"""
 
 
 def free_port():
@@ -119,8 +157,9 @@ class FixtureServer:
 
 
 def fixture_server(args):
-    from hyperloom import cli, config, orchestrate, remote, secrets
+    from hyperloom import cli, config, orchestrate, remote, render, secrets
     from hyperloom.web import api as web_api
+    from hyperloom.web import recipes as recipe_web
 
     directory = args.fixture_dir
     directory.mkdir(parents=True, exist_ok=True)
@@ -140,6 +179,8 @@ def fixture_server(args):
                                           ("halo-2", "linux", "ssh", "192.0.2.11")):
         cluster.machines[mid] = config.Machine(mid, system, access, address, mid, 22,
                                              "/opt/hyperloom/" + mid, True, [{"id": "gpu"}])
+    # A two-node profile for the recipes walkthrough's deploy (its recipe needs a replica on each node).
+    cluster.profiles["qwen-two"] = {"preset": "qwen-replicas", "nodes": ["halo-1", "halo-2"]}
     ordered = {mid: cluster.machines[mid] for mid in ("workstation", "halo-1", "halo-2")}
     cluster.machines.clear()
     cluster.machines.update(ordered)
@@ -165,7 +206,7 @@ def fixture_server(args):
 
     def record(action, **values):
         with lock, (directory / "calls.jsonl").open("a", encoding="utf-8", newline="\n") as stream:
-            stream.write(json.dumps({"action": action, **values}) + "\n")
+            stream.write(json.dumps({"action": action, **values}, default=repr) + "\n")
 
     def up(*a, **kw):
         cancelled.clear()
@@ -257,6 +298,32 @@ def fixture_server(args):
                         (socket.socket, "connect", connect), (socket.socket, "bind", bind)]
         for owner, name, value in replacements:
             stack.enter_context(patch.object(owner, name, value))
+        # Recipe requests run the CLI's parser and commands.run here (the fixture refuses subprocesses), on the
+        # stub reader; the pinned router is taken to accept the routes policy so a plan can pass.
+        def recipe_run(self, argv, *, stdin=None, deadline_s, cancelled=lambda: False):
+            with patch("sys.stdin", io.TextIOWrapper(io.BytesIO(stdin or b""), encoding="utf-8")):
+                try:
+                    return recipe_web.in_process(argv, lambda path: cluster)
+                except Exception as exc:          # e.g. a probe the fixture refuses: a refusal like the CLI's
+                    return recipe_web.Result(1, b"", f"hyperloom: {exc}".encode())
+        stack.enter_context(patch.object(recipe_web.Runner, "run", recipe_run))
+        # Hardware facts for recipes: a saved observation of the fixture's node (no probe runs here).
+        from hyperloom.recipes import commands as recipe_commands, session as recipe_session
+        node = {"name": "AMD Radeon 8060S", "memory_gib": 120.0, "host_ram_gib": 125.0}
+        observation = recipe_session.facts_record(
+            "qwen-two", {"cuda": []}, {"model": "qwen3.8-flash-next", "devices": {"halo-1": node, "halo-2": node},
+                                       "links": []},
+            {"devices": {"halo-1": {"available": True}, "halo-2": {"available": True}},
+             "hosts": {"workstation": {"free_ram_gib": 100.0, "free_commit_gib": 150.0}, "halo-1": {"free_ram_gib": 500.0},
+                       "halo-2": {"free_ram_gib": 500.0}}, "lan": {"halo-1": {"up": True}, "halo-2": {"up": True}}, "usb4": {}}, [])
+        (directory / "run" / "facts").mkdir(parents=True, exist_ok=True)
+        (directory / "run" / "facts" / "fixture.json").write_text(json.dumps(observation), encoding="utf-8")
+        stack.enter_context(patch.object(recipe_commands, "live_source", lambda cluster, measure_disks=False:
+                                         recipe_session.saved_source(directory / "run" / "facts" / "fixture.json")))
+        (config_file.parent / "recipes").mkdir(exist_ok=True)
+        (config_file.parent / "recipes" / "qwen3.8-flash-next.fixture.toml").write_text(FIXTURE_RECIPE, encoding="utf-8")
+        stack.enter_context(patch.object(render, "router_policies", lambda: ("nodes", "rtx", "auto", "routes")))
+        os.environ.update(HYPERLOOM_RECIPE_STUB="1", HYPERLOOM_SS_RECIPE="")
         os.environ["HYPERLOOM_UI_INPROCESS"] = "1"  # patched backends: keep jobs in this process
         return cli.main(["ui", "--port", str(args.port), "--no-browser"])
 
@@ -483,7 +550,76 @@ def keyboard_walkthrough(client, server):
         print("PASS keyboard " + action + " (Tab, reverse Tab, Space, Escape)", flush=True)
 
 
-def browser_smoke(chrome, server, output, *, keyboard=False, keyboard_only=False):
+def recipes_walkthrough(client, server):
+    """Drive the Recipes & profiles page: open a recipe, an invalid field shows its inline error, a server refusal is
+    shown, fixing it clears the errors, the preview answers (its refusal gates Deploy with the reason), and a copy is
+    saved into the user directory and listed."""
+    def wait(expression, timeout=60):
+        try:
+            return eventually(lambda: client.evaluate(expression), timeout=timeout)
+        except AssertionError:
+            raise AssertionError("recipes walkthrough: timed out waiting for " + expression + " -- page: "
+                                 + str(client.evaluate("document.querySelector('main').innerText"))[:4000]) from None
+
+    def field(path, value):
+        client.evaluate(f"(() => {{ const el = document.querySelector('[data-path=\"{path}\"]'); el.value = {json.dumps(value)}; "
+                        "el.dispatchEvent(new Event(el.tagName === 'SELECT' ? 'change' : 'input', {bubbles: true})); })()")
+
+    def click(selector):
+        client.evaluate(f"document.querySelector({json.dumps(selector)}).click()")
+    client.call("Emulation.setDeviceMetricsOverride", width=1440, height=1000, deviceScaleFactor=1, mobile=False)
+    client.call("Page.navigate", url=server.url + "#/recipes")
+    wait("!!document.querySelector('[data-recipe-action=open][data-id=\"qwen3.8-flash-next.lab\"]')")
+    click('[data-recipe-action=open][data-id="qwen3.8-flash-next.lab"]')
+    minimum, maximum = "routes.prefill_rtx.when.prompt_tokens_min", "routes.prefill_rtx.when.prompt_tokens_max"
+    wait(f"!!document.querySelector('[data-path=\"{minimum}\"]')")
+    field(minimum, "-5")
+    wait(f"(() => {{ const el = document.querySelector('[data-path=\"{minimum}\"]'); const e = document.getElementById(el.id + '-error'); "
+         "return !!e && /outside/.test(e.textContent) && el.getAttribute('aria-describedby').includes(e.id); })()")
+    field(minimum, "1024")
+    field(maximum, "10")
+    wait("[...document.querySelectorAll('main .field-error')].some(e => /refused|prompt_tokens/.test(e.textContent))")
+    click('[data-recipe-action="reset-edits"]')
+    field(minimum, "2048")
+    wait("!document.querySelector('main .field-error') && /recipe explain/.test(document.body.innerText)")
+    click('[data-recipe-action="plan"]')
+    wait("/recipe plan/.test(document.body.innerText)")
+    ready = client.evaluate("!document.querySelector('[data-recipe-action=deploy]').disabled")
+    if not ready:
+        reason = client.evaluate("document.querySelector('[data-recipe-action=deploy]').title")
+        if not reason or reason == "undefined":
+            raise AssertionError("Deploy is disabled without its reason")
+    else:
+        click('[data-recipe-action="deploy"]')
+        wait("document.getElementById('recipe-dialog')?.open")
+        click("#recipe-dialog-confirm")
+        wait("!document.getElementById('job-panel').hidden")
+    click('[data-recipe-action="save-copy"]')
+    wait("document.getElementById('recipe-dialog')?.open")
+    client.evaluate("document.getElementById('copy-id').value = 'qwen3.8-flash-next.walk'; "
+                    "document.getElementById('copy-name').value = 'qwen-walk'")
+    click("#recipe-dialog-confirm")
+    wait("!!document.querySelector('[data-recipe-action=open][data-id=\"qwen3.8-flash-next.walk\"]')")
+    # A recipe that fits the fixture: the preview passes, Deploy is enabled and its job runs to the end.
+    client.evaluate("(() => { const el = document.getElementById('recipe-profile'); el.value = 'qwen-two'; "
+                    "el.dispatchEvent(new Event('change', {bubbles: true})); })()")
+    click('[data-recipe-action=open][data-id="qwen3.8-flash-next.fixture"]')
+    wait("!!document.querySelector('[data-recipe-action=plan]') && /qwen-fixture-two/.test(document.body.innerText)")
+    click('[data-recipe-action="plan"]')
+    wait("!document.querySelector('[data-recipe-action=deploy]').disabled")
+    click('[data-recipe-action="deploy"]')
+    wait("document.getElementById('recipe-dialog')?.open")
+    click("#recipe-dialog-confirm")
+    wait("/(succeeded|failed)/.test(document.getElementById('job-panel').innerText)", timeout=120)
+    job = client.evaluate("document.getElementById('job-panel').innerText")
+    if "recipes/deploy" not in job or "succeeded" not in job:
+        raise AssertionError("recipes walkthrough: the deploy job did not succeed: " + job[:2000])
+    if client.errors:
+        raise AssertionError("Browser console/exception errors: " + json.dumps(client.errors))
+    return ("deploy job" if ready else "deploy gated by the preview's refusal") + ", fixture recipe deployed by a job"
+
+
+def browser_smoke(chrome, server, output, *, keyboard=False, keyboard_only=False, recipes_only=False):
     with tempfile.TemporaryDirectory(prefix="hyperloom-chrome-") as profile:
         port = free_port()
         command = [chrome, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-first-run", "--no-default-browser-check",
@@ -513,7 +649,7 @@ def browser_smoke(chrome, server, output, *, keyboard=False, keyboard_only=False
                 client.call("Page.enable")
                 client.call("Page.addScriptToEvaluateOnNewDocument", source="localStorage.removeItem('hyperloom-theme');")
                 captures = 0
-                for width in (() if keyboard_only else (1440, 390)):
+                for width in (() if keyboard_only or recipes_only else (1440, 390)):
                     client.call("Emulation.setDeviceMetricsOverride", width=width, height=1000,
                                 deviceScaleFactor=1, mobile=False)
                     backgrounds = {}
@@ -534,7 +670,7 @@ def browser_smoke(chrome, server, output, *, keyboard=False, keyboard_only=False
                             backgrounds[theme] = metrics["theme"]
                             if metrics["scroll"] > width:
                                 raise AssertionError(f"{route}/{width}: document overflows to {metrics['scroll']}px")
-                            if len(set(client.evaluate("[...document.querySelectorAll('#navigation svg')].map(s => s.innerHTML)"))) != 7:
+                            if len(set(client.evaluate("[...document.querySelectorAll('#navigation svg')].map(s => s.innerHTML)"))) != len(ROUTES):
                                 raise AssertionError("Navigation icons must be distinct")
                             if route == "devices":
                                 for text in ("Windows 11", "80.0 GB free of 131.0 GB", "ROCm 10.1.0", "unified · GPU-visible", "4/4 streams openable · layout 1 (host)", "Cable B trained below Gen3 x2"):
@@ -547,6 +683,10 @@ def browser_smoke(chrome, server, output, *, keyboard=False, keyboard_only=False
                                     raise AssertionError("Only the machine with a cable warning should be degraded")
                                 if client.evaluate("document.querySelector('.packages')?.open"):
                                     raise AssertionError("ROCm package details should start collapsed")
+                            if route == "recipes":
+                                for text in ("Profiles of", "qwen3.8-flash-next.lab", "Deployment profile", "Active"):
+                                    if text not in metrics["body"]:
+                                        raise AssertionError("Recipes page is missing: " + text)
                             if route == "topology" and not client.evaluate("!!document.querySelector('svg.topo')"):
                                 raise AssertionError("Cluster map missing")
                             if route == "topology" and width == 390:
@@ -578,6 +718,9 @@ def browser_smoke(chrome, server, output, *, keyboard=False, keyboard_only=False
                 client.evaluate("true")
                 if client.errors:
                     raise AssertionError(json.dumps(client.errors))
+                if not keyboard_only:
+                    print("PASS recipes walkthrough: edit, inline refusal, fix, preview, " + recipes_walkthrough(client, server)
+                          + ", save copy", flush=True)
                 return captures
             finally:
                 if client:
@@ -595,6 +738,7 @@ def main():
     parser.add_argument("--contrast-only", action="store_true")
     parser.add_argument("--keyboard", action="store_true", help="also check dialog keyboard focus and destructive Enter handling")
     parser.add_argument("--keyboard-only", action="store_true", help="run the dialog keyboard pass without screenshots")
+    parser.add_argument("--recipes-only", action="store_true", help="run only the Recipes & profiles walkthrough")
     parser.add_argument("--serve", action="store_true", help="keep a fake-backed UI running for keyboard review")
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--chrome", help="Chrome/Chromium executable (or set CHROME)")
@@ -625,7 +769,8 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     print("Screenshots: " + str(output), flush=True)
     with FixtureServer() as server:
-        count = browser_smoke(chrome, server, output, keyboard=args.keyboard, keyboard_only=args.keyboard_only)
+        count = browser_smoke(chrome, server, output, keyboard=args.keyboard, keyboard_only=args.keyboard_only,
+                              recipes_only=args.recipes_only)
     print(f"PASS {count} route/viewport/theme captures; no console errors" if count else "PASS keyboard walkthrough; no console errors")
     return 0
 

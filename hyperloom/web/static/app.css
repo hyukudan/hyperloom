@@ -232,3 +232,21 @@ dialog h2{font-size:18px;margin:0}
 }
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 
+/* Recipes & profiles (recipes.js) */
+.recipe-cards .recipe-card{display:flex;flex-direction:column;gap:8px}
+.recipe-card.sel{outline:2px solid var(--accent);outline-offset:-2px}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{display:inline-flex;align-items:center;gap:4px;font-size:12px;padding:2px 8px;border-radius:999px;background:var(--surface-2);border:1px solid var(--border);font-variant-numeric:tabular-nums}
+.chip .lbl{color:var(--text-3)}
+.tag.basis-measured{background:var(--ok-soft);color:var(--text);border-color:transparent}
+.tag.basis-projected,.tag.basis-target,.tag.basis-upper_bound,.tag.basis-lower_bound{background:var(--warn-soft);color:var(--text);border-color:transparent}
+.tag.basis-derived{background:var(--info-soft);color:var(--text);border-color:transparent}
+.split{height:10px;border-radius:999px;background:var(--s2);overflow:hidden;margin:6px 0}
+.split i{display:block;height:100%;width:0;background:var(--s1)}
+h2.section{font-size:15px;margin:22px 0 10px}
+h2.section .sub{font-weight:500;color:var(--text-3);font-size:12.5px;margin-left:8px}
+.cli code{white-space:pre-wrap;word-break:break-all}
+.recipe-actions{margin:0 0 14px}
+fieldset.checks{border:1px solid var(--border);border-radius:var(--r);padding:8px 12px}
+#recipe-source{width:100%;font-size:12.5px;min-height:240px}
+#recipe-dialog textarea{width:100%}

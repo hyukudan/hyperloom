@@ -2,11 +2,12 @@
 "use strict";
 (() => {
   const $ = id => document.getElementById(id);
-  const routes = {devices: "Devices", topology: "Topology & links", models: "Models & placement", engines: "Engines", stats: "Live stats", logs: "Logs", settings: "Settings & pairing"};
+  const routes = {devices: "Devices", topology: "Topology & links", models: "Models & placement", recipes: "Recipes & profiles", engines: "Engines", stats: "Live stats", logs: "Logs", settings: "Settings & pairing"};
   const navIcons = {
     devices: '<rect x="3" y="4" width="14" height="10" rx="2"/><path d="M7 17h6"/>',
     topology: '<circle cx="5" cy="5" r="2.2"/><circle cx="15" cy="5" r="2.2"/><circle cx="10" cy="15" r="2.2"/><path d="M7 5h6M6.2 7l2.6 6M13.8 7l-2.6 6"/>',
     models: '<path d="M10 2l7 4v8l-7 4-7-4V6z"/><path d="M3 6l7 4 7-4M10 10v8"/>',
+    recipes: '<path d="M5 3h8l3 3v11H5z"/><path d="M8 8h5M8 11h5M8 14h3"/>',
     engines: '<path d="M5 4l10 6-10 6z"/>',
     stats: '<path d="M3 16V9M8 16V4M13 16v-6M18 16v-9"/>',
     logs: '<path d="M4 4h12M4 8h12M4 12h8M4 16h10"/>',
@@ -319,26 +320,34 @@
     $("control-machine").textContent = local ? `Control · ${local.name || local.id}` : "Control · this machine";
     $("version").textContent = doc("settings").version ? `Hyperloom ${doc("settings").version}` : "Hyperloom · local portal";
     const renderers = {devices: renderDevices, topology: renderTopology, models: renderModels, engines: renderEngines, stats: renderStats, logs: renderLogs, settings: renderSettings};
-    if (state.docs[source]) {
+    // The recipes page (recipes.js) owns its documents; it is rendered with the same focus/details preservation.
+    const external = page === "recipes" ? window.HyperloomRecipes : null;
+    if (external) renderers.recipes = external.render;
+    if (external ? external.ready() : state.docs[source]) {
       const focused = document.activeElement;
       // Keep a keyboard user's focus stable across polls and filters.
       const focusId = $("main").contains(focused) ? focused.id : "";
       const selection = focused?.selectionStart;
       const scroll = $("main").querySelector(".log")?.scrollTop;
       const openDetails = [...$("main").querySelectorAll("details")].map(el => el.open);
-      $("main").innerHTML = renderers[page]();
+      const html = renderers[page]();
+      if (external && html === state.lastExternal) { renderConnection(); renderJob(); updateDialogGate(); return; }
+      state.lastExternal = external ? html : null;
+      $("main").innerHTML = html;
       $("main").querySelectorAll("button,input,select,a,summary,[tabindex]").forEach((el, index) => { if (!el.id) el.id = `route-${page}-control-${index}`; });
       $("main").querySelectorAll("[data-meter]").forEach(el => { el.style.width = `${el.dataset.meter}%`; });
       [...$("main").querySelectorAll("details")].forEach((el, i) => { el.open = openDetails[i] || false; });
       if (focusId && $(focusId)) {
         $(focusId).focus({preventScroll: true});
-        if (selection != null && typeof $(focusId).setSelectionRange === "function" && ["text", "search"].includes($(focusId).type)) $(focusId).setSelectionRange(selection, selection);
+        if (selection != null && typeof $(focusId).setSelectionRange === "function" && ["text", "search", "textarea"].includes($(focusId).type)) $(focusId).setSelectionRange(selection, selection);
       }
       if (scroll != null && $("main").querySelector(".log")) $("main").querySelector(".log").scrollTop = scroll;
+    } else if (external && external.error()) {
+      $("main").innerHTML = empty("Recipe data unavailable", external.error(), button("Retry", "refresh"));
     } else if (state.errors[source]) {
       $("main").innerHTML = empty("Portal data unavailable", state.errors[source], button("Retry", "refresh"));
     }
-    $("main").setAttribute("aria-busy", state.docs[source] ? "false" : "true");
+    $("main").setAttribute("aria-busy", (external ? external.ready() : state.docs[source]) ? "false" : "true");
     renderConnection();
     renderJob();
     updateDialogGate();
@@ -556,7 +565,8 @@
     if (!control || control.disabled) return;
     const action = control.dataset.action;
     if (action === "stop" || action === "cancel") { stop(action === "cancel"); return; }
-    if (action === "refresh") { refresh(); return; }
+    if (action === "refresh") { refresh(); window.HyperloomRecipes?.refresh(); return; }
+    if (control.dataset.recipeAction) return;      // recipes.js handles its own controls
     if (action === "export-csv") { exportCSV(); return; }
     if (action === "export-config") { download("hyperloom-config-redacted.json", JSON.stringify(doc("settings").configuration, null, 2)); return; }
     if (action === "export-log") { download("hyperloom-log-redacted.json", JSON.stringify(doc("logs"), null, 2)); return; }
@@ -643,7 +653,7 @@
   });
   addEventListener("hashchange", () => {
     $("sidebar").classList.remove("open"); $("menu").setAttribute("aria-expanded", "false"); $("menu").setAttribute("aria-label", "Open navigation menu");
-    $("main").innerHTML = "";
+    $("main").innerHTML = ""; state.lastExternal = null;
     render(); refresh(); $("main").focus({preventScroll: true});
   });
   document.addEventListener("visibilitychange", () => { state.generation++; state.fresh = false; if (document.hidden) pollAbort?.abort(); render(); resetPolling(); });
@@ -660,5 +670,9 @@
   setInterval(() => {
     if (Object.values(state.fetched).some(time => Date.now() - time > 6000) && state.fresh) { state.fresh = false; render(); }
   }, 1000);
+  // Shared with recipes.js (the Recipes & profiles page): the same rendering helpers, request path and job flow.
+  window.Hyperloom = {esc, display, unavailable, statusPill, tag, button, card, table, cells, kv, empty, rows,
+    request, mutate, refresh, render, announce, mutationReason, capability, profiles, profileId, state, activeJob,
+    csrf: () => document.querySelector('meta[name="hyperloom-csrf"]')?.content};
   render(); resetPolling();
 })();

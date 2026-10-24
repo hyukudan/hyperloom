@@ -583,11 +583,8 @@ def prelaunch(cluster, profile, settings, kind, clients, mids):
             "node_paths": node_paths, "release_rows": release_rows}
 
 
-def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s=1140, approval=None, queue_timeout_s=3600,
-       diagnostics=None, vram_cap_gib=None, recipe=None):
-    _approval(deadline_s, approval)
-    if type(queue_timeout_s) is not int or not 60 <= queue_timeout_s <= MAX_QUEUE_S:
-        raise ValueError(f"queue timeout must be 60..{MAX_QUEUE_S} seconds")
+def check_launch(cluster, profile, router="local", nodes=None, *, diagnostics=None, recipe=False):
+    """The profile, node and router checks up makes before any I/O (also `hyperloom recipe plan`'s preflight)."""
     settings, kind, defaults = _profile(cluster, profile)
     name = _preset_name(cluster, profile)
     engine = engines.release_adapter(name)
@@ -604,19 +601,33 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
         raise ValueError("declared nodes must be distinct machines of the profile")
     if pair and mids != defaults:
         raise ValueError("pair requires both rank machines in rank order")
+    if recipe and engine.bind == "loopback":
+        raise ValueError(f"--recipe needs the router on this machine, and {kind} engines bind loopback on their node "
+                         "(only a router on rank 0 reaches them): this profile does not run with a recipe yet")
     if engine.bind == "loopback" and router != mids[0]:
         raise ValueError(f"{kind} engines bind loopback only (no API key support): "
                          f"run the router on rank 0 with --router {mids[0]}")
-    declared = list(mids)
-    service = settings.get("prefill_service")
-    launch = None
-    if recipe is not None:
-        from .recipes import launch as recipe_launch
+    if recipe:
         if mids != list(defaults):
             raise ValueError("--recipe binds the profile's own nodes: drop --node")
         if router != "local":
             # The router reads the route state hyperloom writes on this machine every second.
             raise ValueError("--recipe runs the router locally (it reads the route state written here): use --router local")
+    return settings, kind, defaults, engine, name, pair, diagnostics, mids
+
+
+def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s=1140, approval=None, queue_timeout_s=3600,
+       diagnostics=None, vram_cap_gib=None, recipe=None):
+    _approval(deadline_s, approval)
+    if type(queue_timeout_s) is not int or not 60 <= queue_timeout_s <= MAX_QUEUE_S:
+        raise ValueError(f"queue timeout must be 60..{MAX_QUEUE_S} seconds")
+    settings, kind, defaults, engine, name, pair, diagnostics, mids = check_launch(
+        cluster, profile, router, nodes, diagnostics=diagnostics, recipe=recipe is not None)
+    declared = list(mids)
+    service = settings.get("prefill_service")
+    launch = None
+    if recipe is not None:
+        from .recipes import launch as recipe_launch
         launch = recipe_launch.prepare(cluster, profile, recipe, router=router, vram_cap_gib=vram_cap_gib,
                                        state_dir=_state_path(profile).parent)
         if not launch.service_start:

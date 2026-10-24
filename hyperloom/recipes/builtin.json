@@ -1,0 +1,20 @@
+{
+ "schema": "hyperloom/builtin-recipes-v1",
+ "source": {
+  "repo": "strix-stream",
+  "path": "recipes/examples",
+  "commit": "4f95e1dded949c5212d6f5685ae890673c67edd1"
+ },
+ "note": "Vendored read-only copies of strix-stream recipes/examples at the commit below, line endings normalized to LF (hyperloom stores text as LF); otherwise byte-identical. Update by copying from strix-stream and re-recording the hashes; tests check them.",
+ "files": {
+  "deepseek-v4.1-flash.lab-hetero.toml": "4ccde72625d1115012bd45c84a96384ddd564be365720af2917c9931bd7f188a",
+  "deepseek-v4.1-flash.lab.toml": "cfee1c28fc16a8383bd875d6d8b7773dcd82b73eb48e0fe924ae6e30c1483fc5",
+  "minimax-m3.1-flash.lab.toml": "22cebf000c8286118cc5cfe49c37f5360edacff07f6f7b6f2d71cec3dd80c472",
+  "pending/deepseek-v4.1-flash.card32.toml": "5049030a950cdd874ddfabebea53c00f42b36e067b82e8ce95408e50bb2d26f0",
+  "pending/deepseek-v4.1-flash.lab-rtx-replica.toml": "68d247fc6d6e039bfef635b8acd6bc64a4c0e9fbf9b2dbe985c41ecd3ef0cfae",
+  "pending/glm-5.3-flash.lab.toml": "d642ba416f689030391c140ce755a84553cb3269f72030ab216af102cb25f306",
+  "pending/minimax-m3.1-flash.card32.toml": "c574ca0525ae5b33f84dc99960620c42593beb88fafa47bf4d3f4675e6bd87a7",
+  "pending/minimax-m3.1-flash.morehostram.toml": "440b2068743e37864b174589028081b738de2e755c965a806c23f55312ef865a",
+  "qwen3.8-flash-next.lab.toml": "e8da39fe5391da777e9196c64ab1e8ad7ed52663d6d149c64f2c39bfb7556205"
+ }
+}
