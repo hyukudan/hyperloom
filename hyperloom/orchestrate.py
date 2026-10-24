@@ -248,11 +248,22 @@ def _wait_job(client, root, job, timeout=3600):
 
 
 def _required_flags(kind, targets):
-    """Flags the frozen preset passes to its binary; the node checks they exist in the built binary."""
+    """Flags the frozen preset passes to its binary, plus every advanced knob's argv flag or env name; the
+    node checks they exist as strings in the built binary (never executed)."""
     from .config import preset
-    flags = sorted({token for token in preset(kind)["argv"] if token.startswith("--")})
-    binary = preset(kind)["binary"]
-    return {target: flags for target in targets if target == binary}
+    data = preset(kind)
+    flags = {token for token in data["argv"] if token.startswith("--")}
+    flags |= {knob["target"] for knob in data.get("advanced", {}).values()}
+    return {target: sorted(flags) for target in targets if target == data["binary"]}
+
+
+def _knob_targets(settings, kind):
+    """Targets of the advanced knobs this launch sets to a non-production value (they render argv/env)."""
+    from .config import preset
+    from . import knobs
+    data = preset(kind)
+    changed = knobs.summary(settings, data)["advanced"]
+    return data["binary"], [data["advanced"][name]["target"] for name in changed]
 
 
 def install(cluster, build_machine, targets, *, profile=None):
@@ -391,7 +402,8 @@ def _approval(deadline_s, approval):
         raise ValueError("deadline above 1140 seconds requires explicit approval")
 
 
-def _release(client, machine, profile, configured):
+def _release(client, machine, profile, configured, needs=None):
+    """The release to run; with needs=(binary, strings), each string must be in the release's static check."""
     data = _call(client, "releases", {"root": machine.install_root})
     release = configured or data.get("active", {}).get(profile)
     rows = data.get("releases", [])
@@ -400,6 +412,13 @@ def _release(client, machine, profile, configured):
     row = next((row for row in rows if row.get("release_id", row.get("id")) == release), None)
     if not release or row is None:
         raise OrchestrationError(f"{machine.id}: no installed release for {profile}")
+    if needs and needs[1]:
+        recipe = (row.get("manifest") or {}).get("recipe") or {}
+        checked = set((recipe.get("required_flags") or {}).get(needs[0]) or ())
+        missing = [value for value in needs[1] if value not in checked]
+        if missing:
+            raise OrchestrationError(f"{machine.id}: release {release} was not checked for advanced knob target "
+                                     f"{', '.join(missing)}; rebuild it with 'hyperloom install {profile}'")
     return release
 
 
@@ -521,7 +540,8 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
         state["assets"] = assets.inspect(cluster, profile, clients, mids, strict=True)
         state["asset_cache_note"] = assets.CACHE_NOTE
         for mid in mids:
-            releases[mid] = _release(clients[mid], cluster.machines[mid], profile, settings.get("release_id"))
+            releases[mid] = _release(clients[mid], cluster.machines[mid], profile, settings.get("release_id"),
+                                     needs=_knob_targets(settings, kind))
         if len(set(releases.values())) != 1:
             raise OrchestrationError("profile nodes must run the same release id: "
                                      + ", ".join(f"{mid} {rid}" for mid, rid in releases.items()))

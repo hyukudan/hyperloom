@@ -296,6 +296,11 @@ def release(root, rid):
     return directory, manifest
 
 
+def checked_string(value):
+    """A string the static capability check may look for: an argv flag or an engine env name."""
+    return isinstance(value, str) and bool(re.fullmatch(r"--[A-Za-z0-9][A-Za-z0-9_-]{0,125}|STRIX_[A-Z0-9_]{1,64}", value))
+
+
 def static_capabilities(binary, flags):
     data = Path(binary).read_bytes()
     if data[:4] != b"\x7fELF":
@@ -375,10 +380,9 @@ def validate_install(payload):
             or set(recipe) - {"configure", "targets", "ctest_regex", "trellis", "required_flags"}):
         raise ValueError("recipe requires configure, targets, ctest_regex and trellis (optional required_flags)")
     flags = recipe.get("required_flags", {})
-    if not isinstance(flags, dict) or any(
-            not isinstance(v, list) or not all(isinstance(f, str) and f.startswith("--") and len(f) < 128 for f in v)
-            for v in flags.values()):
-        raise ValueError("required_flags must map targets to lists of --flags")
+    if not isinstance(flags, dict) or any(not isinstance(v, list) or not all(map(checked_string, v))
+                                          for v in flags.values()):
+        raise ValueError("required_flags must map targets to lists of --flags or STRIX_* env names")
     if not isinstance(recipe["configure"], list):
         raise ValueError("configure must be an argv list")
     for arg in recipe["configure"]:

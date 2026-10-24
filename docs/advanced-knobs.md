@@ -13,7 +13,7 @@ This page describes how they are now exposed.
 - Refused as targets: identity, transport, layout, numerics, endpoints and asset flags; the production identity env; `STRIX_DIST_*`;
   loader/interpreter variables; any flag the production line or a basic knob already sets.
 
-## Rows at engine `70ec42b9`
+## Rows at engine `9211b07e` (first qualified at `70ec42b9`; the code is identical, only README and docs/performance.md changed)
 
 | profile | knob | values (production first) | evidence at the pin |
 |---|---|---|---|
@@ -33,6 +33,10 @@ All four only change scheduling or which drafts are proposed; the engine documen
 - Values are checked against the table; `requires`/`conflicts` are checked on the effective values.
 - Advanced knobs are refused unless the preset's `engine_sha` equals the engine commit in `versions.lock`
   (a pin move needs the table re-qualified).
+- `install` checks every row's target statically in the built binary, like the production flags: the argv flag, or the
+  env name, must be present as a string in the ELF (the binary is never executed). `up` refuses a non-production knob
+  whose target the active release was not checked for (a release built before the row existed): rebuild it with
+  `hyperloom install <profile>`.
 - A production value renders nothing new, so the golden production line is unchanged.
 - Any other value is appended as a named override. `hyperloom render` and `hyperloom status` then show
   `"launch": {"production": false, "advanced": {...}, "qualification": {...}}`, so the launch can never be
