@@ -313,6 +313,36 @@ def _hosts(args):
     return {"machine": machine.id, "pinned": match[0].sha256_fingerprint, "algorithm": match[0].algorithm}
 
 
+VRAMPLAN_ENGINES = ("minimax-rtx-prefill", "qwen-rtx-prefill", "ds41-rtx-prefill", "ds41-rtx-front", "ds41-rtx-hot")
+
+
+def _vramplan(args):
+    vramplan, placement = _module("hyperloom.vramplan"), _module("hyperloom.placement")
+    params = {}
+    if args.engine.endswith("-prefill"):
+        if args.positions is None:
+            raise ValueError(f"{args.engine} needs --positions")
+        params["positions"] = args.positions
+    if args.layers is not None:
+        params["layers"] = args.layers
+    if args.mtp:
+        params["mtp_gguf"] = args.mtp
+    if args.engine == "ds41-rtx-hot":
+        if not args.routes:
+            raise ValueError("ds41-rtx-hot needs --routes")
+        params["routes"] = args.routes
+    inputs = vramplan.Inputs(args.vram_cap_gib, host_gib=args.host_gib, margin_gib=args.margin_gib)
+    plan = placement.plan(args.engine, args.model, inputs, **params)
+    result = dict(plan.to_dict(), explain=vramplan.explain(plan).splitlines())
+    if args.engine == "ds41-rtx-hot" and args.placement_out:
+        ds41 = _module("hyperloom.placement.ds41")
+        budget = round(args.vram_cap_gib - plan.margin_bytes / vramplan.GIB, 3)
+        ds41.write_placement(args.placement_out, ds41.placement_json(plan, model_file=Path(args.model).name,
+                                                                     budget_gib=budget))
+        result["flags"] = {"placement": str(args.placement_out)}
+    return result
+
+
 def _version():
     from . import __version__
     try:
@@ -390,6 +420,9 @@ def main(argv=None):
     up.add_argument("--approval-ref")
     up.add_argument("--approval-lease", type=int)
     up.add_argument("--approval-end")
+    up.add_argument("--vram-cap-gib", type=float, default=None,
+                    help="RTX prefill service: plan its placement for this cap (at most the reservation's) and "
+                         "guard it there")
     up.add_argument("--diagnostic", action="append", default=None,
                     help="non-production diagnostic from the preset (repeatable); output goes to the node log/")
     down = commands.add_parser("down")
@@ -422,13 +455,26 @@ def main(argv=None):
     export.add_argument("profile")
     export.add_argument("--out", type=Path, required=True)
     prefill = commands.add_parser("prefill", help="RTX prefill service: device check, CUDA build, fidelity gate")
-    prefill.add_argument("operation", choices=("check", "build", "gate", "placement"))
+    prefill.add_argument("operation", choices=("check", "build", "gate", "placement", "plan"))
     prefill.add_argument("profile")
     prefill.add_argument("--config", type=Path, default=config_path())
     prefill.add_argument("--prompts", type=Path, help="gate/placement: reference prompt file(s) directory")
     prefill.add_argument("--source", type=Path, help="build: engine checkout at the preset's pinned commit")
     prefill.add_argument("--standalone", action="store_true", help="gate: launch the service alone, gate it, stop it")
     prefill.add_argument("--attach", type=int, help="gate: an already running service on this loopback port")
+    prefill.add_argument("--vram-cap-gib", type=float, help="plan: the cap to plan for (default: the reservation's)")
+    vplan = commands.add_parser("vramplan", help="RTX placement for a VRAM cap from the model files (prints the flags)")
+    # Literal list (the parser imports nothing); hyperloom.placement.ENGINES is the same set (tested).
+    vplan.add_argument("engine", choices=VRAMPLAN_ENGINES)
+    vplan.add_argument("--model", required=True, help="model file or directory (headers only are read)")
+    vplan.add_argument("--vram-cap-gib", type=float, required=True)
+    vplan.add_argument("--host-gib", type=float, help="pinned host budget (required for ds41-rtx-prefill)")
+    vplan.add_argument("--positions", type=int, help="prefill engines: prompt / context positions")
+    vplan.add_argument("--layers", type=int, help="minimax-rtx-prefill: the engine's --layers subset (validation)")
+    vplan.add_argument("--mtp", help="qwen-rtx-prefill: the MTP sidecar GGUF")
+    vplan.add_argument("--routes", help="ds41-rtx-hot: routes file (measured routing frequency)")
+    vplan.add_argument("--placement-out", type=Path, help="ds41-rtx-hot: write the hot-expert placement JSON here")
+    vplan.add_argument("--margin-gib", type=float, default=2.0)
     # Internal controller entry point; not part of the public interface.
     helper = commands.add_parser("_prefill-run", help=argparse.SUPPRESS)
     helper.add_argument("spec")
@@ -493,7 +539,7 @@ def main(argv=None):
             cluster = _cluster(args.config)
             _json(_module("hyperloom.orchestrate").up(cluster, args.profile, router=args.router,
                   nodes=args.node, devices=args.device, deadline_s=args.deadline, approval=approval,
-                  queue_timeout_s=args.queue_timeout, diagnostics=args.diagnostic))
+                  queue_timeout_s=args.queue_timeout, diagnostics=args.diagnostic, vram_cap_gib=args.vram_cap_gib))
         elif args.command == "down":
             _json(_module("hyperloom.orchestrate").down(args.profile, force=args.force))
         elif args.command == "endpoint":
@@ -531,7 +577,10 @@ def main(argv=None):
         elif args.command == "prefill":
             _json(_module("hyperloom.rtx").command(args.operation, _cluster(args.config), args.profile,
                                                    prompts=args.prompts, source=args.source,
-                                                   attach=args.attach, standalone=args.standalone))
+                                                   attach=args.attach, standalone=args.standalone,
+                                                   vram_cap_gib=args.vram_cap_gib))
+        elif args.command == "vramplan":
+            _json(_vramplan(args))
         elif args.command == "config":
             _cluster(args.path)
             _json({"valid": True})

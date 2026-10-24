@@ -20,7 +20,7 @@ import threading
 import time
 import uuid
 
-from . import procs, secrets
+from . import placement as placements, procs, secrets, vramplan
 from .config import ConfigError, family, identifier, integer, number, preset, read_json, record, text
 from .paths import repo_root
 from .winproc import no_window, retry_sharing
@@ -126,6 +126,7 @@ class ServiceSpec:
     ready_timeout_s: int
     consistency: dict
     binary_sha256: str | None = None
+    placement: dict | None = None
 
 
 def redact(argv, flags):
@@ -182,7 +183,44 @@ def host_gib(data, reservation, free_physical_gib):
                       math.floor(free_physical_gib - rule["physical_reserve_gib"])))
 
 
-def render_service(cluster, profile_name, *, api_key, handoff_api_key, free_physical_gib, now=None):
+def effective_cap(reservation, requested):
+    """The VRAM cap of this start: `up --vram-cap-gib` lowers the operator's grant, never raises it."""
+    granted = reservation["vram_cap_gib"] if reservation else 96
+    if requested is None:
+        return granted
+    number(requested, "--vram-cap-gib", 1, 1024)
+    if reservation and requested > granted:
+        raise ConfigError(f"--vram-cap-gib {requested:g} is above the reservation's {granted:g} GiB")
+    return requested
+
+
+def plan_placement(data, model_path, cap, host, positions):
+    """The preset's placement engine planned for this cap (None when the preset has no placement block)."""
+    rule = data.get("placement")
+    if rule is None:
+        return None
+    inputs = vramplan.Inputs(cap, host_gib=host, **rule.get("margin", {}))
+    try:
+        plan = placements.plan(rule["engine"], model_path, inputs, positions=positions, **rule.get("params", {}))
+    except (vramplan.PlanError, OSError, ValueError) as exc:
+        raise ConfigError(f"{data['name']}: no placement at {cap:g} GiB: {exc}") from exc
+    return plan
+
+
+def expand_placement(argv, plan):
+    """The `{placement}` token becomes the plan's flags (several tokens)."""
+    out = []
+    for token in argv:
+        if token == "{placement}":
+            if plan is None:
+                raise ConfigError("argv has {placement} but the preset has no placement block")
+            out += plan.argv()
+        else:
+            out.append(token)
+    return out
+
+
+def render_service(cluster, profile_name, *, api_key, handoff_api_key, free_physical_gib, now=None, vram_cap_gib=None):
     s, data, kind = _service(cluster, profile_name)
     decode = data["decode_profiles"][kind]
     rule = decode["context"]
@@ -228,14 +266,17 @@ def render_service(cluster, profile_name, *, api_key, handoff_api_key, free_phys
                 raise ConfigError(f"{s['machine']}: asset {name} is {size} bytes, the manifest says {assets[name]['bytes']}")
     binary = PureWindowsPath(machine.install_root) / "cuda" / data["engine_sha"][:12] / "bin" / (data["binary"] + ".exe")
     floor = reservation["free_commit_floor_gib"] if reservation else 4
-    cap = reservation["vram_cap_gib"] if reservation else 96
+    cap = effective_cap(reservation, vram_cap_gib)
+    host = host_gib(data, reservation or {"host_gib": 4096}, free_physical_gib)
     values = {name: item["path"] for name, item in assets.items()}
+    # Re-planned on every start: a different cap (or free memory) gives a different placement.
+    plan = plan_placement(data, values.get(data.get("placement", {}).get("model_asset")), cap, host, positions)
     values.update(binary=str(binary), port=str(s.get("port", data["port"])),
-                  positions=str(s.get("positions", data["positions"]["default"])),
-                  vram_cap_gib=f"{cap:g}", host_gib=str(host_gib(data, reservation or {"host_gib": 4096}, free_physical_gib)),
+                  positions=str(positions),
+                  vram_cap_gib=f"{cap:g}", host_gib=str(host),
                   commit_floor_gib=f"{floor + 10:g}", api_key=api_key, handoff_api_key=handoff_api_key,
                   pro_uuid=device["uuid"])
-    argv = [token.format_map(values) for token in data["argv"]]
+    argv = [token.format_map(values) for token in expand_placement(data["argv"], plan)]
     env = dict(child_env(os.environ), **{k: v.format_map(values) for k, v in data["env"].items()})
     manifest = Path(binary).parent.parent / "MANIFEST.json"
     sha = None
@@ -243,7 +284,7 @@ def render_service(cluster, profile_name, *, api_key, handoff_api_key, free_phys
         sha = read_json(manifest).get("binaries", {}).get(binary.name)
     return ServiceSpec(data["name"], s["machine"], device["uuid"], int(values["port"]), argv, env,
                        redact(argv, data["secret_flags"]), deadline, cap, floor, data["ready"]["timeout_s"], consistency,
-                       sha)
+                       sha, None if plan is None else dict(plan.to_dict(), explain=vramplan.explain(plan)))
 
 
 # Device selection and behaviour switches of the CUDA runtime are never inherited (the preset sets its own);
@@ -644,7 +685,8 @@ def prepare_service(spec):
     directory = secrets.runtime_dir() / ("prefill-" + uuid.uuid4().hex)
     directory.mkdir(parents=True)
     return {"machine": spec.machine_id, "directory": str(directory), "port": spec.port, "preset": spec.preset,
-            "device": spec.pro_uuid, "argv": spec.redacted}
+            "device": spec.pro_uuid, "argv": spec.redacted, "vram_cap_gib": spec.vram_cap_gib,
+            "placement": spec.placement}
 
 
 def launch_service(record, spec, *, detached, owner=None, timeout_s=None, check=lambda: None):
@@ -711,13 +753,14 @@ def stop_service(record, timeout_s=60):
 
 # --- operator commands: preview, device check, CUDA build, fidelity gate, placement check --------------------
 
-def render_preview(cluster, profile_name):
-    """The service line as it would start now (keys redacted), with the context consistency it was checked for."""
+def render_preview(cluster, profile_name, vram_cap_gib=None):
+    """The service line as it would start now (keys redacted), with the context consistency it was checked for and
+    the placement planned for the cap."""
     spec = render_service(cluster, profile_name, api_key="0" * 64, handoff_api_key="0" * 64,
-                          free_physical_gib=memory_status()["free_physical_gib"])
+                          free_physical_gib=memory_status()["free_physical_gib"], vram_cap_gib=vram_cap_gib)
     return {"argv": spec.redacted, "cuda_env": {k: spec.env[k] for k in ("CUDA_DEVICE_ORDER", "CUDA_VISIBLE_DEVICES")},
             "deadline": spec.deadline if math.isfinite(spec.deadline) else None, "consistency": spec.consistency,
-            "binary_sha256": spec.binary_sha256}
+            "binary_sha256": spec.binary_sha256, "vram_cap_gib": spec.vram_cap_gib, "placement": spec.placement}
 
 
 def _release_dir(cluster, profile_name):
@@ -933,26 +976,37 @@ def check(cluster, profile_name):
             "service": preview, "release": read_json(manifest) if manifest.exists() else None}
 
 
-def standalone_gate(cluster, profile_name, prompts, *, detached, start=start_service, stop=stop_service, gate=None):
+def standalone_gate(cluster, profile_name, prompts, *, detached, start=start_service, stop=stop_service, gate=None,
+                    vram_cap_gib=None):
     """Acceptance 1 and 4 without the pair: launch the service exactly as `up` does (same render, helper, Job Object
     and watchdog; the handoff key is a throwaway, nothing is handed off), run the oracle, stop it."""
     import secrets as random
     gate = gate or fidelity_gate
     key = random.token_hex(32)
     spec = render_service(cluster, profile_name, api_key=key, handoff_api_key=random.token_hex(32),
-                          free_physical_gib=memory_status()["free_physical_gib"])
+                          free_physical_gib=memory_status()["free_physical_gib"], vram_cap_gib=vram_cap_gib)
     record = start(spec, detached=detached)
     try:
         result = gate(cluster, profile_name, prompts, service=record, key=key)
-        result["launch"] = {"argv": spec.redacted, "ready": record.get("ready"), "binary_sha256": spec.binary_sha256}
+        result["launch"] = {"argv": spec.redacted, "ready": record.get("ready"), "binary_sha256": spec.binary_sha256,
+                            "vram_cap_gib": spec.vram_cap_gib, "placement": spec.placement}
         return result
     finally:
         stop(record)
 
 
-def command(operation, cluster, profile_name, *, prompts=None, source=None, attach=None, standalone=False):
+def plan_command(cluster, profile_name, vram_cap_gib=None):
+    """Passive: the placement `up` would start with at this cap, and the flags it becomes."""
+    preview = render_preview(cluster, profile_name, vram_cap_gib=vram_cap_gib)
+    return {"vram_cap_gib": preview["vram_cap_gib"], "argv": preview["argv"], "placement": preview["placement"]}
+
+
+def command(operation, cluster, profile_name, *, prompts=None, source=None, attach=None, standalone=False,
+            vram_cap_gib=None):
     if profile_name not in cluster.profiles:
         raise ConfigError(f"unknown profile: {profile_name}")
+    if operation == "plan":
+        return plan_command(cluster, profile_name, vram_cap_gib)
     if operation == "check":
         return check(cluster, profile_name)
     if operation == "build":
@@ -964,6 +1018,6 @@ def command(operation, cluster, profile_name, *, prompts=None, source=None, atta
             return fidelity_gate(cluster, profile_name, prompts, service={"port": attach, "device": None}, key="")
         if standalone:
             from .orchestrate import _detached
-            return standalone_gate(cluster, profile_name, prompts, detached=_detached)
+            return standalone_gate(cluster, profile_name, prompts, detached=_detached, vram_cap_gib=vram_cap_gib)
         return fidelity_gate(cluster, profile_name, prompts)
     return placement_check(cluster, profile_name)

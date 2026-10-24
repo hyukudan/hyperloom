@@ -583,7 +583,7 @@ def prelaunch(cluster, profile, settings, kind, clients, mids):
 
 
 def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s=1140, approval=None, queue_timeout_s=3600,
-       diagnostics=None):
+       diagnostics=None, vram_cap_gib=None):
     _approval(deadline_s, approval)
     if type(queue_timeout_s) is not int or not 60 <= queue_timeout_s <= MAX_QUEUE_S:
         raise ValueError(f"queue timeout must be 60..{MAX_QUEUE_S} seconds")
@@ -610,6 +610,8 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
     service = settings.get("prefill_service")
     if service is not None and router != "local":
         raise ValueError("the RTX prefill service is loopback-only: use --router local")
+    if vram_cap_gib is not None and service is None:
+        raise ValueError("--vram-cap-gib places an RTX prefill service; this profile has none")
     for device in devices or []:
         try:
             mid, did = device.split(":", 1)
@@ -760,7 +762,8 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
             # After the decode side is READY (its import route is the handoff), before the router admits.
             spec = rtx.render_service(selected, profile, api_key=secrets.ensure(_secret_name(profile, "prefill")),
                                       handoff_api_key=node_values[mids[0]],
-                                      free_physical_gib=rtx.memory_status()["free_physical_gib"])
+                                      free_physical_gib=rtx.memory_status()["free_physical_gib"],
+                                      vram_cap_gib=vram_cap_gib)
             spec = rtx.ServiceSpec(**dict(spec.__dict__, deadline=min(spec.deadline, state["deadline"])))
             # Recorded before the helper exists, so down (or the watchdog) can always find and stop it.
             state["prefill_service"] = rtx.prepare_service(spec)

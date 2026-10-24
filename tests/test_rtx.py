@@ -15,6 +15,22 @@ from hyperloom.config import ConfigError, parse
 from hyperloom.render import render_router, validate_router
 from tests.test_config import example
 
+DS41_SIZES = json.loads((Path(__file__).parent / "fixtures" / "vramplan" / "ds41-sizes.json").read_text())
+_PATCHES = []
+
+
+def setUpModule():
+    # The placement plan reads the model header; the example's asset path is not a real file.
+    from hyperloom.placement import ds41
+    _PATCHES.append(mock.patch.object(ds41, "sizes", return_value=DS41_SIZES))
+    _PATCHES[-1].start()
+
+
+def tearDownModule():
+    for patch in _PATCHES:
+        patch.stop()
+
+
 PRO = "GPU-00000000-0000-0000-0000-000000000001"
 OTHER = "GPU-00000000-0000-0000-0000-000000000002"
 KEY_A, KEY_B = "a" * 64, "b" * 64
@@ -129,14 +145,40 @@ class RenderTests(unittest.TestCase):
         return rtx.render_service(parse(obj or rtx_example()), "ds41-rtx", api_key=KEY_A, handoff_api_key=KEY_B,
                                   free_physical_gib=kw.pop("free", 100.0), **kw)
 
+    def test_vram_cap_replans_the_placement(self):
+        hi, lo = self.render(), self.render(vram_cap_gib=48)
+        value = lambda spec, flag: spec.argv[spec.argv.index(flag) + 1]
+        self.assertEqual((hi.vram_cap_gib, lo.vram_cap_gib), (90, 48))  # the watchdog's hard stop
+        self.assertEqual((value(hi, "--vram-cap-gib"), value(lo, "--vram-cap-gib")), ("86.3", "45"))
+        self.assertLess(lo.placement["resident_gib"], hi.placement["resident_gib"])
+        self.assertLessEqual(lo.placement["predicted_peak_gib"], 48)
+        self.assertIn("predicted peak", lo.placement["explain"])
+        self.assertEqual(rtx.prepare_service(lo)["placement"]["vram_cap_gib"], 48)
+
+    def test_vram_cap_never_raises_the_reservation(self):
+        with self.assertRaises(ConfigError):
+            self.render(vram_cap_gib=95)
+        with self.assertRaises(ConfigError):
+            self.render(vram_cap_gib=0)
+
+    def test_a_cap_too_small_for_the_engine_is_refused_before_launch(self):
+        with self.assertRaises(ConfigError) as ctx:
+            self.render(vram_cap_gib=12)
+        self.assertIn("no placement", str(ctx.exception))
+
+    def test_placement_token_without_a_placement_block(self):
+        with self.assertRaises(ConfigError):
+            rtx.expand_placement(["{placement}"], None)
+
     def test_lab_launch_line(self):
         spec = self.render()
         argv = spec.argv
         self.assertTrue(argv[0].endswith("\\cuda\\9211b07e13c6\\bin\\strix-cuda-ds41-prefill-service.exe"))
         # The lab window's line (model --port --positions 32768 --host-gib --host-commit-floor-gib 14
-        # --host-pin-wait-s 90 --exact) plus loopback bind, the reservation's VRAM cap and the keys.
+        # --host-pin-wait-s 90 --exact) plus loopback bind, the planned engine cap and the keys. The engine's cap
+        # excludes its CUDA context, so it is the guard's 90 GiB - margin 2.7 - context 1.0.
         self.assertEqual(argv[1:], ["C:/hyperloom/assets/ds41.gguf", "--host", "127.0.0.1", "--port", "8095",
-                                    "--positions", "32768", "--vram-cap-gib", "90", "--host-gib", "72",
+                                    "--positions", "32768", "--vram-cap-gib", "86.3", "--host-gib", "72",
                                     "--host-commit-floor-gib", "14", "--host-pin-wait-s", "90", "--exact",
                                     "--api-key", KEY_A, "--handoff-api-key", KEY_B])
         self.assertEqual(spec.env["CUDA_DEVICE_ORDER"], "PCI_BUS_ID")

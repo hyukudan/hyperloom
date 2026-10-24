@@ -35,7 +35,9 @@ Status: implemented on `hl/phase3a`, 2026-10-23 (lead review fixes included). Th
 
 - **Reservation (lab mode).** Without a current reservation, nothing heavy starts on the PC: no service and no CUDA build. The UI cannot grant one; it lives only in the config file.
 - **What the reservation controls:**
-  - `--vram-cap-gib`;
+  - the VRAM cap: `up --vram-cap-gib X` may lower it. The cap plans the service's placement and the watchdog guards
+    it (docs/vramplan.md); the engine receives the planned flags (for DeepSeek an engine `--vram-cap-gib` of cap −
+    margin − CUDA context, and a `--host-gib` no larger than what streams);
   - `--host-gib` = min(80, `host_gib`, free physical memory − 20), the same rule the lab window used;
   - `--host-commit-floor-gib` = floor + 10;
   - the watchdog's limits.
