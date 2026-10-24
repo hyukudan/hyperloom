@@ -570,6 +570,36 @@ class DescriptorTests(unittest.TestCase):
         self.assertEqual("".join(rows).rstrip("PD"), "R" * len(p.resident))  # a prefix
 
 
+class HeteroTests(unittest.TestCase):
+    """DS decode across the RTX PRO and the pair: the time models reproduce their measured calibration points."""
+
+    def setUp(self):
+        from hyperloom.placement import hetero
+        self.hetero = hetero
+        self.curve = hetero.curve_from_csv(FIXTURES / "ds41-hitrate.csv")
+
+    def test_pipeline_reproduces_k22(self):
+        self.assertAlmostEqual(self.hetero.pipeline(22).tok_s, 38.4, places=1)
+        self.assertLess(self.hetero.pipeline(10).tok_s, self.hetero.pipeline(22).tok_s)
+
+    def test_hot_reproduces_the_static_80_gib_run(self):
+        c = self.hetero.hot(80 - 9.55, self.curve)  # W1 reserve: 70.45 GiB of experts
+        self.assertAlmostEqual(c.detail["remote_layers_per_token"], 24.2, delta=0.6)  # measured 24.2
+        self.assertAlmostEqual(c.tok_s, 33.6, delta=0.5)  # measured 33.6
+
+    def test_candidates_rank_by_predicted_time_and_refuse_bad_caps(self):
+        cs = self.hetero.candidates(90, curve=self.curve, front_k=21)
+        self.assertEqual([c.family for c in cs], ["pipeline", "dense+hot", "pair-only"])
+        self.assertEqual(cs[-1].tok_s, 27.2)
+        self.assertEqual([c.family for c in self.hetero.candidates(10, curve=self.curve, front_k=0)], ["pair-only"])
+        with self.assertRaises(PlanError):
+            self.hetero.candidates(float("nan"), curve=self.curve, front_k=1)
+
+    def test_25g_link_only_changes_the_crossing(self):
+        self.assertAlmostEqual(self.hetero.pipeline(22, "2.5g").ms_per_token,
+                               self.hetero.pipeline(22).ms_per_token - 0.42, places=6)
+
+
 class RegistryTests(unittest.TestCase):
     def test_unknown_engine(self):
         from hyperloom import placement
