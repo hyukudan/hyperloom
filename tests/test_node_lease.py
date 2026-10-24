@@ -297,6 +297,49 @@ class LeaseLogicTests(LeaseFixture):
         with self.assertRaisesRegex(ValueError, "repository"):
             lease.marked_root(str(self.root))
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "reads /proc")
+    def test_status_settles_a_queued_lease_whose_turn_waiter_is_gone(self):
+        # The lab launcher can refuse a turn on arrival and exit; the lease must not stay queued forever.
+        lease.marked_root(str(self.root))
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait()
+        state = {"lease": "abc", "label": "hl-qwen-test", "state": "queued", "processes": [], "reason": None}
+        lease.write_json(lease.record_path(self.root, "abc"), state)
+        lease.write_json(lease.inside(self.root, "run", "owner-abc.json"), {"pid": dead.pid})
+        (self.root / "log").mkdir(exist_ok=True)
+        (self.root / "log" / "lease-abc.log").write_text("21:46:57 REFUSE hl-qwen-test (arrival: pair waiting)\n")
+        reply = lease.run("status", {"root": str(self.root)})
+        row = next(r for r in reply["leases"] if r["lease"] == "abc")
+        self.assertEqual(row["state"], "failed")
+        self.assertIn("turn ended before acquire", row["reason"])
+        self.assertIn("REFUSE", row["reason"])
+        self.assertEqual(lease.read_json(lease.record_path(self.root, "abc"))["state"], "failed")
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "reads /proc")
+    def test_status_keeps_a_queued_lease_while_its_waiter_runs(self):
+        lease.marked_root(str(self.root))
+        waiter = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "hl-qwen-test"])
+        self.addCleanup(waiter.kill)
+        state = {"lease": "abd", "label": "hl-qwen-test", "state": "queued", "processes": [], "reason": None}
+        lease.write_json(lease.record_path(self.root, "abd"), state)
+        lease.write_json(lease.inside(self.root, "run", "owner-abd.json"), {"pid": waiter.pid})
+        row = next(r for r in lease.run("status", {"root": str(self.root)})["leases"] if r["lease"] == "abd")
+        self.assertEqual(row["state"], "queued")
+        # A different label at the same pid (pid reuse) is not the waiter.
+        state["label"] = "hl-other"
+        lease.write_json(lease.record_path(self.root, "abd"), state)
+        row = next(r for r in lease.run("status", {"root": str(self.root)})["leases"] if r["lease"] == "abd")
+        self.assertEqual(row["state"], "failed")
+
+    def test_settle_never_touches_an_acquired_lease(self):
+        lease.marked_root(str(self.root))
+        lease.write_json(lease.record_path(self.root, "abe"), {"lease": "abe", "label": "x", "state": "acquired"})
+        with patch.object(lease, "waiter_alive", return_value=False), patch.object(lease, "state_lock") as lock:
+            lock.return_value.__enter__ = lambda *a: None
+            lock.return_value.__exit__ = lambda *a: False
+            row = lease.settle_dead_waiter(self.root, {"lease": "abe", "label": "x", "state": "queued", "turn_pid": 1})
+        self.assertEqual(row["state"], "acquired")
+
     def test_status_and_idempotent_stop(self):
         lease.marked_root(str(self.root))
         state = {"lease": "abc", "state": "ready", "processes": [{"name": "engine", "pid": 123}],

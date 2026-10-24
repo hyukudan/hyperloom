@@ -435,6 +435,36 @@ def start_lease(payload):
     return {"lease": lease}
 
 
+def waiter_alive(pid, label):
+    """The turn waiter (gpu-turn*.sh LABEL ...) of a queued lease is still running. /proc's cmdline must carry the
+    lease label, so a reused pid never counts as the waiter."""
+    try:
+        cmdline = Path("/proc/" + str(int(pid)) + "/cmdline").read_bytes().split(b"\0")
+    except (OSError, ValueError):
+        return False
+    return label.encode() in cmdline
+
+
+def settle_dead_waiter(root, state):
+    """A queued lease whose waiter exited never acquired its turn (the lab launcher refused it on arrival, or it
+    was killed): mark it failed with the end of its log instead of leaving it queued until the controller's queue
+    timeout."""
+    if waiter_alive(state.get("turn_pid"), state.get("label", "")):
+        return state
+    lease = identifier(state["lease"])
+    with state_lock(root, lease):
+        current = read_json(record_path(root, lease))
+        if current.get("state") != "queued":  # the supervisor acquired (or something settled it) meanwhile
+            return current
+        if waiter_alive(state.get("turn_pid"), state.get("label", "")):
+            return current
+        lines = [line for line in tail_file(inside(root, "log", "lease-" + lease + ".log"), 4096).splitlines()
+                 if line.strip()]
+        current.update(state="failed", reason="turn ended before acquire: " + (lines[-1][-300:] if lines else "no output"))
+        write_json(record_path(root, lease), current)
+        return current
+
+
 def ssh_command(target, command):
     return ["ssh", "-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
             "-o", "ConnectTimeout=10", "--", target, command]
@@ -905,6 +935,7 @@ def run(verb, payload):
                     owner = inside(root, "run", "owner-" + identifier(state["lease"]) + ".json")
                     if state["state"] == "queued" and owner.exists():
                         state["turn_pid"] = read_json(owner)["pid"]
+                        state = settle_dead_waiter(root, state)
                     leases.append(state)
                 result["leases"] = leases
                 result["jobs"] = [read_json(inside(root, "run", filename.name))
