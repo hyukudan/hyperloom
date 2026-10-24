@@ -23,7 +23,7 @@ import uuid
 from . import procs, secrets
 from .config import ConfigError, family, identifier, integer, number, preset, read_json, record, text
 from .paths import repo_root
-from .winproc import no_window
+from .winproc import no_window, retry_sharing
 
 SCHEMA = "hyperloom/prefill-service-v1"
 PRESETS = Path(__file__).with_name("presets")
@@ -464,15 +464,7 @@ def _scrub(event, secrets):
     return json.loads(text)
 
 
-def _retry(action):
-    """Windows: a reader holding state.json briefly makes replace/read fail with a sharing violation."""
-    for attempt in range(40):
-        try:
-            return action()
-        except PermissionError:
-            if attempt == 39:
-                raise
-            time.sleep(0.05)
+_retry = retry_sharing  # Windows: a reader holding state.json briefly makes replace/read fail
 
 
 def _write(path, value):

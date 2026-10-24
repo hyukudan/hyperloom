@@ -15,7 +15,8 @@ status=0
 for version in 3.11 3.12 3.13; do
     echo "== unit, Python $version"
     # A writable copy: tests create files beside the checkout.
-    docker run --rm -v "$src:/ro:ro" python:"$version"-slim sh -c \
-        'cp -a /ro /src && cd /src && python -m unittest discover -s tests -t .' || status=1
+    # Unprivileged, like the nodes: the non-lab service code refuses to run as root.
+    docker run --rm --user 1000:1000 -e HOME=/tmp -v "$src:/ro:ro" python:"$version"-slim sh -c \
+        'cp -a /ro /tmp/src && cd /tmp/src && python -m unittest discover -s tests -t .' || status=1
 done
 exit $status

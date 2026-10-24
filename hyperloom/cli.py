@@ -16,7 +16,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 import uuid
 
 from .paths import repo_root
-from .winproc import no_window
+from .winproc import no_window, retry_sharing
 
 
 _controllers = []
@@ -48,7 +48,8 @@ def _write(path, obj):
     temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
     try:
         temporary.write_text(json.dumps(obj, indent=2), encoding="utf-8")
-        temporary.replace(path)
+        # The router controller and the CLI read and replace the same state files.
+        retry_sharing(lambda: temporary.replace(path))
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -70,7 +71,7 @@ def _active(directory):
 
 def _state(directory):
     try:
-        return json.loads((directory / "router-state.json").read_text(encoding="utf-8"))
+        return retry_sharing(lambda: json.loads((directory / "router-state.json").read_text(encoding="utf-8")))
     except FileNotFoundError:
         return {}
 
@@ -406,6 +407,15 @@ def main(argv=None):
     hosts.add_argument("machine")
     hosts.add_argument("--fingerprint", help="SHA256:... confirmed on the machine itself (required for pin)")
     hosts.add_argument("--config", type=Path, default=config_path())
+    metrics = commands.add_parser("metrics", help="Prometheus re-export of router and engine telemetry")
+    metrics.add_argument("operation", choices=("dump", "serve"))
+    metrics.add_argument("profile", nargs="?")
+    metrics.add_argument("--listen", default="127.0.0.1:18701", help="loopback IP:port (serve only)")
+    service = commands.add_parser("service", help="non-lab systemd --user units (lab_mode: false only)")
+    service.add_argument("operation", choices=("install", "start", "stop", "status", "remove"))
+    service.add_argument("profile")
+    service.add_argument("--enable", action="store_true", help="install: also enable the unit at login")
+    service.add_argument("--config", type=Path, default=config_path())
     keys = commands.add_parser("keys").add_subparsers(dest="key_operation", required=True)
     keys.add_parser("rotate").add_argument("name")
     export = keys.add_parser("export")
@@ -492,8 +502,20 @@ def main(argv=None):
             _json(_module("hyperloom.orchestrate").status(args.profile))
         elif args.command == "logs":
             _json(_module("hyperloom.orchestrate").logs(args.profile, args.process, args.tail))
+        elif args.command == "metrics":
+            exporter = _module("hyperloom.metrics_export")
+            if args.operation == "dump":
+                sys.stdout.write(exporter.collect(profile=args.profile))
+            else:
+                exporter.serve(args.listen, args.profile)
         elif args.command == "hosts":
             _json(_hosts(args))
+        elif args.command == "service":
+            result = _module("hyperloom.service").run(_cluster(args.config), args.operation, args.profile,
+                                                      enable=args.enable)
+            _json(result)
+            if not result["ok"]:
+                return 1
         elif args.command == "keys":
             if args.key_operation == "export":
                 _json(_module("hyperloom.orchestrate").export_key(args.profile, args.out))

@@ -23,6 +23,19 @@ def no_window(flags=0):
     return {"creationflags": flags | CREATE_NO_WINDOW}
 
 
+def retry_sharing(action, attempts=40, delay_s=0.05):
+    """Windows: another process holding a file open (a reader of a JSON state file) makes os.replace or a read
+    fail with PermissionError for a moment; retry instead of failing the command."""
+    import time
+    for attempt in range(attempts):
+        try:
+            return action()
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay_s)
+
+
 def has_console():
     """True when this process is attached to a console, visible or hidden (children may share it without flashing).
     GetConsoleWindow() is NULL inside a CREATE_NO_WINDOW console, so count the attached processes instead."""
