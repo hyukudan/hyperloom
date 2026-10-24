@@ -22,8 +22,9 @@ import importlib
 import re
 
 
-MODULES = ("overview", "machines", "history", "observe", "energy", "health", "alerts", "events", "bench",
-           "planner", "turns", "library", "logsearch", "integrations", "prefs")
+MODULES = ("overview", "machines", "history", "observe", "ledger", "endpoints", "usb4", "energy", "health", "alerts",
+           "events", "bench",
+           "planner", "turns", "library", "logsearch", "ops", "integrations", "prefs")
 NAME = re.compile(r"[a-z][a-z0-9-]*(?:/[a-z0-9][a-z0-9-]*)*/?")
 
 

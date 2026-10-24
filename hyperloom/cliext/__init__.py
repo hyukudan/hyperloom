@@ -8,7 +8,8 @@ argv for the same functions, so the CLI and the portal share one code path.
 import sys
 
 
-MODULES = ("bench", "telemetry", "health", "turns", "library", "logsearch", "integrations")
+MODULES = ("bench", "telemetry", "observe", "ledger", "usb4", "energy", "health", "alerts", "turns", "library", "logsearch",
+           "ops", "planner", "integrations")
 
 
 def add_all(commands):
