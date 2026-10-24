@@ -28,7 +28,10 @@ class Unit:
     key: str
     bytes: int
     benefit: float = 0.0
-    host: str = "pinned"  # where it lives when not resident: pinned (host_gib), disk, or pair (another device)
+    # Where it lives when not resident: "pinned" (host RAM, counted against host_gib), "disk" (NVMe stream), "pinned|disk"
+    # (three tiers: pinned while host_gib lasts, best benefit per byte first, else streamed from NVMe), or "pair"
+    # (another device).
+    host: str = "pinned"
 
 
 @dataclass
@@ -71,6 +74,7 @@ class Plan:
     fixed: list
     notes: list
     source: dict
+    tiers: dict = field(default_factory=dict)  # non-resident unit -> pinned | disk | pair
 
     def to_dict(self):
         return {"engine": self.engine, "vram_cap_gib": _gib(self.cap_bytes), "margin_gib": _gib(self.margin_bytes),
@@ -79,6 +83,7 @@ class Plan:
                 "resident_gib": _gib(self.resident_bytes), "pinned_host_gib": _gib(self.pinned_bytes),
                 "disk_gib": _gib(self.disk_bytes), "resident_units": len(self.resident),
                 "streamed_units": len(self.streamed), "flags": self.flags,
+                "tier_units": {t: sum(1 for v in self.tiers.values() if v == t) for t in sorted(set(self.tiers.values()))},
                 "fixed": [[n, _gib(b)] for n, b in self.fixed], "notes": list(self.notes), "source": self.source}
 
     def argv(self):
@@ -118,17 +123,40 @@ def plan(model, inputs):
     resident = [u for u in model.units if u.key in keys]
     streamed = [u for u in model.units if u.key not in keys]
     slots = _stream(model, streamed)
-    pinned = sum(u.bytes for u in streamed if u.host == "pinned") + sum(b for _, b in model.host_fixed)
+    tiers = _host_tiers(model, streamed, inputs)
+    pinned = sum(u.bytes for u in streamed if tiers[u.key] == "pinned") + sum(b for _, b in model.host_fixed)
     if inputs.host_gib is not None and pinned > inputs.host_gib * GIB:
         raise PlanError(f"{model.engine}: {_gib(pinned)} GiB must be pinned on the host at this cap, above "
                         f"host_gib {inputs.host_gib:g}; raise the cap or the host budget")
     used = sum(u.bytes for u in resident)
     check_peak(model.engine, fixed + slots + used, cap, margin)
     result = Plan(model.engine, cap, margin, fixed, slots, [u.key for u in resident], [u.key for u in streamed], used,
-                  pinned, sum(u.bytes for u in streamed if u.host == "disk"), fixed + slots + used,
+                  pinned, sum(u.bytes for u in streamed if tiers[u.key] == "disk"), fixed + slots + used,
                   sum(u.benefit for u in resident), {}, list(model.fixed), list(model.notes), dict(model.source))
+    result.tiers = {u.key: tiers[u.key] for u in streamed}
     result.flags = dict(model.flags([u.key for u in resident], result))
     return result
+
+
+def _host_tiers(model, streamed, inputs):
+    """Tier of every non-resident unit. Spillable units ("pinned|disk") take the pinned host budget left after the
+    pinned-only units and host_fixed, best benefit per byte first (ties in model order); the rest stream from NVMe."""
+    tiers = {u.key: u.host for u in streamed if u.host != "pinned|disk"}
+    spill = [u for u in streamed if u.host == "pinned|disk"]
+    if not spill:
+        return tiers
+    if inputs.host_gib is None:
+        tiers.update({u.key: "pinned" for u in spill})
+        return tiers
+    left = inputs.host_gib * GIB - sum(b for _, b in model.host_fixed) -         sum(u.bytes for u in streamed if tiers.get(u.key) == "pinned")
+    position = {u.key: i for i, u in enumerate(model.units)}
+    for unit in sorted(spill, key=lambda u: (-(u.benefit / u.bytes if u.bytes else math.inf), position[u.key])):
+        if unit.bytes <= left:
+            tiers[unit.key] = "pinned"
+            left -= unit.bytes
+        else:
+            tiers[unit.key] = "disk"
+    return tiers
 
 
 def check_peak(engine, peak, cap, margin):

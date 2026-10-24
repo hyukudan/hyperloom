@@ -150,6 +150,22 @@ class PlannerTests(unittest.TestCase):
         full = vramplan.plan(model, Inputs(12, margin_gib=1, margin_fraction=0))
         self.assertEqual((len(full.resident), full.stream_bytes), (10, 0))
 
+    def test_three_tiers_spill_from_pinned_to_nvme(self):
+        model = toy(host="pinned|disk")  # 10 units of 1 GiB, benefit 10..1
+        p = vramplan.plan(model, Inputs(8, host_gib=2, margin_gib=1, margin_fraction=0))
+        self.assertEqual(len(p.resident), 6)
+        self.assertEqual(p.tiers, {"u:6": "pinned", "u:7": "pinned", "u:8": "disk", "u:9": "disk"})
+        self.assertEqual((p.pinned_bytes, p.disk_bytes), (2 * GIB, 2 * GIB))
+        self.assertEqual(p.to_dict()["tier_units"], {"disk": 2, "pinned": 2})
+        unlimited = vramplan.plan(model, Inputs(8, margin_gib=1, margin_fraction=0))
+        self.assertEqual(set(unlimited.tiers.values()), {"pinned"})
+
+    def test_pinned_only_units_take_the_host_budget_first(self):
+        model = toy(host="pinned|disk")
+        model.units[9] = Unit("u:9", GIB, 0.0, host="pinned")
+        p = vramplan.plan(model, Inputs(8, host_gib=2, margin_gib=1, margin_fraction=0))
+        self.assertEqual(p.tiers, {"u:6": "pinned", "u:7": "disk", "u:8": "disk", "u:9": "pinned"})
+
     def test_ranked_takes_best_benefit_per_byte(self):
         model = toy(order="ranked")
         model.units = [Unit("a", GIB, 1.0), Unit("b", GIB, 3.0), Unit("c", GIB, 3.0), Unit("d", 2 * GIB, 4.0)]
@@ -317,6 +333,7 @@ class DeepSeekTests(unittest.TestCase):
         self.assertLessEqual(p.peak_bytes, 46 * GIB)
         self.assertEqual(int(p.flags["--host-gib"]), 74)
         self.assertGreater(p.disk_bytes, 0)  # what does not fit the host budget streams from the file
+        self.assertEqual(set(p.tiers.values()), {"pinned", "disk"})
 
     def test_host_gib_never_exceeds_what_streams(self):
         p = ds41.predict_prefill("m.gguf", vram_cap_gib=200, positions=512, host_gib=74, sz=DS41)

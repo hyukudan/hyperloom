@@ -167,7 +167,9 @@ def predict_prefill(model_gguf, *, vram_cap_gib, positions, host_gib, margin_gib
                        f"dense from the GGUF {(sum(sz['layer_dense']) + sz['globals']) / 1e9:.2f} GB; "
                        f"expert {eb} B; Engram {sz['engram_file'] / 1e9:.1f} GB stays in the file"],
                 source={"model": str(model_gguf), "positions": positions, "engine_budget_experts": budget,
-                        "resident_per_layer": resident, "tiers": tiers, "plan": note})
+                        "resident_per_layer": resident, "tiers": tiers, "plan": note},
+                tiers={f"layer:{L}:{v}": {"host": "pinned", "file": "disk"}[tier]
+                       for L, (v, tier) in enumerate(zip(s, tiers)) if v})
 
 
 def _runs(values):
