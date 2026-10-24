@@ -108,6 +108,9 @@ def plan(model, inputs):
         raise PlanError(f"{model.engine}: fixed device memory {_gib(fixed)} GiB + margin {_gib(margin)} GiB "
                         f"exceeds the {inputs.vram_cap_gib:g} GiB cap")
     chosen = _choose(model, room)
+    if chosen is None:
+        raise PlanError(f"{model.engine}: nothing fits under the {inputs.vram_cap_gib:g} GiB cap: fixed "
+                        f"{_gib(fixed)} GiB + margin {_gib(margin)} GiB + the stream slots exceed it")
     if len(chosen) < model.min_units:
         raise PlanError(f"{model.engine}: only {len(chosen)} units fit under the cap; the engine needs "
                         f"{model.min_units}")
@@ -120,11 +123,19 @@ def plan(model, inputs):
         raise PlanError(f"{model.engine}: {_gib(pinned)} GiB must be pinned on the host at this cap, above "
                         f"host_gib {inputs.host_gib:g}; raise the cap or the host budget")
     used = sum(u.bytes for u in resident)
+    check_peak(model.engine, fixed + slots + used, cap, margin)
     result = Plan(model.engine, cap, margin, fixed, slots, [u.key for u in resident], [u.key for u in streamed], used,
                   pinned, sum(u.bytes for u in streamed if u.host == "disk"), fixed + slots + used,
                   sum(u.benefit for u in resident), {}, list(model.fixed), list(model.notes), dict(model.source))
     result.flags = dict(model.flags([u.key for u in resident], result))
     return result
+
+
+def check_peak(engine, peak, cap, margin):
+    """Every plan's last check: the predicted peak never exceeds cap - margin."""
+    if peak > cap - margin:
+        raise PlanError(f"{engine}: predicted peak {_gib(peak)} GiB above the cap {_gib(cap)} GiB - margin "
+                        f"{_gib(margin)} GiB")
 
 
 def _stream(model, streamed):
@@ -141,12 +152,14 @@ def _choose(model, room):
                 return units[:k]
             if k:
                 total -= units[k - 1].bytes
-        return []
+        return None  # not even 0 resident + the slots fit
     if model.order != "ranked":
         raise PlanError(f"unknown unit order {model.order}")
     if sum(u.bytes for u in units) <= room:
         return list(units)
     room -= _stream(model, units)  # something streams: reserve the slots (sized for the largest unit)
+    if room < 0:
+        return None
     position = {u.key: i for i, u in enumerate(units)}
     # Best benefit per byte first; ties keep model order (deterministic). Greedy is exact for equal-sized units,
     # which is every family's case within a kind (a layer, an expert of a layer).

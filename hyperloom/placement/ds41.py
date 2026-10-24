@@ -23,14 +23,16 @@ import math
 import re
 
 from .. import modelfiles
-from ..vramplan import GIB, Model, Plan, PlanError, Unit
+from ..vramplan import GIB, Model, Plan, PlanError, Unit, check_peak
 
 LAYERS, EXPERTS, FIRST_DECODER, WINDOW, WINDOW_ROWS = 40, 384, 20, 128, 64
 # Measured (hetero/w2/e2e/alias-*.jsonl, exact profile): device bytes in use before the routed experts (dense
 # weights, row buffers, workspaces, attention state; CUDA context excluded) by --positions, GiB.
 USED_BEFORE_EXPERTS = [(512, 11.10), (2048, 11.46), (8192, 12.89), (32768, 18.36)]
 # free_at_start_gib: cudaMemGetInfo free after the service's own context, measured 93.09 of 95.57 GiB (TTFT exact run);
-# context_gib: the share of that the process itself holds (what the watchdog sees), until the PC-BIG measures it.
+# context_gib: the share of that the process itself holds (what the watchdog sees). NOT measured yet: ~2.5 GiB is gone
+# before planning (context + display + driver); the margin (2.7 GiB at 90) covers the difference today. Re-check
+# against the on-device measurement before shrinking any margin.
 DEFAULTS = {"context_gib": 1.0, "reserve_gib": 1.0, "slots": 2, "free_at_start_gib": 93.09}
 # Measured: the decode FRONT at K=22 (positions 2600) uses 96.0 GB of the PRO (hetero/hdec-report.md section 6.3b).
 FRONT_MEASURED = {"k": 22, "device_bytes": 96.0e9, "positions": 2600}
@@ -148,6 +150,7 @@ def predict_prefill(model_gguf, *, vram_cap_gib, positions, host_gib, margin_gib
     slot_bytes = (0 if max(s) == 0 else min(n_slots, LAYERS)) * max(s) * eb
     experts_dev = sum(resident) * eb
     peak = int((context_gib + used) * GIB) + experts_dev + slot_bytes
+    check_peak("ds41-rtx-prefill", peak, int(vram_cap_gib * GIB), int(margin * GIB))
     # --host-gib: what the streamed layers need (rounded up), never more than the reservation's rule allows.
     want_host = min(host_gib, math.ceil(sum(v * eb for v in s) / GIB)) if max(s) else 0
     flags = {"--vram-cap-gib": f"{engine_cap:g}", "--host-gib": str(int(want_host))}
@@ -237,8 +240,12 @@ def hot_model(model_gguf, *, routes, reserve_gib=HOT_RESERVE_GIB, sz=None):
                  source={"model": str(model_gguf), "expert_bytes": eb, "routes_selections": total})
 
 
-def placement_json(plan, *, model_file, budget_gib, reserve_gib=HOT_RESERVE_GIB, expert_bytes=9953280):
-    """tensormeld/hot-expert-placement-v1 for a hot plan (rtx-pro experts; every other expert on the AMD servers)."""
+def placement_json(plan, *, model_file, budget_gib, servers, reserve_gib=HOT_RESERVE_GIB):
+    """tensormeld/hot-expert-placement-v1 for a hot plan: rtx-pro experts; every other expert on the two AMD expert
+    servers (machine ids from the cluster, rank 0 holds experts [0, 192), rank 1 [192, 384))."""
+    if len(servers) != 2 or not all(isinstance(x, str) and x for x in servers):
+        raise PlanError("hot placement needs the two expert-server machine ids")
+    expert_bytes = plan.source["expert_bytes"]
     per = {L: [] for L in range(LAYERS)}
     for key in plan.resident:
         L, e = map(int, key.split(":"))
@@ -256,7 +263,7 @@ def placement_json(plan, *, model_file, budget_gib, reserve_gib=HOT_RESERVE_GIB,
                     {"id": "pc-ram", "kind": "host", "role": "expert-cache", "budget_gib": 0, "expert_gib": 0,
                      "experts": 0},
                     {"id": "amd", "kind": "hip", "role": "expert-server",
-                     "servers": [{"node": "cluster1", "experts": [0, 192]}, {"node": "cluster2", "experts": [192, 384]}]}],
+                     "servers": [{"node": servers[0], "experts": [0, 192]}, {"node": servers[1], "experts": [192, 384]}]}],
         "layers": [{"layer": L, "rtx-pro": sorted(per[L]), "rtx-4090": [], "pc-ram": []} for L in range(LAYERS)],
         "combine": {"identity": "ds41-canonical-halves-v1",
                     "remote_return": "raw-per-expert; a remote canonical prefix of a half may return one folded partial"},

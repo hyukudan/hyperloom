@@ -73,6 +73,54 @@ class ReaderTests(unittest.TestCase):
             _, tensors = modelfiles.read(Path(d) / "m-00002-of-00002.gguf")
         self.assertEqual([(t.name, t.bytes) for t in tensors], [("a", 128), ("b", 256)])
 
+    def test_gguf_metadata_arrays_are_skipped_and_nesting_refused(self):
+        def string(s):
+            b = s.encode()
+            return struct.pack("<Q", len(b)) + b
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "a.gguf"
+            vocab = struct.pack("<IQ", 8, 2) + string("a") + string("bc")
+            path.write_bytes(b"GGUF" + struct.pack("<IQQ", 3, 0, 1) + string("tokens") + struct.pack("<I", 9) + vocab)
+            meta, _ = modelfiles.read(path)
+            self.assertEqual(meta["tokens"], {"array": 2})
+            path.write_bytes(b"GGUF" + struct.pack("<IQQ", 3, 0, 1) + string("x") + struct.pack("<IIQ", 9, 9, 1))
+            with self.assertRaises(modelfiles.ModelFileError):
+                modelfiles.read(path)
+
+    def test_gguf_alignment_must_be_a_power_of_two(self):
+        with tempfile.TemporaryDirectory() as d:
+            for bad in (0, 24):
+                path = Path(d) / f"a{bad}.gguf"
+                write_gguf(path, [("a", [32], 0)], alignment=32)
+                raw = bytearray(path.read_bytes())
+                at = raw.index(b"general.alignment") + len(b"general.alignment") + 4
+                raw[at:at + 4] = struct.pack("<I", bad)
+                path.write_bytes(bytes(raw))
+                with self.assertRaises(modelfiles.ModelFileError):
+                    modelfiles.read(path)
+
+    def test_safetensors_offsets_are_validated(self):
+        with tempfile.TemporaryDirectory() as d:
+            for entry in ({"dtype": "F32", "shape": [1], "data_offsets": [100, 0]},
+                          {"dtype": "F32", "shape": [1], "data_offsets": [0, 10 ** 9]},
+                          ["not", "a", "dict"]):
+                raw = json.dumps({"x": entry}).encode()
+                path = Path(d) / "a.safetensors"
+                path.write_bytes(struct.pack("<Q", len(raw)) + raw + b"\0" * 16)
+                with self.assertRaises(modelfiles.ModelFileError):
+                    modelfiles.read(path)
+
+    def test_split_gguf_needs_the_exact_shard_pattern(self):
+        with tempfile.TemporaryDirectory() as d:
+            write_gguf(Path(d) / "m-00001-of-00002.gguf", [("a", [32], 0)])
+            write_gguf(Path(d) / "m-00002-of-00002.gguf", [("b", [64], 0)])
+            write_gguf(Path(d) / "m-00001-of-00003.gguf", [("c", [64], 0)])  # another split, same prefix
+            write_gguf(Path(d) / "m-extra-of-x.gguf", [("d", [64], 0)])
+            _, tensors = modelfiles.read(Path(d) / "m-00001-of-00002.gguf")
+            self.assertEqual([t.name for t in tensors], ["a", "b"])
+            _, tensors = modelfiles.read(Path(d) / "m-extra-of-x.gguf")
+            self.assertEqual([t.name for t in tensors], ["d"])
+
     def test_safetensors_directory(self):
         with tempfile.TemporaryDirectory() as d:
             write_safetensors(Path(d) / "a.safetensors", [("x", "BF16", [4, 2], 16), ("y", "F32", [3], 12)])
@@ -107,6 +155,17 @@ class PlannerTests(unittest.TestCase):
         model.units = [Unit("a", GIB, 1.0), Unit("b", GIB, 3.0), Unit("c", GIB, 3.0), Unit("d", 2 * GIB, 4.0)]
         p = vramplan.plan(model, Inputs(3.5, margin_gib=1, margin_fraction=0))
         self.assertEqual(p.resident, ["b", "c"])  # ties keep model order; d is 2 B/byte
+
+    def test_fixed_fits_but_fixed_plus_slots_does_not(self):
+        for order in ("prefix", "ranked"):
+            model = toy(order=order, stream=lambda streamed: 2 * GIB)
+            with self.assertRaises(PlanError):  # room 1.5 GiB: no unit, and the 2 GiB of slots do not fit either
+                vramplan.plan(model, Inputs(3, margin_gib=1, margin_fraction=0))
+
+    def test_check_peak(self):
+        vramplan.check_peak("x", 7 * GIB, 8 * GIB, GIB)
+        with self.assertRaises(PlanError):
+            vramplan.check_peak("x", 7 * GIB + 1, 8 * GIB, GIB)
 
     def test_fixed_above_cap_is_refused(self):
         with self.assertRaises(PlanError):
@@ -178,6 +237,12 @@ class MiniMaxTests(unittest.TestCase):
         self.assertLess(p95.peak_bytes, (95 - 2.85) * GIB)
         self.assertEqual(p90.stream_bytes, 2 * minimax._granule(2864462336))
 
+    def test_tiny_caps_are_refused_not_over_planned(self):
+        # review of d5c3e0f: caps 8/9/10 GiB gave --resident 0 with a predicted peak above the cap
+        for cap in (8, 9, 10):
+            with self.assertRaises(PlanError):
+                vramplan.plan(self._model(), Inputs(cap))
+
     def test_low_cap_needs_more_pinned_host_than_the_pc_has(self):
         with self.assertRaises(PlanError):
             vramplan.plan(self._model(), Inputs(48, host_gib=80))
@@ -242,6 +307,10 @@ class DeepSeekTests(unittest.TestCase):
         self.assertAlmostEqual(p.stream_bytes / 1e9, 7.64, places=2)
         self.assertTrue(71.4e9 < p.resident_bytes < 71.9e9)
 
+    def test_prefill_refuses_a_cap_below_its_own_floor(self):
+        with self.assertRaises(PlanError):
+            ds41.predict_prefill("m.gguf", vram_cap_gib=16, positions=32768, host_gib=74, sz=DS41)
+
     def test_prefill_engine_cap_leaves_room_for_the_context(self):
         p = ds41.predict_prefill("m.gguf", vram_cap_gib=48, positions=8192, host_gib=74, sz=DS41)
         self.assertEqual(p.flags["--vram-cap-gib"], "45")  # 48 - margin 2 - context 1
@@ -283,7 +352,11 @@ class DeepSeekTests(unittest.TestCase):
         model = ds41.hot_model("m.gguf", routes=counts, reserve_gib=0, sz=DS41)
         p = vramplan.plan(model, Inputs(3 * 9953280 / GIB + 1e-6, margin_gib=0, margin_fraction=0))
         self.assertEqual(p.resident, ["0:5", "0:7", "1:3"])  # 2, 2, then 1: 0:5 beats 1:9 (ties by layer)
-        data = ds41.placement_json(p, model_file="m.gguf", budget_gib=1.0, reserve_gib=0)
+        data = ds41.placement_json(p, model_file="m.gguf", budget_gib=1.0, reserve_gib=0, servers=["halo-1", "halo-2"])
+        self.assertEqual([s["node"] for s in data["devices"][3]["servers"]], ["halo-1", "halo-2"])
+        self.assertEqual(data["model"]["expert_bytes"], 9953280)
+        with self.assertRaises(PlanError):
+            ds41.placement_json(p, model_file="m.gguf", budget_gib=1.0, servers=["halo-1"])
         self.assertEqual(data["layers"][0]["rtx-pro"], [5, 7])
         self.assertEqual(data["devices"][0]["experts"], 3)
         self.assertLessEqual(3 * 9953280, data["devices"][0]["expert_gib"] * GIB)

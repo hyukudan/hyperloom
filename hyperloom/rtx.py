@@ -184,13 +184,15 @@ def host_gib(data, reservation, free_physical_gib):
 
 
 def effective_cap(reservation, requested):
-    """The VRAM cap of this start: `up --vram-cap-gib` lowers the operator's grant, never raises it."""
+    """The VRAM cap of this start: `up --vram-cap-gib` lowers the operator's grant (or the 96 GiB default without a
+    reservation), never raises it."""
     granted = reservation["vram_cap_gib"] if reservation else 96
     if requested is None:
         return granted
     number(requested, "--vram-cap-gib", 1, 1024)
-    if reservation and requested > granted:
-        raise ConfigError(f"--vram-cap-gib {requested:g} is above the reservation's {granted:g} GiB")
+    if requested > granted:
+        where = "the reservation's" if reservation else "the default"
+        raise ConfigError(f"--vram-cap-gib {requested:g} is above {where} {granted:g} GiB")
     return requested
 
 
@@ -207,16 +209,17 @@ def plan_placement(data, model_path, cap, host, positions):
     return plan
 
 
-def expand_placement(argv, plan):
-    """The `{placement}` token becomes the plan's flags (several tokens)."""
+def expand_placement(data, plan):
+    """The `{placement}` token: the plan's flags when the cap was given, else the preset's unplanned tokens (the
+    launch line qualified before planning existed)."""
     out = []
-    for token in argv:
-        if token == "{placement}":
-            if plan is None:
-                raise ConfigError("argv has {placement} but the preset has no placement block")
-            out += plan.argv()
-        else:
+    for token in data["argv"]:
+        if token != "{placement}":
             out.append(token)
+        elif "placement" not in data:
+            raise ConfigError("argv has {placement} but the preset has no placement block")
+        else:
+            out += plan.argv() if plan is not None else list(data["placement"]["unplanned_argv"])
     return out
 
 
@@ -269,14 +272,17 @@ def render_service(cluster, profile_name, *, api_key, handoff_api_key, free_phys
     cap = effective_cap(reservation, vram_cap_gib)
     host = host_gib(data, reservation or {"host_gib": 4096}, free_physical_gib)
     values = {name: item["path"] for name, item in assets.items()}
-    # Re-planned on every start: a different cap (or free memory) gives a different placement.
-    plan = plan_placement(data, values.get(data.get("placement", {}).get("model_asset")), cap, host, positions)
+    # Planned only when the operator asks for a cap (`up --vram-cap-gib`), on every such start; without it the
+    # qualified launch line is unchanged (lead decision, review of d5c3e0f).
+    plan = None
+    if vram_cap_gib is not None:
+        plan = plan_placement(data, values.get(data.get("placement", {}).get("model_asset")), cap, host, positions)
     values.update(binary=str(binary), port=str(s.get("port", data["port"])),
                   positions=str(positions),
                   vram_cap_gib=f"{cap:g}", host_gib=str(host),
                   commit_floor_gib=f"{floor + 10:g}", api_key=api_key, handoff_api_key=handoff_api_key,
                   pro_uuid=device["uuid"])
-    argv = [token.format_map(values) for token in expand_placement(data["argv"], plan)]
+    argv = [token.format_map(values) for token in expand_placement(data, plan)]
     env = dict(child_env(os.environ), **{k: v.format_map(values) for k, v in data["env"].items()})
     manifest = Path(binary).parent.parent / "MANIFEST.json"
     sha = None

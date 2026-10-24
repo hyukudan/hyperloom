@@ -335,10 +335,12 @@ def _vramplan(args):
     plan = placement.plan(args.engine, args.model, inputs, **params)
     result = dict(plan.to_dict(), explain=vramplan.explain(plan).splitlines())
     if args.engine == "ds41-rtx-hot" and args.placement_out:
+        if not args.expert_servers:
+            raise ValueError("--placement-out needs --expert-servers RANK0,RANK1 (machine ids)")
         ds41 = _module("hyperloom.placement.ds41")
         budget = round(args.vram_cap_gib - plan.margin_bytes / vramplan.GIB, 3)
-        ds41.write_placement(args.placement_out, ds41.placement_json(plan, model_file=Path(args.model).name,
-                                                                     budget_gib=budget))
+        ds41.write_placement(args.placement_out, ds41.placement_json(
+            plan, model_file=Path(args.model).name, budget_gib=budget, servers=args.expert_servers.split(",")))
         result["flags"] = {"placement": str(args.placement_out)}
     return result
 
@@ -474,6 +476,7 @@ def main(argv=None):
     vplan.add_argument("--mtp", help="qwen-rtx-prefill: the MTP sidecar GGUF")
     vplan.add_argument("--routes", help="ds41-rtx-hot: routes file (measured routing frequency)")
     vplan.add_argument("--placement-out", type=Path, help="ds41-rtx-hot: write the hot-expert placement JSON here")
+    vplan.add_argument("--expert-servers", help="ds41-rtx-hot: the two expert-server machine ids (rank 0,rank 1)")
     vplan.add_argument("--margin-gib", type=float, default=2.0)
     # Internal controller entry point; not part of the public interface.
     helper = commands.add_parser("_prefill-run", help=argparse.SUPPRESS)

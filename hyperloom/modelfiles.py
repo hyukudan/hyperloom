@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import re
 import struct
 
 
@@ -38,7 +39,9 @@ GGML_TYPES = {
     39: ("MXFP4", 32, 17),
 }
 _SCALAR = {0: "<B", 1: "<b", 2: "<H", 3: "<h", 4: "<I", 5: "<i", 6: "<f", 7: "<?", 10: "<Q", 11: "<q", 12: "<d"}
-MAX_HEADER = 256 << 20
+MAX_HEADER = 256 << 20  # bytes of header (metadata + tensor infos) read from one file
+MAX_DIMS = 8
+SPLIT = re.compile(r"(?P<prefix>.+)-\d{5}-of-(?P<count>\d{5})\.gguf")
 
 
 class _Reader:
@@ -46,6 +49,8 @@ class _Reader:
         self.stream = stream
 
     def take(self, n):
+        if self.stream.tell() + n > MAX_HEADER:
+            raise ModelFileError("GGUF header larger than 256 MiB")
         data = self.stream.read(n)
         if len(data) != n:
             raise ModelFileError("truncated GGUF header")
@@ -62,20 +67,28 @@ class _Reader:
         return self.take(n).decode("utf-8", "replace")
 
     def value(self, kind):
+        """Scalars and strings; an array is skipped and recorded as {"array": length} (the planner needs none)."""
         if kind == 8:
             return self.string()
         if kind == 9:
             inner, n = self.scalar(4), self.scalar(10)
-            if n > MAX_HEADER:
-                raise ModelFileError("GGUF array too long")
-            return [self.value(inner) for _ in range(n)]
+            if inner == 9:
+                raise ModelFileError("nested GGUF arrays are not supported")
+            if inner == 8:
+                for _ in range(n):
+                    self.take(self.scalar(10))
+            elif inner in _SCALAR:
+                self.take(n * struct.calcsize(_SCALAR[inner]))
+            else:
+                raise ModelFileError(f"unknown GGUF value type {inner}")
+            return {"array": n}
         if kind not in _SCALAR:
             raise ModelFileError(f"unknown GGUF value type {kind}")
         return self.scalar(kind)
 
 
 def gguf(path):
-    """(metadata, tensors) of one GGUF file. Large metadata arrays (vocabularies) are kept; callers use scalars."""
+    """(metadata, tensors) of one GGUF file. Metadata arrays (vocabularies) are skipped; callers use scalars."""
     path = Path(path)
     size = path.stat().st_size
     with open(path, "rb") as stream:
@@ -93,9 +106,14 @@ def gguf(path):
         infos = []
         for _ in range(count):
             name = r.string()
-            dims = [r.scalar(10) for _ in range(r.scalar(4))]
+            n_dims = r.scalar(4)
+            if n_dims > MAX_DIMS:
+                raise ModelFileError(f"{path}: tensor {name} has {n_dims} dimensions")
+            dims = [r.scalar(10) for _ in range(n_dims)]
             infos.append((name, dims, r.scalar(4), r.scalar(10)))
-        alignment = int(metadata.get("general.alignment", 32))
+        alignment = metadata.get("general.alignment", 32)
+        if type(alignment) is not int or alignment <= 0 or alignment & (alignment - 1):
+            raise ModelFileError(f"{path}: general.alignment must be a positive power of two")
         start = -(-stream.tell() // alignment) * alignment
     ends = sorted(offset for *_, offset in infos) + [size - start]
     tensors = []
@@ -126,12 +144,24 @@ def safetensors(path):
         n = struct.unpack("<Q", head)[0]
         if n > MAX_HEADER:
             raise ModelFileError(f"{path}: safetensors header too large")
-        header = json.loads(stream.read(n))
+        try:
+            header = json.loads(stream.read(n))
+        except ValueError as exc:
+            raise ModelFileError(f"{path}: safetensors header is not JSON") from exc
+    if not isinstance(header, dict):
+        raise ModelFileError(f"{path}: safetensors header is not an object")
+    data_bytes = path.stat().st_size - 8 - n
     metadata = header.pop("__metadata__", {}) or {}
     tensors = []
     for name in sorted(header):
-        begin, end = header[name]["data_offsets"]
-        tensors.append(Tensor(name, end - begin, str(path), header[name]["dtype"], tuple(header[name]["shape"])))
+        entry = header[name]
+        offsets = entry.get("data_offsets") if isinstance(entry, dict) else None
+        shape = entry.get("shape") if isinstance(entry, dict) else None
+        if not (isinstance(offsets, list) and len(offsets) == 2 and all(type(x) is int for x in offsets)
+                and 0 <= offsets[0] <= offsets[1] <= data_bytes and isinstance(entry.get("dtype"), str)
+                and isinstance(shape, list) and all(type(x) is int and x >= 0 for x in shape)):
+            raise ModelFileError(f"{path}: malformed safetensors entry {name}")
+        tensors.append(Tensor(name, offsets[1] - offsets[0], str(path), entry["dtype"], tuple(shape)))
     return metadata, tensors
 
 
@@ -145,11 +175,11 @@ def read(path):
             raise ModelFileError(f"{path}: no .safetensors or .gguf files")
     else:
         files = [path]
-        stem = path.name
-        # llama.cpp splits: name-00001-of-00003.gguf
-        if "-of-" in stem and stem.endswith(".gguf"):
-            prefix = stem[:stem.rindex("-", 0, stem.index("-of-"))]
-            files = sorted(p for p in path.parent.iterdir() if p.name.startswith(prefix + "-") and p.suffix == ".gguf")
+        # A split GGUF: name-00001-of-00003.gguf (every shard of the same name and count).
+        split = SPLIT.fullmatch(path.name)
+        if split:
+            same = re.compile(re.escape(split["prefix"]) + r"-\d{5}-of-" + split["count"] + r"\.gguf")
+            files = sorted(p for p in path.parent.iterdir() if same.fullmatch(p.name))
     metadata, tensors = {}, []
     for i, f in enumerate(files):
         meta, rows = (gguf if f.suffix == ".gguf" else safetensors)(f)
