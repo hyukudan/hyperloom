@@ -52,7 +52,8 @@ class InstallCase(unittest.TestCase):
 
 class InstallTests(InstallCase):
     def test_verbs(self):
-        self.assertEqual(install.VERBS, {"install", "job", "releases", "activate", "uninstall", "verify-model", "stat-assets", "push-release"})
+        self.assertEqual(install.VERBS, {"install", "job", "releases", "activate", "uninstall", "verify-model", "stat-assets", "push-release",
+                                         "bundle-prepare", "bundle-accept"})
 
     def test_marker_created_once(self):
         self.mark()

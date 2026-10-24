@@ -19,7 +19,12 @@ import unicodedata
 import uuid
 
 
-VERBS = {"install", "job", "releases", "activate", "uninstall", "verify-model", "stat-assets", "push-release"}
+VERBS = {"install", "job", "releases", "activate", "uninstall", "verify-model", "stat-assets", "push-release",
+         "bundle-prepare", "bundle-accept"}
+# The single ref a source bundle carries (hyperloom/bundles.py writes it; nothing else is in the bundle).
+BUNDLE_REF = "refs/hyperloom/source"
+MAX_BUNDLE = 64 * 1024 ** 3
+TRELLIS_MODES = {"ds41", "minimax"}
 HASH_BLOCK = 8 * 1024 ** 2
 DIRECT_UNSUPPORTED = {errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP, errno.ENOTSUP}
 RUNTIME_ENV = {"LD_LIBRARY_PATH": "/opt/rocm/core-10.1/lib"}
@@ -396,22 +401,43 @@ def launch_job(root, kind, payload):
     return {"job": job, "pid": child.pid, "log": str(log)}
 
 
+def validate_component(item):
+    """A pinned source: {repo, commit} fetched from the remote, or, for an unpublished commit, also
+    {published: false, bundle_sha256} fetched from the staged bundle <root>/incoming/<commit>.bundle."""
+    if not isinstance(item, dict) or not {"repo", "commit"} <= set(item):
+        raise ValueError("component requires repo and commit")
+    extra = set(item) - {"repo", "commit"}
+    if extra and (extra != {"published", "bundle_sha256"} or item["published"] is not False
+                  or not isinstance(item["bundle_sha256"], str)
+                  or not re.fullmatch(r"[0-9a-f]{64}", item["bundle_sha256"])):
+        raise ValueError("an unpublished component requires published false and bundle_sha256")
+    if not re.fullmatch(r"[0-9a-f]{40}", text(item["commit"])):
+        raise ValueError("component commit must be an immutable full SHA")
+    if text(item["repo"]).startswith("-"):
+        raise ValueError("invalid component repository")
+
+
 def validate_install(payload):
     components = payload.get("components")
     if not isinstance(components, dict) or "engine" not in components:
         raise ValueError("components.engine is required")
     for name, item in components.items():
         identifier(name)
-        if not isinstance(item, dict) or set(item) != {"repo", "commit"}:
-            raise ValueError("component requires repo and commit")
-        if not re.fullmatch(r"[0-9a-f]{40}", text(item["commit"])):
-            raise ValueError("component commit must be an immutable full SHA")
-        if text(item["repo"]).startswith("-"):
-            raise ValueError("invalid component repository")
+        validate_component(item)
     recipe = payload.get("recipe")
+    optional = {"required_flags", "trellis_mode", "trellis_api", "trellis_configure"}
     if (not isinstance(recipe, dict) or not {"configure", "targets", "ctest_regex", "trellis"} <= set(recipe)
-            or set(recipe) - {"configure", "targets", "ctest_regex", "trellis", "required_flags"}):
-        raise ValueError("recipe requires configure, targets, ctest_regex and trellis (optional required_flags)")
+            or set(recipe) - {"configure", "targets", "ctest_regex", "trellis"} - optional):
+        raise ValueError("recipe requires configure, targets, ctest_regex and trellis (optional required_flags, "
+                         "trellis_mode, trellis_api, trellis_configure)")
+    if recipe.get("trellis_mode", "ds41") not in TRELLIS_MODES:
+        raise ValueError("unknown trellis_mode")
+    if recipe.get("trellis_api", "v12") not in {"v12", "tp03", "splitk04", "dense_r1"}:
+        raise ValueError("unknown trellis_api")
+    trellis_flags = recipe.get("trellis_configure", [])
+    if not isinstance(trellis_flags, list) or not all(
+            isinstance(flag, str) and re.fullmatch(r"-D[A-Z0-9_]+=[A-Za-z0-9_.]+", flag) for flag in trellis_flags):
+        raise ValueError("trellis_configure must list -DNAME=VALUE flags")
     flags = recipe.get("required_flags", {})
     if not isinstance(flags, dict) or any(not isinstance(v, list) or not all(map(checked_string, v))
                                           for v in flags.values()):
@@ -433,22 +459,51 @@ def validate_install(payload):
         raise ValueError("trellis source component is required")
 
 
+def bundle_heads(bundle):
+    """The refs a bundle advertises (git bundle list-heads works outside a repository)."""
+    listed = command(["git", "bundle", "list-heads", str(bundle)], capture_output=True, text=True, timeout=600,
+                     cwd=str(Path(bundle).parent)).stdout
+    rows = [line.split() for line in listed.splitlines() if line.strip()]
+    if any(len(row) != 2 for row in rows):
+        raise ValueError("malformed bundle head list")
+    return {ref: commit for commit, ref in rows}
+
+
+def staged_bundle(root, item):
+    """The verified bundle of an unpublished component: sha256 as recorded, exactly one ref at the pinned commit."""
+    bundle = inside(root, "incoming", item["commit"] + ".bundle")
+    if bundle.is_symlink() or not bundle.is_file():
+        raise ValueError("unpublished source bundle missing: stage it with hyperloom install --source")
+    if sha256(bundle) != item["bundle_sha256"]:
+        raise ValueError("source bundle sha256 mismatch")
+    if bundle_heads(bundle) != {BUNDLE_REF: item["commit"]}:
+        raise ValueError("source bundle must carry exactly " + BUNDLE_REF + " at the pinned commit")
+    return bundle
+
+
 def fetch_sources(root, components):
-    """Fetch pinned sources, including the router's unbuilt Python package."""
+    """Fetch pinned sources, including the router's unbuilt Python package. Published components come from
+    their remote by commit; unpublished ones from their staged bundle (never from a remote)."""
     sources = {}
     for name, item in sorted(components.items()):
         identifier(name)
-        if not re.fullmatch(r"[0-9a-f]{40}", text(item["commit"])):
-            raise ValueError("component commit must be an immutable full SHA")
-        if text(item["repo"]).startswith("-"):
-            raise ValueError("invalid component repository")
+        validate_component(item)
         source = inside(root, "src", name + "-" + item["commit"])
         source.mkdir(exist_ok=True)
         if not (source / ".git").exists():
             command(["git", "init", str(source)])
-        # Recover cleanly after an interrupted init/remote setup.
-        command(["git", "-C", str(source), "config", "remote.origin.url", item["repo"]])
-        command(["git", "-C", str(source), "fetch", "--depth", "1", "origin", item["commit"]])
+        if item.get("published") is False:
+            bundle = staged_bundle(root, item)
+            # The bundle is depth 1 (hyperloom/bundles.py): mark its commit shallow, as a --depth 1 fetch would.
+            shallow = source / ".git" / "shallow"
+            known = set(shallow.read_text(encoding="ascii").split()) if shallow.is_file() else set()
+            shallow.write_text("".join(sha + "\n" for sha in sorted(known | {item["commit"]})),
+                               encoding="ascii", newline="\n")
+            command(["git", "-C", str(source), "fetch", str(bundle), BUNDLE_REF])
+        else:
+            # Recover cleanly after an interrupted init/remote setup.
+            command(["git", "-C", str(source), "config", "remote.origin.url", item["repo"]])
+            command(["git", "-C", str(source), "fetch", "--depth", "1", "origin", item["commit"]])
         command(["git", "-C", str(source), "checkout", "--force", "FETCH_HEAD"])
         actual = command(["git", "-C", str(source), "rev-parse", "HEAD"],
                          capture_output=True, text=True).stdout.strip()
@@ -468,6 +523,9 @@ def build(root, payload, job):
     env = dict(os.environ, **RUNTIME_ENV)
     env["HYPERLOOM_CONFIGURE"] = "\n".join(recipe["configure"])
     env["HYPERLOOM_CTEST_REGEX"] = recipe["ctest_regex"]
+    env["HYPERLOOM_TRELLIS_MODE"] = recipe.get("trellis_mode", "ds41")
+    env["HYPERLOOM_TRELLIS_API"] = recipe.get("trellis_api", "v12")
+    env["HYPERLOOM_TRELLIS_CONFIGURE"] = "\n".join(recipe.get("trellis_configure", []))
     try:
         command(["bash", str(Path(__file__).with_name("build-node.sh")), str(sources["engine"]),
                  str(sources["strix-trellis"]) if recipe["trellis"] else "-",
@@ -622,6 +680,45 @@ def push_release(root, payload):
         command([*ssh, "rm -rf -- " + q(staging)], timeout=30)
 
 
+def bundle_prepare(root, payload):
+    """A fresh staging name in <root>/incoming for one scp upload (the control machine copies, then accepts)."""
+    commit = text(payload.get("commit"))
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("bundle commit must be a full SHA")
+    incoming = inside(root, "incoming")
+    if incoming.is_symlink():
+        raise ValueError("incoming must not be a symlink")
+    incoming.mkdir(mode=0o700, exist_ok=True)
+    return {"stage": str(inside(root, "incoming", ".stage-" + uuid.uuid4().hex + ".bundle")),
+            "path": str(inside(root, "incoming", commit + ".bundle"))}
+
+
+def bundle_accept(root, payload):
+    """Verify an uploaded stage (size, sha256, exactly one ref at the commit), then rename it into place."""
+    commit = text(payload.get("commit"))
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("bundle commit must be a full SHA")
+    digest, size = payload.get("sha256"), payload.get("bytes")
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise ValueError("bundle sha256 required")
+    if type(size) is not int or not 0 < size <= MAX_BUNDLE:
+        raise ValueError("bundle size out of bounds")
+    stage = absolute(payload.get("stage"))
+    if not re.fullmatch(r"\.stage-[0-9a-f]{32}\.bundle", stage.name) or stage.parent != inside(root, "incoming"):
+        raise ValueError("bundle stage must be a staging name in <root>/incoming")
+    try:
+        if stage.is_symlink() or not stage.is_file() or stage.stat().st_size != size or sha256(stage) != digest:
+            raise ValueError("uploaded bundle size or sha256 mismatch")
+        if bundle_heads(stage) != {BUNDLE_REF: commit}:
+            raise ValueError("source bundle must carry exactly " + BUNDLE_REF + " at the pinned commit")
+        os.chmod(stage, 0o600)
+        destination = inside(root, "incoming", commit + ".bundle")
+        os.replace(stage, destination)
+    finally:
+        stage.unlink(missing_ok=True)
+    return {"path": str(destination), "sha256": digest, "bytes": size}
+
+
 def run(verb, payload):
     result = {"schema": "hyperloom/node-v1", "verb": verb}
     try:
@@ -652,7 +749,11 @@ def run(verb, payload):
         if verb == "install":
             validate_install(payload)
             lab_idle(payload.get("lab_dir"))
-        root = checked_root(payload, create=verb == "install")
+        root = checked_root(payload, create=verb in {"install", "bundle-prepare"})
+        if verb == "bundle-prepare":
+            return {**result, **bundle_prepare(root, payload)}
+        if verb == "bundle-accept":
+            return {**result, **bundle_accept(root, payload)}
         if verb in {"install", "verify-model"}:
             policy = read_json(root / "etc" / "install-policy.json")
             payload = {**payload, "lab_dir": payload.get("lab_dir") or policy.get("lab_dir")}

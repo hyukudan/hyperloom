@@ -27,6 +27,13 @@ MAX_LOG = 64 * 1024
 BASE_PATH = "/usr/local/bin:/usr/bin:/bin"
 TERMINAL = {"stopped", "failed", "aborted", "cancelled"}
 USB_LAYOUT = Path("/run/usb4stream-layout.json")
+# Readiness adapters, one per engine family (hyperloom/engines.py), each combined with /health == 200.
+READY_ADAPTERS = {"qwen-stderr", "ds41-json", "minimax-stdout", "http-health"}
+# strix-minimax-serve (apps/minimax_serve_main.cpp): rank 0 prints this line on stdout after its HTTP listener is up;
+# rank 1 never serves HTTP and prints only "connected: ...", then "rank 1: load <s> s, ..." once its weights are
+# resident, then follows rank 0's control blocks ("rank 1: STOPPED" at the end; exit 0, or 2 on an error).
+MINIMAX_READY = re.compile(r"^READY rank 0 http://\S+:\d+ model \S+", re.M)
+MINIMAX_LOADED = re.compile(r"^rank 1: load [0-9.]+ s\b", re.M)
 _launches = []
 
 
@@ -212,7 +219,7 @@ def validate_process(proc):
     path(argv[0])
     environment(proc.get("env", {}))
     proc.setdefault("env", {})
-    if proc.get("ready") not in {"qwen-stderr", "ds41-json", "http-health"}:
+    if proc.get("ready") not in READY_ADAPTERS:
         raise ValueError("unknown readiness adapter")
     health_url(proc.get("health_url"))
     proc["ready_timeout_s"] = number(proc.get("ready_timeout_s", 120), "ready_timeout_s")
@@ -418,11 +425,14 @@ def tail_file(filename, count=MAX_LOG):
         return ""
 
 
-def adapter_ready(adapter, stdout, stderr):
+def adapter_ready(adapter, stdout, stderr, rank=0):
     if adapter == "http-health":
         return True
     if adapter == "qwen-stderr":
         return bool(re.search(r"strix serve: listening on \S+:\d+ model\b", stderr))
+    if adapter == "minimax-stdout":
+        # Rank 1's own readiness is its load line; its health check is rank 0's /health (the pair serves there).
+        return bool((MINIMAX_READY if rank == 0 else MINIMAX_LOADED).search(stdout))
     for line in stdout.splitlines():
         try:
             event = json.loads(line)
@@ -462,10 +472,21 @@ def key_file(proc):
     return None
 
 
-def ds41_follower(proc):
+def rank_of(proc):
     argv = proc["argv"]
-    return (proc["ready"] == "ds41-json" and "--rank" in argv
-            and argv[argv.index("--rank") + 1:argv.index("--rank") + 2] == ["1"])
+    if "--rank" not in argv:
+        return 0
+    value = argv[argv.index("--rank") + 1:argv.index("--rank") + 2]
+    return 1 if value == ["1"] else 0
+
+
+def ds41_follower(proc):
+    return proc["ready"] == "ds41-json" and rank_of(proc) == 1
+
+
+def pair_leader(child):
+    """A MiniMax rank 0 on this node: stopped first, because it sends the shutdown block that ends rank 1."""
+    return child.proc["ready"] == "minimax-stdout" and not child.peer and rank_of(child.proc) == 0
 
 
 def group_signal(process, sig):
@@ -522,7 +543,8 @@ class Child:
 
     def check_ready(self):
         stdout, stderr = self.logs()
-        return adapter_ready(self.proc["ready"], stdout, stderr) and http(self.proc["health_url"])
+        return (adapter_ready(self.proc["ready"], stdout, stderr, rank_of(self.proc))
+                and http(self.proc["health_url"]))
 
     def terminate(self):
         if self.peer:
@@ -541,9 +563,23 @@ class Child:
             stream.close()
 
 
-def stop_children(children):
+def stop_children(children, leader_grace=30):
+    # A MiniMax rank 0 stops first (SIGTERM ends its scheduler, which sends the shutdown block to rank 1); the
+    # others are signalled after it exits or after leader_grace, then share the grace period below.
+    leaders = [child for child in children if child.process is not None and pair_leader(child)]
+    for child in leaders:
+        try:
+            child.terminate()
+        except OSError:
+            pass
+    if leaders:
+        end = time.monotonic() + leader_grace
+        while any(child.process.poll() is None for child in leaders) and time.monotonic() < end:
+            time.sleep(0.05)
     # All drains and TERM requests precede the shared grace period.
     for child in reversed(children):
+        if child in leaders:
+            continue
         try:
             child.terminate()
         except OSError:

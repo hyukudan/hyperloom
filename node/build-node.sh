@@ -16,14 +16,35 @@ configure=()
 while IFS= read -r flag; do
     [[ -z "$flag" ]] || configure+=("$flag")
 done <<< "${HYPERLOOM_CONFIGURE:-}"
+# Per-family trellis recipe (hyperloom/engines.py): ds41 links the archive through STRIX_DS41_TRELLIS_*
+# (adapter HYPERLOOM_TRELLIS_API, v12 unless the preset says otherwise); minimax points STRIX_MINIMAX_TRELLIS_DIR at
+# a tree with include/strix_trellis.h and build-qualification-v03/libstrix_trellis.a, the layout its CMake expects.
+mode=${HYPERLOOM_TRELLIS_MODE:-ds41}
+api=${HYPERLOOM_TRELLIS_API:-v12}
+trellis_configure=()
+while IFS= read -r flag; do
+    [[ -z "$flag" ]] || trellis_configure+=("$flag")
+done <<< "${HYPERLOOM_TRELLIS_CONFIGURE:-}"
 if [[ "$trellis" != - ]]; then
-    cmake -S "$trellis" -B "$build/trellis" -G Ninja \
+    case "$mode" in
+        ds41) trellis_build="$build/trellis" ;;
+        minimax)
+            mkdir -p -- "$build/mm-trellis"
+            ln -sfn -- "$trellis/include" "$build/mm-trellis/include"
+            trellis_build="$build/mm-trellis/build-qualification-v03" ;;
+        *) echo "unknown trellis mode: $mode" >&2; exit 2 ;;
+    esac
+    cmake -S "$trellis" -B "$trellis_build" -G Ninja \
         -DCMAKE_BUILD_TYPE=Release -DSTRIX_TRELLIS_ENABLE_HIP=ON \
-        -DCMAKE_HIP_COMPILER="$HIPCXX" -DCMAKE_HIP_ARCHITECTURES=gfx1151
-    ninja -C "$build/trellis" -j6 strix_trellis
-    configure+=(-DSTRIX_DS41_TRELLIS=ON -DSTRIX_DS41_TRELLIS_API=v12
-        "-DSTRIX_DS41_TRELLIS_LIBRARY=$build/trellis/libstrix_trellis.a"
-        "-DSTRIX_DS41_TRELLIS_INCLUDE_DIR=$trellis/include")
+        -DCMAKE_HIP_COMPILER="$HIPCXX" -DCMAKE_HIP_ARCHITECTURES=gfx1151 "${trellis_configure[@]}"
+    ninja -C "$trellis_build" -j6 strix_trellis
+    if [[ "$mode" == minimax ]]; then
+        configure+=("-DSTRIX_MINIMAX_TRELLIS_DIR=$build/mm-trellis")
+    else
+        configure+=(-DSTRIX_DS41_TRELLIS=ON "-DSTRIX_DS41_TRELLIS_API=$api"
+            "-DSTRIX_DS41_TRELLIS_LIBRARY=$build/trellis/libstrix_trellis.a"
+            "-DSTRIX_DS41_TRELLIS_INCLUDE_DIR=$trellis/include")
+    fi
 fi
 cmake -S "$engine" -B "$build/engine" -G Ninja "${configure[@]}"
 regex=${HYPERLOOM_CTEST_REGEX:?a named host-only ctest subset is required}
