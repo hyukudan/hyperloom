@@ -7,7 +7,7 @@
   const $ = id => document.getElementById(id);
   const OFFLINE_S = 40, HARDWARE_S = 160;
   const R = {catalog: null, error: null, model: "", profile: "", selected: "", detail: null, detailError: null,
-    edits: {}, raw: {}, fieldErrors: {}, editsError: null, explain: null, check: null, simulate: null, tokens: 8192,
+    edits: {}, raw: {}, fieldErrors: {}, parseErrors: {}, editsError: null, explain: null, check: null, simulate: null, tokens: 8192,
     plan: null, planKey: null, diff: null, compare: "", active: null, routes: null, tuning: "", overrides: [],
     source: null, sourceCheck: null, busy: {}, timer: null, lastLoad: 0};
   const esc = value => H().esc(value);
@@ -69,7 +69,7 @@
   const current = () => (R.catalog?.recipes || []).find(r => r.id === R.selected);
   async function select(id) {
     if (R.selected === id && R.detail) return;
-    Object.assign(R, {selected: id, detail: null, detailError: null, edits: {}, raw: {}, fieldErrors: {}, editsError: null,
+    Object.assign(R, {selected: id, detail: null, detailError: null, edits: {}, raw: {}, fieldErrors: {}, parseErrors: {}, editsError: null,
       explain: null, check: null, simulate: null, plan: null, planKey: null, diff: null, source: null, sourceCheck: null,
       tuning: "", overrides: []});
     rerender();
@@ -89,7 +89,8 @@
     return out;
   }
   function editArgs() { return Object.keys(R.edits).length ? {edits: {...R.edits}} : {}; }
-  const planKey = () => JSON.stringify([R.selected, R.profile, R.edits, R.tuning, R.overrides]);
+  const planKey = () => JSON.stringify([R.selected, R.profile, R.edits, R.raw, R.tuning, R.overrides]);
+  const invalid = () => Object.keys(R.parseErrors).length > 0;
   function fieldPathIn(message) {
     const paths = (R.detail?.fields || []).map(f => f.path).filter(p => message.includes(p));
     return paths.sort((a, b) => b.length - a.length)[0] || null;
@@ -200,7 +201,7 @@
   }
   function fieldInput(field, index) {
     const id = `rf-${index}`, value = Object.hasOwn(R.raw, field.path) ? R.raw[field.path] : shown(Object.hasOwn(R.edits, field.path) ? R.edits[field.path] : field.value);
-    const changed = Object.hasOwn(R.edits, field.path), error = R.fieldErrors[field.path];
+    const changed = Object.hasOwn(R.edits, field.path), error = R.parseErrors[field.path] || R.fieldErrors[field.path];
     const describe = `${id}-hint${error ? ` ${id}-error` : ""}`;
     const attrs = `id="${id}" data-path="${esc(field.path)}" aria-describedby="${describe}" class="inp${changed ? " chg" : ""}"${R.detail.writable === undefined ? "" : ""}`;
     let control;
@@ -216,8 +217,8 @@
     const fields = R.detail.fields || [];
     const groups = {};
     fields.forEach((field, index) => (groups[field.group] ||= []).push([field, index]));
-    const changed = Object.keys(R.edits).length;
-    const body = Object.entries(groups).map(([group, items]) => `<details${items.some(([f]) => Object.hasOwn(R.edits, f.path) || R.fieldErrors[f.path]) ? " open" : ""}><summary>${esc(group)} <span class="hint">${items.length} fields</span></summary><div class="grid g3">${items.map(([f, i]) => fieldInput(f, i)).join("")}</div></details>`).join("");
+    const changed = Object.keys(R.edits).length + Object.keys(R.parseErrors).length;
+    const body = Object.entries(groups).map(([group, items]) => `<details${items.some(([f]) => Object.hasOwn(R.edits, f.path) || R.fieldErrors[f.path] || R.parseErrors[f.path]) ? " open" : ""}><summary>${esc(group)} <span class="hint">${items.length} fields</span></summary><div class="grid g3">${items.map(([f, i]) => fieldInput(f, i)).join("")}</div></details>`).join("");
     return H().card("Fields", `<p class="hint">Changes are one overrides layer on this recipe (checked as you type, like <span class="mono">--recipe-overrides</span>). They apply to the checks, the preview and the deploy below, never to the file itself.</p><div class="row">${changed ? H().tag(`${changed} changed`) : ""}${busy("edits") ? '<span class="hint">checking…</span>' : ""}<button type="button" class="btn sm" data-recipe-action="reset-edits" ${changed ? "" : 'disabled title="No changes"'}>Reset fields</button></div>${R.editsError ? `<p class="field-error" role="alert">${esc(R.editsError)}</p>` : ""}${body}${R.explain ? cli(R.explain) : ""}`, "edit with inline validation");
   }
   function layersCard() {
@@ -262,7 +263,8 @@
         + `<p class="hint">Snapshot <span class="mono">${esc((res.inputs || "").slice(0, 16))}</span> · deploy launches exactly this snapshot (recipe, layers, configuration, profile).</p>`;
     }
     const stale = p && R.planKey !== planKey();
-    return H().card("Placement preview", `<div class="row"><button type="button" class="btn pri" data-recipe-action="plan" ${reason || busy("plan") ? `disabled title="${esc(reason || "planning")}"` : ""}>Preview placement on ${esc(R.profile || "…")}</button>${busy("plan") ? '<span class="hint">planning…</span>' : ""}</div>${stale ? '<div class="banner warn">The fields or layers changed since this preview: preview again before deploying.</div>' : ""}${refusal(p && p.exit_code !== 1 ? p : null)}${body}${p ? cli(p) : ""}`, "what up would decide before any lease");
+    const planReason = reason || (invalid() ? "Fix the invalid fields first" : "");
+    return H().card("Placement preview", `<div class="row"><button type="button" class="btn pri" data-recipe-action="plan" ${planReason || busy("plan") ? `disabled title="${esc(planReason || "planning")}"` : ""}>Preview placement on ${esc(R.profile || "…")}</button>${busy("plan") ? '<span class="hint">planning…</span>' : ""}</div>${stale ? '<div class="banner warn">The fields or layers changed since this preview: preview again before deploying.</div>' : ""}${refusal(p && p.exit_code !== 1 ? p : null)}${body}${p ? cli(p) : ""}`, "what up would decide before any lease");
   }
   function sourceCard() {
     const row = current();
@@ -277,7 +279,7 @@
   }
   function actions() {
     const row = current();
-    const deployReason = !R.profile ? "No deployment profile serves this model" : row?.status === "pending" ? `pending: ${row.blocker || "see its header"}` : !R.plan ? "Preview the placement first" : R.planKey !== planKey() ? "Preview again: fields or layers changed" : !R.plan.result?.up?.ok ? "The preview refuses: see Placement preview" : H().mutationReason();
+    const deployReason = !R.profile ? "No deployment profile serves this model" : row?.status === "pending" ? `pending: ${row.blocker || "see its header"}` : invalid() ? "Fix the invalid fields first" : Object.keys(R.edits).length ? "Deploy launches only a reviewed snapshot: save the field changes as a layer (Layers), keep it selected, and preview again" : !R.plan ? "Preview the placement first" : R.planKey !== planKey() ? "Preview again: fields or layers changed" : !R.plan.result?.up?.ok ? "The preview refuses: see Placement preview" : H().mutationReason();
     return `<div class="row recipe-actions"><button type="button" class="btn pri" data-recipe-action="deploy" ${deployReason ? `disabled title="${esc(deployReason)}"` : ""}>Deploy…</button><button type="button" class="btn" data-recipe-action="save-copy">Save as my recipe…</button>${deployReason ? `<span class="hint">${esc(deployReason)}</span>` : ""}</div>`;
   }
   function detail() {
@@ -345,7 +347,7 @@
   // --- actions ----------------------------------------------------------------------------------------------------
   const handlers = {
     open: control => select(control.dataset.id),
-    "reset-edits": () => { R.edits = {}; R.raw = {}; R.fieldErrors = {}; R.editsError = null; R.explain = null; rerender(); },
+    "reset-edits": () => { R.edits = {}; R.raw = {}; R.fieldErrors = {}; R.parseErrors = {}; R.editsError = null; R.explain = null; rerender(); },
     check: () => run("check", async () => { R.check = await post("recipes/validate", {recipe: R.selected, profile: R.profile, ...layerArgs(), ...editArgs()}, HARDWARE_S); }),
     simulate: () => run("simulate", async () => { R.simulate = await post("recipes/explain", {recipe: R.selected, profile: R.profile, prompt_tokens: Number(R.tokens) || 0, ...layerArgs(), ...editArgs()}, HARDWARE_S); }),
     plan: () => run("plan", async () => { const key = planKey(); R.plan = await post("recipes/plan", {recipe: R.selected, profile: R.profile, ...layerArgs(), ...editArgs()}, HARDWARE_S); R.planKey = key; }),
@@ -386,18 +388,12 @@
       const running = (R.active?.deployments || []).map(d => d.profile);
       const res = R.plan.result;
       dialog({title: `${running.length ? "Switch to" : "Deploy"} ${R.selected} on ${R.profile}`, destructive: running.length > 0,
-        effects: `<ul>${running.map(p => `<li>Stops <b>${esc(p)}</b> first.</li>`).join("")}<li>Starts <b>${esc(R.profile)}</b> with recipe <b>${esc(R.selected)}</b>${R.tuning ? ` + tuning ${esc(R.tuning)}` : ""}${R.overrides.length ? ` + layers ${esc(R.overrides.join(", "))}` : ""}${Object.keys(R.edits).length ? ` + ${Object.keys(R.edits).length} field change(s) (saved first as layer ${esc(R.selected)}.deploy-…)` : ""}.</li><li>RTX prefill service: ${res.service?.start ? "starts" : "not started · " + esc(res.service?.why || "")}.</li><li>Launches exactly the reviewed snapshot; if anything differs (running set, files, configuration) or a check refuses, nothing is stopped.</li></ul><p class="hint">Checked when it starts: ${esc((res.checked_at_start || []).join("; "))}.</p>`,
+        effects: `<ul>${running.map(p => `<li>Stops <b>${esc(p)}</b> first.</li>`).join("")}<li>Starts <b>${esc(R.profile)}</b> with recipe <b>${esc(R.selected)}</b>${R.tuning ? ` + tuning ${esc(R.tuning)}` : ""}${R.overrides.length ? ` + layers ${esc(R.overrides.join(", "))}` : ""}${Object.keys(R.edits).length ? ` ` : ""}.</li><li>RTX prefill service: ${res.service?.start ? "starts" : "not started · " + esc(res.service?.why || "")}.</li><li>Launches exactly the reviewed snapshot; if anything differs (running set, files, configuration) or a check refuses, nothing is stopped.</li></ul><p class="hint">Checked when it starts: ${esc((res.checked_at_start || []).join("; "))}.</p>`,
         confirm: running.length ? "Stop and deploy" : "Deploy",
         submit: async () => {
-          let digest = res.inputs;
-          if (Object.keys(R.edits).length) {
-            // Edits become a named, audited layer; the launch snapshot then names it like any other layer.
-            const name = `${R.selected}.deploy-${Date.now().toString(36)}`;
-            ensureOk(await post("recipes/save-layer", {name, recipe: R.selected, set: tomlSet()}));
-            const replanned = ensureOk(await post("recipes/plan", {recipe: R.selected, profile: R.profile, tuning_profile: R.tuning || undefined, overrides: [...R.overrides, name + ".json"]}, HARDWARE_S));
-            if (!replanned.result.up.ok) throw new Error("The preview refuses after saving the changes: " + replanned.result.up.refused);
-            digest = replanned.result.inputs;
-          }
+          // Exactly the snapshot this dialog describes; anything else needs its own preview and review.
+          if (R.planKey !== planKey()) throw new Error("The fields or layers changed since the preview: preview again.");
+          const digest = res.inputs;
           await H().mutate("recipes/deploy", {inputs: digest, stop: running});
         }});
     },
@@ -429,7 +425,9 @@
     R.raw[field.path] = input.value;
     const parsed = parse(field, input.value);
     delete R.fieldErrors[field.path];
-    if (parsed.error) { R.fieldErrors[field.path] = parsed.error; delete R.edits[field.path]; }
+    delete R.parseErrors[field.path];
+    // A value that does not parse stays an error (and blocks preview and deploy) until it is fixed or reset.
+    if (parsed.error) { R.parseErrors[field.path] = parsed.error; delete R.edits[field.path]; }
     else if (JSON.stringify(parsed.value) === JSON.stringify(field.value)) delete R.edits[field.path];
     else R.edits[field.path] = parsed.value;
     if (!Object.hasOwn(R.edits, field.path) && !parsed.error) delete R.raw[field.path];

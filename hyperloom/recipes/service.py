@@ -373,6 +373,7 @@ def _manifest_digest(manifest):
 
 DEFAULT_INTENT = {"router": "local", "deadline_s": 1140, "queue_timeout_s": 3600}
 KEEP_SNAPSHOT_S = 24 * 3600
+PIN_S = 6 * 3600              # a launch pins its snapshot while it runs; a pin older than this is a crash leftover
 MAX_SNAPSHOTS = 200
 
 
@@ -432,9 +433,10 @@ def _prune_snapshots(keep):
     at most MAX_SNAPSHOTS in all; remove the rest, oldest first."""
     directory = runtime_dir() / "recipe-inputs"
     referenced = {keep} | {((state.get("recipe") or {}).get("inputs_digest")) for state in _states().values()}
+    now = time.time()
+    referenced |= {p.stem for p in directory.glob("*.pin") if now - p.stat().st_mtime < PIN_S}
     rows = sorted((p.stat().st_mtime, p) for p in directory.iterdir()
                   if p.is_dir() and re.fullmatch(r"[0-9a-f]{64}", p.name))
-    now = time.time()
     excess = len(rows) - MAX_SNAPSHOTS
     for mtime, path in rows:
         if path.name in referenced:
@@ -442,6 +444,26 @@ def _prune_snapshots(keep):
         if now - mtime > KEEP_SNAPSHOT_S or excess > 0:
             shutil.rmtree(path, ignore_errors=True)
             excess -= 1
+
+
+@contextmanager
+def pinned(digest):
+    """Keep a snapshot from being pruned while a launch (deploy or `up --recipe`) uses it; once the launch state
+    records the digest, that reference keeps it."""
+    pin = runtime_dir() / "recipe-inputs" / f"{digest}.pin"
+    pin.parent.mkdir(parents=True, exist_ok=True)
+    pin.write_text(str(os.getpid()), encoding="utf-8")
+    try:
+        yield
+    finally:
+        pin.unlink(missing_ok=True)
+
+
+def cancel_marker(job):
+    """The file whose existence cancels the deploy run with this job id (the portal's cancel writes it)."""
+    if not re.fullmatch(r"[0-9a-f]{8,64}", str(job)):
+        raise RecipeError(f"deploy job id {job!r}: expected hex")
+    return runtime_dir() / "deploy-cancel" / str(job)
 
 
 def load_inputs(digest):
@@ -737,30 +759,58 @@ def _table(table):
     return {k: v for k, v in table.items() if k != "state"}
 
 
-def deploy(digest, stop=(), *, source=None, orchestrate=None, approval=None):
+def deploy(digest, stop=(), *, source=None, orchestrate=None, approval=None, job=None):
     """The switch as one operation: launch exactly the planned snapshot ``digest`` after stopping the reviewed running
     profiles ``stop``. Everything that can refuse deterministically is checked BEFORE anything is stopped: the snapshot
     (manifest digest and every file), the running set (must equal ``stop``), the profile/node/router checks and the
     recipe decision + RTX plan on fresh facts. Then each listed profile is stopped and `up` runs on the snapshot (its
     configuration copy, its launch intent)."""
     from .. import orchestrate as default_orchestrate
-    from . import commands, launch
     orchestrate = orchestrate or default_orchestrate
+    marker = cancel_marker(job) if job else None
+
+    def cancelled():
+        return marker is not None and marker.exists()
+
+    def check():
+        if cancelled():
+            raise RecipeError("deploy cancelled")
+    try:
+        return _deploy(digest, stop, source, orchestrate, approval, cancelled, check)
+    finally:
+        if marker is not None:
+            marker.unlink(missing_ok=True)
+
+
+def _deploy(digest, stop, source, orchestrate, approval, cancelled, check):
+    from .. import orchestrate as default_orchestrate
+    from . import commands, launch
     cluster, intent, options = options_from_inputs(digest)
     profile = intent["profile"]
+    # The launch arguments' own checks (deadline, approval, queue timeout) before anything is stopped.
+    default_orchestrate._approval(intent["deadline_s"], approval)
+    if type(intent["queue_timeout_s"]) is not int or not 60 <= intent["queue_timeout_s"] <= default_orchestrate.MAX_QUEUE_S:
+        raise RecipeError("the snapshot's queue timeout is out of range")
     running = sorted(_states())
     if sorted(set(stop)) != running:
         raise Conflict(f"the running profiles are {', '.join(running) or 'none'}, not the reviewed "
                        f"{', '.join(sorted(set(stop))) or 'none'}: review the switch again")
-    orchestrate.check_launch(cluster, profile, intent["router"], recipe=True)
-    with tempfile.TemporaryDirectory(prefix="hl-recipe-deploy-") as directory:
-        launch.prepare(cluster, profile, options, router=intent["router"], vram_cap_gib=None, state_dir=directory,
-                       source=source or commands.live_source(cluster))
-    stopped = []
-    for name in sorted(set(stop)):
-        stopped.append({"profile": name, "down": orchestrate.down(name)})
-    result = orchestrate.up(cluster, profile, router=intent["router"], deadline_s=intent["deadline_s"],
-                            queue_timeout_s=intent["queue_timeout_s"], approval=approval, recipe=options)
+    with pinned(digest):
+        orchestrate.check_launch(cluster, profile, intent["router"], recipe=True)
+        check()
+        with tempfile.TemporaryDirectory(prefix="hl-recipe-deploy-") as directory:
+            launch.prepare(cluster, profile, options, router=intent["router"], vram_cap_gib=None, state_dir=directory,
+                           source=source or commands.live_source(cluster))
+        stopped = []
+        for name in sorted(set(stop)):
+            check()
+            stopped.append({"profile": name, "down": orchestrate.down(name)})
+        check()
+        # `cancelled` is checked again by up right after it takes ownership of the profile (no gap: a later cancel
+        # stops the launching profile through its own stop marker).
+        result = orchestrate.up(cluster, profile, router=intent["router"], deadline_s=intent["deadline_s"],
+                                queue_timeout_s=intent["queue_timeout_s"], approval=approval, recipe=options,
+                                cancelled=cancelled)
     return {"inputs": digest, "profile": profile, "stopped": stopped, "up": result}
 
 
@@ -950,6 +1000,8 @@ def _existing(root, name):
 def _publish(root, name, data, current):
     """Write data to root/name through an exclusive temporary file, then remove the replaced file if it had another
     spelling."""
+    if current is not None and current.suffix == Path(name).suffix:
+        name = current.name            # same id, other case: keep the file's own spelling (one file, not two)
     handle, temporary = tempfile.mkstemp(prefix=".hl-", suffix=".part", dir=root)
     try:
         with os.fdopen(handle, "wb") as stream:
@@ -961,7 +1013,7 @@ def _publish(root, name, data, current):
     except BaseException:
         Path(temporary).unlink(missing_ok=True)
         raise
-    if current is not None and current.name != name:
+    if current is not None and current.name != name and current.exists() and not os.path.samefile(current, target):
         current.unlink()
     if _key(target.parent) != _key(root):
         raise RecipeError(f"{target}: written outside {root}")
@@ -1170,6 +1222,7 @@ def save_receipt(cluster, name, text, *, replace=None):
         raise RecipeError(f"receipt {name}: larger than 64 KiB")
     with runtime_lock():
         root = _plain_dir(receipts_dir())
+        _check_overlap(cluster, root)
         current = _existing(root, name)
         _check_replace(current, replace, f"receipt {name}")
         target = _publish(root, name + ".json", data, current)
@@ -1228,7 +1281,7 @@ OPERATIONS = {
                                "replace": ("--replace", "string")}),
     "save-receipt": (("name",), {"replace": ("--replace", "string")}),
     "delete-layer": (("name",), {"sha256": ("--sha256", "string")}),
-    "deploy": (("inputs",), {"stop": ("--stop", "strings")}),
+    "deploy": (("inputs",), {"stop": ("--stop", "strings"), "job": ("--job", "string")}),
 }
 # Positionals that may be "-": the recipe text comes on stdin (the portal's draft checks and text saves).
 STDIN = {"validate": "recipe", "explain": "recipe", "save": "text", "save-layer": "text", "save-receipt": "text"}

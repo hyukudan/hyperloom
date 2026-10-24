@@ -234,14 +234,17 @@ def child(argv, *, stdin=None, end, cancelled=lambda: False, track=lambda key, w
             buffer.extend(chunk)
     readers = [threading.Thread(target=drain, args=(worker.process.stdout, out, STDOUT_CAP), daemon=True),
                threading.Thread(target=drain, args=(worker.process.stderr, err, STDERR_CAP), daemon=True)]
+    def feed():
+        try:
+            if stdin is not None:
+                worker.process.stdin.write(stdin)
+            worker.process.stdin.close()
+        except (OSError, ValueError):
+            pass                      # the child exited or was stopped: its output says what happened
+    # stdin is written on its own thread, so the deadline, cancellation and caps below supervise it too.
+    readers.append(threading.Thread(target=feed, daemon=True))
     for reader in readers:
         reader.start()
-    try:
-        if stdin is not None:
-            worker.process.stdin.write(stdin)
-        worker.process.stdin.close()
-    except OSError:
-        pass
     why = None
     try:
         while worker.process.poll() is None:

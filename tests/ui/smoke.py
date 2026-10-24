@@ -576,6 +576,8 @@ def recipes_walkthrough(client, server):
     field(minimum, "-5")
     wait(f"(() => {{ const el = document.querySelector('[data-path=\"{minimum}\"]'); const e = document.getElementById(el.id + '-error'); "
          "return !!e && /outside/.test(e.textContent) && el.getAttribute('aria-describedby').includes(e.id); })()")
+    if not client.evaluate("document.querySelector('[data-recipe-action=plan]').disabled"):
+        raise AssertionError("recipes walkthrough: an invalid field must block the preview")
     field(minimum, "1024")
     field(maximum, "10")
     wait("[...document.querySelectorAll('main .field-error')].some(e => /refused|prompt_tokens/.test(e.textContent))")

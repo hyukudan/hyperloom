@@ -364,7 +364,7 @@
     const panel = $("job-panel"), job = state.job;
     panel.hidden = !job;
     if (!job) return;
-    panel.innerHTML = `<div class="row"><b>${esc(job.action || "Action")} · ${statusPill(job.state || job.status)}</b><span class="mono">${esc(job.id || job.job || "")}</span>${activeJob() && job.action === "up" ? button("Cancel start now", "cancel") : ""}${activeJob() ? button("Stop profile now", "stop", {style: "dan"}) : ""}</div><p>${display(job.progress, "waiting for progress")}</p>${job.error ? `<p class="field-error">${display(job.error)}</p><a class="btn" href="#/logs">View logs</a>` : ""}${job.result != null ? `<details><summary>Result (redacted)</summary><pre class="raw">${esc(JSON.stringify(job.result, null, 2))}</pre></details>` : ""}`;
+    panel.innerHTML = `<div class="row"><b>${esc(job.action || "Action")} · ${statusPill(job.state || job.status)}</b><span class="mono">${esc(job.id || job.job || "")}</span>${activeJob() && ["up", "recipes/deploy"].includes(job.action) ? button("Cancel start now", "cancel") : ""}${activeJob() ? button("Stop profile now", "stop", {style: "dan"}) : ""}</div><p>${display(job.progress, "waiting for progress")}</p>${job.error ? `<p class="field-error">${display(job.error)}</p><a class="btn" href="#/logs">View logs</a>` : ""}${job.result != null ? `<details><summary>Result (redacted)</summary><pre class="raw">${esc(JSON.stringify(job.result, null, 2))}</pre></details>` : ""}`;
   }
   async function request(endpoint, options = {}) {
     const response = await fetch(api + endpoint, {cache: "no-store", credentials: "same-origin", ...options});
@@ -543,7 +543,7 @@
     const current = state.dialog?.profile || state.job?.arguments?.profile || profileId(selected());
     if (state.dialog) closeDialog();
     if (!current && !state.job?.id) { announce("No profile selected to stop."); return; }
-    try { await mutate(cancel ? "cancel" : "down", cancel && state.job?.action === "up" ? {job: state.job.id || state.job.job} : {profile: current}, true); }
+    try { await mutate(cancel ? "cancel" : "down", cancel && ["up", "recipes/deploy"].includes(state.job?.action) ? {job: state.job.id || state.job.job} : {profile: current}, true); }
     catch (error) { announce(error.message); }
   }
   function download(name, text, mime = "application/json") {

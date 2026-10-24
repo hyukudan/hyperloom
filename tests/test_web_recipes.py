@@ -223,6 +223,14 @@ class RunnerTests(unittest.TestCase):
             status, document = recipe_web.document("validate", [], result, now=0)
             self.assertEqual((status, document["error"]), (200, "refusé ✓"))
 
+    def test_stdin_is_supervised_too(self):
+        # A child that never reads its stdin cannot hold the request past its deadline.
+        with mock.patch.object(recipe_web, "COMMAND", self.script("import time; time.sleep(30)")):
+            started = time.monotonic()
+            result = recipe_web.Runner().run([], stdin=b"x" * (4 * 1024 * 1024), deadline_s=1)
+        self.assertEqual(result.why, "deadline")
+        self.assertLess(time.monotonic() - started, 15)
+
     def test_whole_tree_is_removed(self):
         with tempfile.TemporaryDirectory() as directory:
             beat = Path(directory) / "beat"
@@ -304,6 +312,27 @@ class JobTests(unittest.TestCase):
                 job = self.wait(self.api.mutate("recipes/deploy", {"inputs": digest}))
         self.assertEqual(job["state"], "succeeded", job["error"])
         self.assertEqual(self.orch.up.call_args.kwargs["recipe"].digest, digest)
+        # Cancel during the switch: nothing more is stopped or started, and the target gets its stop marker.
+        gate = threading.Event()
+        original = launch.prepare
+
+        def slow_prepare(*a, **kw):
+            gate.wait(30)
+            return original(*a, **kw)
+        with mock.patch.object(render, "router_policies", return_value=("routes",)),                 mock.patch.object(commands, "live_source", return_value=self.source),                 mock.patch.object(launch, "prepare", side_effect=slow_prepare):
+            self.orch.up.reset_mock()
+            running = self.api.mutate("recipes/deploy", {"inputs": digest})
+            cancelled = self.wait(self.api.mutate("cancel", {"job": running["job"]}))
+            self.assertEqual(cancelled["state"], "succeeded", cancelled["error"])
+            self.assertEqual(self.orch.down.call_args.args, ("ds41-rtx",))
+            gate.set()
+            finished = self.wait(running)
+        self.assertIn("deploy cancelled", finished["error"])
+        self.orch.up.assert_not_called()
+        # The API forwards every up argument to the CLI, which refuses what a snapshot launch does not take.
+        bound = self.wait(self.api.mutate("up", {"recipe_inputs": digest, "node": ["halo-1"],
+                                                 "recipe_set": ["limits.host_free_ram_floor_gib=1"]}))
+        self.assertIn("planned snapshot as it is", bound["error"])
         missing = self.wait(self.api.mutate("recipes/deploy", {"inputs": "0" * 64}))
         self.assertIn("no snapshot", missing["error"])
         with self.assertRaises(APIError):

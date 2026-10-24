@@ -617,7 +617,7 @@ def check_launch(cluster, profile, router="local", nodes=None, *, diagnostics=No
 
 
 def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s=1140, approval=None, queue_timeout_s=3600,
-       diagnostics=None, vram_cap_gib=None, recipe=None):
+       diagnostics=None, vram_cap_gib=None, recipe=None, cancelled=None):
     _approval(deadline_s, approval)
     if type(queue_timeout_s) is not int or not 60 <= queue_timeout_s <= MAX_QUEUE_S:
         raise ValueError(f"queue timeout must be 60..{MAX_QUEUE_S} seconds")
@@ -668,6 +668,9 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
         if path.exists():
             raise OrchestrationError("profile has saved running state; run down before up")
         path.with_suffix(".stop").unlink(missing_ok=True)
+        if cancelled is not None and cancelled():
+            # A switch (recipe deploy) cancelled while this launch was being handed over: start nothing.
+            raise OrchestrationError("profile stop requested")
         owned = True
         handlers.enter_context(_up_handlers(path))
         _write(path, state)

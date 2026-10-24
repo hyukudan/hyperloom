@@ -411,9 +411,14 @@ def up_command(args, *, orchestrate=None, load_cluster=None):
     elif any((args.recipe_profile, args.recipe_overrides, args.recipe_set, args.recipe_dir, args.recipe_workload)):
         raise ValueError("--recipe-profile/--recipe-overrides/--recipe-set/--recipe-dir/--recipe-workload need "
                          "--recipe")
-    return orchestrate.up(cluster, args.profile, router=args.router, nodes=args.node, devices=args.device,
-                          deadline_s=args.deadline, approval=approval, queue_timeout_s=args.queue_timeout,
-                          diagnostics=args.diagnostic, vram_cap_gib=args.vram_cap_gib, recipe=recipe)
+    launch = lambda: orchestrate.up(cluster, args.profile, router=args.router, nodes=args.node,  # noqa: E731
+                                    devices=args.device, deadline_s=args.deadline, approval=approval,
+                                    queue_timeout_s=args.queue_timeout, diagnostics=args.diagnostic,
+                                    vram_cap_gib=args.vram_cap_gib, recipe=recipe)
+    if recipe is not None and recipe.digest:
+        with _module("hyperloom.recipes.service").pinned(recipe.digest):
+            return launch()
+    return launch()
 
 
 def build_parser(parser_class=argparse.ArgumentParser):
@@ -659,6 +664,7 @@ def build_parser(parser_class=argparse.ArgumentParser):
     deploy.add_argument("inputs", help="the `inputs` digest `hyperloom recipe plan` printed")
     deploy.add_argument("--stop", action="append", default=[], metavar="PROFILE",
                         help="a running profile to stop first (repeatable; must be exactly the running set)")
+    deploy.add_argument("--job", help="a hex id; the file <config dir>/run/deploy-cancel/ID cancels this deploy")
     deploy.add_argument("--approval-ref")
     deploy.add_argument("--approval-lease", type=int)
     deploy.add_argument("--approval-end")

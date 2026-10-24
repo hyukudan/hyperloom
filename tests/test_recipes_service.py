@@ -197,7 +197,12 @@ class WriteTests(unittest.TestCase):
             saved = service.save(None, "Case.Id", text=copy_of(QWEN, "case"))
             with self.assertRaisesRegex(service.Conflict, "exists: pass its sha256"):
                 service.save(None, "case.id", text=copy_of(QWEN, "case"))
-            self.assertTrue(service.save(None, "case.id", text=copy_of(QWEN, "case"), replace=saved["sha256"])["replaced"])
+            new_text = copy_of(QWEN, "case") + "\n# replaced through another case\n"
+            replaced = service.save(None, "case.id", text=new_text, replace=saved["sha256"])
+            self.assertTrue(replaced["replaced"])
+            files = [p for p in service.user_dir().iterdir() if p.stem.casefold() == "case.id"]
+            self.assertEqual(len(files), 1)                                    # one file, still there
+            self.assertEqual(files[0].read_text(encoding="utf-8"), new_text)
 
     @unittest.skipIf(os.name == "nt" and not hasattr(os, "symlink"), "no symlinks")
     def test_link_and_overlapping_user_directories_are_refused(self):
@@ -293,6 +298,16 @@ class WriteTests(unittest.TestCase):
             with self.assertRaisesRegex(RecipeError, "needs"):
                 service.save_receipt(None, "bad", json.dumps({"host": "x"}))
 
+    def test_receipts_never_write_into_a_read_only_source(self):
+        with isolated() as env:
+            doc = json.loads(env.config.read_text())
+            service.receipts_dir().mkdir(parents=True)
+            doc["pc"]["recipe_dirs"] = [str(service.receipts_dir())]
+            env.config.write_text(json.dumps(doc))
+            receipt = {"disk_read_gbytes_ps": 6.1, "method": "direct", "host": "halo-1", "path": "/m.gguf"}
+            with self.assertRaisesRegex(RecipeError, "overlaps the configured directory"):
+                service.save_receipt(orchestrate.load_cluster(env.config), "x", json.dumps(receipt))
+
 
 class SnapshotTests(unittest.TestCase):
     def test_layout_digest_and_immutability(self):
@@ -350,6 +365,13 @@ class SnapshotTests(unittest.TestCase):
                 service.launch_inputs(None, service.locate(QWEN), session.Layers(), intent={"profile": "c"})
             self.assertFalse((service.runtime_dir() / "recipe-inputs" / old).exists())
             self.assertTrue((service.runtime_dir() / "recipe-inputs" / kept).exists())
+            # A launch in progress pins its snapshot (its state does not name it yet).
+            busy = service.launch_inputs(None, service.locate(QWEN), session.Layers(), intent={"profile": "d"})
+            os.utime(service.runtime_dir() / "recipe-inputs" / busy, (stale, stale))
+            with service.pinned(busy), mock.patch.object(service, "MAX_SNAPSHOTS", 0):
+                service.launch_inputs(None, service.locate(QWEN), session.Layers(), intent={"profile": "e"})
+                self.assertTrue((service.runtime_dir() / "recipe-inputs" / busy).exists())
+            self.assertFalse((service.runtime_dir() / "recipe-inputs" / f"{busy}.pin").exists())
 
 
 class PlanDeployTests(unittest.TestCase):
@@ -402,6 +424,7 @@ class PlanDeployTests(unittest.TestCase):
                     env.config.write_text(env.config.read_text().replace("18601", "18602"))   # config edited later
                     result = service.deploy(digest, ["qwen-replicas"], source=source, orchestrate=fake)
             fake.down.assert_called_once_with("qwen-replicas")
+            self.assertIsNotNone(fake.up.call_args.kwargs["cancelled"])
             launched_cluster, profile = fake.up.call_args.args
             self.assertEqual(profile, "ds41-rtx")
             self.assertIn('"port": 18601', json.dumps(launched_cluster.raw))                    # the snapshot's config
@@ -429,6 +452,66 @@ class PlanDeployTests(unittest.TestCase):
                 code, _, err = run_cli("up", "--recipe", "glm-5.3-flash.lab", "--config", str(env.config))
             self.assertIn("pending", err)
             up.assert_not_called()
+
+
+class DeployRefusalTests(unittest.TestCase):
+    def setUp(self):
+        self.context = isolated()
+        self.env = self.context.__enter__()
+        self.addCleanup(self.context.__exit__, None, None, None)
+        self.source = session.saved_source(self.env.save_facts("f", "deepseek-v4.1-flash", "ds41-rtx"))
+        user_ds()
+        with mock.patch.object(render, "router_policies", return_value=("routes",)):
+            self.digest = service.plan(orchestrate.load_cluster(self.env.config), "ds-user", "ds41-rtx",
+                                       source=self.source)["inputs"]
+        self.fake = mock.Mock(wraps=orchestrate)
+        self.fake.down.return_value = {}
+        self.fake.up.return_value = {}
+        patcher = mock.patch.object(service, "_states", return_value={"qwen-replicas": {"profile": "qwen-replicas"}})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def deploy(self, **kw):
+        with mock.patch.object(render, "router_policies", return_value=("routes",)):
+            return service.deploy(self.digest, ["qwen-replicas"], source=self.source, orchestrate=self.fake, **kw)
+
+    def test_bad_approval_refuses_before_stopping(self):
+        approval = {"ref": "x", "lease_s": 1, "end_epoch": time.time() + 600}
+        with self.assertRaisesRegex(ValueError, "approval needs"):
+            self.deploy(approval=approval)
+        self.fake.down.assert_not_called()
+
+    def test_cancel_before_any_stop_and_before_the_launch(self):
+        job = "ab12cd34"
+        marker = service.cancel_marker(job)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+        with self.assertRaisesRegex(RecipeError, "deploy cancelled"):
+            self.deploy(job=job)
+        self.fake.down.assert_not_called()
+        self.fake.down.side_effect = lambda name: marker.touch() or {}      # cancelled while stopping
+        with self.assertRaisesRegex(RecipeError, "deploy cancelled"):
+            self.deploy(job=job)
+        self.fake.up.assert_not_called()
+        self.assertFalse(marker.exists())
+        # Cancelled during the hand-over: up gets the check and starts nothing.
+        self.fake.down.side_effect = None
+        self.fake.up.side_effect = lambda *a, **kw: kw["cancelled"]() and (_ for _ in ()).throw(
+            orchestrate.OrchestrationError("profile stop requested"))
+        self.fake.down.side_effect = lambda name: {}
+        marker.touch()
+        marker.unlink()
+        self.deploy(job=job)                                                    # not cancelled: launches
+        self.fake.up.assert_called_once()
+
+    def test_up_honors_cancel_right_after_taking_the_profile(self):
+        cluster = orchestrate.load_cluster(self.env.config)
+        with mock.patch.object(orchestrate, "check_launch", side_effect=orchestrate.check_launch) as checks, \
+                mock.patch.object(orchestrate, "_start_up_watch") as watch:
+            with self.assertRaisesRegex(Exception, "stop requested"):
+                orchestrate.up(cluster, "qwen-replicas", cancelled=lambda: True)
+        watch.assert_not_called()                                               # nothing started
+        self.assertFalse(orchestrate._state_path("qwen-replicas").exists())
 
 
 class RunningTests(unittest.TestCase):

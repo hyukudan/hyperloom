@@ -1000,18 +1000,21 @@ class API:
         try:
             if action == "recipes/probe":
                 service.argv("probe", arguments, config=self.config_path)
+            elif "_job" in arguments:
+                raise ValueError("unknown arguments: _job")
             else:
                 self._deploy_argv(arguments)
         except ValueError as exc:
             raise APIError(str(exc)) from exc
         return dict(arguments)
 
-    def _deploy_argv(self, args):
+    def _deploy_argv(self, args, job=None):
         from hyperloom.recipes import service
-        allowed = {"inputs", "stop", "approval_ref", "approval_lease", "approval_end"}
+        allowed = {"inputs", "stop", "approval_ref", "approval_lease", "approval_end", "_job"}   # _job: set by mutate
         if not isinstance(args, dict) or set(args) - allowed:
             raise ValueError("unknown arguments")
-        argv = service.argv("deploy", {k: args[k] for k in ("inputs", "stop") if k in args}, config=self.config_path)
+        argv = service.argv("deploy", {**{k: args[k] for k in ("inputs", "stop") if k in args},
+                                       **({"job": job} if job else {})}, config=self.config_path)
         for key, flag in (("approval_ref", "--approval-ref"), ("approval_lease", "--approval-lease"),
                           ("approval_end", "--approval-end")):
             if key in args:
@@ -1029,20 +1032,24 @@ class API:
         argv = ["up"] + ([args["profile"]] if args.get("profile") else [])
         argv += ["--config", str(Path(args.get("config", self.config_path))), "--router", args.get("router", "local"),
                  "--deadline", str(args.get("deadline", 1140))]
+        # Every accepted argument goes to the CLI, which refuses the combinations it does not allow.
+        for key, flag in (("node", "--node"), ("device", "--device")):
+            if args.get(key):
+                argv += [flag, *args[key]]
         if args.get("recipe_inputs"):
             argv += ["--recipe-inputs", args["recipe_inputs"]]
-        else:
+        if args.get("recipe"):
             argv += ["--recipe", args["recipe"]]
-            for item in args.get("recipe_set") or []:
-                argv += ["--recipe-set", item]
-            for item in args.get("recipe_overrides") or []:
-                argv += ["--recipe-overrides", str(service._named("recipe_overrides", item, service.layers_dir(),
-                                                                  service._suffix_of(item)))]
-            if args.get("recipe_profile"):
-                argv += ["--recipe-profile", str(service._named("recipe_profile", args["recipe_profile"],
-                                                                service.layers_dir(), service._suffix_of(args["recipe_profile"])))]
-            if args.get("recipe_workload"):
-                argv += ["--recipe-workload", args["recipe_workload"]]
+        for item in args.get("recipe_set") or []:
+            argv += ["--recipe-set", item]
+        for item in args.get("recipe_overrides") or []:
+            argv += ["--recipe-overrides", str(service._named("recipe_overrides", item, service.layers_dir(),
+                                                              service._suffix_of(item)))]
+        if args.get("recipe_profile"):
+            argv += ["--recipe-profile", str(service._named("recipe_profile", args["recipe_profile"],
+                                                            service.layers_dir(), service._suffix_of(args["recipe_profile"])))]
+        if args.get("recipe_workload"):
+            argv += ["--recipe-workload", args["recipe_workload"]]
         for key, flag in (("approval_ref", "--approval-ref"), ("approval_lease", "--approval-lease"),
                           ("approval_end", "--approval-end")):
             if key in args:
@@ -1053,7 +1060,7 @@ class API:
         if action == "up" and (args.get("recipe") or args.get("recipe_inputs")):
             return [sys.executable, "-m", "hyperloom", *self._recipe_up_argv(args)]
         if action == "recipes/deploy":
-            return [sys.executable, "-m", "hyperloom", *self._deploy_argv(args)]
+            return [sys.executable, "-m", "hyperloom", *self._deploy_argv(args, job=args.get("_job"))]
         argv = [sys.executable, "-m", "hyperloom", action, args["profile"]]
         if action in ("up", "install"):
             argv += ["--config", str(Path(args.get("config", self.config_path)))]
@@ -1111,7 +1118,8 @@ class API:
             return self._run_detached(action, args)
         if action == "recipes/deploy" or recipe_up:
             # In process (tests): the CLI's parser and the very function the CLI runs.
-            argv = self._deploy_argv(args) if action == "recipes/deploy" else self._recipe_up_argv(args)
+            argv = (self._deploy_argv(args, job=args.get("_job")) if action == "recipes/deploy"
+                    else self._recipe_up_argv(args))
             parsed = cli.build_parser(recipe_web.RaisingParser).parse_args(argv)
             if self.detached:
                 return self._run_detached(action, args)
@@ -1120,7 +1128,7 @@ class API:
             from hyperloom.recipes import commands, service
             service.use_config(parsed.config)
             return service.deploy(parsed.inputs, parsed.stop, orchestrate=self.orchestrate,
-                                  approval=commands._approval(parsed))
+                                  approval=commands._approval(parsed), job=parsed.job)
         if self.detached and action in ("up", "down", "install"):
             if action in ("up", "install"):
                 cluster = self.orchestrate.load_cluster(Path(args.get("config", self.config_path)), config)
@@ -1133,8 +1141,10 @@ class API:
             if args.get("job"):
                 with self._job_lock:
                     job = self._jobs.get(args["job"])
-                    if not job or job["action"] != "up":
-                        raise APIError("only an up job can be cancelled; use down with a profile")
+                    if not job or job["action"] not in ("up", "recipes/deploy"):
+                        raise APIError("only an up or a recipes/deploy job can be cancelled; use down with a profile")
+                    if job["action"] == "recipes/deploy":
+                        return self._cancel_deploy(job)
                     profile = job["arguments"]["profile"]
             return self.orchestrate.down(profile)
         if action == "down":
@@ -1182,6 +1192,20 @@ class API:
         self.remote.KnownHosts(self.orchestrate._known_hosts()).pin(mid, machine.http_address, machine.ssh_port, match)
         return {"machine": mid, "pinned": match.sha256_fingerprint, "algorithm": match.algorithm}
 
+    def _cancel_deploy(self, job):
+        """Cancel a switch at any step: its marker stops it before the next stop or the launch hand-over; the target
+        profile's own stop marker stops a launch already under way."""
+        from hyperloom.recipes import service
+        service.use_config(self.config_path)
+        marker = service.cancel_marker(job["job"])
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+        try:
+            profile = service.load_inputs(job["arguments"]["inputs"])[1]["intent"]["profile"]
+        except service.RecipeError:
+            return {"cancelled": job["job"], "stopped": None}
+        return {"cancelled": job["job"], "stopped": self.orchestrate.down(profile)}
+
     def mutate(self, action, arguments):
         try:
             arguments = self._arguments(action, arguments)
@@ -1208,6 +1232,8 @@ class API:
                 if self._jobs[old]["state"] != "running":
                     del self._jobs[old]
             response = dict(job)
+        if action == "recipes/deploy":
+            arguments = dict(arguments, _job=jid)    # the deploy's cancel marker is named by its job
         def run():
             try:
                 result = self._execute(action, arguments)

@@ -250,7 +250,7 @@ def _dispatch(cluster, args, service):
         return service.save_layer(cluster, args.name, args.recipe, [reader.parse_set(s) for s in args.set or []],
                                   text=text, replace=args.replace), True
     if args.operation == "deploy":
-        return service.deploy(args.inputs, args.stop, approval=_approval(args)), True
+        return service.deploy(args.inputs, args.stop, approval=_approval(args), job=args.job), True
     if args.operation == "save-receipt":
         return service.save_receipt(cluster, args.name, _read_source(args.from_file), replace=args.replace), True
     if args.operation == "delete-layer":
