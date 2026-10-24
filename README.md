@@ -331,6 +331,8 @@ Experts from the published Q2 GGUF; dense layers trellis mix-B over a 6.5-bit ov
 
 Every phase ends with unit and hygiene tests green and its acceptance tests passed. GPU acceptance runs are short, bounded leases; performance thresholds are compared in interleaved rounds against the same binary, not against historical numbers. The full plan, acceptance tests and component requests are in [docs/SPEC.md](docs/SPEC.md).
 
+CI (`.github/workflows/ci.yml`) needs one repository secret, `TENSORMELD_TOKEN`: create a fine-grained, read-only token (Contents: read) for the tensormeld repository only. Without it the submodule fetch fails with that message. `tools/ci-docker.sh` runs the Linux jobs in local Docker images.
+
 ## Security
 
 - **Local control plane.** The portal listens on `127.0.0.1` only and accepts only a matching `Host` (no DNS rebinding). GET is read-only; every mutation is a JSON `POST` with a per-launch CSRF header and a matching `Origin`; there are no CORS headers. Negative tests cover each rule.

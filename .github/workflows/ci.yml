@@ -24,14 +24,18 @@ jobs:
         os: [ubuntu-latest, windows-latest]
         python: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
           persist-credentials: false
       # Only the router parser is imported by the tests; the engine and trellis
-      # sources are built on the nodes, never here.
+      # sources are built on the nodes, never here. TensorMeld is private: the
+      # read-only TENSORMELD_TOKEN secret is passed to this step only.
       - name: Fetch the pinned TensorMeld submodule
-        run: git submodule update --init --depth 1 third_party/tensormeld
-      - uses: actions/setup-python@v5
+        shell: bash
+        env:
+          TENSORMELD_TOKEN: ${{ secrets.TENSORMELD_TOKEN }}
+        run: bash tools/ci-fetch-tensormeld.sh
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: ${{ matrix.python }}
       - name: Unit tests (no GPU, no network, no ssh)
@@ -42,10 +46,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.10"
       # hyperloom-node runs on the nodes' system python3 (>= 3.10).
@@ -66,15 +70,17 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
           persist-credentials: false
           # A path with spaces, as the install acceptance requires.
           path: "hyper loom src"
       - name: Fetch the pinned TensorMeld submodule
         working-directory: "hyper loom src"
-        run: git submodule update --init --depth 1 third_party/tensormeld
-      - uses: actions/setup-python@v5
+        env:
+          TENSORMELD_TOKEN: ${{ secrets.TENSORMELD_TOKEN }}
+        run: bash tools/ci-fetch-tensormeld.sh
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: "3.11"
       - name: Windows installer
