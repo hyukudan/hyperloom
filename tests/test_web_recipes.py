@@ -301,6 +301,16 @@ class JobTests(unittest.TestCase):
         with self.assertRaises(APIError):
             self.api.mutate("up", {"recipe": "ds-user", "recipe_overrides": ["../x.json"]})
 
+    def test_detached_stop_cancels_a_running_switch(self):
+        # The portal runs detached: `down` goes to its own CLI process, and still cancels the switch first.
+        self.api.detached = True
+        self.api._jobs["s1"] = {"job": "ab12cd34", "action": "recipes/deploy", "state": "running",
+                                "arguments": {"inputs": "0" * 64}}
+        with mock.patch.object(self.api, "_run_detached", return_value={"state": "stopped"}) as detached,                 mock.patch.object(self.api, "_cancel_deploy") as cancel:
+            self.api._execute("down", {"profile": "qwen-replicas"})
+        cancel.assert_called_once()
+        detached.assert_called_once()
+
     def test_deploy_job_binds_the_planned_snapshot(self):
         with mock.patch.object(render, "router_policies", return_value=("routes",)):
             cluster = orchestrate.load_cluster(self.env.config)
