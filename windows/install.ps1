@@ -56,7 +56,7 @@ function Test-HyperloomRelease {
     $sha = [System.Security.Cryptography.SHA256]::Create()
     foreach ($file in Get-ChildItem -LiteralPath $Root -Recurse -File -Force) {
         $relative = $file.FullName.Substring($rootPath.Length).Replace('\', '/')
-        if ($relative -eq 'RELEASE.json' -or $relative.StartsWith('wheels/')) { continue }
+        if ($relative -eq 'RELEASE.json') { continue }
         if (-not $expected.ContainsKey($relative)) { throw "File not in RELEASE.json: $relative" }
         # .NET directly: Get-FileHash is missing when PSModulePath points at another PowerShell.
         $stream = [System.IO.File]::OpenRead($file.FullName)
@@ -64,7 +64,8 @@ function Test-HyperloomRelease {
         if ($hash -ne $expected[$relative]) { throw "sha256 mismatch: $relative" }
         $seen++
     }
-    $listed = @($expected.Keys | Where-Object { -not $_.StartsWith('wheels/') }).Count
+    # Bundled wheels are verified like every other file: pip installs them from the verified copy.
+    $listed = $expected.Count
     if ($seen -ne $listed) { throw "Release is incomplete: $seen of $listed files present." }
     return $manifest
 }
@@ -144,9 +145,10 @@ if (Test-Path -LiteralPath (Join-Path $repository 'RELEASE.json')) {
     $venv = Join-Path $base 'venv'
 }
 $venvPython = Join-Path $venv 'Scripts\python.exe'
-$wheels = Join-Path $repository 'wheels'
+# Release mode installs only from the verified copy (wheels included), never from the extracted archive.
+$wheels = Join-Path $source 'wheels'
 $pipArguments = @('-m', 'pip', 'install')
-if (Test-Path -LiteralPath $wheels -PathType Container) {
+if (Test-Path -LiteralPath (Join-Path $repository 'wheels') -PathType Container) {
     $pipArguments += @('--no-index', '--find-links', $wheels)
 }
 $pipArguments += @((Join-Path $source 'third_party\tensormeld'), '-e', $source)
@@ -164,8 +166,7 @@ if ($PSCmdlet.ShouldProcess($base, 'Create venv, install TensorMeld and hyperloo
         } else {
             $staging = "$source.$PID.tmp"
             New-Item -ItemType Directory -Path $staging -Force | Out-Null
-            Get-ChildItem -LiteralPath $repository -Force | Where-Object { $_.Name -ne 'wheels' } |
-                Copy-Item -Destination $staging -Recurse -Force
+            Get-ChildItem -LiteralPath $repository -Force | Copy-Item -Destination $staging -Recurse -Force
             Test-HyperloomRelease -Root $staging | Out-Null
             Move-Item -LiteralPath $staging -Destination $source
         }

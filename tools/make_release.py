@@ -9,8 +9,13 @@ engine and strix-trellis are built on the nodes from their pinned SHAs; add
     python tools/make_release.py [--out dist] [--wheels] [--node-sources]
 
 Writes <name>.zip (Windows), <name>.tar.gz (Linux) and SHA256SUMS, where
-<name> is hyperloom-<version>-g<12-hex commit>. Archives are reproducible:
-sorted entries, the commit time as every mtime, fixed modes.
+<name> is hyperloom-<version>-g<12-hex commit>. The release tree and
+RELEASE.json are reproducible from the commit: sorted entries, the commit time
+as every mtime, fixed modes, and git archive with fixed line-ending settings
+(TensorMeld's `* text=auto` has no eol, so the local core.autocrlf would
+otherwise decide). The .zip and .tar.gz bytes are reproducible only with the
+same toolchain: deflate level 9 output depends on the Python/zlib build, so
+compare RELEASE.json (the per-file sha256) across machines, not SHA256SUMS.
 """
 
 import argparse
@@ -33,6 +38,8 @@ SCHEMA = "hyperloom/release-v1"
 COMPONENTS = ("tensormeld", "engine", "strix-trellis")
 # Executable inside the release (git tracks no mode bits on Windows checkouts).
 EXECUTABLE = {"node/hyperloom-node", "node/build-node.sh", "tools/make_release.py", "tools/ci-docker.sh"}
+# git archive applies text/eol conversion; pin it so a Windows core.autocrlf=true cannot add CRLF.
+ARCHIVE = ("-c", "core.autocrlf=false", "-c", "core.eol=lf", "archive")
 
 
 def git(*args, cwd=ROOT, binary=False):
@@ -115,31 +122,35 @@ def main(argv=None):
                         help="bundle setuptools and wheel for an offline pip install (needs PyPI now)")
     parser.add_argument("--node-sources", action="store_true",
                         help="add git archives of the pinned engine and strix-trellis under sources/")
-    parser.add_argument("--allow-dirty", action="store_true", help="for testing only; the name gets +dirty")
+    parser.add_argument("--allow-dirty", action="store_true",
+                        help="build from HEAD although the checkout has uncommitted changes (they are NOT included)")
     args = parser.parse_args(argv)
     dirty = git("status", "--porcelain", "--untracked-files=no", "--ignore-submodules=dirty")
     if dirty and not args.allow_dirty:
         raise SystemExit("the checkout has uncommitted changes:\n" + dirty)
+    if dirty:
+        # The archive is exactly HEAD, so it is named after HEAD; the changes are left out.
+        print("warning: uncommitted changes are not in the release; it contains HEAD only", file=sys.stderr)
     commit = git("rev-parse", "HEAD")
     components = pins()
-    name = f"hyperloom-{version()}-g{commit[:12]}" + ("-dirty" if dirty else "")
+    name = f"hyperloom-{version()}-g{commit[:12]}"
     stamp = int(git("show", "-s", "--format=%ct", "HEAD"))
     args.out.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as temporary:
         tree = Path(temporary) / name
         tree.mkdir()
-        extract(git("archive", "--format=tar", "HEAD", binary=True), tree)
+        extract(git(*ARCHIVE, "--format=tar", "HEAD", binary=True), tree)
         source = ROOT / "third_party" / "tensormeld"
         if not (source / ".git").exists():
             raise SystemExit("run: git submodule update --init --depth 1 third_party/tensormeld")
-        extract(git("archive", "--format=tar", components["tensormeld"], cwd=source, binary=True),
+        extract(git(*ARCHIVE, "--format=tar", components["tensormeld"], cwd=source, binary=True),
                 tree, "third_party/tensormeld")
         if args.node_sources:
             for component in ("engine", "strix-trellis"):
                 checkout = ROOT / "third_party" / component
                 if not (checkout / ".git").exists():
                     raise SystemExit(f"run: git submodule update --init third_party/{component}")
-                data = git("archive", "--format=tar.gz", f"--prefix={component}-{components[component]}/",
+                data = git(*ARCHIVE, "--format=tar.gz", f"--prefix={component}-{components[component]}/",
                            components[component], cwd=checkout, binary=True)
                 target = tree / "sources" / f"{component}-{components[component]}.tar.gz"
                 target.parent.mkdir(exist_ok=True)

@@ -62,12 +62,37 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(modes["hyperloom-0-g000000000000/node/hyperloom-node"], 0o755)
         self.assertEqual(modes["hyperloom-0-g000000000000/README.md"], 0o644)
 
+    def test_git_archive_line_endings_do_not_depend_on_local_config(self):
+        repo = self.directory / "repo"
+        repo.mkdir()
+        env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+
+        def git(*args):
+            return subprocess.run(["git", *args], cwd=repo, env=env, capture_output=True, check=True).stdout
+
+        git("init", "-q")
+        (repo / ".gitattributes").write_bytes(b"* text=auto\n")
+        (repo / "a.txt").write_bytes(b"one\ntwo\n")
+        git("add", "-A")
+        git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "x")
+        git("config", "core.autocrlf", "true")
+        self.assertIn(b"one\r\n", git("archive", "--format=tar", "HEAD"))
+        with tarfile.open(fileobj=io.BytesIO(git(*make_release.ARCHIVE, "--format=tar", "HEAD"))) as archive:
+            self.assertEqual(archive.extractfile("a.txt").read(), b"one\ntwo\n")
+
+    def test_allow_dirty_is_named_after_head(self):
+        source = (ROOT / "tools" / "make_release.py").read_text(encoding="utf-8")
+        self.assertNotIn('"-dirty"', source)
+        self.assertIn("NOT included", source)
+
     @unittest.skipUnless(os.name == "nt", "Windows PowerShell installer")
     def test_installer_verifies_release_before_any_change(self):
         release = self.directory / "hyperloom-0.1.0-g0123456789ab"
         (release / "windows").mkdir(parents=True)
         shutil.copyfile(ROOT / "windows" / "install.ps1", release / "windows" / "install.ps1")
         (release / "README.md").write_text("readme\n", encoding="utf-8")
+        (release / "wheels").mkdir()
+        (release / "wheels" / "w-1-py3-none-any.whl").write_bytes(b"wheel")
         files = {p.relative_to(release).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
                  for p in release.rglob("*") if p.is_file()}
         (release / "RELEASE.json").write_text(json.dumps(
@@ -83,9 +108,20 @@ class ReleaseTests(unittest.TestCase):
 
         result = run()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("verified 2 files", result.stdout)
+        self.assertIn("verified 3 files", result.stdout)
         self.assertIn(str(local / "hyperloom" / "venvs" / release.name), result.stdout)
         self.assertIn("-P -m hyperloom ui", result.stdout)
+        # pip installs from the verified copy, wheels included, never from the extracted archive.
+        line = next(x for x in result.stdout.splitlines() if x.startswith("Pip arguments: "))
+        pip = json.loads(line[len("Pip arguments: "):])
+        copy = local / "hyperloom" / "releases" / release.name
+        self.assertEqual(pip[pip.index("--find-links") + 1], str(copy / "wheels"))
+        self.assertEqual(pip[-1], str(copy))
+        (release / "wheels" / "w-1-py3-none-any.whl").write_bytes(b"tampered")
+        result = run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("sha256 mismatch: wheels/w-1-py3-none-any.whl", result.stdout + result.stderr)
+        (release / "wheels" / "w-1-py3-none-any.whl").write_bytes(b"wheel")
         (release / "README.md").write_text("tampered\n", encoding="utf-8")
         result = run()
         self.assertNotEqual(result.returncode, 0)
