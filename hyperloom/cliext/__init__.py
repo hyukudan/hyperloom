@@ -5,6 +5,7 @@ Each module in MODULES defines ``add(commands)`` (``commands`` is the top-level 
 argv for the same functions, so the CLI and the portal share one code path.
 """
 
+import argparse
 import sys
 
 
@@ -13,6 +14,8 @@ MODULES = ("bench", "telemetry", "observe", "ledger", "usb4", "energy", "health"
 
 
 def add_all(commands):
+    """Add every available CLI family; one whose import or parser setup fails is skipped whole (it is first
+    built against a scratch parser, so a failure never leaves half-registered commands behind)."""
     for name in MODULES:
         full = __name__ + "." + name
         try:
@@ -20,5 +23,19 @@ def add_all(commands):
         except ModuleNotFoundError as exc:
             if exc.name == full:
                 continue
-            raise
-        sys.modules[full].add(commands)
+            print(f"hyperloom: CLI extension {name} unavailable ({exc})", file=sys.stderr)
+            continue
+        except Exception as exc:
+            print(f"hyperloom: CLI extension {name} unavailable ({type(exc).__name__}: {exc})", file=sys.stderr)
+            continue
+        module = sys.modules[full]
+        try:
+            scratch = argparse.ArgumentParser(add_help=False).add_subparsers(dest="command")
+            module.add(scratch)
+            taken = sorted(set(scratch.choices) & set(commands.choices))
+            if taken:
+                raise ValueError("command names already used: " + ", ".join(taken))
+        except Exception as exc:
+            print(f"hyperloom: CLI extension {name} unavailable ({type(exc).__name__}: {exc})", file=sys.stderr)
+            continue
+        module.add(commands)

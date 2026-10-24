@@ -64,6 +64,35 @@ class APIError(ValueError):
 
 
 LOOPBACK_UNAVAILABLE = "unavailable: engine bound to loopback on its node"
+ADMISSION_CAP = 2
+
+
+class JobContext:
+    """Passed to feature jobs: ctx(text) reports progress; ctx.cancelled() after a cancel, a priority stop of an
+    overlapping profile or the deadline (ctx.reason says which); ctx.deadline is a monotonic time."""
+
+    def __init__(self, deadline_s):
+        self.deadline = time.monotonic() + deadline_s
+        self.reason = None
+        self.report = lambda text: None
+        self._event = threading.Event()
+
+    def __call__(self, text):
+        self.report(text)
+
+    def cancel(self, reason):
+        if not self._event.is_set():
+            self.reason = reason
+            self._event.set()
+
+    def cancelled(self):
+        if not self._event.is_set() and time.monotonic() >= self.deadline:
+            self.cancel("deadline reached")
+        return self._event.is_set()
+
+    def wait(self, seconds):
+        """Sleep up to `seconds`, waking early on cancellation; True when cancelled."""
+        return self._event.wait(max(0.0, min(seconds, self.deadline - time.monotonic()))) or self.cancelled()
 
 
 def _binds_loopback(profile, status, cluster):
@@ -86,6 +115,13 @@ def _binds_loopback(profile, status, cluster):
         return False
 
 
+def _numeric(item):
+    """Numbers, arrays of integers, or flat maps of numbers: token counts and token-id arrays, never credentials."""
+    number = lambda v: type(v) in (int, float)
+    return (number(item) or (isinstance(item, list) and all(type(v) is int for v in item))
+            or (isinstance(item, dict) and bool(item) and all(number(v) for v in item.values())))
+
+
 def redact(value):
     """Redact structured secrets and command/log representations of them."""
     if isinstance(value, dict):
@@ -95,7 +131,11 @@ def redact(value):
                 {"storage": "DPAPI", "values": "never shown"},
                 {"storage": "0600 files", "values": "never shown"})
             sensitive = re.search(r"password|secret|token|authorization|api[_-]?key|private[_-]?key", key, re.I)
-            result[key] = "[redacted]" if sensitive and not metadata and not key.endswith(
+            # A key that is only about tokens (token counts, token ids) keeps numeric data; a string under it is
+            # still redacted (it could be a credential).
+            counts = (sensitive and _numeric(item) and not re.search(
+                r"password|secret|authorization|api[_-]?key|private[_-]?key|bearer|csrf", key, re.I))
+            result[key] = "[redacted]" if sensitive and not counts and not metadata and not key.endswith(
                 ("_file", "_path", "_tokens")) else redact(item)
         return result
     if isinstance(value, (list, tuple)):
@@ -318,6 +358,8 @@ class API:
         self._history = deque(maxlen=1800)
         self._counters = {}
         self._recent = {}
+        self._admitted = {}     # job id -> {"resources": set, "context": JobContext} (contract C11)
+        self._features_running = {}     # job id -> JobContext of every running feature job
         self.recipes = recipe_web.Runner()
 
     def _recipe_loader(self, path):
@@ -909,13 +951,13 @@ class API:
         query = query or {}
         if screen == "jobs":
             with self._job_lock:
-                return self._document("jobs", jobs=[dict(job) for job in self._jobs.values()], active=self._active)
+                return redact(self._document("jobs", jobs=[dict(job) for job in self._jobs.values()], active=self._active))
         if screen.startswith("jobs/"):
             with self._job_lock:
                 job = self._jobs.get(screen[5:])
                 if job is None:
                     raise APIError("unknown job", 404)
-                return dict(job)
+                return redact(dict(job))
         if screen not in SCREENS:
             handler, rest = feature_registry.registry().find_get(screen)
             if handler is None:
@@ -993,26 +1035,61 @@ class API:
             self._audit(action, arguments, {"state": "succeeded", "result": document})
         return 200, redact(document)
 
+    def _resources_of_profile(self, profile):
+        """Resource ids a profile occupies (its machines and its router); everything ("*") when unknown."""
+        try:
+            cluster = self._cluster()
+            machines = self.orchestrate._profile(cluster, profile)[2]
+            return {*(str(m) for m in machines), "router"}
+        except Exception:
+            return {"*"}
+
+    @staticmethod
+    def _overlap(a, b):
+        return bool(a & b) or "*" in a or "*" in b
+
     def _feature_job(self, action, arguments):
         spec = feature_registry.registry().jobs[action]
         try:
             if spec.validate is not None:
                 arguments = self._feature_call(spec.validate, arguments)
+            resources = set()
+            if spec.admission:
+                resources = {str(r) for r in self._feature_call(spec.resources, arguments)}
+                if not resources:
+                    raise APIError("an admitted job must name the resources it uses")
         except APIError as exc:
             self._audit(action, arguments, {"state": "refused", "error": str(exc)})
             raise
+        context = JobContext(spec.deadline_s)
         with self._job_lock:
+            refusal = None
             if spec.exclusive and self._active:
-                self._audit(action, arguments, {"state": "refused", "error": "another mutating job is running"})
-                raise APIError("another mutating job is running", 409)
+                refusal = "another mutating job is running"
+            elif spec.admission:
+                if self._active:
+                    refusal = "a deploy, stop or install job is running (" + str(self._jobs[self._active]["action"]) + ")"
+                elif len(self._admitted) >= ADMISSION_CAP:
+                    refusal = f"at most {ADMISSION_CAP} benchmark or demo runs at a time"
+                else:
+                    busy = [jid for jid, held in self._admitted.items() if self._overlap(held["resources"], resources)]
+                    if busy:
+                        refusal = "the target's resources are held by job " + busy[0]
+            if refusal:
+                self._audit(action, arguments, {"state": "refused", "error": refusal})
+                raise APIError(refusal, 409)
             jid = uuid.uuid4().hex
             job = {"job": jid, "id": jid, "action": action, "arguments": redact(arguments),
                    "state": "running", "started_at": self.clock(), "finished_at": None,
-                   "result": None, "error": None, "progress": "starting"}
+                   "result": None, "error": None, "progress": "starting",
+                   "resources": sorted(resources) if spec.admission else None}
             self._audit(action, arguments, {"job": jid, "state": "accepted"})
             self._jobs[jid] = job
             if spec.exclusive:
                 self._active = jid
+            if spec.admission:
+                self._admitted[jid] = {"resources": resources, "context": context}
+            self._features_running[jid] = context
             for old in list(self._jobs):
                 if len(self._jobs) <= 100:
                     break
@@ -1023,23 +1100,38 @@ class API:
         def progress(text):
             with self._job_lock:
                 job["progress"] = redact(str(text))[:500]
+        context.report = progress
 
         def run():
             try:
-                result = spec.run(self, arguments, progress)
-                update = {"state": "succeeded", "result": redact(result), "error": None}
+                result = spec.run(self, arguments, context)
+                update = {"state": "cancelled" if context.cancelled() and result is None else "succeeded",
+                          "result": redact(result), "error": context.reason if context.cancelled() else None}
             except Exception as exc:
-                update = {"state": "failed", "result": None, "error": redact(str(exc))}
+                update = {"state": "cancelled" if context.cancelled() else "failed", "result": None,
+                          "error": redact(str(exc))}
             try:
                 self._audit(action, arguments, {"job": jid, **update})
             except OSError as exc:
-                update = {"state": "failed", "result": update["result"], "error": "audit write failed: " + str(exc)}
+                update = {"state": "failed", "result": update["result"],
+                          "error": redact("audit write failed: " + str(exc))}
             with self._job_lock:
                 job.update(update, finished_at=self.clock(), progress="finished")
                 if self._active == jid:
                     self._active = None
+                self._admitted.pop(jid, None)
+                self._features_running.pop(jid, None)
         threading.Thread(target=run, name="hyperloom-feature-" + jid[:8], daemon=True).start()
         return response
+
+    def _cancel_feature_jobs(self, resources, reason):
+        """Priority stop: cancel admitted jobs whose resources overlap (they clean up and finish)."""
+        with self._job_lock:
+            hits = [(jid, held["context"]) for jid, held in self._admitted.items()
+                    if self._overlap(held["resources"], resources)]
+        for jid, context in hits:
+            context.cancel(reason)
+        return [jid for jid, _ in hits]
 
     def _action_log(self):
         try:
@@ -1258,6 +1350,11 @@ class API:
             if args.get("job"):
                 with self._job_lock:
                     job = self._jobs.get(args["job"])
+                    context = self._features_running.get(args["job"])
+                if context is not None:
+                    context.cancel("cancelled by request")
+                    return {"cancelled": args["job"]}
+                with self._job_lock:
                     if not job or job["action"] not in ("up", "recipes/deploy"):
                         raise APIError("only an up or a recipes/deploy job can be cancelled; use down with a profile")
                     if job["action"] == "recipes/deploy":
@@ -1332,10 +1429,23 @@ class API:
             self._audit(action, arguments, {"state": "refused", "error": str(exc)})
             raise
         priority = action in ("down", "cancel")
+        occupying = action in ("up", "install", "recipes/deploy", "recipes/probe")
+        resources = set()
+        if occupying or action == "down":
+            profile = arguments.get("profile")
+            resources = self._resources_of_profile(profile) if isinstance(profile, str) and profile else {"*"}
+        if action == "down":
+            self._cancel_feature_jobs(resources, "stopped: profile " + str(arguments.get("profile")) + " is going down")
         with self._job_lock:
             if self._active and not priority:
                 self._audit(action, arguments, {"state": "refused", "error": "another mutating job is running"})
                 raise APIError("another mutating job is running", 409)
+            if occupying:
+                busy = [jid for jid, held in self._admitted.items() if self._overlap(held["resources"], resources)]
+                if busy:
+                    message = "a benchmark or demo holds these resources (job " + busy[0] + "); cancel it first"
+                    self._audit(action, arguments, {"state": "refused", "error": message})
+                    raise APIError(message, 409)
             jid = uuid.uuid4().hex
             job = {"job": jid, "id": jid, "action": action, "arguments": redact(arguments),
                    "state": "running", "started_at": self.clock(), "finished_at": None,

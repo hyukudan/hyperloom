@@ -40,6 +40,43 @@ class RegistryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             reg.collector("x", lambda api, now: [], interval=0.1)
 
+    def test_reserved_names_and_longest_prefix(self):
+        reg = features.Registry()
+        for name in ("devices", "jobs", "recipes/x", "up", "settings/x"):
+            with self.assertRaises(ValueError, msg=name):
+                reg.get(name, lambda api, q: {})
+        reg.get_prefix("bench/", lambda api, rest, q: "short")
+        reg.get_prefix("bench/runs/", lambda api, rest, q: "long")
+        reg.get("bench/runs/latest", lambda api, q: "exact")
+        self.assertEqual(reg.find_get("bench/runs/7")[1], "7")
+        self.assertEqual(reg.find_get("bench/runs/7")[0](None, None, None), "long")
+        self.assertEqual(reg.find_get("bench/other")[0](None, None, None), "short")
+        self.assertEqual(reg.find_get("bench/runs/latest")[0](None, None), "exact")
+        with self.assertRaises(ValueError):
+            reg.job("bench/run", lambda a, b, c: {}, admission="bench")     # admitted jobs name resources
+
+    def test_failed_registration_leaves_nothing_behind(self):
+        module = mock.Mock()
+
+        def register(reg):
+            reg.get("half", lambda api, q: {})
+            reg.collector("half", lambda api, now: [])
+            raise RuntimeError("late failure")
+        module.register = register
+        with mock.patch("importlib.import_module", return_value=module):
+            reg = features.load(("overview",))
+        self.assertEqual((reg.gets, reg.collectors, reg.loaded), ({}, {}, []))
+        self.assertIn("late failure", reg.failed["overview"])
+
+    def test_conflicting_feature_is_rejected_whole(self):
+        first, second = mock.Mock(), mock.Mock()
+        first.register = lambda reg: reg.get("shared", lambda api, q: 1)
+        second.register = lambda reg: (reg.get("mine", lambda api, q: 2), reg.get("shared", lambda api, q: 3))
+        with mock.patch("importlib.import_module", side_effect=[first, second]):
+            reg = features.load(("overview", "machines"))
+        self.assertEqual(sorted(reg.gets), ["shared"])
+        self.assertIn("registered twice", reg.failed["machines"])
+
     def test_broken_feature_is_reported_not_fatal(self):
         with mock.patch("importlib.import_module", side_effect=[RuntimeError("boom")]):
             reg = features.load(("overview",))
@@ -63,11 +100,21 @@ class APIDispatchTests(unittest.TestCase):
         reg.job("demo/job", lambda api, a, progress: (progress("half"), {"done": a["n"]})[1],
                 validate=lambda api, a: a if isinstance(a.get("n"), int) else (_ for _ in ()).throw(ValueError("n required")))
         reg.job("demo/exclusive", lambda api, a, progress: time.sleep(0.2) or {}, exclusive=True)
+
+        def bench(api, a, ctx):
+            while not ctx.wait(0.01):
+                pass
+            return None
+        reg.job("demo/bench", bench, admission="bench", resources=lambda api, a: set(a["on"]), deadline_s=30)
+        reg.job("demo/short", lambda api, a, ctx: (ctx.wait(5), {"cancelled": ctx.reason})[1],
+                admission="bench", resources=lambda api, a: {"x"}, deadline_s=1)
+        reg.job("demo/leak", lambda api, a, ctx: (_ for _ in ()).throw(RuntimeError("password=hunter2 Bearer abc")))
         reg.capability("demo", False, "needs data")
         features.reset(reg)
         self.addCleanup(features.reset)
         self.api = API(Path(self.dir.name) / "cluster.json", orchestrator=mock.Mock(), remote_module=mock.Mock(),
                        audit_path=Path(self.dir.name) / "audit.jsonl")
+        self.api.orchestrate.down.return_value = {"stopped": True}
 
     def test_get_documents_are_redacted_and_errors_mapped(self):
         document = self.api.read("demo", {"x": "1"})
@@ -94,6 +141,58 @@ class APIDispatchTests(unittest.TestCase):
                 break
             time.sleep(0.01)
         self.assertEqual((current["state"], current["result"]), ("succeeded", {"done": 3}))
+
+    def wait(self, jid):
+        for _ in range(500):
+            current = self.api.read("jobs/" + jid)
+            if current["state"] != "running":
+                return current
+            time.sleep(0.01)
+        self.fail("job did not finish")
+
+    def test_admission_resources_cap_and_cancel(self):
+        first = self.api.mutate("demo/bench", {"on": ["halo-1", "router"]})
+        with self.assertRaises(APIError) as caught:
+            self.api.mutate("demo/bench", {"on": ["halo-1"]})          # overlapping resources
+        self.assertEqual(caught.exception.status, 409)
+        second = self.api.mutate("demo/bench", {"on": ["halo-2"]})
+        with self.assertRaises(APIError) as caught:
+            self.api.mutate("demo/bench", {"on": ["workstation"]})     # lab-wide cap of two
+        self.assertIn("at most 2", str(caught.exception))
+        # A deploy over held resources is refused (resources unknown -> everything overlaps).
+        with self.assertRaises(APIError) as caught:
+            self.api.mutate("up", {"profile": "qwen"})
+        self.assertIn("benchmark or demo holds", str(caught.exception))
+        # Cancelling through the core cancel action reaches the feature job.
+        cancel = self.api.mutate("cancel", {"job": first["id"]})
+        self.assertEqual(self.wait(cancel["id"])["result"], {"cancelled": first["id"]})
+        done = self.wait(first["id"])
+        self.assertEqual((done["state"], done["error"]), ("cancelled", "cancelled by request"))
+        # A stop of a profile cancels overlapping admitted jobs (priority: it never waits).
+        self.api.mutate("down", {"profile": "qwen"})
+        self.assertEqual(self.wait(second["id"])["state"], "cancelled")
+
+    def test_admitted_jobs_wait_for_core_jobs_and_meet_deadlines(self):
+        exclusive = self.api.mutate("demo/exclusive", {})
+        self.api._active = exclusive["id"]
+        with self.assertRaises(APIError) as caught:
+            self.api.mutate("demo/bench", {"on": ["halo-1"]})
+        self.assertIn("deploy, stop or install", str(caught.exception))
+        self.wait(exclusive["id"])
+        short = self.wait(self.api.mutate("demo/short", {})["id"])
+        self.assertEqual(short["result"], {"cancelled": "deadline reached"})
+
+    def test_job_errors_and_token_data_through_redaction(self):
+        failed = self.wait(self.api.mutate("demo/leak", {})["id"])
+        self.assertNotIn("hunter2", json.dumps(failed))
+        self.assertNotIn("abc", failed["error"])
+        from hyperloom.web.api import redact
+        kept = redact({"prompt_tokens": 5, "tokens": 12, "token_ids": [1, 2, 3], "tokens_by_kind": {"cached": 4},
+                       "token": "s3cret", "api_key": 7, "csrf_token": 9, "tokens_note": "Bearer zz"})
+        self.assertEqual((kept["prompt_tokens"], kept["tokens"], kept["token_ids"], kept["tokens_by_kind"]),
+                         (5, 12, [1, 2, 3], {"cached": 4}))
+        self.assertEqual((kept["token"], kept["api_key"], kept["csrf_token"], kept["tokens_note"]),
+                         ("[redacted]",) * 4)
 
     def test_exclusive_jobs_take_the_single_slot(self):
         first = self.api.mutate("demo/exclusive", {})
@@ -163,6 +262,26 @@ class PortalAssetTests(unittest.TestCase):
         self.assertIn('<link rel="stylesheet" href="/pages/demo.css">', html)
         self.assertNotIn("unlisted.js", html)
 
+    def test_feature_directory_must_not_be_a_link(self):
+        import os
+        import subprocess
+        outside = Path(self.dir.name) / "outside"
+        outside.mkdir()
+        (outside / "x.js").write_text("window.z = 1;")
+        (outside / "manifest.json").write_text(json.dumps({"files": ["x.js"]}))
+        assets = self.server.static_dir / "assets"
+        for child in assets.iterdir():
+            child.unlink()
+        assets.rmdir()
+        try:
+            if os.name == "nt":
+                subprocess.run(["cmd", "/c", "mklink", "/J", str(assets), str(outside)], check=True, capture_output=True)
+            else:
+                assets.symlink_to(outside, target_is_directory=True)
+        except (OSError, subprocess.CalledProcessError):
+            self.skipTest("cannot create a directory link here")
+        self.assertEqual(self.get("/assets/x.js")[0], 404)
+
     def test_feature_posts_and_jobs_need_post(self):
         self.assertEqual(self.get("/hyperloom/api/demo/echo")[0], 405)
         self.assertEqual(self.get("/hyperloom/api/demo/job")[0], 405)
@@ -171,9 +290,6 @@ class PortalAssetTests(unittest.TestCase):
         self.assertEqual((status, job["action"]), (202, "demo/job"))
         self.assertEqual(self.post("/hyperloom/api/demo/none", {})[0], 404)
 
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class HistoryFeatureTests(unittest.TestCase):
@@ -203,3 +319,17 @@ class HistoryFeatureTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.history.series(self.api, "../x", {})
         self.assertEqual(self.history.index(self.api, {})["series"], ["gpu_busy"])
+
+    def test_kind_aware_value_and_no_store(self):
+        self.api.telemetry.describe("tokens", "delta", interval=2)
+        self.api.telemetry.record([("tokens", {}, 5)], ts=self.clock.now - 10)
+        self.assertEqual(self.history.series(self.api, "tokens", {})["value"], "sum")
+        self.api.telemetry = None
+        doc = self.history.series(self.api, "tokens", {})
+        self.assertIsNone(doc["lines"])
+        self.assertIn("not open", doc["why"]["lines"])
+        self.assertIsNone(self.history.index(self.api, {})["series"])
+
+
+if __name__ == "__main__":
+    unittest.main()

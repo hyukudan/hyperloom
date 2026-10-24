@@ -1,9 +1,12 @@
 """Metrics history (F4): the series in the telemetry store and their buckets.
 
 GET history                       -> {series: [names], collectors: {name: state}}
-GET history/<series>?range=3600   -> {series, kind, tier, step, start, end, lines: [{labels, points}]}
+GET history/<series>?range=3600   -> {series, kind, unit, interval_s, legend, value, tier, step, start, end,
+                                      lines: [{labels, points}], truncated}
     optional: start=<epoch> end=<epoch> tier=raw|m1|m15 and label filters l.<label>=<value>
-Points are [t, avg, max, min, n, sum]; missing buckets are absent (charts draw gaps, never zeros).
+Points are [t, avg, max, min, n, sum, last, coverage]; ``value`` names the field to plot for the kind (gauge: avg,
+delta: sum, state: last). Missing buckets are absent (charts draw gaps, never zeros). A GET never creates the
+store: without one (samplers not started in this process) the document says why.
 """
 
 import math
@@ -29,10 +32,19 @@ def _number(query, key, default=None):
     return value
 
 
+VALUE = {"gauge": "avg", "delta": "sum", "state": "last"}
+NO_STORE = "metrics history not open in this portal process (samplers disabled)"
+
+
 def index(api, query):
-    store = telemetry.store_for(api)
-    return api.document("history", series=store.names(), collectors=telemetry.status(api),
-                        why={} if telemetry.status(api) is not None else {"collectors": "samplers not running in this process"})
+    store = telemetry.existing_store(api)
+    status = telemetry.status(api)
+    why = {}
+    if store is None:
+        why["series"] = NO_STORE
+    if status is None:
+        why["collectors"] = "samplers not running in this process"
+    return api.document("history", series=None if store is None else store.names(), collectors=status, why=why)
 
 
 def series(api, name, query):
@@ -54,14 +66,19 @@ def series(api, name, query):
     if end < start or end - start > MAX_RANGE:
         raise ValueError("range must be positive and at most 31 days")
     tier = query.get("tier")
-    store = telemetry.store_for(api)
-    lines = store.query(name, start, end, labels=labels, tier=tier)
-    if not lines:
-        return api.document("history-series", series=name, kind=None, tier=None, step=None, start=start, end=end,
-                            lines=[], why={"lines": "no samples recorded for this series in the range"})
-    return api.document("history-series", series=name, kind=lines[0]["kind"], tier=lines[0]["tier"],
-                        step=lines[0]["step"], start=start, end=end,
-                        lines=[{"labels": line["labels"], "points": line["points"]} for line in lines])
+    store = telemetry.existing_store(api)
+    if store is None:
+        return api.document("history-series", series=name, kind=None, value=None, tier=None, step=None, start=start,
+                            end=end, lines=None, truncated=[], why={"lines": NO_STORE})
+    result = store.query(name, start, end, labels=labels, tier=tier)
+    descriptor = result["descriptor"] or {}
+    why = {} if result["lines"] else {"lines": "no samples recorded for this series in the range"}
+    if result["truncated"]:
+        why["truncated"] = "oldest buckets beyond the point limit were cut for the listed lines"
+    return api.document("history-series", series=name, kind=descriptor.get("kind"), unit=descriptor.get("unit"),
+                        interval_s=descriptor.get("interval_s"), legend=descriptor.get("legend"),
+                        value=VALUE.get(descriptor.get("kind")), tier=result["tier"], step=result["step"],
+                        start=start, end=end, lines=result["lines"], truncated=result["truncated"], why=why)
 
 
 def register(reg):

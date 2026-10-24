@@ -74,6 +74,9 @@ class PortalServer(ThreadingHTTPServer):
         runner = getattr(self.api, "recipes", None)
         if runner is not None:
             runner.close()
+        if getattr(self.api, "sampler", None) is not None:
+            from hyperloom import telemetry
+            telemetry.stop(self.api)
         super().server_close()
 
 
@@ -164,10 +167,14 @@ class Handler(BaseHTTPRequestHandler):
             name = files.get(path)
             root = self.server.static_dir.resolve()
             parts = path[len("/hyperloom"):].split("/") if path.startswith("/hyperloom/") else path.split("/")
-            if (name is None and len(parts) == 3 and parts[0] == "" and parts[1] in ASSET_DIRS
-                    and parts[2] in manifest(root, parts[1])):
-                root = (root / parts[1]).resolve()
-                name = parts[2]
+            if name is None and len(parts) == 3 and parts[0] == "" and parts[1] in ASSET_DIRS:
+                # The feature directory itself must be a plain directory inside the static root (no link,
+                # junction or reparse point leading elsewhere) before its manifest is even read.
+                directory = root / parts[1]
+                if (not directory.is_symlink() and directory.resolve() == directory and directory.parent == root
+                        and parts[2] in manifest(root, parts[1])):
+                    root = directory
+                    name = parts[2]
             if name is None:
                 self._error(404, "not found")
                 return
