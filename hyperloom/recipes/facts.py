@@ -25,6 +25,10 @@ DEFAULT_HOST_OVERHEAD_GIB = 4.0
 # Defaults read from the engine at the pinned commit (strix-deepseek41-serve: context 4096, slots 4,
 # apps/deepseek41_serve_main.cpp:139); a family whose default hyperloom does not know refuses a recipe unless the
 # preset or the profile sets the flag.
+# The generation budget the decode engine assumes for a request without max_tokens (flag, engine default or None).
+FAMILY_GENERATION = {"ds41-pair": ("--default-max-tokens", 1024),     # apps/deepseek41_serve_main.cpp:141
+                     "qwen-replicas": ("--http-default-max-tokens", None),
+                     "minimax-pair": ("--max-tokens", None)}
 FAMILY_BOUNDS = {"ds41-pair": (("--context", 4096), ("--slots", 4)),
                  "qwen-replicas": (("--context", None), ("--http-batch", None)),
                  "minimax-pair": (("--capacity", None), ("--slots", None))}
@@ -61,12 +65,14 @@ def context(cluster, profile):
     (context_flag, context_default), (batch_flag, batch_default) = FAMILY_BOUNDS[kind]
     limits = {"node_context": _flag_value(settings, data, context_flag, context_default),
               "node_batch": _flag_value(settings, data, batch_flag, batch_default),
-              "node_flags": (context_flag, batch_flag), "default_generation_tokens": 1024,
+              "node_flags": (context_flag, batch_flag),
+              "default_generation_tokens": _flag_value(settings, data, *FAMILY_GENERATION[kind]),
               "commit_floor_gib": ((cluster.pc.get("cuda") or {}).get("reservation") or {}).get("free_commit_floor_gib", 4)}
     if service is not None:
         _, service_data, _ = rtx._service(cluster, profile)
         limits["service_positions"] = settings["prefill_service"].get("positions", service_data["positions"]["default"])
-        limits["default_generation_tokens"] = service_data["decode_profiles"][kind]["context"]["reserve_default"]
+        rule = service_data["decode_profiles"][kind]["context"]
+        limits["default_generation_tokens"] = rtx._decode_flag(cluster, profile, rule["reserve_flag"], rule["reserve_default"])
     known = {mid: _descriptor(cluster, mid, FAMILY_MODELS[kind][1]) for mid in nodes}
     if service is not None:
         known[service["uuid"]] = _descriptor(cluster, pc, service.get("model_asset") or "")

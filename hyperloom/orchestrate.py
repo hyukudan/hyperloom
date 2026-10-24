@@ -718,7 +718,7 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
         rendered = render.render_router(selected, profile)
         if launch is not None:
             key_file = selected.router["replica_api_key_files"].get(service["machine"]) if service else None
-            rendered["prefill"] = recipe_launch.router_prefill(launch, cluster if service else selected, profile, key_file)
+            rendered["prefill"] = recipe_launch.router_prefill(launch, selected, profile, key_file)
         state.update(release_id=prepared["release_id"], nodes=mids, devices=list(devices or []),
                      started_at=time.time(), process_specs=[asdict(spec) for spec in processes],
                      rendered_router=rendered, launch=render.launch_summary(selected, profile))
@@ -841,6 +841,10 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
                     launch, state.get("prefill_service") if state["recipe"]["service"]["start"] else None,
                     rtx.reservation_end(reservation, time.time()) if reservation else None, state)
                 route_state["initial_nodes"] = node_ram
+                if route_state["disk"] and service is not None:
+                    data = rtx._service(selected, profile)[1]
+                    asset = selected.assets.get(service["machine"], {}).get((data.get("placement") or {}).get("model_asset"))
+                    route_state["disk"] = {m: (asset or {}).get("path") for m in route_state["disk"]}
             state["router"] = _start_local_router(profile, rendered, keys, ownership=state, route_state=route_state)
         else:
             machine = cluster.machines[router]

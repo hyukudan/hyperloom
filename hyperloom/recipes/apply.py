@@ -371,6 +371,19 @@ def requirements(recipe, recipe_sha, ctx, bound):
     return out
 
 
+def with_disk(reqs, route_ids, set_id, disk_bytes, recipe_sha):
+    """The requirements with a planned disk tier on one set's members (their plan ids follow)."""
+    out = []
+    for req in reqs:
+        if req["route"] in route_ids and req["set"] == set_id and disk_bytes > 0:
+            req = dict(req, disk_bytes=int(disk_bytes))
+            req["plan_id"] = hashlib.sha256(json.dumps(
+                [recipe_sha, req["route"], set_id, req["member"], req["id"], req["descriptor_sha256"], CAP_MODEL,
+                 req["host_bytes"], req["commit_bytes"], req["disk_bytes"]]).encode()).hexdigest()
+        out.append(req)
+    return out
+
+
 def running_entry(route_id, recipe_sha, reqs):
     return {"route": route_id, "effective_sha256": recipe_sha,
             "plan_ids": sorted(r["plan_id"] for r in reqs if r["route"] == route_id)}
@@ -380,6 +393,9 @@ def deploy(recipe, ctx, bound, availability, recipe_sha, select=None):
     """What `up` runs, decided before anything starts: the decode route (admitted against the nodes' free RAM before
     launch), each prefill route's place and admission at up, and whether the prefill service starts."""
     refuse_unsupported(recipe)
+    if (ctx.limits or {}).get("default_generation_tokens") is None:
+        raise RecipeError(f"profile {ctx.profile}: the decode engine's default generation budget is unknown (the router "
+                          "needs it for requests without max_tokens); set it in the profile's overrides")
     by_id = {r["id"]: r for r in recipe["routes"]}
     reqs = requirements(recipe, recipe_sha, ctx, bound)
     pre = admission_state(bound, availability, ctx, requirements=reqs)
@@ -469,6 +485,8 @@ def route_table(eff_json, recipe_sha256, bound, decision, state_file, ctx, servi
                 charge[host] = charge.get(host, 0.0) + req["host_bytes"] / GIB
                 commit[host] = commit.get(host, 0.0) + req["commit_bytes"] / GIB
         hosts = list(dict.fromkeys(m["host"] for s in route_sets for m in bound["binding"][s]))
+        disk_members = sorted({r["id"] for r in decision["requirements"]
+                               if r["route"] in {x["id"] for x in involved} and r.get("disk_bytes", 0) > 0})
         handoff = by_id[route["handoff_route"]]["when"] if route["handoff_route"] else None
         routes.append({"id": route["id"], "place": place,
                        # An offload route without a started service never admits (the nodes take every prompt).
@@ -480,6 +498,7 @@ def route_table(eff_json, recipe_sha256, bound, decision, state_file, ctx, servi
                        "max_context_tokens": min(r["placement"][s]["max_context_tokens"] for r in involved
                                                  for s in r["devices"]),
                        "fallback": route["fallback"], "sets": route_sets, "links": links, "hosts": hosts,
+                       "disk_members": disk_members,
                        "charges": {h: round(g, 6) for h, g in sorted(charge.items())},
                        "commit_charges": {h: round(g, 6) for h, g in sorted(commit.items())},
                        "running_while": "decode" if place == "local" else "service"})
@@ -488,7 +507,7 @@ def route_table(eff_json, recipe_sha256, bound, decision, state_file, ctx, servi
             "effective_sha256": decision["effective_sha256"], "floor_gib": eff_json["limits"]["host_free_ram_floor_gib"],
             "commit_floor_gib": eff_json["limits"]["host_free_commit_floor_gib"],
             "binding": deepcopy(bound["binding"]), "roles": dict(bound["roles"]), "routes": routes,
-            "default_generation_tokens": limits.get("default_generation_tokens", 1024),
+            "default_generation_tokens": limits["default_generation_tokens"],
             "state": {"file": str(state_file), "max_age_s": STATE_MAX_AGE_S},
             "offload_max_wait_s": OFFLOAD_MAX_WAIT_S}
 

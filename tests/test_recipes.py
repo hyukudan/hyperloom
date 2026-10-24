@@ -354,6 +354,26 @@ class ApplyTests(unittest.TestCase):
             self.deploy(PLAIN.replace("max_context_tokens = 32768\nmax_batch = 1\n",
                                       "max_context_tokens = 32768\nmax_batch = 2\n"))
 
+    def test_planned_disk_tier_reaches_the_table_and_admission(self):
+        eff = reader.resolve(PLAIN)
+        bound = apply.bind(eff.recipe, ctx(), INVENTORY)
+        decision = apply.deploy(eff.recipe, ctx(), bound, availability(), SHA)
+        decision["requirements"] = apply.with_disk(decision["requirements"], {"prefill_long"}, "rtx", 6 * GIB_BYTES, SHA)
+        table = apply.route_table(eff.to_json(), eff.sha256, bound, decision, "s.json", ctx())
+        self.assertEqual([r["disk_members"] for r in table["routes"]], [[GPU], []])
+        long = [r for r in decision["requirements"] if r["route"] == "prefill_long"][0]
+        self.assertEqual(long["disk_bytes"], 6 * GIB_BYTES)
+        state = select_state(eff.recipe, requirements=decision["requirements"],
+                             running=compiled(eff.recipe)[1] + [apply.running_entry("prefill_long", SHA, decision["requirements"])])
+        result = reader.select(eff.recipe, state, SHA)
+        self.assertEqual((result["route"], result["trace"][0]["why"]), ("prefill_nodes", 'set "rtx" member ' + GPU + ": disk unavailable"))
+        state["devices"][GPU]["disk_available"] = True
+        self.assertEqual(reader.select(eff.recipe, state, SHA)["route"], "prefill_long")
+
+    def test_generation_default_must_be_known(self):
+        with self.assertRaisesRegex(RecipeError, "default generation budget is unknown"):
+            self.deploy(context=dataclasses.replace(ctx(), limits=dict(LIMITS, default_generation_tokens=None)))
+
     def test_route_table_is_the_effective_prefill_routes(self):
         eff = reader.resolve(PLAIN, sets=[("routes.prefill_long.when.prompt_tokens_min", 3072)])
         bound = apply.bind(eff.recipe, ctx(), INVENTORY)
@@ -648,6 +668,37 @@ class LaunchTests(unittest.TestCase):
             self.assertEqual(launch.plan_service(cluster, "ds41-rtx", 88.0, 48.0, free_physical_gib=100.0),
                              (None, "no saved header"))
 
+    def test_exact_host_and_whole_gib(self):
+        from tests import test_rtx
+        from hyperloom.config import parse
+        cluster = parse(test_rtx.rtx_example())
+        plan = mock.Mock(flags={"--vram-cap-gib": "80", "--host-gib": "31"})
+        plan.to_dict.return_value = {"flags": plan.flags, "disk_gib": 0}
+        with mock.patch.object(launch.rtx, "plan_placement", return_value=plan):
+            result, why = launch.plan_service(cluster, "ds41-rtx", 88.0, 48.0, free_physical_gib=100.0)
+        self.assertIsNone(why)
+        self.assertEqual(result["flags"]["--host-gib"], "48")                     # the budget, not the plan's estimate
+        result, why = launch.plan_service(cluster, "ds41-rtx", 88.0, 48.5, free_physical_gib=100.0)
+        self.assertIn("whole GiB", why)
+
+    def test_generation_default_follows_the_launch(self):
+        from tests import test_rtx
+        from hyperloom.config import parse
+        obj = test_rtx.rtx_example()
+        obj["profiles"]["ds41-rtx"].setdefault("overrides", {})["--default-max-tokens"] = 4096
+        cluster = parse(obj)
+        self.assertEqual(facts.context(cluster, "ds41-rtx").limits["default_generation_tokens"], 4096)
+        del obj["profiles"]["ds41-rtx"]["overrides"]["--default-max-tokens"]
+        self.assertEqual(facts.context(parse(obj), "ds41-rtx").limits["default_generation_tokens"], 1024)
+
+    def test_route_state_disk_availability(self):
+        model = self.dir / "model.gguf"
+        spec = dict(self.spec(None), disk={GPU: str(model)})
+        memory = lambda: {"free_physical_gib": 60.0, "free_commit_gib": 80.0}
+        self.assertFalse(launch.write_route_state(spec, memory=memory)["devices"][GPU]["disk_available"])
+        model.write_bytes(b"x")
+        self.assertTrue(launch.write_route_state(spec, memory=memory)["devices"][GPU]["disk_available"])
+
     def test_node_floors(self):
         evaluation = mock.Mock()
         evaluation.effective.recipe = {"limits": {"host_free_ram_floor_gib": 8.0}}
@@ -821,9 +872,9 @@ def _core():
 
 GRID_FULL = dict(tokens=(0, 4095, 4096, 4097, 30000), context=(None, 32769, 40000), gpu=(True, False),
                  n1=(True, False), link=(True, False), service=(True, False), stale=(False, True),
-                 pc=(7.0, 40.0, 70.0), nodes=(None, 5.0, 20.0))
+                 pc=(7.0, 40.0, 70.0), nodes=(None, 5.0, 20.0), disk=(None, True, False))
 GRID_CORE = dict(tokens=(4095, 4096), context=(None, 40000), gpu=(True, False), n1=(True,), link=(True, False),
-                 service=(True, False), stale=(False, True), pc=(7.0, 70.0), nodes=(None, 5.0, 20.0))
+                 service=(True, False), stale=(False, True), pc=(7.0, 70.0), nodes=(None, 5.0, 20.0), disk=(None,))
 
 
 class ConformanceTests(unittest.TestCase):
@@ -842,6 +893,8 @@ class ConformanceTests(unittest.TestCase):
             tokens = case["tokens"]
             context = tokens + 1024 if case["context"] is None else case["context"]
             devices = {GPU: {"available": case["gpu"]}, "n1": {"available": case["n1"]}, "n2": {"available": True}}
+            if case["disk"] is not None:
+                devices[GPU]["disk_available"] = case["disk"]
             links = {"pc-nodes": {"up": case["link"]}, "pair.internal": {"up": True}}
             hosts = {"pc": {"free_ram_gib": case["pc"]}}
             if case["nodes"] is not None:
@@ -852,7 +905,7 @@ class ConformanceTests(unittest.TestCase):
             running = decision["running"] + ([apply.running_entry("prefill_long", sha, decision["requirements"])]
                                              if case["service"] else [])
             state = apply.admission_state(
-                bound, {"devices": {} if case["stale"] else dict(devices, **{GPU: {"available": case["gpu"] and case["service"]}}),
+                bound, {"devices": {} if case["stale"] else dict(devices, **{GPU: dict(devices[GPU], available=case["gpu"] and case["service"])}),
                         "links": {} if case["stale"] else links, "hosts": {} if case["stale"] else hosts},
                 ctx(), running=running, requirements=decision["requirements"], tokens=tokens, context=context)
             yield case, tokens, context, router_state, state
@@ -872,6 +925,8 @@ class ConformanceTests(unittest.TestCase):
         if routes is None:
             self.skipTest("TensorMeld without prefill_routes (set HYPERLOOM_TM_SRC to a src dir that has it)")
         resolved, bound, decision, sha = self.prepare(core.StubBackend())
+        # The PRO route plans a file tier: its member needs disk_available too (Sol-6 #2).
+        decision["requirements"] = apply.with_disk(decision["requirements"], {"prefill_long"}, "rtx", GIB_BYTES, sha)
         table = routes.RouteTable.parse(apply.route_table(resolved.to_json(), resolved.file_sha256, bound, decision,
                                                           "s.json", ctx()))
         checked = 0
@@ -887,7 +942,7 @@ class ConformanceTests(unittest.TestCase):
                 expected = None
             self.assertEqual(router, expected, case)
             checked += 1
-        self.assertEqual(checked, 5 * 3 * 2 ** 5 * 3 * 3)
+        self.assertEqual(checked, 5 * 3 * 2 ** 5 * 3 * 3 * 3)
 
     def test_stub_equals_core(self):
         backend = _core()

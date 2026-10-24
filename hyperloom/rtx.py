@@ -229,6 +229,17 @@ def effective_cap(reservation, requested):
     return requested
 
 
+# Service engines whose --host-gib is whole GiB (placement/ds41.py emits it as an integer).
+WHOLE_GIB_HOST = ("ds41-rtx-prefill",)
+
+
+def exact_host(plan, host):
+    """A recipe's host budget reaches the engine exactly: the plan's --host-gib (its own lower estimate) is replaced
+    by the budget the recipe set and admission charged."""
+    if "--host-gib" in plan.flags:
+        plan.flags["--host-gib"] = str(int(host)) if float(host).is_integer() else f"{host:g}"
+
+
 def plan_placement(data, model_path, cap, host, positions):
     """The preset's placement engine planned for this cap (None when the preset has no placement block)."""
     rule = data.get("placement")
@@ -317,6 +328,8 @@ def render_service(cluster, profile_name, *, api_key, handoff_api_key, free_phys
     plan = None
     if vram_cap_gib is not None:
         plan = plan_placement(data, values.get(data.get("placement", {}).get("model_asset")), cap, host, positions)
+        if plan is not None and host_gib_exact is not None:
+            exact_host(plan, host_gib_exact)
     values.update(binary=str(binary), port=str(s.get("port", data["port"])),
                   positions=str(positions),
                   vram_cap_gib=f"{cap:g}", host_gib=f"{host:g}",

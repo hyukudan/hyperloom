@@ -74,6 +74,9 @@ def plan_service(cluster, profile, cap, host, *, free_physical_gib=None):
     planner (saved header descriptors only). Returns (plan dict, None) or (None, why it cannot start)."""
     s, data, _ = rtx._service(cluster, profile)
     reservation = cluster.pc.get("cuda", {}).get("reservation")
+    engine = (data.get("placement") or {}).get("engine")
+    if engine in rtx.WHOLE_GIB_HOST and host != int(host):
+        return None, f"the {engine} service takes --host-gib in whole GiB; host_pinned_gib {host:g} cannot be launched exactly"
     try:
         rtx.effective_cap(reservation, cap)
         free = rtx.memory_status()["free_physical_gib"] if free_physical_gib is None else free_physical_gib
@@ -89,7 +92,10 @@ def plan_service(cluster, profile, cap, host, *, free_physical_gib=None):
             plan = rtx.plan_placement(data, asset["path"], cap, host, positions)
     except (ConfigError, descriptors.DescriptorError) as exc:
         return None, str(exc)
-    return (None if plan is None else plan.to_dict()), None
+    if plan is None:
+        return None, None
+    rtx.exact_host(plan, host)
+    return plan.to_dict(), None
 
 
 def prepare(cluster, profile, options, *, router, vram_cap_gib, state_dir, source=None):
@@ -126,6 +132,12 @@ def prepare(cluster, profile, options, *, router, vram_cap_gib, state_dir, sourc
         if why is not None:
             service = {"start": False, "why": "planner: " + why}
             decision["service"] = service
+        elif plan is not None and plan.get("disk_gib", 0) > 0:
+            # The planned file tier: those members need their disk available at admission (core §7.2).
+            offload = {p["id"] for p in decision["prefill"] if p["place"] == "offload"}
+            sid = next(s_ for s_, r in evaluation.bound["roles"].items() if r == "service")
+            decision["requirements"] = apply.with_disk(decision["requirements"], offload, sid,
+                                                       plan["disk_gib"] * apply.GIB, evaluation.effective_sha256)
     table = apply.route_table(evaluation.effective.to_json(), evaluation.effective.file_sha256, evaluation.bound,
                               decision, Path(state_dir) / "route-state.json", evaluation.context,
                               service_started=service["start"])
@@ -210,8 +222,10 @@ def route_state_spec(launch, service_record, reservation_end, state):
     """What the router helper needs to write the route state every second, including how to reach the nodes."""
     e = launch.evaluation
     cuda = [m["id"] for s, members in e.bound["binding"].items() if e.bound["roles"][s] != "decode" for m in members]
+    disk = sorted({m for r in launch.table["routes"] for m in r["disk_members"]})
     return {"file": launch.table["state"]["file"], "service_dir": service_record["directory"] if service_record else None,
             "uuids": cuda, "nodes": list(e.context.nodes), "pc": e.context.pc,
+            "disk": {m: state.get("disk_paths", {}).get(m) for m in disk},
             "links": [l["id"] for l in e.effective.recipe["match"]["links"]],
             "internal": [f"{d['id']}.internal" for d in e.effective.recipe["match"]["devices"]
                          if d["internal_link"] is not None],
@@ -250,6 +264,10 @@ def write_route_state(spec, *, memory=None, now=None, nodes=None, replicas=None)
         available, why = False, "reservation ends within 60 s"
     status = (memory or rtx.memory_status)()
     devices = {uuid: {"available": available, **({"why": why} if why else {})} for uuid in spec["uuids"]}
+    for member, model in (spec.get("disk") or {}).items():
+        # The member's planned file tier reads its model file: available while the file is there.
+        devices.setdefault(member, {"available": False, "why": "not bound"})["disk_available"] = bool(
+            model and os.path.isfile(model))
     hosts = {spec["pc"]: {"free_ram_gib": status["free_physical_gib"], "free_commit_gib": status["free_commit_gib"]}}
     all_up = bool(spec["nodes"]) and all(replicas.get(mid) == "up" for mid in spec["nodes"] if mid in replicas) \
         and any(mid in replicas for mid in spec["nodes"])
