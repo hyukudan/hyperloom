@@ -1,0 +1,234 @@
+{
+ "_note": "install payload recipe and components computed by main (f58815b) for each original preset; a variant without its own components must build the same release as main",
+ "presets": {
+  "ds41-pair": {
+   "components": {
+    "engine": {
+     "commit": "9211b07e13c64ab80ae04fcbfcbeab50fe0cbf04",
+     "repo": "https://github.com/hyukudan/strix-halo-engine-lab"
+    },
+    "strix-trellis": {
+     "commit": "5acf0905a3586e719081abf735152298c320827c",
+     "repo": "https://github.com/hyukudan/strix-trellis"
+    },
+    "tensormeld": {
+     "commit": "7165e981eaf31cdd771e7954596f7d8dc180e0dc",
+     "repo": "https://github.com/hyukudan/tensormeld"
+    }
+   },
+   "recipe": {
+    "configure": [
+     "-G",
+     "Ninja",
+     "-DCMAKE_BUILD_TYPE=Release",
+     "-DCMAKE_HIP_ARCHITECTURES=gfx1151",
+     "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++",
+     "-DSTRIX_ENABLE_HIP_RUNTIME=ON",
+     "-DSTRIX_ENABLE_EXPERIMENTAL_Q4K_A8_RUNTIME=ON"
+    ],
+    "ctest_regex": "^strix-(serve-(frontend|deepseek-chat|api)|host-upload)-tests$",
+    "required_flags": {
+     "strix-deepseek41-serve": [
+      "--dspark",
+      "--dspark-max-inflight",
+      "--dspark-ranks",
+      "--dspark-vocab",
+      "--http-api-key-file",
+      "--http-bind",
+      "--http-port",
+      "--prefill-path",
+      "--rank",
+      "--transport",
+      "STRIX_DS41_SERVE_SCHED"
+     ]
+    },
+    "targets": [
+     "strix-deepseek41-serve"
+    ],
+    "trellis": true
+   }
+  },
+  "ds41-pair-long": {
+   "components": {
+    "engine": {
+     "commit": "9211b07e13c64ab80ae04fcbfcbeab50fe0cbf04",
+     "repo": "https://github.com/hyukudan/strix-halo-engine-lab"
+    },
+    "strix-trellis": {
+     "commit": "5acf0905a3586e719081abf735152298c320827c",
+     "repo": "https://github.com/hyukudan/strix-trellis"
+    },
+    "tensormeld": {
+     "commit": "7165e981eaf31cdd771e7954596f7d8dc180e0dc",
+     "repo": "https://github.com/hyukudan/tensormeld"
+    }
+   },
+   "recipe": {
+    "configure": [
+     "-G",
+     "Ninja",
+     "-DCMAKE_BUILD_TYPE=Release",
+     "-DCMAKE_HIP_ARCHITECTURES=gfx1151",
+     "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++",
+     "-DSTRIX_ENABLE_HIP_RUNTIME=ON",
+     "-DSTRIX_ENABLE_EXPERIMENTAL_Q4K_A8_RUNTIME=ON"
+    ],
+    "ctest_regex": "^strix-(serve-(frontend|deepseek-chat|api)|host-upload)-tests$",
+    "required_flags": {
+     "strix-deepseek41-serve": [
+      "--dspark",
+      "--dspark-max-inflight",
+      "--dspark-ranks",
+      "--dspark-vocab",
+      "--http-api-key-file",
+      "--http-bind",
+      "--http-port",
+      "--prefill-path",
+      "--rank",
+      "--transport",
+      "STRIX_DS41_SERVE_SCHED"
+     ]
+    },
+    "targets": [
+     "strix-deepseek41-serve"
+    ],
+    "trellis": true
+   }
+  },
+  "qwen-replicas": {
+   "components": {
+    "engine": {
+     "commit": "9211b07e13c64ab80ae04fcbfcbeab50fe0cbf04",
+     "repo": "https://github.com/hyukudan/strix-halo-engine-lab"
+    },
+    "strix-trellis": {
+     "commit": "5acf0905a3586e719081abf735152298c320827c",
+     "repo": "https://github.com/hyukudan/strix-trellis"
+    },
+    "tensormeld": {
+     "commit": "7165e981eaf31cdd771e7954596f7d8dc180e0dc",
+     "repo": "https://github.com/hyukudan/tensormeld"
+    }
+   },
+   "recipe": {
+    "configure": [
+     "-G",
+     "Ninja",
+     "-DCMAKE_BUILD_TYPE=Release",
+     "-DCMAKE_HIP_ARCHITECTURES=gfx1151",
+     "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++",
+     "-DSTRIX_ENABLE_HIP_RUNTIME=ON",
+     "-DSTRIX_ENABLE_EXPERIMENTAL_Q4K_A8_RUNTIME=ON"
+    ],
+    "ctest_regex": "^strix-(serve-(frontend|deepseek-chat|api)|host-upload)-tests$",
+    "required_flags": {
+     "strix-hip-decode-token": [
+      "--batched-moe-activation",
+      "--context",
+      "--deferred-moe-status",
+      "--execution-mode",
+      "--fused-staged-hyper-mix",
+      "--generate",
+      "--grouped-exact-q51-down",
+      "--http-api-key-file",
+      "--http-batch",
+      "--http-bind",
+      "--http-default-max-tokens",
+      "--http-port",
+      "--http-serve",
+      "--known-prefix-expert-union",
+      "--known-prefix-full-rows",
+      "--known-prefix-host-headroom-bytes",
+      "--known-prefix-host-metadata-budget-bytes",
+      "--known-prefix-output-policy",
+      "--known-prefix-prefill-rows",
+      "--known-prefix-uma-budget-bytes",
+      "--known-prefix-window",
+      "--known-prefix-workspace-budget-bytes",
+      "--known-window-router-rows",
+      "--lane-chain-hyper-output",
+      "--mtp",
+      "--mtp-candidate-depth",
+      "--mtp-conversion",
+      "--mtp-converter-revision",
+      "--mtp-converter-sha256",
+      "--mtp-draft-chain",
+      "--mtp-draft-context-vocab",
+      "--mtp-draft-q4",
+      "--mtp-draft-vocab",
+      "--mtp-golden",
+      "--mtp-golden-max-bytes",
+      "--mtp-golden-sha256",
+      "--mtp-header-bytes",
+      "--mtp-max-hidden-error",
+      "--mtp-max-logit-error",
+      "--mtp-ngram-draft",
+      "--mtp-norm-converter-sha256",
+      "--mtp-normalized-rounding",
+      "--mtp-policy-id",
+      "--mtp-projection-rounding",
+      "--mtp-replay-host-bytes",
+      "--mtp-runtime-bytes",
+      "--mtp-sidecar",
+      "--mtp-sidecar-bytes",
+      "--mtp-sidecar-logical-name",
+      "--mtp-sidecar-residency",
+      "--mtp-sidecar-retained-bytes",
+      "--mtp-sidecar-setup-bytes",
+      "--mtp-sidecar-sha256",
+      "--mtp-source-path",
+      "--mtp-source-repository",
+      "--mtp-source-revision",
+      "--mtp-spec-min-p",
+      "--mtp-target-capture-bytes",
+      "--mtp-target-content",
+      "--mtp-target-sha256",
+      "--mtp-target-window-rows",
+      "--mtp-target-window-rows-set",
+      "--mtp-window-arena-bytes",
+      "--mtp-window-capture-bytes",
+      "--mtp-window-checkpoint-bytes",
+      "--mtp-window-expert-union",
+      "--mtp-window-expert-union-bytes",
+      "--mtp-window-history-intervals",
+      "--mtp-window-hyper-mix",
+      "--mtp-window-prefix",
+      "--mtp-window-qsa-rows",
+      "--mtp-window-total-bytes",
+      "--numerical-profile",
+      "--optimization-profile",
+      "--parallel-hyper-mix",
+      "--parallel-moe-router",
+      "--prefetch-q8-gdn-input",
+      "--prefetch-q8-hyper-output",
+      "--prefetch-q8-lm-head",
+      "--prefetch-q8-qsa-input",
+      "--prefetch-q8-shared-expert",
+      "--prefetch-typed-hyper-rows",
+      "--prefill-numerical-profile",
+      "--prefix-cache-every",
+      "--prefix-cache-host-bytes",
+      "--q4k-a8g32-gate-up",
+      "--q51-slot-parallel-down",
+      "--residency",
+      "--staged-hyper-projections",
+      "--typed-fused-hyper-projections",
+      "--unqualified-context",
+      "--virtual-q8-gdn-input",
+      "--virtual-q8-gdn-output",
+      "--virtual-q8-lm-head",
+      "--wave-moe-router-topk",
+      "--wave8-q8-gdn-input",
+      "--wave8-q8-gdn-output",
+      "--wave8-q8-lm-head",
+      "--wave8-q8-qsa-output"
+     ]
+    },
+    "targets": [
+     "strix-hip-decode-token"
+    ],
+    "trellis": false
+   }
+  }
+ }
+}

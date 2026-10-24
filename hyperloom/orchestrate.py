@@ -250,11 +250,19 @@ def _wait_job(client, root, job, timeout=3600):
     raise OrchestrationError("build job timed out: " + str(job))
 
 
+def _recipe_preset(name):
+    """The preset whose argv and knobs define a build's static checks. A variant that declares no ``components``
+    (ds41-pair-long) builds its family's release exactly as main did, so its recipe and release id stay equal to
+    the family preset's; a preset with its own pins (the w5 and MiniMax presets) is its own build."""
+    data = render.preset(name)
+    return name if data.get("components") else render.family(name)
+
+
 def _required_flags(kind, targets):
     """Flags the frozen preset passes to its binary, plus every advanced knob's argv flag or env name; the
     node checks they exist as strings in the built binary (never executed)."""
     from .config import preset
-    data = preset(kind)
+    data = preset(_recipe_preset(kind))
     flags = {token for token in data["argv"] if token.startswith("--")}
     flags |= {knob["target"] for knob in data.get("advanced", {}).values()}
     return {target: sorted(flags) for target in targets if target == data["binary"]}
@@ -264,7 +272,7 @@ def _knob_targets(settings, kind):
     """Targets of the advanced knobs this launch sets to a non-production value (they render argv/env)."""
     from .config import preset
     from . import knobs
-    data = preset(kind)
+    data = preset(_recipe_preset(kind))
     changed = knobs.summary(settings, data)["advanced"]
     return data["binary"], [data["advanced"][name]["target"] for name in changed]
 

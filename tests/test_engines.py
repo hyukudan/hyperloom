@@ -455,6 +455,30 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn("--dspark-vocab", recipe["required_flags"]["strix-deepseek41-serve"])
         node_install.validate_install(payload)
 
+    def test_original_presets_build_exactly_mains_recipe(self):
+        """qwen-replicas, ds41-pair and ds41-pair-long declare no components: their install payload (recipe with
+        required_flags and options, and components) is pinned to what main computes, so their release ids stay
+        main's. The expected values were computed by main's install path (tests/fixtures/main_recipes.json)."""
+        expected = json.loads((ROOT / "tests" / "fixtures" / "main_recipes.json").read_text(encoding="utf-8"))["presets"]
+        self.assertEqual(sorted(expected), ["ds41-pair", "ds41-pair-long", "qwen-replicas"])
+        obj = cluster_obj()
+        for row in obj["machines"][1:]:
+            row.update(lab_dir="/opt/lab", peer_ssh={"halo-1": "halo-1", "halo-2": "halo-2"})
+        obj["profiles"]["ds41-pair-long"] = {"preset": "ds41-pair-long", "rank0": "halo-1", "rank1": "halo-2",
+                                             "api_key_files": dict(KEYS), "release_id": "0" * 12}
+        cluster = parse(obj)
+        for name, row in expected.items():
+            with self.subTest(preset=name):
+                self.calls.clear()
+                orch.install(cluster, "halo-1", profile=name)
+                payload = next(p for _, v, p in self.calls if v == "install")
+                self.assertEqual(payload["recipe"], row["recipe"])
+                self.assertEqual(payload["components"], row["components"])
+        settings = {"advanced": {"serve_sched": "interleave"}}
+        self.assertEqual(orch._knob_targets(settings, "ds41-pair-long"), orch._knob_targets(settings, "ds41-pair"))
+        self.assertEqual(orch._recipe_preset("ds41-pair-long"), "ds41-pair")
+        self.assertEqual(orch._recipe_preset("ds41-pair-w5"), "ds41-pair-w5")
+
     def test_qwen_w5_install_recipe_and_published_fetch(self):
         orch.install(self.cluster, "halo-1", profile="qwen-replicas-w5")
         payload = next(p for _, v, p in self.calls if v == "install")
