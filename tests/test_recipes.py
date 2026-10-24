@@ -674,6 +674,24 @@ class LaunchTests(unittest.TestCase):
         receipt.write_text('{"host": "n1", "path": "/m", "method": "direct", "disk_read_gbytes_ps": Infinity}')
         with self.assertRaisesRegex(probe.ProbeError, "finite"):
             facts.Cache(self.dir / "facts.json").put_evidence("n1", "/m", receipt)
+        receipt.write_text('{"host": "n1", "path": "/m", "method": "direct", "disk_read_gbytes_ps": 1' + "0" * 400 + "}")
+        with self.assertRaisesRegex(probe.ProbeError, "finite"):
+            facts.Cache(self.dir / "facts.json").put_evidence("n1", "/m", receipt)
+
+    def test_node_poller_survives_any_bad_answer(self):
+        from hyperloom import orchestrate
+        state = {"machines": {"n1": {}, "n2": {}}, "known_hosts": None}
+        polled = {"n1": {"free_ram_gib": 20.0, "at": 1.0}}
+        answers = iter([{"checks": []}, TypeError("bad")])           # parsing raises; the call raises
+
+        def call(*args, **kwargs):
+            answer = next(answers)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+        with mock.patch.object(orchestrate, "_client"), mock.patch.object(orchestrate, "_call", side_effect=call):
+            orchestrate.poll_nodes_once(state, polled)
+        self.assertEqual(polled, {"n1": {"free_ram_gib": 20.0, "at": 1.0}})     # unchanged: both nodes age out
 
     def test_idle_cuda_members_are_never_available(self):
         spec = dict(self.spec(None), idle=["GPU-4090"])
@@ -838,6 +856,12 @@ class UpWithRecipeTests(unittest.TestCase):
         cluster.pc["cuda"] = deepcopy(test_rtx.rtx_example()["pc"]["cuda"])     # the operator's PC-BIG grant
         with mock.patch("hyperloom.recipes.commands.live_source", return_value=self.source):
             return orch.up(cluster, "ds41-rtx", recipe=self.options)
+
+    def test_route_table_refused_by_the_pinned_router_stops_before_any_lease(self):
+        with mock.patch.object(launch.render, "check_route_table", return_value="routes[0].hosts: expected bound hosts"):
+            with self.assertRaisesRegex(RecipeError, "pinned TensorMeld router refuses the route table: routes"):
+                self.up()
+        self.assertEqual([verb for _, verb, _ in self.calls if verb in ("lease", "service-render", "router-start")], [])
 
     def test_service_starts_with_the_recipe_budget_and_the_routes_policy(self):
         state = self.up()

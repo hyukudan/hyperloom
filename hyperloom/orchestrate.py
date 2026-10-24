@@ -959,6 +959,18 @@ def _start_local_router(profile, rendered, keys, *, ownership=None, route_state=
         raise
 
 
+def poll_nodes_once(route_state, polled):
+    """Free RAM of every node over ssh (the node tool's read-only `gpu` verb) into ``polled``. Any failure or bad
+    answer leaves that node's last reading, which ages out (fail closed); it never raises."""
+    from .recipes import launch as recipe_launch
+    for mid, machine in route_state["machines"].items():
+        try:
+            result = _call(_client(SimpleNamespace(**machine), route_state["known_hosts"]), "gpu", {}, timeout=5)
+            polled[mid] = {"free_ram_gib": recipe_launch.node_ram(result), "at": time.time()}
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def local_router_run(spec_path):
     """Persistent CLI helper owns LocalChild's Job Object and plaintext keys."""
     path = Path(spec_path)
@@ -991,15 +1003,9 @@ def local_router_run(spec_path):
     halt = threading.Event()
 
     def poll_nodes():
-        # Free RAM of every node over ssh (the node tool's read-only `gpu` verb), every few seconds.
         from .recipes import launch as recipe_launch
         while not halt.wait(recipe_launch.NODE_POLL_S):
-            for mid, machine in route_state["machines"].items():
-                try:
-                    result = _call(_client(SimpleNamespace(**machine), route_state["known_hosts"]), "gpu", {}, timeout=5)
-                    polled[mid] = {"free_ram_gib": recipe_launch.node_ram(result), "at": time.time()}
-                except Exception:  # noqa: BLE001 - any bad answer: the node ages out (fail closed), the thread lives
-                    pass
+            poll_nodes_once(route_state, polled)
 
     poller = threading.Thread(target=poll_nodes, daemon=True) if route_state else None
     try:
