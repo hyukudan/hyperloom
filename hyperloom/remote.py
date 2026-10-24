@@ -33,6 +33,19 @@ VERBS = frozenset({"version", "doctor", "gpu",
 NODE_FILES = ("hyperloom-node", "hyperloom_install.py", "hyperloom_lease.py", "build-node.sh")
 
 
+def tool_digest(directory=None):
+    """Same digest as hyperloom-node's version check, over this checkout's node files."""
+    directory = Path(directory) if directory is not None else repo_root() / "node"
+    digest = hashlib.sha256()
+    for name in sorted(NODE_FILES):
+        try:
+            data = (directory / name).read_bytes()
+        except OSError:
+            data = b"missing"
+        digest.update(name.encode() + b"\0" + hashlib.sha256(data).hexdigest().encode() + b"\n")
+    return digest.hexdigest()
+
+
 class RemoteError(RuntimeError):
     pass
 
@@ -332,11 +345,17 @@ class Remote:
                              'printf \'%s\\n\' "$HOME/.hyperloom-boot/hyperloom-node"',
                              timeout=timeout, cancel_event=cancel_event))
         options = self.known_hosts.options(self.alias, self.address, self.port)
-        _run([scp, *options, "-P", str(self.port), "--", *(str(path.absolute()) for path in sources),
-              f"{self.target}:.hyperloom-boot/"], timeout=timeout, cancel_event=cancel_event)
+        # Stage, then rename into place: a running build-node.sh or supervisor keeps its old inode.
+        stage = ".stage-" + os.urandom(6).hex()
         boot = PurePosixPath(self.node_path).parent
-        self._ssh("chmod 700 -- " + " ".join(shlex.quote(str(boot / name)) for name in NODE_FILES), timeout=timeout,
-                  cancel_event=cancel_event)
+        self._ssh("umask 077; mkdir -- " + shlex.quote(str(boot / stage)), timeout=timeout, cancel_event=cancel_event)
+        _run([scp, *options, "-P", str(self.port), "--", *(str(path.absolute()) for path in sources),
+              f"{self.target}:.hyperloom-boot/{stage}/"], timeout=timeout, cancel_event=cancel_event)
+        self._ssh("cd -- " + shlex.quote(str(boot)) + " && chmod 700 -- "
+                  + " ".join(shlex.quote(stage + "/" + name) for name in NODE_FILES)
+                  + " && for f in " + " ".join(shlex.quote(name) for name in NODE_FILES)
+                  + "; do mv -f -- " + shlex.quote(stage) + '/"$f" "$f" || exit 1; done && rmdir -- ' + shlex.quote(stage),
+                  timeout=timeout, cancel_event=cancel_event)
         return self.call("version", {}, timeout, cancel_event=cancel_event)
 
     def call(self, verb, payload, timeout=30, *, cancel_event=None):

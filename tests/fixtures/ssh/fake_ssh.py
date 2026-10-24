@@ -58,7 +58,7 @@ if mode == "stderr_huge":
 command = argv[-1]
 if command.startswith("umask ") or command.startswith("printf "):
     sys.stdout.buffer.write("/opt/operator space ' Ω/.hyperloom-boot/hyperloom-node\n".encode("utf-8"))
-elif command.startswith("chmod "):
+elif command.startswith("chmod ") or command.startswith("cd -- "):
     pass
 elif mode == "eof":
     pass

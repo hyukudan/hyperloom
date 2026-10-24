@@ -62,6 +62,8 @@ class FakeRemote:
             self.leases[payload["lease"]]["state"] = "stopped"
         if verb == "install":
             return {"job": "build-job"}
+        if verb == "version":
+            return {"checks": {"tool": {"status": "ok", "value": getattr(self, "tool", None) or orch.remote.tool_digest()}}}
         return {}
 
 
@@ -183,6 +185,51 @@ class OrchestrationTests(unittest.TestCase):
         self.fail.clear()
         orch.down("qwen-replicas")
         self.assertFalse(orch._state_path("qwen-replicas").exists())
+
+    def test_queue_timeout_is_bounded_and_passed_to_the_wait(self):
+        for bad in (59, orch.MAX_QUEUE_S + 1, 1.5):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                orch.up(self.cluster, "qwen-replicas", queue_timeout_s=bad)
+        seen = []
+        real = orch._wait_ready
+        def spy(*args, **kwargs):
+            seen.append(kwargs.get("queue_timeout"))
+            return real(*args, **kwargs)
+        with patch.object(orch, "_wait_ready", side_effect=spy):
+            orch.up(self.cluster, "qwen-replicas", queue_timeout_s=7200)
+        self.assertTrue(seen and all(value == 7200 for value in seen))
+
+    def test_stale_node_tool_refused_before_any_lease(self):
+        real = FakeRemote.call
+        def stale(remote, verb, payload, timeout=60):
+            if verb == "version" and remote.machine.id == "halo-2":
+                remote.calls.append((remote.machine.id, verb, {}))
+                return {"checks": {"version": {"status": "ok", "value": "0.1.0"}}}
+            return real(remote, verb, payload, timeout)
+        with patch.object(FakeRemote, "call", stale):
+            with self.assertRaisesRegex(orch.OrchestrationError, "halo-2: node tool differs.*nodes update"):
+                orch.up(self.cluster, "qwen-replicas")
+        self.assertNotIn("lease", [verb for _, verb, _ in self.calls])
+
+    def test_nodes_update_refuses_while_a_lease_is_live(self):
+        self.leases["lease-x"] = {"lease": "lease-x", "state": "ready"}
+        with self.assertRaisesRegex(orch.OrchestrationError, "lease is live"):
+            orch.nodes_update(self.cluster, "qwen-replicas")
+        self.assertNotIn("bootstrap", [verb for _, verb, _ in self.calls])
+        result = orch.nodes_update(self.cluster, "qwen-replicas", machine="halo-1", force=True)
+        self.assertEqual(list(result), ["halo-1"])
+        self.leases["lease-x"]["state"] = "stopped"
+        result = orch.nodes_update(self.cluster, "qwen-replicas")
+        self.assertTrue(all(row["tool"] == row["expected"] for row in result.values()))
+        self.assertEqual([mid for mid, verb, _ in self.calls if verb == "bootstrap"], ["halo-1", "halo-1", "halo-2"])
+
+    def test_control_and_node_tool_digests_agree(self):
+        import importlib.machinery, importlib.util
+        path = Path(orch.repo_root()) / "node" / "hyperloom-node"
+        loader = importlib.machinery.SourceFileLoader("hyperloom_node_digest", str(path))
+        module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+        loader.exec_module(module)
+        self.assertEqual(module.tool_digest(path.parent), orch.remote.tool_digest())
 
     def test_down_cancels_queued_leases(self):
         orch.up(self.cluster, "qwen-replicas")
