@@ -374,8 +374,20 @@ class RouterRecordTests(unittest.TestCase):
 
     def test_routes_reads_the_routers_per_request_records(self):
         source = Path(os.environ["HYPERLOOM_TM_SRC"])
+        # This TensorMeld, not the pinned one another test may already have imported.
+        names = ("tensormeld", "test_prefill_routes", "test_replica_router")
+        saved = {k: v for k, v in sys.modules.items() if k.split(".")[0] in names}
+        for key in saved:
+            del sys.modules[key]
         sys.path[:0] = [str(source), str(source.parent / "tests")]
-        self.addCleanup(lambda: [sys.path.remove(p) for p in (str(source), str(source.parent / "tests"))])
+
+        def restore():
+            for p in (str(source), str(source.parent / "tests")):
+                sys.path.remove(p)
+            for key in [k for k in sys.modules if k.split(".")[0] in names]:
+                del sys.modules[key]
+            sys.modules.update(saved)
+        self.addCleanup(restore)
         import test_prefill_routes as tm
         harness = tm.RoutesEndToEndTests("test_long_prompts_offload_short_ones_stay_local")
         harness.setUp()
