@@ -343,6 +343,9 @@ def main(argv=None):
     install = commands.add_parser("install")
     install.add_argument("profile")
     install.add_argument("--build-on")
+    install.add_argument("--source", action="append", default=[], metavar="NAME=DIR[@COMMIT]",
+                         help="build component NAME (engine, strix-trellis) from a local repository: its pinned commit "
+                              "is shipped as a git bundle instead of being fetched from the remote")
     install.add_argument("--config", type=Path, default=config_path())
     assets = commands.add_parser("assets", help="verify assets, inspect the integrity cache, or run pinned downloads")
     asset_commands = assets.add_subparsers(dest="operation", required=True)
@@ -440,8 +443,10 @@ def main(argv=None):
             cluster = _cluster(args.config)
             orchestrate = _module("hyperloom.orchestrate")
             _, kind, mids = orchestrate._profile(cluster, args.profile)
-            targets = ["strix-hip-decode-token" if kind == "qwen-replicas" else "strix-deepseek41-serve"]
-            _json({"release_id": orchestrate.install(cluster, args.build_on or mids[0], targets, profile=args.profile)})
+            targets = list(_module("hyperloom.engines").adapter(kind).targets)
+            sources = _module("hyperloom.bundles").parse_all(args.source)
+            _json({"release_id": orchestrate.install(cluster, args.build_on or mids[0], targets, profile=args.profile,
+                                                     sources=sources)})
         elif args.command == "nodes":
             _json(_module("hyperloom.orchestrate").nodes_update(_cluster(args.config), args.profile,
                                                                 machine=args.machine, force=args.force))

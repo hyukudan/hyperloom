@@ -18,7 +18,7 @@ from urllib.request import ProxyHandler, build_opener
 import uuid
 
 from .winproc import no_window
-from . import assets, procs, remote, render, rtx, secrets
+from . import assets, bundles, engines, procs, remote, render, rtx, secrets
 from .paths import repo_root
 
 
@@ -97,8 +97,11 @@ def _profile(cluster, profile):
         raise ValueError("unknown profile: " + profile)
     settings = cluster.profiles[profile]
     kind = render.family(settings.get("preset", profile))
-    mids = settings["nodes"] if kind == "qwen-replicas" else [settings["rank0"], settings["rank1"]]
-    return settings, kind, list(mids)
+    return settings, kind, engines.members(settings, kind)
+
+
+def _preset_name(cluster, profile):
+    return cluster.profiles[profile].get("preset", profile)
 
 
 def _versions():
@@ -266,18 +269,85 @@ def _knob_targets(settings, kind):
     return data["binary"], [data["advanced"][name]["target"] for name in changed]
 
 
-def install(cluster, build_machine, targets, *, profile=None):
-    """Build once and verify copies before activating a profile on every node."""
+def _components(data, versions, sources, staged):
+    """The install payload's pinned components: the preset's pins over versions.lock. A component given with
+    --source is marked unpublished and carries its bundle's sha256; any other pin must be a full SHA."""
+    rows = {}
+    for name, row in engines.components(data, versions).items():
+        if name in staged:
+            rows[name] = {"repo": row["repo"], "commit": staged[name].commit, "published": False,
+                          "bundle_sha256": staged[name].sha256}
+        elif row.get("commit"):
+            rows[name] = {"repo": row["repo"], "commit": row["commit"]}
+        else:
+            raise OrchestrationError(f"{name}: the preset pins only {row.get('commit_prefix')}; "
+                                     f"install with --source {name}=<checkout>@<full sha>")
+    unknown = set(sources) - set(rows)
+    if unknown:
+        raise ValueError("--source names no component of this preset: " + ", ".join(sorted(unknown)))
+    return rows
+
+
+def _stage_bundles(cluster, client, build_machine, data, versions, sources):
+    """Bundle each --source commit locally, copy it staged into <root>/incoming, and have the node verify and
+    rename it. Returns {name: Bundle}."""
+    import tempfile
+    if not sources:
+        return {}
+    if "tensormeld" in sources:
+        raise ValueError("--source tensormeld is not supported: the router package is fetched by peers too")
+    pins = engines.components(data, versions)
+    machine = cluster.machines[build_machine]
+    staged = {}
+    with tempfile.TemporaryDirectory(prefix="hyperloom-sources-") as scratch:
+        for name, source in sorted(sources.items()):
+            if name not in pins:
+                raise ValueError("--source names no component of this preset: " + name)
+            commit = bundles.resolve(source, pins[name])
+            bundle = bundles.create(source, commit, scratch)
+            reply = _call(client, "bundle-prepare", {"root": machine.install_root, "lab_dir": _lab(cluster, build_machine),
+                                                     "asset_paths": [a["path"] for a in cluster.assets.get(build_machine, {}).values()],
+                                                     "commit": commit})
+            client.upload(bundle.path, reply["stage"])
+            _call(client, "bundle-accept", {"root": machine.install_root, "commit": commit, "stage": reply["stage"],
+                                            "sha256": bundle.sha256, "bytes": bundle.bytes}, timeout=3600)
+            staged[name] = bundle
+    return staged
+
+
+def unpublished(manifest):
+    """Components of a release manifest built from a local bundle (published: false)."""
+    return sorted(name for name, row in ((manifest or {}).get("components") or {}).items()
+                  if isinstance(row, dict) and row.get("published") is False)
+
+
+def install(cluster, build_machine, targets=None, *, profile=None, sources=None):
+    """Build once and verify copies before activating a profile on every node. ``sources`` maps a component to a
+    bundles.Source (``--source NAME=DIR[@COMMIT]``) for a pinned commit that is not on any remote."""
     if profile is not None:
         _, kind, mids = _profile(cluster, profile)
+        name = _preset_name(cluster, profile)
     else:
-        profiles = [name for name in cluster.profiles if
-                    ("strix-deepseek41-serve" in targets) ==
-                    (cluster.profiles[name].get("preset", name) == "ds41-pair")]
-        mids = list(dict.fromkeys(mid for name in profiles for mid in _profile(cluster, name)[2]))
-        kind = "ds41-pair" if "strix-deepseek41-serve" in targets else "qwen-replicas"
+        kind = next((family for family, row in engines.FAMILIES.items() if set(targets or ()) & set(row.targets)), None)
+        if kind is None:
+            raise ValueError("targets name no engine family")
+        profiles = [p for p in cluster.profiles if render.family(_preset_name(cluster, p)) == kind]
+        mids = list(dict.fromkeys(mid for p in profiles for mid in _profile(cluster, p)[2]))
+        name = kind
+    adapter = engines.adapter(kind)
+    targets = list(targets or adapter.targets)
     if build_machine not in mids:
         raise ValueError("build machine must belong to the profile")
+    data = render.preset(name)
+    sources = dict(sources or {})
+    pins = engines.components(data)
+    unknown = set(sources) - set(pins)
+    if unknown:
+        raise ValueError("--source names no component of this preset: " + ", ".join(sorted(unknown)))
+    unresolved = sorted(c for c, row in pins.items() if not row.get("commit") and c not in sources)
+    if unresolved:
+        raise OrchestrationError(f"{unresolved[0]}: the preset pins only {pins[unresolved[0]].get('commit_prefix')}; "
+                                 f"install with --source {unresolved[0]}=<checkout>@<full sha>")
     clients = {mid: _client(cluster.machines[mid]) for mid in mids}
     for mid in mids:
         _lab(cluster, mid)
@@ -285,17 +355,20 @@ def install(cluster, build_machine, targets, *, profile=None):
     # Resolve all peer routes before starting any build.
     peers = {mid: _peer(cluster, build_machine, mid) for mid in mids if mid != build_machine}
     versions = _versions()
+    staged = _stage_bundles(cluster, clients[build_machine], build_machine, data, versions, sources)
+    options = engines.recipe_options(data, kind)
+    recipe = {"configure": options.pop("configure", versions["toolchains"]["hip_configure"]),
+              "targets": targets,
+              "ctest_regex": "^strix-(serve-(frontend|deepseek-chat|api)|host-upload)-tests$",
+              "trellis": adapter.trellis is not None,
+              # Checked statically on the node (flag strings in the binary); never executed.
+              "required_flags": _required_flags(name, targets)}
+    recipe.update(options)
     payload = {"root": cluster.machines[build_machine].install_root,
                "lab_dir": _lab(cluster, build_machine),
                "asset_paths": [asset["path"] for asset in cluster.assets.get(build_machine, {}).values()],
-               "components": {name: {key: row[key] for key in ("repo", "commit")}
-                              for name, row in versions["components"].items()},
-               "recipe": {"configure": versions["toolchains"]["hip_configure"],
-                          "targets": list(targets),
-                          "ctest_regex": "^strix-(serve-(frontend|deepseek-chat|api)|host-upload)-tests$",
-                          "trellis": kind == "ds41-pair",
-                          # Checked statically on the node (flag strings in the binary); never executed.
-                          "required_flags": _required_flags(kind, targets)}}
+               "components": _components(data, versions, sources, staged),
+               "recipe": recipe}
     response = _call(clients[build_machine], "install", payload)
     job = _wait_job(clients[build_machine], payload["root"], response["job"])
     release = job.get("release_id")
@@ -402,8 +475,9 @@ def _approval(deadline_s, approval):
         raise ValueError("deadline above 1140 seconds requires explicit approval")
 
 
-def _release(client, machine, profile, configured, needs=None):
-    """The release to run; with needs=(binary, strings), each string must be in the release's static check."""
+def _release(client, machine, profile, configured, needs=None, rows_out=None):
+    """The release to run; with needs=(binary, strings), each string must be in the release's static check.
+    rows_out, if given, receives the release's listing row (its manifest)."""
     data = _call(client, "releases", {"root": machine.install_root})
     release = configured or data.get("active", {}).get(profile)
     rows = data.get("releases", [])
@@ -419,6 +493,8 @@ def _release(client, machine, profile, configured, needs=None):
         if missing:
             raise OrchestrationError(f"{machine.id}: release {release} was not checked for advanced knob target "
                                      f"{', '.join(missing)}; rebuild it with 'hyperloom install {profile}'")
+    if rows_out is not None:
+        rows_out[machine.id] = row
     return release
 
 
@@ -470,8 +546,11 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
     if type(queue_timeout_s) is not int or not 60 <= queue_timeout_s <= MAX_QUEUE_S:
         raise ValueError(f"queue timeout must be 60..{MAX_QUEUE_S} seconds")
     settings, kind, defaults = _profile(cluster, profile)
+    engine = engines.adapter(kind)
+    name = _preset_name(cluster, profile)
+    pair = engine.topology == "pair"
     diagnostics = list(dict.fromkeys(diagnostics or ()))
-    unknown = set(diagnostics) - set(render.preset(kind).get("diagnostics", {}))
+    unknown = set(diagnostics) - set(render.preset(name).get("diagnostics", {}))
     if unknown:
         raise ValueError("unknown diagnostic for this profile: " + ", ".join(sorted(unknown)))
     mids = list(defaults if nodes is None else nodes)
@@ -480,8 +559,11 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
             raise ValueError("unknown machine: " + mid)
     if not mids or len(mids) != len(set(mids)) or any(mid not in defaults for mid in mids):
         raise ValueError("declared nodes must be distinct machines of the profile")
-    if kind == "ds41-pair" and mids != defaults:
+    if pair and mids != defaults:
         raise ValueError("pair requires both rank machines in rank order")
+    if engine.bind == "loopback" and router != mids[0]:
+        raise ValueError(f"{kind} engines bind loopback only (no API key support): "
+                         f"run the router on rank 0 with --router {mids[0]}")
     declared = list(mids)
     service = settings.get("prefill_service")
     if service is not None and router != "local":
@@ -531,33 +613,34 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
                 _call(client, "doctor", {"lab_dir": lab}, timeout=60)
             except (remote.RemoteError, OrchestrationError) as exc:
                 raise OrchestrationError(f"{mid}: doctor failed: {exc}") from exc
-        peer = _peer(cluster, mids[0], mids[1]) if kind == "ds41-pair" else None
+        peer = _peer(cluster, mids[0], mids[1]) if pair else None
         selected = deepcopy(cluster)
-        if kind == "qwen-replicas":
+        if not pair:
             selected.profiles[profile]["nodes"] = mids
         releases = {}
         _check_tools(clients, mids, profile)
         state["assets"] = assets.inspect(cluster, profile, clients, mids, strict=True)
         state["asset_cache_note"] = assets.CACHE_NOTE
+        release_rows = {}
         for mid in mids:
             releases[mid] = _release(clients[mid], cluster.machines[mid], profile, settings.get("release_id"),
-                                     needs=_knob_targets(settings, kind))
+                                     needs=_knob_targets(settings, name), rows_out=release_rows)
         if len(set(releases.values())) != 1:
             raise OrchestrationError("profile nodes must run the same release id: "
                                      + ", ".join(f"{mid} {rid}" for mid, rid in releases.items()))
         selected.profiles[profile]["release_id"] = releases[mids[0]]
         node_values = {}
         node_paths = {}
-        for mid in mids:
-            name = _secret_name(profile, mid)
-            node_values[mid] = secrets.ensure(name)
-            node_paths[mid] = _put(clients[mid], cluster.machines[mid], name, node_values[mid])
+        for mid in (mids if engine.key_file else ()):
+            secret = _secret_name(profile, mid)
+            node_values[mid] = secrets.ensure(secret)
+            node_paths[mid] = _put(clients[mid], cluster.machines[mid], secret, node_values[mid])
         selected.profiles[profile]["api_key_files"] = node_paths
         selected.router["machine"] = router
         selected.router["replica_api_key_files"] = {}
         router_key = _secret_name(profile, "router")
         if router == "local":
-            for mid in mids:
+            for mid in node_values:
                 key = secrets.runtime_dir() / ("router-" + uuid.uuid4().hex + ".key")
                 keys.append(str(key))
                 local_values[str(key)] = node_values[mid]
@@ -574,7 +657,7 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
             selected.router["listen"] = cluster.pc.get("router_listen", "127.0.0.1:18600")
         else:
             machine = cluster.machines[router]
-            for mid in mids:
+            for mid in node_values:
                 selected.router["replica_api_key_files"][mid] = _put(
                     clients[router], machine, _secret_name(profile, mid), node_values[mid])
             selected.router["api_key_file"] = _put(clients[router], machine, router_key, secrets.ensure(router_key))
@@ -587,6 +670,8 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
         state.update(release_id=releases[mids[0]], nodes=mids, devices=list(devices or []),
                      started_at=time.time(), process_specs=[asdict(spec) for spec in processes],
                      rendered_router=rendered, launch=render.launch_summary(selected, profile))
+        # Components built from a local bundle (never published) are named on every launch record.
+        state["launch"]["unpublished_sources"] = unpublished((release_rows.get(mids[0]) or {}).get("manifest"))
         # A non-production advanced knob makes the whole run non-production, like a diagnostic does.
         state["production"] = state["production"] and state["launch"]["production"]
         _write(path, state)
@@ -606,25 +691,27 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
 
         def process(spec, location):
             machine = cluster.machines[spec.machine_id]
-            # DeepSeek rank 1 has no HTTP listener; its READY event accompanies
-            # the pair's health endpoint on rank 0.
-            health_machine = cluster.machines[mids[0]] if kind == "ds41-pair" else machine
-            port = int(spec.argv[spec.argv.index("--http-port") + 1])
-            return {"name": spec.role if kind == "ds41-pair" else _node_name(spec.machine_id),
+            # A pair's rank 1 has no HTTP listener; its readiness accompanies the pair's health endpoint on rank 0
+            # (checked by the supervisor on rank 0's machine, so a loopback-bound pair is checked on 127.0.0.1).
+            health_machine = cluster.machines[mids[0]] if pair else machine
+            address = health_machine.http_address if engine.bind == "lan" else "127.0.0.1"
+            port = int(spec.argv[spec.argv.index(render.port_flag(render.preset(name))) + 1])
+            return {"name": spec.role if pair else _node_name(spec.machine_id),
                     "machine": location, "argv": spec.argv, "env": spec.env,
                     "ready": spec.ready,
-                    "health_url": _url({"address": health_machine.http_address, "port": port}, "/health"),
-                    "key_file": node_paths[spec.machine_id], "ready_timeout_s": 600}
+                    "health_url": _url({"address": address, "port": port}, engine.health_path),
+                    "key_file": node_paths.get(spec.machine_id), "ready_timeout_s": 600}
 
-        for index, mid in enumerate(mids if kind == "qwen-replicas" else mids[:1]):
+        for index, mid in enumerate(engines.router_members(kind, mids) if pair else mids):
             payload = {"root": cluster.machines[mid].install_root, "lab_dir": _lab(cluster, mid),
-                       "label": f"hl-qwen-{_node_name(mid)}-{uuid.uuid4().hex[:4]}" if kind == "qwen-replicas" else f"hl-ds41-{uuid.uuid4().hex[:4]}",
-                       "kind": "single" if kind == "qwen-replicas" else "pair", "deadline_s": deadline_s,
-                       "approval": approval, "profile": profile, "layout_required": "1" if kind == "ds41-pair" else None,
+                       "label": (f"{engine.label}-{uuid.uuid4().hex[:4]}" if pair
+                                 else f"{engine.label}-{_node_name(mid)}-{uuid.uuid4().hex[:4]}"),
+                       "kind": "pair" if pair else "single", "deadline_s": deadline_s,
+                       "approval": approval, "profile": profile, "layout_required": engine.layout_required,
                        "peer_ssh": peer, "peer_root": cluster.machines[mids[1]].install_root if peer else None,
                        "peer_lab_dir": _lab(cluster, mids[1]) if peer else None,
-                       "processes": [process(processes[index], "local")] if kind == "qwen-replicas" else
-                       [process(spec, "local" if i == 0 else "peer") for i, spec in enumerate(processes)]}
+                       "processes": [process(spec, "local" if i == 0 else "peer") for i, spec in enumerate(processes)]
+                       if pair else [process(processes[index], "local")]}
             if diagnostics:
                 payload["diagnostic"] = diagnostics
             start(mid, payload, "engine")
@@ -954,6 +1041,7 @@ def status(profile=None):
     state = _read(path)
     result = {"profile": profile, "nodes": {}, "router": None,
               "assets": state.get("assets", []), "asset_cache_note": assets.CACHE_NOTE, "launch": state.get("launch"),
+              "unpublished_sources": (state.get("launch") or {}).get("unpublished_sources", []),
               "production": state.get("production", True), "diagnostic": state.get("diagnostic", [])}
     for mid, machine in state["machines"].items():
         try:

@@ -27,6 +27,7 @@ MAX_JSON = 256 * 1024
 VERBS = frozenset({"version", "doctor", "gpu",
                    # hyperloom_install (phase 1a)
                    "install", "job", "releases", "activate", "uninstall", "verify-model", "stat-assets", "push-release",
+                   "bundle-prepare", "bundle-accept",
                    # hyperloom_lease (phase 1a)
                    "lease", "cancel", "status", "logs", "stop", "put-secret",
                    "peer-run", "supervise-internal",
@@ -418,6 +419,18 @@ class Remote:
                   + "; do mv -f -- " + shlex.quote(stage) + '/"$f" "$f" || exit 1; done && rmdir -- ' + shlex.quote(stage),
                   timeout=timeout, cancel_event=cancel_event)
         return self.call("version", {}, timeout, cancel_event=cancel_event)
+
+    def upload(self, local, remote_path, timeout=3600, *, scp="scp", cancel_event=None):
+        """Copy one local file to an absolute node path the node tool chose (a staging name it then verifies)."""
+        remote_path = str(remote_path)
+        if (not PurePosixPath(remote_path).is_absolute() or ".." in PurePosixPath(remote_path).parts
+                or not re.fullmatch(r"[A-Za-z0-9/._+-]+", remote_path)):
+            raise RemoteError("upload destination must be a plain absolute node path")
+        if not Path(local).is_file():
+            raise RemoteError("upload source is not a file")
+        options = self.known_hosts.options(self.alias, self.address, self.port)
+        _run([scp, *options, "-P", str(self.port), "--", str(Path(local).absolute()), f"{self.target}:{remote_path}"],
+             timeout=timeout, cancel_event=cancel_event)
 
     def call(self, verb, payload, timeout=30, *, cancel_event=None):
         if not isinstance(verb, str) or verb not in VERBS:

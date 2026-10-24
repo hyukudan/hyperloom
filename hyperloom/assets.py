@@ -12,6 +12,7 @@ from pathlib import Path
 
 from . import secrets
 from .config import preset
+from . import engines
 
 
 FIELDS = ("bytes", "mtime_ns", "inode", "dev")
@@ -60,8 +61,8 @@ def write_manifest(entries):
 
 def profile_assets(cluster, profile, mids=None):
     from . import orchestrate as orch
-    _, kind, defaults = orch._profile(cluster, profile)
-    names = preset(kind)["assets"]
+    _, _, defaults = orch._profile(cluster, profile)
+    names = preset(orch._preset_name(cluster, profile))["assets"]
     return {mid: {name: asset for name, asset in cluster.assets.get(mid, {}).items() if name in names}
             for mid in (defaults if mids is None else mids)}
 
@@ -112,7 +113,7 @@ def inspect(cluster, profile, clients, mids=None, *, strict=False):
                          "ok": reason is None, "reason": reason,
                          "manifest": entry, "stat": current})
     _, kind, _ = orch._profile(cluster, profile)
-    if kind == "ds41-pair":
+    if engines.adapter(kind).topology == "pair":
         for name in {row["asset"] for row in rows}:
             ranks = [row for row in rows if row["asset"] == name and row["manifest"] is not None]
             if len({row["manifest"]["sha256"] for row in ranks}) > 1:

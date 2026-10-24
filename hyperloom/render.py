@@ -10,7 +10,7 @@ from pathlib import Path, PurePosixPath
 import re
 import sys
 
-from . import knobs
+from . import engines, knobs
 from .config import ConfigError, family, listen, preset, validate_overrides
 from .paths import repo_root
 
@@ -32,12 +32,17 @@ def _profile(cluster, name):
     data = preset(kind)
     validate_overrides(p.get("overrides", {}), data)
     knobs.validate(p.get("advanced", {}), data)
-    mids = p["nodes"] if kind == "qwen-replicas" else [p["rank0"], p["rank1"]]
+    mids = engines.members(p, family(kind))
     return p, kind, data, mids
 
 
+def port_flag(data):
+    """The argv flag that carries the serve port ({port}): --http-port, or --port for the MiniMax serve."""
+    return data["argv"][data["argv"].index("{port}") - 1]
+
+
 def _port(profile, data):
-    return profile.get("overrides", {}).get("--http-port", profile.get("port", data["port"]))
+    return profile.get("overrides", {}).get(port_flag(data), profile.get("port", data["port"]))
 
 
 def _tokens(asset):
@@ -80,6 +85,8 @@ def diagnostic_env(data, names, values):
 def render_processes(cluster, profile_name, *, diagnostics=(), run=None) -> list[ProcessSpec]:
     """Production render; diagnostics (names from the preset table) add observation-only env under <root>/log."""
     profile, kind, data, mids = _profile(cluster, profile_name)
+    engine = engines.adapter(family(kind))
+    replicas = engine.topology == "replicas"
     if diagnostics and (run is None or not re.fullmatch(r"[0-9a-f]{8,32}", run)):
         raise ConfigError("diagnostic runs need a hex run id")
     if "release_id" not in profile:
@@ -91,15 +98,16 @@ def render_processes(cluster, profile_name, *, diagnostics=(), run=None) -> list
         missing = set(data["assets"]) - assets.keys()
         if missing:
             raise ConfigError(f"{mid}: missing assets {sorted(missing)}")
-        try:
-            key_file = profile["api_key_files"][mid]
-        except KeyError as exc:
-            raise ConfigError(f"{mid}: missing node-local api_key_files path") from exc
         values = {name: item["path"] for name, item in assets.items()}
+        if engine.key_file:
+            try:
+                values["key_file"] = profile["api_key_files"][mid]
+            except KeyError as exc:
+                raise ConfigError(f"{mid}: missing node-local api_key_files path") from exc
         values.update(binary=str(PurePosixPath(machine.install_root) / "releases" / profile["release_id"] / "bin" / data["binary"]),
-                      address=machine.http_address, port=str(_port(profile, data)),
-                      key_file=key_file, rank=str(rank))
-        if kind == "qwen-replicas":
+                      address=machine.http_address if engine.bind == "lan" else "127.0.0.1",
+                      port=str(_port(profile, data)), rank=str(rank))
+        if "pins" in data:
             # These pins are part of the frozen numerical identity, not capacity settings.
             pins = data["pins"]
             if (assets["sidecar"]["sha256"] != pins["sidecar_sha256"]
@@ -108,9 +116,7 @@ def render_processes(cluster, profile_name, *, diagnostics=(), run=None) -> list
             values["golden_sha256"] = assets["golden"]["sha256"]
             if values["golden_sha256"] != pins["golden_sha256"]:
                 raise ConfigError("golden: manifest does not match the qualified preset")
-            tokens = _tokens(assets["calibration_tokens"])
-        else:
-            tokens = []
+        tokens = _tokens(assets["calibration_tokens"]) if "{tokens}" in data["argv"] else []
         argv = []
         for token in data["argv"]:
             if token == "{tokens}":
@@ -127,20 +133,21 @@ def render_processes(cluster, profile_name, *, diagnostics=(), run=None) -> list
         if diagnostics:
             env.update(diagnostic_env(data, diagnostics, {
                 "log_dir": str(PurePosixPath(machine.install_root) / "log"), "run": run,
-                "role": "replica-" + str(rank) if kind == "qwen-replicas" else f"rank{rank}"}))
-        result.append(ProcessSpec(mid, "replica" if kind == "qwen-replicas" else f"rank{rank}",
-                                  argv, env, "qwen-stderr" if kind == "qwen-replicas" else "ds41-json"))
+                "role": "replica-" + str(rank) if replicas else f"rank{rank}"}))
+        result.append(ProcessSpec(mid, "replica" if replicas else f"rank{rank}", argv, env, engine.ready))
     return result
 
 
 def launch_summary(cluster, profile_name) -> dict:
     """Whether a launch is the qualified production line, and which advanced knobs differ."""
-    profile, _, data, _ = _profile(cluster, profile_name)
-    return dict(knobs.summary(profile, data), receipt=data["receipt"], engine_sha=data["engine_sha"])
+    profile, kind, data, _ = _profile(cluster, profile_name)
+    return dict(knobs.summary(profile, data), receipt=data["receipt"], engine_sha=data["engine_sha"],
+                family=family(kind), preset=kind)
 
 
 def render_router(cluster, profile_name) -> dict:
     profile, kind, data, mids = _profile(cluster, profile_name)
+    engine = engines.adapter(family(kind))
     settings = cluster.router
     host = settings.get("machine", "local")
     default_listen = cluster.pc.get("router_listen", "127.0.0.1:18600")
@@ -155,12 +162,19 @@ def render_router(cluster, profile_name) -> dict:
     if not ipaddress.ip_address(endpoint["address"]).is_loopback and "api_key_file" not in obj:
         raise ConfigError("non-loopback router requires a router-host-local api_key_file")
     keys = settings.get("replica_api_key_files", {})
-    for mid in (mids if kind == "qwen-replicas" else mids[:1]):
-        if mid not in keys:
-            raise ConfigError(f"{mid}: missing router-host-local replica_api_key_files path")
-        obj["replicas"].append({"id": mid, "node": mid, "address": cluster.machines[mid].http_address,
-                                "port": _port(profile, data), "max_inflight": settings.get("max_inflight", 8),
-                                "api_key_file": keys[mid]})
+    for mid in engines.router_members(family(kind), mids):
+        replica = {"id": mid, "node": mid, "address": cluster.machines[mid].http_address,
+                   "port": _port(profile, data), "max_inflight": settings.get("max_inflight", 8)}
+        if engine.bind == "loopback":
+            # No key support in the engine: it binds 127.0.0.1, so only a router on the same machine reaches it.
+            if host != mid:
+                raise ConfigError(f"{family(kind)} engines bind loopback only: run the router on {mid}")
+            replica["address"] = "127.0.0.1"
+        if engine.key_file:
+            if mid not in keys:
+                raise ConfigError(f"{mid}: missing router-host-local replica_api_key_files path")
+            replica["api_key_file"] = keys[mid]
+        obj["replicas"].append(replica)
     prefill = {"policy": settings.get("policy", "nodes")}
     if "prefill_service" in profile:
         # Phase 3a: the service listens on the control machine's loopback, so the router runs there too.

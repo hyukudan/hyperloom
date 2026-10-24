@@ -147,8 +147,12 @@ def read_json(path):
         raise ConfigError(f"cannot read JSON: {exc}") from exc
 
 
+# Every launchable preset; the engine family of each (its "family" key, else its name) is in engines.FAMILIES.
+PRESET_NAMES = ("qwen-replicas", "ds41-pair", "ds41-pair-long", "qwen-replicas-w5", "ds41-pair-w5", "minimax-pair")
+
+
 def preset(name):
-    if name not in ("qwen-replicas", "ds41-pair", "ds41-pair-long"):
+    if name not in PRESET_NAMES:
         raise ConfigError(f"unknown preset: {name}")
     return read_json(PRESETS / f"{name}.json")
 
@@ -302,13 +306,16 @@ def parse(obj: dict) -> Cluster:
                                        "release_id", "prefill_service", "advanced"))
         kind = p.get("preset", name)
         data = preset(kind)
+        from . import engines
+        engine = engines.adapter(family(kind))
+        engines.check_components(data, f"preset {kind}")
         if "receipt" in p and p["receipt"] != data["receipt"]:
             raise ConfigError("profile.receipt: does not match qualified preset")
         if "release_id" in p and (not isinstance(p["release_id"], str) or not re.fullmatch(r"[0-9a-f]{12}", p["release_id"])):
             raise ConfigError("profile.release_id: expected 12 lowercase hex characters")
-        if kind == "qwen-replicas":
+        if engine.topology == "replicas":
             if "rank0" in p or "rank1" in p:
-                raise ConfigError("Qwen profile uses nodes")
+                raise ConfigError("replica profile uses nodes")
             mids = p.get("nodes")
             if not isinstance(mids, list) or not 1 <= len(mids) <= 64 or any(not isinstance(x, str) for x in mids):
                 raise ConfigError("profile.nodes: expected 1..64 machine ids")
@@ -323,7 +330,7 @@ def parse(obj: dict) -> Cluster:
         if any(machines[mid].os != "linux" for mid in mids):
             raise ConfigError("Phase 0 engine presets require Linux workers")
         integer(p.get("port", data["port"]), "profile.port", 1, 65535)
-        keys = record(p.get("api_key_files", {}), "profile.api_key_files", optional=mids)
+        keys = record(p.get("api_key_files", {}), "profile.api_key_files", optional=mids if engine.key_file else ())
         for mid, value in keys.items():
             absolute(value, "profile.api_key_files", machines[mid].os)
         validate_overrides(p.get("overrides", {}), data)

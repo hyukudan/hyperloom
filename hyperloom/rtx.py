@@ -145,6 +145,9 @@ def _service(cluster, profile_name):
     kind = family(profile.get("preset", profile_name))
     if kind not in data["decode_presets"]:
         raise ConfigError(f"{s['preset']} does not hand off to {kind} profiles")
+    if preset(profile.get("preset", profile_name))["engine_sha"] != data["engine_sha"]:
+        # The handoff imports the service's state into the decode pair: one engine pin on both sides.
+        raise ConfigError(f"{s['preset']} is qualified at engine {data['engine_sha'][:8]}, not at this profile's pin")
     return s, data, kind
 
 

@@ -25,8 +25,10 @@ ENV_NAME = re.compile(r"STRIX_[A-Z0-9_]{1,64}")
 RESERVED_ENV = re.compile(r"STRIX_(DIST_|DS41_(OVERLAY|CB4|TRELLIS)|.*(TRANSPORT|LAYOUT|USB4|DEVICE|VISIBLE)).*")
 
 
-def engine_pin():
-    return read_json(repo_root() / "versions.lock")["components"]["engine"]["commit"]
+def engine_pin(data=None):
+    """The engine commit a preset builds: its own component pin, else versions.lock's default."""
+    own = ((data or {}).get("components") or {}).get("engine") or {}
+    return own.get("commit") or read_json(repo_root() / "versions.lock")["components"]["engine"]["commit"]
 
 
 def _scalar(value, where):
@@ -81,7 +83,7 @@ def validate(chosen, data):
     """Validate a profile's ``advanced`` selection; returns {name: value}."""
     table = check_table(data)
     chosen = record(chosen, "profile.advanced", optional=table)
-    if chosen and data["engine_sha"] != engine_pin():
+    if chosen and data["engine_sha"] != engine_pin(data):
         raise ConfigError("profile.advanced: preset is not qualified at the pinned engine; advanced knobs refused")
     for name, value in chosen.items():
         if type(value) is bool or value not in table[name]["values"]:

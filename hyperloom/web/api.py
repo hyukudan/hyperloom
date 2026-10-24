@@ -27,7 +27,7 @@ import time
 import uuid
 from urllib.request import ProxyHandler, Request, build_opener
 
-from hyperloom import __version__, cli, config, orchestrate, remote, render, secrets
+from hyperloom import __version__, cli, config, engines, orchestrate, remote, render, secrets
 from hyperloom.adapters import engine, router
 from hyperloom.paths import repo_root
 from hyperloom.stats import Window
@@ -515,7 +515,7 @@ class API:
                     selected = deepcopy(cluster)
                     if row["release"]:
                         selected.profiles[name]["release_id"] = row["release"]
-                    if declared.get("preset", name) == "qwen-replicas":
+                    if engines.adapter(config.family(declared.get("preset", name))).topology == "replicas":
                         selected.profiles[name]["nodes"] = row["nodes"]
                     specs = [asdict(spec) for spec in render.render_processes(selected, name)]
                 except (OSError, ValueError, KeyError):
@@ -948,8 +948,8 @@ class API:
             if action in ("up", "install"):
                 cluster = self.orchestrate.load_cluster(Path(args.get("config", self.config_path)), config)
                 _, kind, _ = self.orchestrate._profile(cluster, args["profile"])
-                if kind != "qwen-replicas":
-                    raise APIError("later phase · only Qwen replicas are available in Phase 1b")
+                if engines.adapter(kind).topology != "replicas":
+                    raise APIError("later phase · only replica profiles are available in Phase 1b")
             return self._run_detached(action, args)
         if action == "cancel":
             profile = args.get("profile")
@@ -971,11 +971,11 @@ class API:
         cluster = self.orchestrate.load_cluster(Path(args.get("config", self.config_path)), config)
         if action in ("up", "install"):
             _, kind, mids = self.orchestrate._profile(cluster, args["profile"])
-            if kind != "qwen-replicas":
-                raise APIError("later phase · only Qwen replicas are available in Phase 1b")
+            if engines.adapter(kind).topology != "replicas":
+                raise APIError("later phase · only replica profiles are available in Phase 1b")
         if action == "install":
             release = self.orchestrate.install(cluster, args.get("build_on") or mids[0],
-                                               ["strix-hip-decode-token"], profile=args["profile"])
+                                               list(engines.adapter(kind).targets), profile=args["profile"])
             return {"release_id": release}
         if action == "up":
             supplied = [key in args for key in ("approval_ref", "approval_lease", "approval_end")]
