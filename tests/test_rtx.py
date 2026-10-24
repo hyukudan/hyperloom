@@ -634,11 +634,15 @@ class DeviceTests(unittest.TestCase):
         row = f"{PRO}, NVIDIA RTX PRO 6000 Blackwell Workstation Edition, 00000000:01:00.0, 97887\n"
         info = rtx.verify_pro(PRO, self.smi_by_query(row))
         self.assertEqual(info["memory_total_mib"], 97887)
-        # Another job on the PRO (listed, or only visible as device memory under WDDM) refuses the start.
-        with self.assertRaisesRegex(rtx.ServiceError, "busy: compute processes"):
-            rtx.verify_pro(PRO, self.smi_by_query(row, apps=f"{PRO}, 777, [N/A]\n"))
+        # Another job on the PRO (a listed process with real memory, or device memory under WDDM) refuses the start.
         with self.assertRaisesRegex(rtx.ServiceError, "busy: 85000 MiB"):
             rtx.verify_pro(PRO, self.smi_by_query(row, used="85000"))
+        # WDDM: desktop apps listed with [N/A] memory on an idle PRO are not a job; a real job shows device memory.
+        rtx.verify_pro(PRO, self.smi_by_query(row, apps=f"{PRO}, 29048, [N/A]\n{PRO}, 80700, [N/A]\n", used="40"))
+        with self.assertRaisesRegex(rtx.ServiceError, "busy: 70000 MiB"):
+            rtx.verify_pro(PRO, self.smi_by_query(row, apps=f"{PRO}, 29048, [N/A]\n", used="70000"))
+        with self.assertRaisesRegex(rtx.ServiceError, "busy: compute processes .777."):
+            rtx.verify_pro(PRO, self.smi_by_query(row, apps=f"{PRO}, 777, 5000\n", used="40"))
         rtx.verify_pro(PRO, self.smi_by_query(row, apps=f"{OTHER}, 777, 300\n"))
         with self.assertRaises(rtx.ServiceError):
             rtx.verify_pro(PRO, self.smi(f"{PRO}, NVIDIA GeForce RTX 4090, 00000000:02:00.0, 24564\n"))

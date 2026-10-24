@@ -349,8 +349,10 @@ def verify_pro(pro_uuid, run=subprocess.run, require_idle=True):
 
 
 def pro_busy(pro_uuid, run=subprocess.run):
-    """None when the PRO is idle, else what holds it (listed processes, or device memory under WDDM)."""
-    others = [pid for gpu, pid, _ in compute_apps(run) if gpu == pro_uuid]
+    """None when the PRO is idle, else what holds it. Under WDDM the driver lists desktop processes (a GPU-accelerated
+    UI, a tray app) on every GPU with memory [N/A]; those alone are not a job. A listed process with real memory above
+    idle is, and so is device memory above idle (a real job under WDDM shows up there even when its row is [N/A])."""
+    others = [pid for gpu, pid, used in compute_apps(run) if gpu == pro_uuid and used is not None and used > PRO_IDLE_MIB]
     if others:
         return f"compute processes {sorted(others)}"
     used = device_used_mib(pro_uuid, run)
