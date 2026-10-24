@@ -26,6 +26,8 @@ MAX_JSON = 256 * 1024
 MAX_LOG = 64 * 1024
 BASE_PATH = "/usr/local/bin:/usr/bin:/bin"
 TERMINAL = {"stopped", "failed", "aborted", "cancelled"}
+# Lease records of non-lab systemd units (hyperloom_service) carry this label prefix.
+SERVICE_PREFIX = "hl-svc-"
 USB_LAYOUT = Path("/run/usb4stream-layout.json")
 _launches = []
 
@@ -303,16 +305,95 @@ def state_lock(root, lease):
         yield
 
 
+@contextmanager
+def root_lock(root):
+    """Serializes the lease/service exclusion check with the record it guards (nodes are POSIX; elsewhere,
+    as in unit tests on the control machine, there is no lock)."""
+    try:
+        import fcntl
+    except ImportError:
+        yield
+        return
+    filename = inside(root, "run", "root.lock")
+    with os.fdopen(os.open(filename, os.O_RDWR | os.O_CREAT, 0o600), "r+b") as stream:
+        fcntl.flock(stream, fcntl.LOCK_EX)
+        yield
+
+
+def boot_id():
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+    except OSError:
+        return None
+
+
+def service_stale(state):
+    """A non-terminal non-lab service record whose unit process is gone (SIGKILL, OOM, power loss)."""
+    if not str(state.get("label", "")).startswith(SERVICE_PREFIX) or state.get("state") in TERMINAL:
+        return False
+    if state.get("boot_id") is not None and state["boot_id"] != boot_id():
+        return True
+    pid = state.get("pid")
+    if type(pid) is int and pid > 0 and os.name == "posix":
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False
+    return False
+
+
+def settle_service(root, filename, state, reason):
+    state = {**state, "state": "failed", "reason": reason, "end_time": time.time()}
+    write_json(filename, state)
+    return state
+
+
+def live_records(root):
+    """Non-terminal lease records of this root; stale service records are settled as failed first."""
+    result = []
+    for filename in sorted(inside(root, "run").glob("lease-*.json")):
+        filename = inside(root, "run", filename.name)
+        state = read_json(filename)
+        if state.get("state") in TERMINAL:
+            continue
+        if service_stale(state):
+            settle_service(root, filename, state, "stale: the unit process is gone")
+            continue
+        result.append(state)
+    return result
+
+
+def service_specs(root):
+    return sorted(path.name for path in inside(root, "etc").glob("service-*.json"))
+
+
+def exclude_services(root, gpu):
+    """Leases and non-lab units never share a root: refuse while a service unit runs, and for GPU work
+    (a turn, a pair peer) while a unit is installed at all (an enabled unit would start again)."""
+    running = [state.get("label") for state in live_records(root)
+               if str(state.get("label", "")).startswith(SERVICE_PREFIX)]
+    if running:
+        raise ValueError("refused: a non-lab service unit is running on this root (" + ", ".join(running)
+                         + "); stop it with 'hyperloom service stop'")
+    installed = service_specs(root) if gpu else []
+    if installed:
+        raise ValueError("refused: a non-lab service unit is installed on this root (etc/" + ", etc/".join(installed)
+                         + "); remove it with 'hyperloom service remove' before using lab leases")
+
+
 def start_lease(payload):
     spec = validate_spec(payload)
     root = marked_root(spec["root"], spec.get("lab_dir"))
     if os.name != "posix":
         raise ValueError("node leases require POSIX process groups")
     spec["root"] = str(root)
+    if spec["label"].startswith(SERVICE_PREFIX):
+        raise ValueError("hl-svc- labels are reserved for non-lab service units")
     lease = uuid.uuid4().hex
     spec["lease"] = lease
     filename = inside(root, "run", "spec-" + lease + ".json")
-    write_json(filename, spec)
     state = {"lease": lease, "label": spec["label"], "kind": spec["kind"],
              "state": "queued", "queued_at": time.time(), "processes": [],
              "deadline_s": spec["deadline_s"], "approval": spec.get("approval"), "reason": None}
@@ -320,7 +401,10 @@ def start_lease(payload):
         state["profile"] = text(spec["profile"], "profile")
     if spec.get("diagnostic"):
         state.update(production=False, diagnostic=spec["diagnostic"])
-    write_json(record_path(root, lease), state)
+    with root_lock(root):
+        exclude_services(root, gpu=spec["kind"] != "none" or spec.get("lab_dir") is not None)
+        write_json(filename, spec)
+        write_json(record_path(root, lease), state)
     boot = Path(__file__).resolve().with_name("hyperloom-node")
     command = [str(boot), "supervise-internal", str(filename)]
     env = environment({})
@@ -693,6 +777,8 @@ def peer_run(payload, stream=None):
     root = marked_root(payload["root"])
     lease = identifier(payload["lease"])
     diagnostic_names(payload.get("diagnostic"))
+    with root_lock(root):
+        exclude_services(root, gpu=True)
     proc = validate_process(payload["process"])
     proc["machine"] = "local"
     child = Child(root, lease, proc)

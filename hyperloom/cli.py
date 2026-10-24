@@ -407,6 +407,11 @@ def main(argv=None):
     metrics.add_argument("operation", choices=("dump", "serve"))
     metrics.add_argument("profile", nargs="?")
     metrics.add_argument("--listen", default="127.0.0.1:18701", help="loopback IP:port (serve only)")
+    service = commands.add_parser("service", help="non-lab systemd --user units (lab_mode: false only)")
+    service.add_argument("operation", choices=("install", "start", "stop", "status", "remove"))
+    service.add_argument("profile")
+    service.add_argument("--enable", action="store_true", help="install: also enable the unit at login")
+    service.add_argument("--config", type=Path, default=config_path())
     keys = commands.add_parser("keys").add_subparsers(dest="key_operation", required=True)
     keys.add_parser("rotate").add_argument("name")
     export = keys.add_parser("export")
@@ -499,6 +504,12 @@ def main(argv=None):
                 exporter.serve(args.listen, args.profile)
         elif args.command == "hosts":
             _json(_hosts(args))
+        elif args.command == "service":
+            result = _module("hyperloom.service").run(_cluster(args.config), args.operation, args.profile,
+                                                      enable=args.enable)
+            _json(result)
+            if not result["ok"]:
+                return 1
         elif args.command == "keys":
             if args.key_operation == "export":
                 _json(_module("hyperloom.orchestrate").export_key(args.profile, args.out))

@@ -464,6 +464,30 @@ def _put(client, machine, name, value):
     return str(PurePosixPath(machine.install_root) / "etc/keys" / name)
 
 
+def prelaunch(cluster, profile, settings, kind, clients, mids):
+    """The node checks and keys every launch path shares (up and service install), in this order: the deployed
+    node tool matches this checkout, the profile's assets pass the strict inspection, every node runs the same
+    installed release (checked for the advanced knob targets), then each node gets its API key file.
+
+    Returns {"assets", "release_id", "node_values", "node_paths"}; raises before any key is pushed when a
+    check fails."""
+    _check_tools(clients, mids, profile)
+    inspected = assets.inspect(cluster, profile, clients, mids, strict=True)
+    releases = {mid: _release(clients[mid], cluster.machines[mid], profile, settings.get("release_id"),
+                              needs=_knob_targets(settings, kind))
+                for mid in mids}
+    if len(set(releases.values())) != 1:
+        raise OrchestrationError("profile nodes must run the same release id: "
+                                 + ", ".join(f"{mid} {rid}" for mid, rid in releases.items()))
+    node_values, node_paths = {}, {}
+    for mid in mids:
+        name = _secret_name(profile, mid)
+        node_values[mid] = secrets.ensure(name)
+        node_paths[mid] = _put(clients[mid], cluster.machines[mid], name, node_values[mid])
+    return {"assets": inspected, "release_id": releases[mids[0]], "node_values": node_values,
+            "node_paths": node_paths}
+
+
 def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s=1140, approval=None, queue_timeout_s=3600,
        diagnostics=None):
     _approval(deadline_s, approval)
@@ -535,23 +559,11 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
         selected = deepcopy(cluster)
         if kind == "qwen-replicas":
             selected.profiles[profile]["nodes"] = mids
-        releases = {}
-        _check_tools(clients, mids, profile)
-        state["assets"] = assets.inspect(cluster, profile, clients, mids, strict=True)
+        prepared = prelaunch(cluster, profile, settings, kind, clients, mids)
+        state["assets"] = prepared["assets"]
         state["asset_cache_note"] = assets.CACHE_NOTE
-        for mid in mids:
-            releases[mid] = _release(clients[mid], cluster.machines[mid], profile, settings.get("release_id"),
-                                     needs=_knob_targets(settings, kind))
-        if len(set(releases.values())) != 1:
-            raise OrchestrationError("profile nodes must run the same release id: "
-                                     + ", ".join(f"{mid} {rid}" for mid, rid in releases.items()))
-        selected.profiles[profile]["release_id"] = releases[mids[0]]
-        node_values = {}
-        node_paths = {}
-        for mid in mids:
-            name = _secret_name(profile, mid)
-            node_values[mid] = secrets.ensure(name)
-            node_paths[mid] = _put(clients[mid], cluster.machines[mid], name, node_values[mid])
+        selected.profiles[profile]["release_id"] = prepared["release_id"]
+        node_values, node_paths = prepared["node_values"], prepared["node_paths"]
         selected.profiles[profile]["api_key_files"] = node_paths
         selected.router["machine"] = router
         selected.router["replica_api_key_files"] = {}
@@ -584,7 +596,7 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
         processes = render.render_processes(selected, profile, **(
             {"diagnostics": diagnostics, "run": state["token"][:12]} if diagnostics else {}))
         rendered = render.render_router(selected, profile)
-        state.update(release_id=releases[mids[0]], nodes=mids, devices=list(devices or []),
+        state.update(release_id=prepared["release_id"], nodes=mids, devices=list(devices or []),
                      started_at=time.time(), process_specs=[asdict(spec) for spec in processes],
                      rendered_router=rendered, launch=render.launch_summary(selected, profile))
         # A non-production advanced knob makes the whole run non-production, like a diagnostic does.

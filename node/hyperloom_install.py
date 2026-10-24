@@ -133,8 +133,17 @@ def checked_root(payload, create=False):
     for name in ("etc", "run", "log", "src", "releases"):
         inside(root, name).mkdir(exist_ok=True)
     if create:
+        if lab is not None and service_specs(root):
+            raise ValueError("refused: a non-lab service unit is installed on this root (etc/"
+                             + ", etc/".join(service_specs(root)) + "); remove it with 'hyperloom service remove' "
+                             "before installing in lab mode")
         atomic_json(policy_path, {"lab_dir": lab, "asset_paths": sorted(set(protected) - {lab})})
     return root
+
+
+def service_specs(root):
+    """Non-lab unit specs (hyperloom_service) of this root; each references one of its releases."""
+    return sorted(path.name for path in inside(root, "etc").glob("service-*.json"))
 
 
 def lab_idle(lab):
@@ -149,11 +158,27 @@ def lab_idle(lab):
         raise ValueError("builds and model hashing are refused during a PAIR turn")
 
 
+def service_gone(state):
+    """A non-lab service record whose unit process is gone (killed, node rebooted): not an active lease."""
+    if not str(state.get("label", "")).startswith("hl-svc-"):
+        return False
+    if state.get("boot_id") is not None and state["boot_id"] != boot_id():
+        return True
+    if os.name == "posix" and type(state.get("pid")) is int and state["pid"] > 0:
+        try:
+            os.kill(state["pid"], 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            pass
+    return False
+
+
 def active_leases(root, profile=None):
     result = []
     for path in inside(root, "run").glob("lease-*.json"):
         state = read_json(inside(root, "run", path.name))
-        if state.get("state") in TERMINAL:
+        if state.get("state") in TERMINAL or service_gone(state):
             continue
         recorded_profile = state.get("profile", state.get("spec", {}).get("profile"))
         # Older lease records have no profile: fail closed rather than switch live code.
@@ -699,6 +724,9 @@ def run(verb, payload):
         elif verb == "uninstall":
             if active_leases(root):
                 raise ValueError("cannot uninstall while a lease is running")
+            if service_specs(root):
+                raise ValueError("cannot uninstall while a non-lab service unit references this root's releases (etc/"
+                                 + ", etc/".join(service_specs(root)) + "); run 'hyperloom service remove' first")
             if any(read_json(p).get("state") in {"queued", "running"}
                    for p in (root / "run").glob("job-*.json") if not p.name.endswith(".spec.json")):
                 raise ValueError("cannot uninstall while a job is running")
