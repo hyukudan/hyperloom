@@ -113,6 +113,29 @@ class RemoteTests(unittest.TestCase):
                 remote.keyscan("192.0.2.1", 2222)
         self.assertEqual(run.call_count, 1)
 
+    def test_keyscan_timeout_is_not_retried(self):
+        with (patch.object(remote.os, "name", "nt"),
+              patch.object(remote.shutil, "which", return_value=r"C:\Git\usr\bin\ssh-keyscan.exe"),
+              patch.object(remote.os.path, "isfile", return_value=True),
+              patch.object(remote, "_run", side_effect=remote.RemoteTimeout("remote operation timed out")) as run):
+            with self.assertRaises(remote.RemoteTimeout):
+                remote.keyscan("192.0.2.1", 2222)
+        self.assertEqual(run.call_count, 1)
+
+    def test_has_tool_is_a_read_only_test(self):
+        self.pin()
+        with patch.object(remote, "_run", return_value=b"no\n") as run:
+            self.assertFalse(self.client.has_tool(5))
+        command = run.call_args.args[0][-1]
+        self.assertTrue(command.startswith("if test -f "))
+        for word in ("mkdir", "scp", "mv", "chmod", "rm"):
+            self.assertNotIn(word, command.split())
+        with patch.object(remote, "_run", return_value=b"yes\n"):
+            self.assertTrue(self.client.has_tool(5))
+        with patch.object(remote, "_run", return_value=b"maybe\n"):
+            with self.assertRaises(remote.RemoteError):
+                self.client.has_tool(5)
+
     def test_unknown_key_refused_before_connection(self):
         with self.assertRaisesRegex(remote.RemoteError, "unknown host key"):
             self.client.call("doctor", {}, 2)

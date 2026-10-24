@@ -50,6 +50,10 @@ class RemoteError(RuntimeError):
     pass
 
 
+class RemoteTimeout(RemoteError):
+    """The command ran out of time or was cancelled (not a failure of the tool itself)."""
+
+
 @dataclass(frozen=True)
 class HostKey:
     algorithm: str
@@ -194,9 +198,9 @@ def _run(argv, data=b"", timeout=30, cancel_event=None, limit=MAX_JSON, executab
             if overflow.is_set():
                 raise RemoteError("OpenSSH output exceeds the size limit")
             if cancel_event is not None and cancel_event.is_set():
-                raise RemoteError("remote operation cancelled")
+                raise RemoteTimeout("remote operation cancelled")
             if time.monotonic() >= deadline:
-                raise RemoteError("remote operation timed out")
+                raise RemoteTimeout("remote operation timed out")
             time.sleep(0.01)
         if overflow.is_set():
             raise RemoteError("OpenSSH output exceeds the size limit")
@@ -219,6 +223,9 @@ def keyscan(address, port):
     argv = ["ssh-keyscan", "-t", "ed25519,ecdsa,rsa", "-p", str(port), address]
     try:
         return _keys(_run(argv))
+    except RemoteTimeout:
+        # An unreachable or slow host times out with any tool: do not double the wait.
+        raise
     except RemoteError:
         # Windows' bundled ssh-keyscan 9.5 offers a key exchange it cannot complete
         # (sntrup761) and finds no keys; retry with the one on PATH or Git for Windows'
@@ -354,6 +361,15 @@ class Remote:
         except (UnicodeError, ValueError) as exc:
             raise RemoteError("invalid remote boot path") from exc
         self.node_path = path
+
+    def has_tool(self, timeout=30, *, cancel_event=None):
+        """Whether ~/.hyperloom-boot/hyperloom-node exists (read-only; changes nothing on the node)."""
+        raw = self._ssh('if test -f "$HOME/.hyperloom-boot/hyperloom-node"; then printf \'yes\\n\'; '
+                        "else printf 'no\\n'; fi", timeout=timeout, cancel_event=cancel_event)
+        answer = raw.strip()
+        if answer not in (b"yes", b"no"):
+            raise RemoteError("unexpected reply to the node tool check")
+        return answer == b"yes"
 
     def bootstrap(self, source=None, timeout=30, *, scp="scp", cancel_event=None):
         source = Path(source) if source is not None else repo_root() / "node"
