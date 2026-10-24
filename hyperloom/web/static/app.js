@@ -14,6 +14,21 @@
     settings: '<circle cx="10" cy="10" r="3"/><path d="M10 2v3M10 15v3M2 10h3M15 10h3M4.3 4.3l2 2M13.7 13.7l2 2M4.3 15.7l2-2M13.7 6.3l2-2"/>'
   };
   const endpoints = ["devices", "topology", "models", "profiles", "stats", "logs", "settings"];
+  // Feature pages (static/pages/*.js) register here before this file runs:
+  //   (window.HyperloomPages ||= {}).id = {title, icon, group, order, home, endpoints() -> ["doc?query"...],
+  //     render() -> html, ready()?, error()?, actions()? -> header html, after(main)?, refresh()?}
+  // Their documents are fetched with the core ones while the page is open (state.docs[endpoint]).
+  // Controls with data-page-action are handled by the page itself.
+  const pages = window.HyperloomPages || {};
+  const coreOrder = Object.keys(routes);
+  for (const [id, page] of Object.entries(pages).sort((a, b) => (a[1].order ?? 100) - (b[1].order ?? 100))) {
+    if (Object.hasOwn(routes, id) || !/^[a-z][a-z0-9-]*$/.test(id) || typeof page?.render !== "function") continue;
+    routes[id] = page.title || id;
+    navIcons[id] = page.icon || '<circle cx="10" cy="10" r="6"/>';
+  }
+  const homeRoute = Object.keys(pages).find(id => pages[id]?.home && Object.hasOwn(routes, id)) || "devices";
+  const pageOf = name => coreOrder.includes(name) ? null : pages[name] || null;
+  const pageEndpoints = name => { try { return (pageOf(name)?.endpoints?.() || []).filter(e => typeof e === "string" && e); } catch (_) { return []; } };
   const api = "/hyperloom/api/";
   const state = {docs: {}, fetched: {}, errors: {}, fresh: false, busy: false, job: null, selected: "", dialog: null, returnFocus: null, logProcess: "all", logLevel: "warnings", logText: "", range: 900, warnings: new Set(), generation: 0, operation: 0, switching: false};
   let polling = null;
@@ -296,14 +311,19 @@
   }
   function route() {
     const name = location.hash.replace(/^#\/?/, "").split(/[?&]/)[0];
-    return Object.hasOwn(routes, name) ? name : "devices";
+    return Object.hasOwn(routes, name) ? name : homeRoute;
   }
   function render() {
     const page = route(), source = page === "engines" ? "profiles" : page;
     document.title = `Hyperloom · ${routes[page]}`;
     document.body.dataset.page = page;
     $("page-title").textContent = routes[page];
-    if (!$("navigation").childElementCount) $("navigation").innerHTML = Object.entries(routes).map(([key, title]) => `<a href="#/${key}"><svg class="ic" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">${navIcons[key]}</svg>${esc(title)}</a>`).join("");
+    if (!$("navigation").childElementCount) {
+      const link = key => `<a href="#/${key}"><svg class="ic" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">${navIcons[key]}</svg>${esc(routes[key])}</a>`;
+      const groups = {};
+      for (const key of Object.keys(routes)) { const g = pageOf(key)?.group || ""; (groups[g] ||= []).push(key); }
+      $("navigation").innerHTML = Object.entries(groups).map(([g, keys]) => (g ? `<div class="nav-group">${esc(g)}</div>` : "") + keys.map(link).join("")).join("");
+    }
     $("navigation").querySelectorAll("a").forEach(link => {
       const active = link.getAttribute("href") === `#/${page}`;
       link.classList.toggle("on", active);
@@ -311,7 +331,8 @@
     });
     const current = selected(), disabled = mutationReason();
     const controls = page === "devices" ? button("Add by address", "add", {id: "add-machine", style: "pri", disabled}) + button("Doctor…", "doctor-dialog", {id: "doctor-devices", disabled}) : page === "engines" ? button("Start profile…", "start-dialog", {id: "start-profile", style: "pri", disabled: disabled || profileBlocker(current)}) + button("Install…", "install-dialog", {id: "install-profile", disabled: disabled || profileBlocker(current)}) + button("Doctor…", "doctor-dialog", {id: "doctor-profile", disabled}) + button("Stop profile", "stop", {id: "stop-profile", style: "dan", disabled: current ? "" : "No profile configured"}) : page === "topology" ? button("Measure Ethernet links", "", {disabled: "later phase · Phase 2"}) : page === "logs" ? button("Download redacted log", "export-log", {disabled: logEntries().length ? "" : "No log entries"}) : "";
-    if ($("page-actions").innerHTML !== controls) $("page-actions").innerHTML = controls;
+    const pageControls = pageOf(page)?.actions ? (() => { try { return pageOf(page).actions(); } catch (_) { return ""; } })() : controls;
+    if ($("page-actions").innerHTML !== pageControls) $("page-actions").innerHTML = pageControls;
     const running = profiles().find(p => ["running", "starting", "stopping", "degraded", "error", "failed"].includes(p.state));
     const global = running?.state || (profiles().length ? "stopped" : state.docs.profiles ? "not configured" : "loading");
     $("global-status").outerHTML = `<span id="global-status">${statusPill(global)}</span>`;
@@ -320,8 +341,14 @@
     $("control-machine").textContent = local ? `Control · ${local.name || local.id}` : "Control · this machine";
     $("version").textContent = doc("settings").version ? `Hyperloom ${doc("settings").version}` : "Hyperloom · local portal";
     const renderers = {devices: renderDevices, topology: renderTopology, models: renderModels, engines: renderEngines, stats: renderStats, logs: renderLogs, settings: renderSettings};
-    // The recipes page (recipes.js) owns its documents; it is rendered with the same focus/details preservation.
-    const external = page === "recipes" ? window.HyperloomRecipes : null;
+    // The recipes page (recipes.js) and feature pages own their documents; they are rendered with the same
+    // focus/details preservation.
+    const feature = pageOf(page) && page !== "recipes" ? pageOf(page) : null;
+    const external = page === "recipes" ? window.HyperloomRecipes : feature ? {
+      render: feature.render,
+      ready: () => feature.ready ? feature.ready() : pageEndpoints(page).every(e => state.docs[e]),
+      error: () => feature.error ? feature.error() : pageEndpoints(page).map(e => state.errors[e]).filter(Boolean).join(" · "),
+    } : null;
     if (external) renderers.recipes = external.render;
     if (external ? external.ready() : state.docs[source]) {
       const focused = document.activeElement;
@@ -342,8 +369,9 @@
         if (selection != null && typeof $(focusId).setSelectionRange === "function" && ["text", "search", "textarea"].includes($(focusId).type)) $(focusId).setSelectionRange(selection, selection);
       }
       if (scroll != null && $("main").querySelector(".log")) $("main").querySelector(".log").scrollTop = scroll;
+      if (feature?.after) { try { feature.after($("main")); } catch (error) { console.error(error); } }
     } else if (external && external.error()) {
-      $("main").innerHTML = empty("Recipe data unavailable", external.error(), button("Retry", "refresh"));
+      $("main").innerHTML = empty(feature ? `${routes[page]} data unavailable` : "Recipe data unavailable", external.error(), button("Retry", "refresh"));
     } else if (state.errors[source]) {
       $("main").innerHTML = empty("Portal data unavailable", state.errors[source], button("Retry", "refresh"));
     }
@@ -377,7 +405,7 @@
     if (inFlight) return inFlight;
     const generation = state.generation;
     inFlight = (async () => {
-      const names = [...endpoints, "jobs"];
+      const names = [...endpoints, ...pageEndpoints(route()).filter(e => !endpoints.includes(e)), "jobs"];
       pollAbort = new AbortController();
       const timeout = setTimeout(() => pollAbort?.abort(), 30000);
       const results = await Promise.allSettled(names.map(name => {
@@ -565,8 +593,8 @@
     if (!control || control.disabled) return;
     const action = control.dataset.action;
     if (action === "stop" || action === "cancel") { stop(action === "cancel"); return; }
-    if (action === "refresh") { refresh(); window.HyperloomRecipes?.refresh(); return; }
-    if (control.dataset.recipeAction) return;      // recipes.js handles its own controls
+    if (action === "refresh") { refresh(); window.HyperloomRecipes?.refresh(); pageOf(route())?.refresh?.(); return; }
+    if (control.dataset.recipeAction || control.dataset.pageAction) return;      // recipes.js and feature pages handle their own controls
     if (action === "export-csv") { exportCSV(); return; }
     if (action === "export-config") { download("hyperloom-config-redacted.json", JSON.stringify(doc("settings").configuration, null, 2)); return; }
     if (action === "export-log") { download("hyperloom-log-redacted.json", JSON.stringify(doc("logs"), null, 2)); return; }
@@ -673,6 +701,7 @@
   // Shared with recipes.js (the Recipes & profiles page): the same rendering helpers, request path and job flow.
   window.Hyperloom = {esc, display, unavailable, statusPill, tag, button, card, table, cells, kv, empty, rows,
     request, mutate, refresh, render, announce, mutationReason, capability, profiles, profileId, state, activeJob,
+    doc, machines, meter, kpi, chart, lineChart, spark, field, route, routes, pages, download,
     csrf: () => document.querySelector('meta[name="hyperloom-csrf"]')?.content};
   render(); resetPolling();
 })();
