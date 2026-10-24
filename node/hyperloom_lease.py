@@ -268,16 +268,21 @@ def validate_spec(payload, now=None):
     if any(proc["machine"] == "peer" for proc in spec["processes"]):
         if kind != "pair" or not spec.get("peer_ssh") or not spec.get("peer_root"):
             raise ValueError("peer processes require a pair with peer_ssh and peer_root")
-    diagnostic = spec.get("diagnostic")
-    if diagnostic is not None and (not isinstance(diagnostic, list) or not 1 <= len(diagnostic) <= 16
-                                   or any(not isinstance(name, str) or not re.fullmatch(r"[a-z0-9-]{1,40}", name)
-                                          for name in diagnostic)):
-        raise ValueError("diagnostic must list 1..16 diagnostic names")
+    diagnostic_names(spec.get("diagnostic"))
     if spec.get("layout_required") not in {None, "1"}:
         raise ValueError("only production layout 1 is supported")
     if spec.get("layout_required") and not spec.get("lab_dir"):
         raise ValueError("layout check requires a lab directory")
     return spec
+
+
+def diagnostic_names(diagnostic):
+    """None (production) or 1..16 diagnostic names; the lease records of both nodes carry them."""
+    if diagnostic is not None and (not isinstance(diagnostic, list) or not 1 <= len(diagnostic) <= 16
+                                   or any(not isinstance(name, str) or not re.fullmatch(r"[a-z0-9-]{1,40}", name)
+                                          for name in diagnostic)):
+        raise ValueError("diagnostic must list 1..16 diagnostic names")
+    return diagnostic
 
 
 def record_path(root, lease):
@@ -495,6 +500,8 @@ class Child:
                 payload = {"root": self.spec["peer_root"], "lease": self.lease, "process": self.proc,
                            "profile": self.spec.get("profile"), "label": self.spec["label"],
                            "deadline": self.spec.get("deadline")}
+                if self.spec.get("diagnostic"):
+                    payload["diagnostic"] = self.spec["diagnostic"]
                 self.process.stdin.write(json.dumps(payload).encode() + b"\n")
                 self.process.stdin.flush()
         except BaseException:
@@ -664,6 +671,9 @@ def peer_state(root, payload, child, finished=False):
             "lease": lease, "label": payload.get("label"), "kind": "pair-peer",
             "profile": payload.get("profile"), "start_time": time.time(),
             "deadline": payload.get("deadline"), "processes": []}
+        if payload.get("diagnostic") and "diagnostic" not in state:
+            # The peer's record is marked like the lease owner's: a diagnostic run is never production.
+            state.update(production=False, diagnostic=payload["diagnostic"])
         entry = next((entry for entry in state["processes"] if entry["name"] == child.proc["name"]), None)
         if entry is None:
             entry = {"name": child.proc["name"], "machine": "local", "pid": child.process.pid,
@@ -682,6 +692,7 @@ def peer_run(payload, stream=None):
         raise ValueError("peer-run requires POSIX process groups")
     root = marked_root(payload["root"])
     lease = identifier(payload["lease"])
+    diagnostic_names(payload.get("diagnostic"))
     proc = validate_process(payload["process"])
     proc["machine"] = "local"
     child = Child(root, lease, proc)

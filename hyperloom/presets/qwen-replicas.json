@@ -269,10 +269,10 @@
       },
       "output": "stderr",
       "source": [
-        "src/known_prefix_prefill_runtime.cpp:51-56@70ec42b9",
-        "src/hip_known_prompt_backend.cpp:105-109@70ec42b9",
-        "src/hip_ple_launcher.hip:2477-2483@70ec42b9",
-        "apps/hip_decode_token_main.cpp:829-833@70ec42b9"
+        "src/known_prefix_prefill_runtime.cpp:51-56@9211b07e",
+        "src/hip_known_prompt_backend.cpp:105-109@9211b07e",
+        "src/hip_ple_launcher.hip:2477-2483@9211b07e",
+        "apps/hip_decode_token_main.cpp:829-833@9211b07e"
       ]
     },
     "cycle-timing": {
@@ -282,8 +282,8 @@
       },
       "output": "stderr",
       "source": [
-        "include/strix/host_phase_timing.hpp:12-27@70ec42b9",
-        "src/hip_ple_launcher.hip:2575-2576@70ec42b9"
+        "include/strix/host_phase_timing.hpp:12-27@9211b07e",
+        "src/hip_ple_launcher.hip:2575-2576@9211b07e"
       ]
     },
     "prompt-batch-log": {
@@ -293,7 +293,7 @@
       },
       "output": "stderr",
       "source": [
-        "apps/hip_mtp_decode_bridge.hpp:659-665@70ec42b9"
+        "apps/hip_mtp_decode_bridge.hpp:659-665@9211b07e"
       ]
     }
   }

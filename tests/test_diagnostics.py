@@ -1,9 +1,12 @@
 """Diagnostic-run mode: verified preset table, production render unchanged, non-production marking."""
+import contextlib
 from dataclasses import asdict
 import importlib.util
 import json
 from pathlib import Path
 import re
+import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -118,6 +121,21 @@ class NodeLeaseDiagnosticTests(unittest.TestCase):
         for bad in ([], "prefill-timing", ["Bad Name"], ["x"] * 17):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 lease.validate_spec(dict(spec, diagnostic=bad))
+
+    def test_peer_lease_record_is_marked_non_production(self):
+        child = SimpleNamespace(proc={"name": "rank1"}, process=SimpleNamespace(pid=7, returncode=None))
+        with tempfile.TemporaryDirectory() as tmp:
+            record = Path(tmp) / "lease.json"
+            with (patch.object(lease, "state_lock", lambda *_: contextlib.nullcontext()),
+                  patch.object(lease, "record_path", lambda *_: record)):
+                lease.peer_state(Path(tmp), {"lease": "a1", "diagnostic": ["dist-latency-trace"]}, child)
+                state = json.loads(record.read_text(encoding="utf-8"))
+                self.assertEqual((state["production"], state["diagnostic"]), (False, ["dist-latency-trace"]))
+                record.unlink()
+                lease.peer_state(Path(tmp), {"lease": "a1"}, child)
+                self.assertNotIn("production", json.loads(record.read_text(encoding="utf-8")))
+        with self.assertRaises(ValueError):
+            lease.diagnostic_names(["Bad Name"])
 
 
 if __name__ == "__main__":

@@ -75,20 +75,20 @@
       },
       "output": "stderr",
       "source": [
-        "apps/deepseek41_serve_main.cpp:77-78@70ec42b9",
-        "apps/deepseek41_serve_main.cpp:815-819@70ec42b9"
+        "apps/deepseek41_serve_main.cpp:77-78@9211b07e",
+        "apps/deepseek41_serve_main.cpp:815-819@9211b07e"
       ]
     },
     "dist-latency-trace": {
-      "description": "Per-thread CLOCK_MONOTONIC marks of the USB4 exchange, buffered in memory and written as CSV at thread exit.",
+      "description": "Per-thread CLOCK_MONOTONIC marks of the USB4 exchange, buffered in memory and written as CSV at thread exit (nothing is written if the process is killed with SIGKILL).",
       "env": {
         "STRIX_DIST_LATENCY_TRACE": "{log_dir}/diag-{run}-{role}-dist-latency"
       },
       "output": "files {log_dir}/diag-{run}-{role}-dist-latency.t<tid>.csv",
       "source": [
-        "src/dist_latency_trace.hpp:1-2@70ec42b9",
-        "src/dist_latency_trace.hpp:15-19@70ec42b9",
-        "src/dist_communicator.cpp:159-167@70ec42b9"
+        "src/dist_latency_trace.hpp:1-2@9211b07e",
+        "src/dist_latency_trace.hpp:15-19@9211b07e",
+        "src/dist_communicator.cpp:159-167@9211b07e"
       ]
     }
   }
