@@ -1,6 +1,8 @@
 /* Shared time-series charts for feature pages (loaded first; see pages/manifest.json).
    HyperloomTS.endpoint(series, {range, labels})      -> "history/<series>?range=..&l.<k>=<v>"
    HyperloomTS.lines(historyDoc, {value, label})        -> [{label, color, points: [[t, v], ...]}]
+                                                           (value defaults to the document's kind: gauge avg,
+                                                           delta sum, state last)
    HyperloomTS.chart({title, unit, lines, step, start, end, height, max, min, group}) -> HTML (SVG + legend + table)
    HyperloomTS.bind(root)                               -> shared crosshair for charts with the same group
    Gaps: consecutive points further apart than 2.5 steps are not joined (offline time is a gap, never a zero). */
@@ -26,8 +28,8 @@
     for (const [k, v] of Object.entries(labels)) query.set(`l.${k}`, v);
     return `history/${series}?${query}`;
   }
-  function lines(doc, {value = "avg", label} = {}) {
-    const index = {avg: 1, max: 2, min: 3, n: 4, sum: 5}[value] ?? 1;
+  function lines(doc, {value, label} = {}) {
+    const index = {avg: 1, max: 2, min: 3, n: 4, sum: 5, last: 6}[value || doc?.value || "avg"] ?? 1;
     return (doc?.lines || []).map((line, i) => ({
       label: label ? label(line.labels || {}) : Object.values(line.labels || {}).join(" · ") || doc.series,
       color: colors[i % colors.length],
@@ -42,9 +44,13 @@
     const t0 = start ?? Math.min(...all.map(p => p[0])), t1 = end ?? Math.max(...all.map(p => p[0]));
     const span = Math.max(1, t1 - t0);
     const top = max ?? (Math.max(...all.map(p => p[1])) * 1.1 || 1), bottom = Math.min(min, ...all.map(p => p[1]));
-    const W = 640, H = height, L = 48, R = 8, T = 8, B = 22;
+    // Drawn at the container's real width so axis text keeps its size on any screen.
+    const W = Math.round(Math.max(300, Math.min(1600, (document.querySelector("main")?.clientWidth || 700) - 64))), H = height, L = 52, R = 8, T = 8, B = 22;
     const x = t => L + (t - t0) / span * (W - L - R), y = v => T + (1 - (v - bottom) / ((top - bottom) || 1)) * (H - T - B);
-    const gap = Math.max(step, 2) * 2.5;
+    // Points further apart than 2.5x the usual spacing (the bucket step or, when sparser, the median sample
+    // spacing) are not joined.
+    const spacings = series.flatMap(s => s.points.slice(1).map((p, i) => p[0] - s.points[i][0])).filter(d => d > 0).sort((a, b) => a - b);
+    const gap = Math.max(step, 2, spacings.length ? spacings[Math.floor(spacings.length / 2)] : 0) * 2.5;
     const paths = series.map(s => {
       let d = "", last = null;
       for (const [t, v] of s.points) {
@@ -59,9 +65,9 @@
     const xt = [0, .5, 1].map(f => t0 + f * span).map((t, i) => `<text x="${x(t)}" y="${H - 6}" text-anchor="${["start", "middle", "end"][i]}" class="ts-ax">${esc(clock(t, span))}</text>`).join("");
     const legend = series.map(s => { const lastPoint = s.points.filter(p => Number.isFinite(p[1])).at(-1); return `<span class="ts-key"><i style="background:var(${s.color})"></i>${esc(s.label)} <b>${esc(fmt(lastPoint?.[1], unit))}</b></span>`; }).join("");
     const rowsHtml = series.flatMap(s => s.points.slice(-200).map(p => `<tr><td>${esc(s.label)}</td><td>${esc(new Date(p[0] * 1000).toLocaleString())}</td><td>${esc(fmt(p[1], unit))}</td></tr>`)).join("");
-    const data = esc(JSON.stringify({t0, t1, L, R, W, unit, series: series.map(s => ({label: s.label, color: s.color, points: s.points}))}));
+    const data = esc(JSON.stringify({t0, t1, L, R, W, unit, gap, series: series.map(s => ({label: s.label, color: s.color, points: s.points}))}));
     return `<figure class="ts" id="${id}"><figcaption>${esc(title)}</figcaption><div class="ts-legend">${legend}</div>
-<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(title)}: ${esc(series.length)} series" data-ts="${data}" data-ts-group="${esc(group)}" preserveAspectRatio="none">${grid}${paths}${xt}<line class="ts-cross" x1="0" x2="0" y1="${T}" y2="${H - B}" stroke="var(--text-3)" visibility="hidden"/></svg>
+<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(title)}: ${esc(series.length)} series" data-ts="${data}" data-ts-group="${esc(group)}" width="${W}" height="${H}">${grid}${paths}${xt}<line class="ts-cross" x1="0" x2="0" y1="${T}" y2="${H - B}" stroke="var(--text-3)" visibility="hidden"/></svg>
 <div class="ts-readout" aria-live="off"></div><details><summary>View as table</summary><table class="tbl"><thead><tr><th>Series</th><th>Time</th><th>Value</th></tr></thead><tbody>${rowsHtml}</tbody></table></details></figure>`;
   }
   function bind(root) {
@@ -87,7 +93,9 @@
     const values = meta.series.map(s => {
       let best = null;
       for (const p of s.points) if (best == null || Math.abs(p[0] - t) < Math.abs(best[0] - t)) best = p;
-      return `${s.label}: ${fmt(best?.[1], meta.unit)}`;
+      // Inside a gap there is no sample: say so instead of borrowing a distant value.
+      if (!best || Math.abs(best[0] - t) > meta.gap / 2) return `${s.label}: no sample`;
+      return `${s.label}: ${fmt(best[1], meta.unit)}`;
     });
     const readout = svg.parentElement.querySelector(".ts-readout");
     if (readout) readout.textContent = `${new Date(t * 1000).toLocaleTimeString()} · ${values.join(" · ")}`;

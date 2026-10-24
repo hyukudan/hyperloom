@@ -323,6 +323,8 @@ def fixture_server(args):
         (config_file.parent / "recipes").mkdir(exist_ok=True)
         (config_file.parent / "recipes" / "qwen3.8-flash-next.fixture.toml").write_text(FIXTURE_RECIPE, encoding="utf-8")
         stack.enter_context(patch.object(render, "router_policies", lambda: ("nodes", "rtx", "auto", "routes")))
+        for owner, name, value in seed_fixtures(directory, time.time()):
+            stack.enter_context(patch.object(owner, name, value))
         os.environ.update(HYPERLOOM_RECIPE_STUB="1", HYPERLOOM_SS_RECIPE="")
         os.environ["HYPERLOOM_UI_INPROCESS"] = "1"  # patched backends: keep jobs in this process
         return cli.main(["ui", "--port", str(args.port), "--no-browser"])
@@ -621,6 +623,51 @@ def recipes_walkthrough(client, server):
     return ("deploy job" if ready else "deploy gated by the preview's refusal") + ", fixture recipe deployed by a job"
 
 
+def feature_pages(client, server, output, width, theme):
+    """Every registered feature page (static/pages): it renders its title, finishes loading, does not overflow
+    and raises no console error; one screenshot per page, width and theme (page-<id>-<width>-<theme>.png)."""
+    pages = client.evaluate("Object.entries(window.HyperloomPages || {}).map(([id, p]) => [id, p.title || id])")
+    count = 0
+    for page, title in pages:
+        client.call("Page.navigate", url=server.url + "#/" + page)
+        eventually(lambda: client.evaluate("document.readyState === 'complete' && !!document.querySelector('main')"))
+        eventually(lambda: client.evaluate("document.querySelector('main').getAttribute('aria-busy') === 'false'"), timeout=30)
+        client.evaluate("new Promise(resolve => setTimeout(resolve, 1500))")
+        metrics = client.evaluate("({width:document.documentElement.clientWidth, scroll:document.documentElement.scrollWidth, heading:document.querySelector('h1')?.textContent, body:document.body.innerText})")
+        if metrics["heading"] != title:
+            raise AssertionError(f"page {page}: did not render its title: {metrics['heading']!r}")
+        if metrics["scroll"] > width:
+            raise AssertionError(f"page {page}/{width}: document overflows to {metrics['scroll']}px")
+        if "data unavailable" in metrics["body"] and "Retry" in metrics["body"]:
+            raise AssertionError(f"page {page}: its documents failed to load: {metrics['body'][:400]}")
+        if client.errors:
+            raise AssertionError(f"page {page}: browser console/exception errors: " + json.dumps(client.errors))
+        png = base64.b64decode(client.call("Page.captureScreenshot", format="png", captureBeyondViewport=False)["data"])
+        (output / f"page-{page}-{width}-{theme}.png").write_bytes(png)
+        count += 1
+        print(f"PASS page {page} {width}x1000 {theme}", flush=True)
+    return count
+
+
+def seed_fixtures(directory, now):
+    """Feature fixture data: every tests/ui/seeds/<name>.py may define seed(store, now) (telemetry history)
+    and patches(directory, now) -> [(owner, attribute, value)] (fake node verbs, engine documents)."""
+    import importlib.util
+    from hyperloom.telemetry.store import Store
+    store = Store(directory / "hyperloom" / "telemetry.sqlite3")
+    patches = []
+    for path in sorted((ROOT / "tests" / "ui" / "seeds").glob("*.py")):
+        spec = importlib.util.spec_from_file_location("hyperloom_ui_seed_" + path.stem, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        if hasattr(module, "seed"):
+            module.seed(store, now)
+        if hasattr(module, "patches"):
+            patches.extend(module.patches(directory, now))
+    store.close()
+    return patches
+
+
 def browser_smoke(chrome, server, output, *, keyboard=False, keyboard_only=False, recipes_only=False):
     with tempfile.TemporaryDirectory(prefix="hyperloom-chrome-") as profile:
         port = free_port()
@@ -672,7 +719,7 @@ def browser_smoke(chrome, server, output, *, keyboard=False, keyboard_only=False
                             backgrounds[theme] = metrics["theme"]
                             if metrics["scroll"] > width:
                                 raise AssertionError(f"{route}/{width}: document overflows to {metrics['scroll']}px")
-                            if len(set(client.evaluate("[...document.querySelectorAll('#navigation svg')].map(s => s.innerHTML)"))) != len(ROUTES):
+                            if len(set(client.evaluate("[...document.querySelectorAll('#navigation svg')].map(s => s.innerHTML)"))) != client.evaluate("document.querySelectorAll('#navigation a').length"):
                                 raise AssertionError("Navigation icons must be distinct")
                             if route == "devices":
                                 for text in ("Windows 11", "80.0 GB free of 131.0 GB", "ROCm 10.1.0", "unified · GPU-visible", "4/4 streams openable · layout 1 (host)", "Cable B trained below Gen3 x2"):
@@ -708,6 +755,7 @@ def browser_smoke(chrome, server, output, *, keyboard=False, keyboard_only=False
                                 raise AssertionError("Screenshot dimensions do not match the emulated viewport")
                             captures += 1
                             print(f"PASS {route} {width}x1000 {theme}", flush=True)
+                        captures += feature_pages(client, server, output, width, theme)
                     if not backgrounds.get("light") or backgrounds["light"] == backgrounds.get("dark"):
                         raise AssertionError("System light/dark preference did not change the rendered theme")
                 if keyboard or keyboard_only:

@@ -349,7 +349,7 @@
       ready: () => feature.ready ? feature.ready() : pageEndpoints(page).every(e => state.docs[e]),
       error: () => feature.error ? feature.error() : pageEndpoints(page).map(e => state.errors[e]).filter(Boolean).join(" · "),
     } : null;
-    if (external) renderers.recipes = external.render;
+    if (external) renderers[page] = external.render;
     if (external ? external.ready() : state.docs[source]) {
       const focused = document.activeElement;
       // Keep a keyboard user's focus stable across polls and filters.
