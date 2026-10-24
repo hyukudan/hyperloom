@@ -285,19 +285,28 @@ def _smi(args, run=subprocess.run):
     return [[cell.strip() for cell in line.split(",")] for line in out.stdout.splitlines() if line.strip()]
 
 
-def verify_pro(pro_uuid, run=subprocess.run):
+def verify_pro(pro_uuid, run=subprocess.run, require_idle=True):
     """The UUID must resolve to exactly one RTX PRO 6000 before anything starts on it."""
     rows = _smi(["--query-gpu=uuid,name,pci.bus_id,memory.total", "--format=csv,noheader,nounits", "-i", pro_uuid], run)
     if len(rows) != 1 or rows[0][0] != pro_uuid or "RTX PRO 6000" not in rows[0][1]:
         raise ServiceError(f"{pro_uuid} is not one RTX PRO 6000: {rows}")
     # One PC-BIG at a time across all users of the PRO: refuse a busy device rather than share it.
+    busy = pro_busy(pro_uuid, run)
+    if busy and require_idle:
+        raise ServiceError("RTX PRO busy: " + busy)
+    return {"uuid": rows[0][0], "name": rows[0][1], "pci_bus_id": rows[0][2], "memory_total_mib": int(rows[0][3]),
+            "busy": busy}
+
+
+def pro_busy(pro_uuid, run=subprocess.run):
+    """None when the PRO is idle, else what holds it (listed processes, or device memory under WDDM)."""
     others = [pid for gpu, pid, _ in compute_apps(run) if gpu == pro_uuid]
     if others:
-        raise ServiceError(f"RTX PRO busy: compute processes {sorted(others)}")
+        return f"compute processes {sorted(others)}"
     used = device_used_mib(pro_uuid, run)
     if used > PRO_IDLE_MIB:
-        raise ServiceError(f"RTX PRO busy: {used} MiB in use (idle is <= {PRO_IDLE_MIB} MiB)")
-    return {"uuid": rows[0][0], "name": rows[0][1], "pci_bus_id": rows[0][2], "memory_total_mib": int(rows[0][3])}
+        return f"{used} MiB in use (idle is <= {PRO_IDLE_MIB} MiB)"
+    return None
 
 
 def compute_apps(run=subprocess.run):
@@ -925,7 +934,7 @@ def check(cluster, profile_name):
         preview = {"blocked": str(exc)}
     output, _ = _release_dir(cluster, profile_name)
     manifest = output / "MANIFEST.json"
-    return {"device": verify_pro(device["uuid"]), "memory": memory_status(),
+    return {"device": verify_pro(device["uuid"], require_idle=False), "memory": memory_status(),
             "service": preview, "release": read_json(manifest) if manifest.exists() else None}
 
 
