@@ -28,7 +28,7 @@ class Unit:
     key: str
     bytes: int
     benefit: float = 0.0
-    host: str = "pinned"  # where it lives when not resident: pinned (host_gib) or disk
+    host: str = "pinned"  # where it lives when not resident: pinned (host_gib), disk, or pair (another device)
 
 
 @dataclass

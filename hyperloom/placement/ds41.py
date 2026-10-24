@@ -188,7 +188,7 @@ def front_model(model_gguf, *, sz=None):
         return {"--cuts": n, "--layers": n, "--tiers": "D" * n}
 
     return Model(engine="ds41-rtx-front", fixed=[("front_base (measured at K=22, incl. context)", base)],
-                 units=[Unit(f"layer:{L}", per[L], host="disk") for L in range(LAYERS)], order="prefix",
+                 units=[Unit(f"layer:{L}", per[L], host="pair") for L in range(LAYERS)], order="prefix",
                  flags=flags, min_units=1,
                  notes=["the pair tail must start at the same layer: strix-deepseek41-rank --role pipeline-stage "
                         "--first-layer K",
@@ -220,7 +220,7 @@ def hot_model(model_gguf, *, routes, reserve_gib=HOT_RESERVE_GIB, sz=None):
     sz = sz or sizes(model_gguf)
     eb = sz["expert_bytes"]
     counts = route_counts(routes) if isinstance(routes, str) else Counter(routes)
-    units = [Unit(f"{L}:{e}", eb, benefit=float(counts.get((L, e), 0)), host="disk")
+    units = [Unit(f"{L}:{e}", eb, benefit=float(counts.get((L, e), 0)), host="pair")
              for L in range(LAYERS) for e in range(EXPERTS)]
     total = sum(counts.values())
 
