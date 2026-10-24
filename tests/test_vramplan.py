@@ -236,14 +236,38 @@ class MiniMaxTests(unittest.TestCase):
         self.assertLessEqual(raw, run["kv_state"])
         self.assertLess(run["kv_state"] - raw, 3 * minimax.CUDA_GRANULE)
 
-    def _model(self, positions=8192, layers=60):
+    def _model(self, positions=8192, layers=60, **kw):
         index = minimax_index()
         sizes = [minimax.layer_bytes(index, 0 if L < 3 else 3) for L in range(layers)]
         with mock.patch.object(minimax, "layer_bytes", side_effect=lambda idx, L: sizes[L]), \
                 mock.patch.object(minimax.modelfiles, "read", return_value=({}, [
                     modelfiles.Tensor(f"{minimax.P}layers.{L}.x", 1, "f", "F32", (1,)) for L in range(60)])), \
                 mock.patch.object(minimax.modelfiles, "fingerprint", return_value=[]):
-            return minimax.model("D:/models/mm", positions=positions, layers=layers)
+            return minimax.model("D:/models/mm", positions=positions, layers=layers, **kw)
+
+    def test_three_tier_reproduces_the_g6_configuration(self):
+        # mm-rtx-prefill 48ab2724 three-tier mode; G6 (2026-10-24 18:33) ran --resident 32 --pinned 17 with 11 layers
+        # from the blob cache and peaked at 91,207 MiB = 89.07 GiB on code8k.
+        p = vramplan.plan(self._model(blob_cache="D:/cache"), Inputs(92, host_gib=60))
+        self.assertEqual(p.flags, {"--resident": 32, "--pinned": 17, "--blob-cache": "D:/cache"})
+        self.assertEqual(p.to_dict()["tier_units"], {"disk": 11, "pinned": 17})
+        self.assertAlmostEqual(p.peak_bytes / GIB, 89.07, delta=0.15)
+
+    def test_three_tier_makes_the_full_model_fit_this_pc(self):
+        with self.assertRaises(PlanError):  # two tiers: every streamed layer pinned
+            vramplan.plan(self._model(), Inputs(90, host_gib=56))
+        p = vramplan.plan(self._model(blob_cache="D:/cache"), Inputs(90, host_gib=56))
+        self.assertEqual((p.flags["--resident"], p.flags["--pinned"]), (31, 16))
+        self.assertGreater(p.disk_bytes, 0)
+        self.assertLessEqual(p.pinned_bytes, 56 * GIB)
+
+    def test_three_tier_needs_two_pinned_layers_before_the_file_tier(self):
+        ring = 4 * (-(-2864462336 // 4096) * 4096)
+        state = 2 * 8191 * 60 * 1280 + 8191 * 6144 * 4
+        host = (ring + state + 2864462336) / GIB + 0.01  # room for exactly one pinned layer
+        with self.assertRaises(PlanError) as ctx:
+            vramplan.plan(self._model(blob_cache="D:/cache"), Inputs(90, host_gib=host))
+        self.assertIn("2 pinned layers", str(ctx.exception))
 
     def test_resident_is_a_layer_prefix_and_counts_dense_layers(self):
         p90 = vramplan.plan(self._model(), Inputs(90))

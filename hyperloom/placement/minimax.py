@@ -13,7 +13,7 @@ import math
 import re
 
 from .. import modelfiles
-from ..vramplan import GIB, Model, Unit
+from ..vramplan import GIB, Model, PlanError, Unit
 
 P = "language_model.model."
 LAYERS, FIRST_MOE, EXPERTS, TOP_E = 60, 3, 128, 4
@@ -91,6 +91,50 @@ def _granule(n):
     return -(-n // CUDA_GRANULE) * CUDA_GRANULE
 
 
+STAGE_BUFFERS, FILE_ALIGN = 4, 4096
+
+
+def _three_tier(model_dir, *, positions, layers, context_gib, blob_cache):
+    meta, tensors = modelfiles.read(model_dir)
+    index = {t.name: t for t in tensors if "vision" not in t.file.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]}
+    sizes = [layer_bytes(index, L) for L in range(layers)]
+    dense = min(FIRST_MOE, layers)
+    run = runtime_bytes(positions)
+    rows = positions - 1
+    fixed = [("cuda_context", int(context_gib * GIB)), ("kv_state", run["kv_state"]),
+             ("activations", run["activations"]), ("rope_and_norm", run["rope"] + CUDA_GRANULE),
+             ("dense layers (always resident)", sum(_granule(n) for n in sizes[:dense]))]
+    padded = [-(-n // FILE_ALIGN) * FILE_ALIGN for n in sizes]
+    units = [Unit(f"layer:{L}", _granule(sizes[L]), benefit=1.0, host="pinned|disk", host_bytes=sizes[L],
+                  file_bytes=padded[L]) for L in range(dense, layers)]
+    slot = _granule(max(sizes[dense:])) if layers > dense else 0
+
+    def stream(streamed):
+        return 2 * slot if streamed else 0
+
+    def flags(resident, plan):
+        on_file = sum(1 for t in plan.tiers.values() if t == "disk")
+        pinned = sum(1 for t in plan.tiers.values() if t == "pinned")
+        if on_file and pinned < 2:
+            raise PlanError("minimax three-tier: the engine keeps the first two streamed layers off the file tier, "
+                            "so a plan with file layers needs at least 2 pinned layers; raise the host budget")
+        out = {"--resident": dense + len(resident), "--pinned": pinned, "--blob-cache": str(blob_cache)}
+        if layers != LAYERS:
+            out["--layers"] = layers
+        return out
+
+    return Model(
+        engine="minimax-rtx-prefill", fixed=fixed, units=units, order="prefix", flags=flags, stream=stream,
+        host_fixed=[("state_blobs", 2 * rows * LAYERS * 1280), ("embed_staging", rows * HIDDEN * 4),
+                    ("file staging ring", STAGE_BUFFERS * max(padded[dense:], default=0))],
+        notes=["three-tier mode: --resident counts the dense layers; the engine spreads the MoE device layers and "
+               "the file layers over the depth (byte counts do not depend on which)",
+               "the 4-buffer file staging ring is counted even when no layer streams from the file (conservative)",
+               f"device slots 2 x {slot} B; file blobs padded to {FILE_ALIGN} B"],
+        source={"model_dir": str(model_dir), "positions": positions, "layer_bytes": sizes, "mode": "three-tier",
+                "files": modelfiles.fingerprint(model_dir)})
+
+
 def runtime_bytes(positions):
     """Device buffers of one prompt of `positions` tokens (rows = positions - 1), each rounded to the CUDA granule."""
     rows = positions - 1
@@ -105,8 +149,19 @@ def runtime_bytes(positions):
     return {"kv_state": kv, "activations": activations, "rope": rope}
 
 
-def model(model_dir, *, positions, layers=LAYERS, context_gib=DEFAULTS["context_gib"], pcie_gbps=DEFAULTS["pcie_gbps"]):
-    """`layers` < 60 is the engine's --layers profiling subset (validation only)."""
+def model(model_dir, *, positions, layers=LAYERS, context_gib=DEFAULTS["context_gib"], pcie_gbps=DEFAULTS["pcie_gbps"],
+          blob_cache=None):
+    """`layers` < 60 is the engine's --layers profiling subset (validation only).
+
+    blob_cache: the three-tier mode of mm-rtx-prefill (minimax/engine 48ab2724: --resident N --pinned H --blob-cache
+    DIR, spec-minimax 3.1). The dense layers always stay on the device and N - 3 MoE layers are spread over the depth
+    (which ones does not change any byte count: the MoE blobs are equal); of the other layers H are pinned host blobs
+    and the rest are read per prompt from DIR (4 KiB-padded files) through a 4-buffer pinned staging ring of the
+    largest padded blob. The engine never puts the first two streamed layers on the file tier, so a plan needs at
+    least two pinned layers whenever any layer streams from the file."""
+    if blob_cache is not None:
+        return _three_tier(model_dir, positions=positions, layers=layers, context_gib=context_gib,
+                           blob_cache=blob_cache)
     meta, tensors = modelfiles.read(model_dir)
     index = {t.name: t for t in tensors if "vision" not in t.file.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]}
     found = sorted({int(m.group(1)) for n in index if (m := re.match(re.escape(P) + r"layers\.(\d+)\.", n))})

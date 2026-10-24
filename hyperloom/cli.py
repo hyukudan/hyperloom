@@ -328,6 +328,10 @@ def _vramplan(args):
         if args.engine != "minimax-rtx-prefill":
             raise ValueError("--layers is the minimax-rtx-prefill validation subset only")
         params["layers"] = args.layers
+    if args.blob_cache is not None:
+        if args.engine != "minimax-rtx-prefill":
+            raise ValueError("--blob-cache is the minimax-rtx-prefill three-tier mode only")
+        params["blob_cache"] = args.blob_cache
     if args.placement_out and args.engine not in ("ds41-rtx-hot", "desc-v1"):
         raise ValueError("--placement-out is written for ds41-rtx-hot and desc-v1 only")
     if args.engine == "desc-v1":
@@ -491,6 +495,7 @@ def main(argv=None):
     vplan.add_argument("--host-gib", type=float, help="pinned host budget (required for ds41-rtx-prefill)")
     vplan.add_argument("--positions", type=int, help="prefill engines: prompt / context positions")
     vplan.add_argument("--layers", type=int, help="minimax-rtx-prefill: the engine's --layers subset (validation)")
+    vplan.add_argument("--blob-cache", help="minimax-rtx-prefill: three-tier mode (--pinned + this file tier)")
     vplan.add_argument("--mtp", help="qwen-rtx-prefill: the MTP sidecar GGUF")
     vplan.add_argument("--routes", help="ds41-rtx-hot: routes file (measured routing frequency)")
     vplan.add_argument("--placement-out", type=Path,
