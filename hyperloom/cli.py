@@ -328,6 +328,13 @@ def main(argv=None):
         if operation == "verify":
             asset_command.add_argument("--include-large", action="store_true")
             asset_command.add_argument("--machine")
+    nodes = commands.add_parser("nodes", help="node tool maintenance")
+    node_commands = nodes.add_subparsers(dest="operation", required=True)
+    update = node_commands.add_parser("update", help="redeploy the node tool to the profile's machines")
+    update.add_argument("profile")
+    update.add_argument("--machine")
+    update.add_argument("--force", action="store_true", help="also while a lease is live")
+    update.add_argument("--config", type=Path, default=config_path())
     up = commands.add_parser("up")
     # Keep the no-argument Phase 0 probe for existing launchers.
     up.add_argument("profile", nargs="?")
@@ -384,6 +391,9 @@ def main(argv=None):
             _, kind, mids = orchestrate._profile(cluster, args.profile)
             targets = ["strix-hip-decode-token" if kind == "qwen-replicas" else "strix-deepseek41-serve"]
             _json({"release_id": orchestrate.install(cluster, args.build_on or mids[0], targets, profile=args.profile)})
+        elif args.command == "nodes":
+            _json(_module("hyperloom.orchestrate").nodes_update(_cluster(args.config), args.profile,
+                                                                machine=args.machine, force=args.force))
         elif args.command == "assets":
             cluster = _cluster(args.config)
             assets = _module("hyperloom.assets")

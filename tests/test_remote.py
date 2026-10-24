@@ -142,18 +142,28 @@ class RemoteTests(unittest.TestCase):
             (source / name).write_text("fixture", encoding="utf-8")
         self.client.bootstrap(source, timeout=3)
         calls = self.calls()
-        self.assertEqual(len(calls), 4)
-        self.assertTrue(calls[0]["argv"][-1].startswith("umask 077; mkdir"))
-        scp = calls[1]["argv"]
+        self.assertEqual(len(calls), 5)
+        self.assertTrue(calls[0]["argv"][-1].startswith("umask 077; mkdir -p"))
+        boot = remote.PurePosixPath(self.client.node_path).parent
+        # Files are staged in a fresh directory and renamed into place (running scripts keep their inode).
+        stage_command = shlex.split(calls[1]["argv"][-1].split("; ", 1)[1])
+        self.assertEqual(stage_command[:2], ["mkdir", "--"])
+        stage = remote.PurePosixPath(stage_command[2]).name
+        self.assertEqual(remote.PurePosixPath(stage_command[2]).parent, boot)
+        self.assertRegex(stage, r"^\.stage-[0-9a-f]{12}$")
+        scp = calls[2]["argv"]
         self.assertEqual(scp[0], "scp")
         self.assertEqual(scp[scp.index("-P") + 1], "2222")
         self.assertIn("StrictHostKeyChecking=yes", scp)
         self.assertIn("HostKeyAlias=[halo-1]:2222", scp)
         self.assertEqual(scp[-5:-1], [str((source / name).absolute()) for name in remote.NODE_FILES])
-        self.assertEqual(scp[-1], "operator@halo-1:.hyperloom-boot/")
-        boot = remote.PurePosixPath(self.client.node_path).parent
-        self.assertEqual(shlex.split(calls[2]["argv"][-1]),
-                         ["chmod", "700", "--", *(str(boot / name) for name in remote.NODE_FILES)])
+        self.assertEqual(scp[-1], f"operator@halo-1:.hyperloom-boot/{stage}/")
+        move = calls[3]["argv"][-1]
+        self.assertTrue(move.startswith("cd -- " + shlex.quote(str(boot)) + " && chmod 700 -- "))
+        for name in remote.NODE_FILES:
+            self.assertIn(shlex.quote(stage + "/" + name), move)
+        self.assertIn("mv -f -- " + shlex.quote(stage), move)
+        self.assertTrue(move.endswith("rmdir -- " + shlex.quote(stage)))
 
     def test_bootstrap_missing_extension_fails_before_connection(self):
         self.pin()

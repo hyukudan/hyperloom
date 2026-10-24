@@ -402,6 +402,41 @@ def _release(client, machine, profile, configured):
     return release
 
 
+def _tool(client):
+    reply = _call(client, "version", {})
+    return ((reply.get("checks") or {}).get("tool") or {}).get("value")
+
+
+def _check_tools(clients, mids, profile):
+    """Refuse to start work with a node tool that differs from this checkout's (it may lack checks up relies on)."""
+    expected = remote.tool_digest()
+    for mid in mids:
+        deployed = _tool(clients[mid])
+        if deployed != expected:
+            raise OrchestrationError(f"{mid}: node tool differs from this checkout (deployed {str(deployed)[:12]}, "
+                                     f"expected {expected[:12]}); run 'hyperloom nodes update {profile}'")
+
+
+def nodes_update(cluster, profile, machine=None, force=False):
+    """Redeploy the node tool to the profile's machines; refused while a lease of the root is live."""
+    _, _, mids = _profile(cluster, profile)
+    if machine is not None:
+        if machine not in mids:
+            raise ValueError("machine is not part of the profile: " + machine)
+        mids = [machine]
+    result = {}
+    for mid in mids:
+        client = _client(cluster.machines[mid])
+        if not force:
+            live = [row for row in _call(client, "status", {"root": cluster.machines[mid].install_root}).get("leases", [])
+                    if row.get("state") not in ("stopped", "failed", "aborted", "cancelled", "canceled", "finished")]
+            if live:
+                raise OrchestrationError(f"{mid}: a lease is live ({live[0].get('lease')}); stop it or use --force")
+        client.bootstrap()
+        result[mid] = {"tool": _tool(client), "expected": remote.tool_digest()}
+    return result
+
+
 def _put(client, machine, name, value):
     import base64
     _call(client, "put-secret", {"root": machine.install_root, "name": name,
@@ -470,6 +505,7 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
         if kind == "qwen-replicas":
             selected.profiles[profile]["nodes"] = mids
         releases = {}
+        _check_tools(clients, mids, profile)
         state["assets"] = assets.inspect(cluster, profile, clients, mids, strict=True)
         state["asset_cache_note"] = assets.CACHE_NOTE
         for mid in mids:

@@ -354,9 +354,25 @@ class Inspector:
 
     def inspect(self, verb):
         checks = (self.doctor() if verb == "doctor" else self.gpu() if verb == "gpu"
-                  else {"version": ok(VERSION), "python": ok(platform.python_version())})
+                  else {"version": ok(VERSION), "python": ok(platform.python_version()),
+                        "tool": ok(tool_digest(Path(__file__).resolve().parent))})
         return {"schema": "hyperloom/node-v1", "verb": verb,
                 "commands": self.commands, "checks": checks}
+
+
+TOOL_FILES = ("hyperloom-node", "hyperloom_install.py", "hyperloom_lease.py", "build-node.sh")
+
+
+def tool_digest(directory):
+    """Digest of the deployed node tool, compared by the control machine before it starts work."""
+    digest = hashlib.sha256()
+    for name in sorted(TOOL_FILES):
+        try:
+            data = (Path(directory) / name).read_bytes()
+        except OSError:
+            data = b"missing"
+        digest.update(name.encode() + b"\0" + hashlib.sha256(data).hexdigest().encode() + b"\n")
+    return digest.hexdigest()
 
 
 def main(argv=None):
