@@ -394,7 +394,13 @@ def up_command(args, *, orchestrate=None, load_cluster=None):
                              "--diagnostic, --vram-cap-gib or --router")
         service = _module("hyperloom.recipes.service")
         service.use_config(args.config)
-        cluster, intent, recipe = service.options_from_inputs(args.recipe_inputs, args.profile)
+        pin = service.acquire_pin(args.recipe_inputs)         # before the snapshot is read
+        try:
+            cluster, intent, recipe = service.options_from_inputs(args.recipe_inputs, args.profile)
+        except BaseException:
+            service.release_pin(pin)
+            raise
+        recipe.pin = pin
         args.profile, args.deadline, args.queue_timeout = intent["profile"], intent["deadline_s"], intent["queue_timeout_s"]
     elif args.recipe is not None:
         reader = _module("hyperloom.recipes.reader")
@@ -415,10 +421,11 @@ def up_command(args, *, orchestrate=None, load_cluster=None):
                                     devices=args.device, deadline_s=args.deadline, approval=approval,
                                     queue_timeout_s=args.queue_timeout, diagnostics=args.diagnostic,
                                     vram_cap_gib=args.vram_cap_gib, recipe=recipe)
-    if recipe is not None and recipe.digest:
-        with _module("hyperloom.recipes.service").pinned(recipe.digest):
-            return launch()
-    return launch()
+    try:
+        return launch()
+    finally:
+        if recipe is not None:
+            _module("hyperloom.recipes.service").release_pin(recipe.pin)
 
 
 def build_parser(parser_class=argparse.ArgumentParser):

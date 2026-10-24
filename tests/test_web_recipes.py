@@ -329,6 +329,18 @@ class JobTests(unittest.TestCase):
             finished = self.wait(running)
         self.assertIn("deploy cancelled", finished["error"])
         self.orch.up.assert_not_called()
+        # A plain stop (down of any profile) during a switch cancels the switch as well.
+        gate.clear()
+        with mock.patch.object(render, "router_policies", return_value=("routes",)), \
+                mock.patch.object(commands, "live_source", return_value=self.source), \
+                mock.patch.object(launch, "prepare", side_effect=slow_prepare):
+            running = self.api.mutate("recipes/deploy", {"inputs": digest})
+            stopped = self.wait(self.api.mutate("down", {"profile": "qwen-replicas"}))
+            self.assertEqual(stopped["state"], "succeeded", stopped["error"])
+            gate.set()
+            finished = self.wait(running)
+        self.assertIn("deploy cancelled", finished["error"])
+        self.orch.up.assert_not_called()
         # The API forwards every up argument to the CLI, which refuses what a snapshot launch does not take.
         bound = self.wait(self.api.mutate("up", {"recipe_inputs": digest, "node": ["halo-1"],
                                                  "recipe_set": ["limits.host_free_ram_floor_gib=1"]}))

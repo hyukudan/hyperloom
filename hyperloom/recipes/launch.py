@@ -28,6 +28,7 @@ class Options:
     inputs: list = field(default_factory=list)
     exact_dirs: bool = False
     digest: str | None = None
+    pin: Path | None = None          # the launch's pin on its snapshot (service.acquire_pin), released after up
 
 
 @dataclass

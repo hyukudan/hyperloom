@@ -1136,6 +1136,13 @@ class API:
                 if engines.adapter(kind).topology != "replicas":
                     raise APIError("later phase · only replica profiles are available in Phase 1b")
             return self._run_detached(action, args)
+        if action in ("down", "cancel") and not args.get("job"):
+            # Stopping anything while a switch runs cancels the switch too (it would otherwise go on and launch).
+            with self._job_lock:
+                switches = [dict(j) for j in self._jobs.values()
+                            if j["action"] == "recipes/deploy" and j["state"] == "running"]
+            for switch in switches:
+                self._cancel_deploy(switch)
         if action == "cancel":
             profile = args.get("profile")
             if args.get("job"):

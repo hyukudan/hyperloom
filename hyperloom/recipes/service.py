@@ -21,6 +21,7 @@ import stat
 import tempfile
 import threading
 import time
+import uuid
 
 from .reader import RecipeError
 
@@ -382,7 +383,7 @@ def config_path_in_use():
     return Path(_config or config_path())
 
 
-def launch_inputs(cluster, recipe_path, layers, candidates=(), *, intent):
+def launch_inputs(cluster, recipe_path, layers, candidates=(), *, intent, pin=False):
     """Everything a launch depends on, each file read ONCE and published into a content-addressed directory
     `<config dir>/run/recipe-inputs/<digest>/`: `recipe/` (or `candidates/dNN/` for auto), `profile/`, `overrides/NN/`,
     `config/` (the cluster configuration's bytes) and `manifest.json` (ordered, role-labelled entries with original path,
@@ -423,9 +424,14 @@ def launch_inputs(cluster, recipe_path, layers, candidates=(), *, intent):
                 shutil.rmtree(staging, ignore_errors=True)   # the same inputs were published first: verified below
         else:
             os.utime(root)                                   # recently planned again: kept by the retention rule
+        held = _new_pin(digest) if pin else None             # pinned before anything can prune it
         _prune_snapshots(keep=digest)
-    load_inputs(digest)
-    return digest
+    try:
+        load_inputs(digest)
+    except BaseException:
+        release_pin(held)
+        raise
+    return (digest, held) if pin else digest
 
 
 def _prune_snapshots(keep):
@@ -434,7 +440,9 @@ def _prune_snapshots(keep):
     directory = runtime_dir() / "recipe-inputs"
     referenced = {keep} | {((state.get("recipe") or {}).get("inputs_digest")) for state in _states().values()}
     now = time.time()
-    referenced |= {p.stem for p in directory.glob("*.pin") if now - p.stat().st_mtime < PIN_S}
+    pins = directory / "pins"
+    referenced |= {p.name.split(".")[0] for p in (pins.iterdir() if pins.is_dir() else ())
+                   if now - p.stat().st_mtime < PIN_S}
     rows = sorted((p.stat().st_mtime, p) for p in directory.iterdir()
                   if p.is_dir() and re.fullmatch(r"[0-9a-f]{64}", p.name))
     excess = len(rows) - MAX_SNAPSHOTS
@@ -446,17 +454,38 @@ def _prune_snapshots(keep):
             excess -= 1
 
 
+def _new_pin(digest):
+    """A holder's own pin on a snapshot (caller holds the runtime lock, as pruning does)."""
+    if not (runtime_dir() / "recipe-inputs" / digest).is_dir():
+        raise NotFound(f"recipe inputs {digest}: no snapshot (it may have expired: plan again)")
+    pins = runtime_dir() / "recipe-inputs" / "pins"
+    pins.mkdir(parents=True, exist_ok=True)
+    pin = pins / f"{digest}.{uuid.uuid4().hex}"
+    pin.write_text(str(os.getpid()), encoding="utf-8")
+    return pin
+
+
+def acquire_pin(digest):
+    """Keep a snapshot from being pruned while a launch (deploy or `up --recipe*`) uses it. Each holder has its own pin
+    file, taken and released under the runtime lock (the lock pruning holds); once the launch state records the digest,
+    that reference keeps it."""
+    with runtime_lock():
+        return _new_pin(digest)
+
+
+def release_pin(pin):
+    if pin is not None:
+        with runtime_lock():
+            Path(pin).unlink(missing_ok=True)
+
+
 @contextmanager
 def pinned(digest):
-    """Keep a snapshot from being pruned while a launch (deploy or `up --recipe`) uses it; once the launch state
-    records the digest, that reference keeps it."""
-    pin = runtime_dir() / "recipe-inputs" / f"{digest}.pin"
-    pin.parent.mkdir(parents=True, exist_ok=True)
-    pin.write_text(str(os.getpid()), encoding="utf-8")
+    pin = acquire_pin(digest)
     try:
         yield
     finally:
-        pin.unlink(missing_ok=True)
+        release_pin(pin)
 
 
 def cancel_marker(job):
@@ -579,8 +608,14 @@ def up_options(cluster, recipe, profile=None, *, layers=None, dirs=(), intent=No
     else:
         path, candidates = locate(recipe, cluster, for_up=True, extra=dirs), ()
         profile = deployment_profile(cluster, path, profile)
-    digest = launch_inputs(cluster, path, layers, candidates, intent=dict(intent or {}, profile=profile))
-    return options_from_inputs(digest, profile)
+    digest, pin = launch_inputs(cluster, path, layers, candidates, intent=dict(intent or {}, profile=profile), pin=True)
+    try:
+        cluster, intent, options = options_from_inputs(digest, profile)
+    except BaseException:
+        release_pin(pin)
+        raise
+    options.pin = pin                                         # released by the caller once up returns
+    return cluster, intent, options
 
 
 # --- read operations ---------------------------------------------------------------------------------------------
@@ -783,6 +818,11 @@ def deploy(digest, stop=(), *, source=None, orchestrate=None, approval=None, job
 
 
 def _deploy(digest, stop, source, orchestrate, approval, cancelled, check):
+    with pinned(digest):                                      # held from before the first read to the end of up
+        return _deploy_pinned(digest, stop, source, orchestrate, approval, cancelled, check)
+
+
+def _deploy_pinned(digest, stop, source, orchestrate, approval, cancelled, check):
     from .. import orchestrate as default_orchestrate
     from . import commands, launch
     cluster, intent, options = options_from_inputs(digest)
@@ -795,22 +835,21 @@ def _deploy(digest, stop, source, orchestrate, approval, cancelled, check):
     if sorted(set(stop)) != running:
         raise Conflict(f"the running profiles are {', '.join(running) or 'none'}, not the reviewed "
                        f"{', '.join(sorted(set(stop))) or 'none'}: review the switch again")
-    with pinned(digest):
-        orchestrate.check_launch(cluster, profile, intent["router"], recipe=True)
+    orchestrate.check_launch(cluster, profile, intent["router"], recipe=True)
+    check()
+    with tempfile.TemporaryDirectory(prefix="hl-recipe-deploy-") as directory:
+        launch.prepare(cluster, profile, options, router=intent["router"], vram_cap_gib=None, state_dir=directory,
+                       source=source or commands.live_source(cluster))
+    stopped = []
+    for name in sorted(set(stop)):
         check()
-        with tempfile.TemporaryDirectory(prefix="hl-recipe-deploy-") as directory:
-            launch.prepare(cluster, profile, options, router=intent["router"], vram_cap_gib=None, state_dir=directory,
-                           source=source or commands.live_source(cluster))
-        stopped = []
-        for name in sorted(set(stop)):
-            check()
-            stopped.append({"profile": name, "down": orchestrate.down(name)})
-        check()
-        # `cancelled` is checked again by up right after it takes ownership of the profile (no gap: a later cancel
-        # stops the launching profile through its own stop marker).
-        result = orchestrate.up(cluster, profile, router=intent["router"], deadline_s=intent["deadline_s"],
-                                queue_timeout_s=intent["queue_timeout_s"], approval=approval, recipe=options,
-                                cancelled=cancelled)
+        stopped.append({"profile": name, "down": orchestrate.down(name)})
+    check()
+    # `cancelled` is checked again by up right after it takes ownership of the profile (no gap: a later cancel
+    # stops the launching profile through its own stop marker).
+    result = orchestrate.up(cluster, profile, router=intent["router"], deadline_s=intent["deadline_s"],
+                            queue_timeout_s=intent["queue_timeout_s"], approval=approval, recipe=options,
+                            cancelled=cancelled)
     return {"inputs": digest, "profile": profile, "stopped": stopped, "up": result}
 
 

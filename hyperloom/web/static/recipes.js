@@ -75,9 +75,10 @@
     rerender();
     try {
       const doc = await get("recipes/" + encodeURIComponent(id));
+      if (R.selected !== id) return;               // another recipe was opened meanwhile: its answer wins
       if (!doc.ok) throw new Error(doc.error || "recipe unavailable");
       R.detail = doc.result; R.source = doc.result.text;
-    } catch (error) { R.detailError = error.message; }
+    } catch (error) { if (R.selected === id) R.detailError = error.message; }
     rerender();
   }
 

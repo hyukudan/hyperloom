@@ -368,10 +368,20 @@ class SnapshotTests(unittest.TestCase):
             # A launch in progress pins its snapshot (its state does not name it yet).
             busy = service.launch_inputs(None, service.locate(QWEN), session.Layers(), intent={"profile": "d"})
             os.utime(service.runtime_dir() / "recipe-inputs" / busy, (stale, stale))
-            with service.pinned(busy), mock.patch.object(service, "MAX_SNAPSHOTS", 0):
+            with mock.patch.object(service, "MAX_SNAPSHOTS", 0):
+                first, second = service.acquire_pin(busy), service.acquire_pin(busy)     # two overlapping launches
+                service.release_pin(second)
                 service.launch_inputs(None, service.locate(QWEN), session.Layers(), intent={"profile": "e"})
-                self.assertTrue((service.runtime_dir() / "recipe-inputs" / busy).exists())
-            self.assertFalse((service.runtime_dir() / "recipe-inputs" / f"{busy}.pin").exists())
+                self.assertTrue((service.runtime_dir() / "recipe-inputs" / busy).exists())   # first still holds it
+                service.release_pin(first)
+                service.launch_inputs(None, service.locate(QWEN), session.Layers(), intent={"profile": "f"})
+                self.assertFalse((service.runtime_dir() / "recipe-inputs" / busy).exists())
+                with self.assertRaises(service.NotFound):
+                    service.acquire_pin(busy)                     # a pruned snapshot cannot be pinned (plan again)
+                # `up --recipe` holds its snapshot's pin from publication until it returns.
+                _, _, options = service.up_options(None, QWEN, "qwen-replicas")
+                self.assertTrue(Path(options.pin).exists())
+                service.release_pin(options.pin)
 
 
 class PlanDeployTests(unittest.TestCase):
