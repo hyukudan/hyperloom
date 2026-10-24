@@ -694,11 +694,19 @@ def _tensormeld_routes():
     """The router's selector from the pinned TensorMeld, or from HYPERLOOM_TM_SRC (a TensorMeld src dir)."""
     for root in (os.environ.get("HYPERLOOM_TM_SRC"), str(repo_root() / "third_party" / "tensormeld" / "src")):
         if root and (Path(root) / "tensormeld" / "prefill_routes.py").is_file():
+            # Other tests may have imported the pinned tensormeld package already: import this one in isolation and
+            # put theirs back.
+            saved = {name: module for name, module in sys.modules.items() if name.split(".")[0] == "tensormeld"}
+            for name in saved:
+                del sys.modules[name]
             sys.path.insert(0, root)
             try:
                 return importlib.import_module("tensormeld.prefill_routes")
             finally:
                 sys.path.remove(root)
+                for name in [n for n in sys.modules if n.split(".")[0] == "tensormeld"]:
+                    del sys.modules[name]
+                sys.modules.update(saved)
     return None
 
 
