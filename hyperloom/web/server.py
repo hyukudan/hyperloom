@@ -5,6 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import os
+import re
 import secrets
 from urllib.parse import parse_qs, unquote, urlsplit
 import webbrowser
@@ -14,10 +15,36 @@ import socket
 
 from .api import API, APIError, MUTATIONS, redact
 from . import recipes as recipe_web
+from . import features as feature_registry
 
 
 MAX_BODY = 64 * 1024
 STATIC_DIR = Path(__file__).with_name("static")
+# Feature pages and their assets: only the exact names listed in <dir>/manifest.json ({"files": [...]}) are
+# served (no directory serving; names cannot contain separators, "..", ":" or stream suffixes).
+ASSET_DIRS = ("pages", "assets")
+ASSET_NAME = re.compile(r"[a-z0-9][a-z0-9_-]*(?:\.[a-z0-9_-]+)*\.(?:js|css|svg|png|json|webmanifest)")
+CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
+                 ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png",
+                 ".json": "application/json; charset=utf-8", ".webmanifest": "application/manifest+json"}
+
+
+def manifest(static_dir, directory):
+    """The exact file names a static feature directory may serve, in manifest order."""
+    try:
+        listed = json.loads((Path(static_dir) / directory / "manifest.json").read_text(encoding="utf-8"))["files"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return ()
+    if not isinstance(listed, list):
+        return ()
+    return tuple(name for name in listed if isinstance(name, str) and ASSET_NAME.fullmatch(name) and name != "manifest.json")
+
+
+def page_tags(static_dir):
+    """<link>/<script> tags for the listed feature page files (manifest order = load order)."""
+    names = manifest(static_dir, "pages")
+    return "".join(['<link rel="stylesheet" href="/pages/' + n + '">' for n in names if n.endswith(".css")] +
+                   ['<script src="/pages/' + n + '" defer></script>' for n in names if n.endswith(".js")])
 
 
 def _pairs(pairs):
@@ -117,7 +144,8 @@ class Handler(BaseHTTPRequestHandler):
                     status, document = self.server.api.recipe_get(endpoint, {k: v[0] for k, v in query.items()})
                     self._send(status, document, head=head)
                     return
-                if endpoint in MUTATIONS:
+                registry = feature_registry.registry()
+                if endpoint in MUTATIONS or endpoint in registry.posts or endpoint in registry.jobs:
                     self._error(405, "mutation requires POST")
                     return
                 query = parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True) if parsed.query else {}
@@ -134,22 +162,34 @@ class Handler(BaseHTTPRequestHandler):
                      "/hyperloom/app.css": "app.css", "/hyperloom/app.js": "app.js",
                      "/hyperloom/recipes.js": "recipes.js"}
             name = files.get(path)
+            root = self.server.static_dir.resolve()
+            parts = path[len("/hyperloom"):].split("/") if path.startswith("/hyperloom/") else path.split("/")
+            if (name is None and len(parts) == 3 and parts[0] == "" and parts[1] in ASSET_DIRS
+                    and parts[2] in manifest(root, parts[1])):
+                root = (root / parts[1]).resolve()
+                name = parts[2]
             if name is None:
                 self._error(404, "not found")
                 return
-            root = self.server.static_dir.resolve()
             source = (root / name).resolve()
             if source.parent != root or not source.is_file():
                 self._error(404, "not found")
                 return
             body = source.read_bytes()
-            content_type = {".html": "text/html", ".css": "text/css", ".js": "text/javascript"}[source.suffix] + "; charset=utf-8"
-            if name == "index.html":
+            content_type = CONTENT_TYPES.get(source.suffix)
+            if content_type is None:
+                self._error(404, "not found")
+                return
+            if name == "index.html" and source.parent == self.server.static_dir.resolve():
                 token = self.server.csrf_token
                 html = body.decode("utf-8").replace("__HYPERLOOM_CSRF__", token)
                 # The meta works even if a static page has no placeholder.
                 meta = '<meta name="hyperloom-csrf" content="' + token + '">'
                 html = html.replace("</head>", meta + "</head>") if "</head>" in html else meta + html
+                # Feature pages register themselves before app.js renders (deferred scripts run in order).
+                tags = page_tags(self.server.static_dir)
+                anchor = '<script src="/app.js" defer></script>'
+                html = html.replace(anchor, tags + anchor) if anchor in html else html.replace("</head>", tags + "</head>")
                 body = html.encode("utf-8")
             self._send(200, body, content_type, head=head)
         except APIError as exc:
@@ -189,7 +229,9 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.query or not parsed.path.startswith("/hyperloom/api/"):
                 raise APIError("unknown mutation", 404)
             action = parsed.path[len("/hyperloom/api/"):]
-            if action not in MUTATIONS and action not in recipe_web.POSTS:
+            registry = feature_registry.registry()
+            if (action not in MUTATIONS and action not in recipe_web.POSTS and action not in registry.posts
+                    and action not in registry.jobs):
                 raise APIError("unknown mutation", 404)
             raw = self.rfile.read(size)
             if len(raw) != size:
@@ -201,6 +243,10 @@ class Handler(BaseHTTPRequestHandler):
                 raise APIError("JSON object required")
             if action in recipe_web.POSTS:
                 status, document = self.server.api.recipe_post(action, arguments, cancelled=self._client_gone)
+                self._send(status, document)
+                return
+            if action in registry.posts and action not in MUTATIONS:
+                status, document = self.server.api.feature_post(action, arguments)
                 self._send(status, document)
                 return
             self._send(202, self.server.api.mutate(action, arguments))
@@ -235,6 +281,10 @@ def serve(port=18700, no_browser=False):
     with create_server(port) as server:
         # Mutations survive the portal process; test fixtures with patched backends stay in-process.
         server.api.detached = os.environ.get("HYPERLOOM_UI_INPROCESS") != "1"
+        # Background samplers feed the history store (features' collectors); HYPERLOOM_TELEMETRY=0 disables them.
+        if os.environ.get("HYPERLOOM_TELEMETRY", "1") != "0":
+            from hyperloom import telemetry
+            telemetry.start(server.api)
         print("Hyperloom portal: " + server.origin, flush=True)
         if not no_browser:
             webbrowser.open(server.origin + "/")

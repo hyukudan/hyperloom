@@ -36,6 +36,7 @@ from hyperloom.paths import repo_root
 from hyperloom.stats import Window
 from hyperloom.winproc import no_window
 from hyperloom.web import recipes as recipe_web
+from hyperloom.web import features as feature_registry
 
 
 SCREENS = frozenset(("devices", "topology", "models", "profiles", "stats", "logs", "settings"))
@@ -758,7 +759,7 @@ class API:
                 for field in fields:
                     documents[name][field] = None
                     documents[name]["why"][field] = "configuration unavailable: " + str(exc)
-            documents["settings"]["capabilities"] = CAPABILITIES
+            documents["settings"]["capabilities"] = {**CAPABILITIES, **feature_registry.registry().capabilities}
             return documents
         status_error = None
         try:
@@ -870,8 +871,10 @@ class API:
             documents["settings"]["why"]["trusted_machines"] = str(exc)
             trusted = None
         documents["settings"].update(trusted_machines=trusted, configuration=redact(cluster.raw), version=__version__,
-                                       config_path=str(self.config_path), capabilities=CAPABILITIES,
+                                       config_path=str(self.config_path), capabilities={**CAPABILITIES, **feature_registry.registry().capabilities},
                                        secrets={"storage": "DPAPI" if os.name == "nt" else "0600 files", "values": "never shown"},
+                                       features={"loaded": list(feature_registry.registry().loaded),
+                                                 "failed": dict(feature_registry.registry().failed)},
                                        lab_rules={"label_prefix": "hl-", "turn_cap_s": 1200, "drain_margin_s": 60,
                                                   "usb4_layout": 1, "excluded": "RTX 4090", "extended_turn": "explicit approver ACK required"})
         return documents
@@ -914,7 +917,10 @@ class API:
                     raise APIError("unknown job", 404)
                 return dict(job)
         if screen not in SCREENS:
-            raise APIError("unknown endpoint", 404)
+            handler, rest = feature_registry.registry().find_get(screen)
+            if handler is None:
+                raise APIError("unknown endpoint", 404)
+            return redact(self._feature_call(handler, *(() if rest is None else (rest,)), query))
         # One shared snapshot for every screen and every concurrent tab.
         with self._poll_lock:
             if self._cached is None or self.clock() >= self._expires:
@@ -931,6 +937,109 @@ class API:
                                                            why={"failures": "persistent process failure index unavailable"})
                 document = self._cached[cache_key]
             return redact(document)
+
+    # Feature modules (hyperloom/web/features): helpers they use and the dispatch of their endpoints.
+    def document(self, name, **fields):
+        return self._document(name, **fields)
+
+    def snapshot(self):
+        """The shared 2 s snapshot of the core screens (the same one every core GET reads)."""
+        with self._poll_lock:
+            if self._cached is None or self.clock() >= self._expires:
+                self._cached = self._snapshot()
+                self._expires = self.clock() + POLL_INTERVAL
+            return self._cached
+
+    def cluster(self):
+        return self._cluster()
+
+    def node(self, machine, verb, payload=None):
+        """Run a node verb on a configured machine (id or Machine)."""
+        if isinstance(machine, str):
+            machines = {m.id: m for m in self._cluster().machines}
+            if machine not in machines:
+                raise LookupError("unknown machine " + machine)
+            machine = machines[machine]
+        return self._node(machine, verb, payload)
+
+    def audit(self, action, arguments, result):
+        self._audit(action, arguments, result)
+
+    def _feature_call(self, handler, *args):
+        try:
+            return handler(self, *args)
+        except APIError:
+            raise
+        except LookupError as exc:
+            raise APIError(str(exc).strip("'\""), 404) from exc
+        except PermissionError as exc:
+            raise APIError(str(exc), 409) from exc
+        except ValueError as exc:
+            raise APIError(str(exc)) from exc
+
+    def feature_post(self, action, arguments):
+        """Synchronous feature POST: (status, document)."""
+        registry = feature_registry.registry()
+        handler = registry.posts.get(action)
+        if handler is None:
+            raise APIError("unknown mutation", 404)
+        try:
+            document = self._feature_call(handler, arguments)
+        except APIError as exc:
+            if action in registry.audited:
+                self._audit(action, arguments, {"state": "refused", "error": str(exc)})
+            raise
+        if action in registry.audited:
+            self._audit(action, arguments, {"state": "succeeded", "result": document})
+        return 200, redact(document)
+
+    def _feature_job(self, action, arguments):
+        spec = feature_registry.registry().jobs[action]
+        try:
+            if spec.validate is not None:
+                arguments = self._feature_call(spec.validate, arguments)
+        except APIError as exc:
+            self._audit(action, arguments, {"state": "refused", "error": str(exc)})
+            raise
+        with self._job_lock:
+            if spec.exclusive and self._active:
+                self._audit(action, arguments, {"state": "refused", "error": "another mutating job is running"})
+                raise APIError("another mutating job is running", 409)
+            jid = uuid.uuid4().hex
+            job = {"job": jid, "id": jid, "action": action, "arguments": redact(arguments),
+                   "state": "running", "started_at": self.clock(), "finished_at": None,
+                   "result": None, "error": None, "progress": "starting"}
+            self._audit(action, arguments, {"job": jid, "state": "accepted"})
+            self._jobs[jid] = job
+            if spec.exclusive:
+                self._active = jid
+            for old in list(self._jobs):
+                if len(self._jobs) <= 100:
+                    break
+                if self._jobs[old]["state"] != "running":
+                    del self._jobs[old]
+            response = dict(job)
+
+        def progress(text):
+            with self._job_lock:
+                job["progress"] = redact(str(text))[:500]
+
+        def run():
+            try:
+                result = spec.run(self, arguments, progress)
+                update = {"state": "succeeded", "result": redact(result), "error": None}
+            except Exception as exc:
+                update = {"state": "failed", "result": None, "error": redact(str(exc))}
+            try:
+                self._audit(action, arguments, {"job": jid, **update})
+            except OSError as exc:
+                update = {"state": "failed", "result": update["result"], "error": "audit write failed: " + str(exc)}
+            with self._job_lock:
+                job.update(update, finished_at=self.clock(), progress="finished")
+                if self._active == jid:
+                    self._active = None
+        threading.Thread(target=run, name="hyperloom-feature-" + jid[:8], daemon=True).start()
+        return response
 
     def _action_log(self):
         try:
@@ -1215,6 +1324,8 @@ class API:
         return {"cancelled": job["job"], "stopped": self.orchestrate.down(profile)}
 
     def mutate(self, action, arguments):
+        if action not in MUTATIONS and action in feature_registry.registry().jobs:
+            return self._feature_job(action, arguments)
         try:
             arguments = self._arguments(action, arguments)
         except APIError as exc:
