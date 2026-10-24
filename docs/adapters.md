@@ -168,3 +168,13 @@ An RTX prefill service hands off only to a decode preset at its own engine pin. 
 6. **ds41-w5 receipt:** wave4/dsint/report.md had not been written when this preset was made. The receipt names it;
    please confirm the final cells (serve C1..C8, N8) before treating the preset as qualified.
 7. **ds41-w5 knobs:** `--slots 4` and `--context 4096` remain the only qualified values, as at 9211b07e.
+
+## Hardware check: ds41-pair-w5 (2026-10-24)
+
+One pair GPU lease, three arms in order A B A, release built by hyperloom from integrate/ds41-w5 cab238d6 + strix-trellis
+c95a169 (node build) vs the lab's own build of the same commits (A, launched by hand):
+- both arms loaded the w5 identity `ds41-trellis-mix-v1{head=K5, q_a/kv/q_b/o_a/o_b/shexp K4}` on every site;
+- token gate: 8 greedy prompts, 284 tokens, identical in A1, B and A2;
+- serve (8 fixed prompts, 192 tokens each, every request complete), B vs mean(A): C1 aggregate +0.7 %, C1 decode per
+  request +0.6 %, C4 aggregate +0.1 %, C4 decode per request +2.6 % (A1 38.6 / B 39.4 / A2 39.6 tok/s at C1,
+  63.7 / 64.7 / 65.5 at C4). Not slower in any cell.
