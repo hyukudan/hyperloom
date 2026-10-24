@@ -314,7 +314,7 @@ def _hosts(args):
 
 
 VRAMPLAN_ENGINES = ("minimax-rtx-prefill", "qwen-rtx-prefill", "ds41-rtx-prefill", "ds41-rtx-front", "ds41-rtx-hot",
-                    "ds41-node")
+                    "ds41-node", "desc-v1")
 
 
 def _vramplan(args):
@@ -341,6 +341,10 @@ def _vramplan(args):
     inputs = vramplan.Inputs(args.vram_cap_gib, host_gib=args.host_gib, margin_gib=args.margin_gib)
     plan = placement.plan(args.engine, args.model, inputs, **params)
     result = dict(plan.to_dict(), explain=vramplan.explain(plan).splitlines())
+    if args.engine == "desc-v1" and args.placement_out:
+        desc = _module("hyperloom.placement.desc")
+        args.placement_out.write_text(json.dumps(desc.plan_v1(args.model, plan)), encoding="utf-8")
+        result["flags"] = {"plan-v1": str(args.placement_out)}
     if args.engine == "ds41-rtx-hot" and args.placement_out:
         if not args.expert_servers:
             raise ValueError("--placement-out needs --expert-servers RANK0,RANK1 (machine ids)")
@@ -482,7 +486,8 @@ def main(argv=None):
     vplan.add_argument("--layers", type=int, help="minimax-rtx-prefill: the engine's --layers subset (validation)")
     vplan.add_argument("--mtp", help="qwen-rtx-prefill: the MTP sidecar GGUF")
     vplan.add_argument("--routes", help="ds41-rtx-hot: routes file (measured routing frequency)")
-    vplan.add_argument("--placement-out", type=Path, help="ds41-rtx-hot: write the hot-expert placement JSON here")
+    vplan.add_argument("--placement-out", type=Path,
+                       help="ds41-rtx-hot: the hot-expert placement JSON; desc-v1: the strix-stream plan-v1 JSON")
     vplan.add_argument("--expert-servers", help="ds41-rtx-hot: the two expert-server machine ids (rank 0,rank 1)")
     vplan.add_argument("--mode", choices=("replica", "pair-rank0", "pair-rank1"),
                        help="ds41-node: a full replica, or one rank of the EP pair")

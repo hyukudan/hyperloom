@@ -415,6 +415,63 @@ class NodeTests(unittest.TestCase):
             ds41.node_model("m.gguf", routes={}, mode="tp4", fixed_gib=10, sz=DS41)
 
 
+GOLDEN = FIXTURES / "golden"
+
+
+class DescriptorTests(unittest.TestCase):
+    """desc-v1 descriptors planned here must give the same tiers and totals as strix-stream's C++ ss_plan_make
+    (expected values recorded from ss-plan.exe at cf8705a)."""
+
+    @staticmethod
+    def desc(name):
+        with gzip.open(GOLDEN / f"{name}.desc.json.gz") as f:
+            return json.load(f)
+
+    def test_same_plans_as_strix_stream(self):
+        from hyperloom.placement import desc as D
+        cases = json.loads((GOLDEN / "ss-plan-expected.json").read_text())["cases"]
+        self.assertEqual(len(cases), 10)
+        for case in cases:
+            with self.subTest(descriptor=case["descriptor"], cap=case["cap_gib"], host=case["host_gib"]):
+                d, want = self.desc(case["descriptor"]), case["expected"]
+                inputs = Inputs(case["cap_gib"], host_gib=case["host_gib"])
+                if case["host_gib"] * GIB < sum(n["bytes"] for n in d.get("host_fixed", [])):
+                    # Known divergence (reported to strix-stream): ss_plan_make checks the host budget only when a
+                    # unit is pinned, so host_fixed tables (pinned in every placement) can exceed it; vramplan refuses.
+                    with self.assertRaises(PlanError):
+                        vramplan.plan(D.model(d), inputs)
+                    continue
+                if "refused" in want:
+                    with self.assertRaises(PlanError):
+                        vramplan.plan(D.model(d), inputs)
+                    continue
+                p = vramplan.plan(D.model(d), inputs)
+                got = D.plan_v1(d, p)
+                self.assertEqual(got["tiers"], want["tiers"])
+                self.assertEqual((p.peak_bytes, p.pinned_bytes, p.disk_bytes),
+                                 (want["peak_bytes"], want["pinned_bytes"], want["disk_bytes"]))
+
+    def test_descriptor_rules_match_strix_stream(self):
+        from hyperloom.placement import desc as D
+        base = self.desc("moe-ranked")
+        for change in ({"schema": "x"}, {"order": "random"}, {"tiers": "ssd"}):
+            with self.subTest(change=change), self.assertRaises(PlanError):
+                D.load(dict(base, **change))
+        for change in ({"top_k": 0}, {"parts": []}, {"unit_bytes": 1}, {"kind": "dense"}):
+            layer = dict(base["layers"][0], **change)
+            with self.subTest(layer_change=sorted(change)), self.assertRaises(PlanError):
+                D.load(dict(base, layers=[layer] + base["layers"][1:]))
+
+    def test_plan_v1_letters_cover_every_unit(self):
+        from hyperloom.placement import desc as D
+        d = self.desc("blob-prefix")
+        p = vramplan.plan(D.model(d), Inputs(48, host_gib=63))
+        rows = D.plan_v1(d, p)["tiers"]
+        self.assertEqual(len(rows), 60)
+        self.assertTrue(all(len(r) == 1 and r in "RPD" for r in rows))
+        self.assertEqual("".join(rows).rstrip("PD"), "R" * len(p.resident))  # a prefix
+
+
 class RegistryTests(unittest.TestCase):
     def test_unknown_engine(self):
         from hyperloom import placement

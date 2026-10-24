@@ -33,6 +33,11 @@ class Unit:
     # (another device computes it on its own copy; never a weight transfer). On Strix (unified memory) "disk" is the
     # node's local NVMe and there is no pinned tier.
     host: str = "pinned"
+    host_bytes: int | None = None  # bytes on the host tiers when not resident (default: bytes)
+
+    @property
+    def host_size(self):
+        return self.bytes if self.host_bytes is None else self.host_bytes
 
 
 @dataclass
@@ -125,14 +130,14 @@ def plan(model, inputs):
     streamed = [u for u in model.units if u.key not in keys]
     slots = _stream(model, streamed)
     tiers = _host_tiers(model, streamed, inputs)
-    pinned = sum(u.bytes for u in streamed if tiers[u.key] == "pinned") + sum(b for _, b in model.host_fixed)
+    pinned = sum(u.host_size for u in streamed if tiers[u.key] == "pinned") + sum(b for _, b in model.host_fixed)
     if inputs.host_gib is not None and pinned > inputs.host_gib * GIB:
         raise PlanError(f"{model.engine}: {_gib(pinned)} GiB must be pinned on the host at this cap, above "
                         f"host_gib {inputs.host_gib:g}; raise the cap or the host budget")
     used = sum(u.bytes for u in resident)
     check_peak(model.engine, fixed + slots + used, cap, margin)
     result = Plan(model.engine, cap, margin, fixed, slots, [u.key for u in resident], [u.key for u in streamed], used,
-                  pinned, sum(u.bytes for u in streamed if tiers[u.key] == "disk"), fixed + slots + used,
+                  pinned, sum(u.host_size for u in streamed if tiers[u.key] == "disk"), fixed + slots + used,
                   sum(u.benefit for u in resident), {}, list(model.fixed), list(model.notes), dict(model.source))
     result.tiers = {u.key: tiers[u.key] for u in streamed}
     result.flags = dict(model.flags([u.key for u in resident], result))
@@ -149,12 +154,12 @@ def _host_tiers(model, streamed, inputs):
     if inputs.host_gib is None:
         tiers.update({u.key: "pinned" for u in spill})
         return tiers
-    left = inputs.host_gib * GIB - sum(b for _, b in model.host_fixed) -         sum(u.bytes for u in streamed if tiers.get(u.key) == "pinned")
+    left = inputs.host_gib * GIB - sum(b for _, b in model.host_fixed) -         sum(u.host_size for u in streamed if tiers.get(u.key) == "pinned")
     position = {u.key: i for i, u in enumerate(model.units)}
     for unit in sorted(spill, key=lambda u: (-(u.benefit / u.bytes if u.bytes else math.inf), position[u.key])):
-        if unit.bytes <= left:
+        if unit.host_size <= left:
             tiers[unit.key] = "pinned"
-            left -= unit.bytes
+            left -= unit.host_size
         else:
             tiers[unit.key] = "disk"
     return tiers
