@@ -268,6 +268,11 @@ def child(argv, *, stdin=None, end, cancelled=lambda: False, track=lambda key, w
             worker.kill()
         worker.close()
         track(key, None)
+        for stream in (worker.process.stdout, worker.process.stderr):
+            try:
+                stream.close()
+            except OSError:
+                pass
     return Result(worker.process.returncode, bytes(out), bytes(err), why)
 
 

@@ -265,7 +265,7 @@ class WriteTests(unittest.TestCase):
             self.assertEqual(resolved["routes"][0]["when"]["prompt_tokens_min"], 8192)
             with self.assertRaisesRegex(service.Conflict, "not at the version edited"):
                 service.save(None, "mm-copy2", base="mm-base", base_sha256="0" * 64, sets=pair)
-            with self.assertRaisesRegex(RecipeError, "not a settable path"):
+            with self.assertRaisesRegex(RecipeError, "not a settable path|is not settable"):
                 service.save(None, "mm-copy3", base="mm-base", base_sha256=base_sha,
                              sets=[("routes.prefill_long.execute", "tp")])
             row = next(r for r in service.catalog() if r["id"] == "mm-copy")
@@ -276,7 +276,7 @@ class WriteTests(unittest.TestCase):
             saved = service.save_layer(None, "qwen-floor", QWEN, [("limits.host_free_ram_floor_gib", 6.0)])
             layer = json.loads(Path(saved["path"]).read_text(encoding="utf-8"))
             self.assertEqual((layer["schema"], layer["recipe"]), (service.OVERRIDES_SCHEMA, "qwen3.8-flash-next-lab"))
-            with self.assertRaisesRegex(RecipeError, "not a settable path"):
+            with self.assertRaisesRegex(RecipeError, "not a settable path|is not settable"):
                 service.save_layer(None, "bad", QWEN, [("routes.prefill_rtx.execute", "tp")])
             text = json.dumps(dict(layer, recipe="no-such-recipe"))
             with self.assertRaisesRegex(RecipeError, "no recipe named"):

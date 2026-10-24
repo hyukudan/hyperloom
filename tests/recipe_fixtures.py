@@ -44,13 +44,17 @@ class Isolated:
     """A temporary configuration directory (cluster.json, recipes/, run/) that both this process and CLI children
     use: APPDATA/LOCALAPPDATA/HOME point into it, and the stub reader is selected unless a core is configured."""
 
-    def __init__(self, core=False):
+    def __init__(self, core=None):
+        # The strix-stream core when HYPERLOOM_SS_RECIPE names it (the same tests then run on the core), else the stub.
+        if core is None:
+            core = bool(os.environ.get("HYPERLOOM_SS_RECIPE")) and Path(os.environ["HYPERLOOM_SS_RECIPE"]).is_file()
         self.temporary = tempfile.TemporaryDirectory(prefix="hl-recipes-test-")
         self.root = Path(self.temporary.name)
         env = {"APPDATA": str(self.root / "appdata"), "LOCALAPPDATA": str(self.root / "local"),
                "HOME": str(self.root / "home"), "XDG_CONFIG_HOME": str(self.root / "home" / ".config")}
+        env.update(HYPERLOOM_RECIPE_STUB="1")      # `up --recipe` on the stub is allowed (non-production) in tests
         if not core:
-            env.update(HYPERLOOM_SS_RECIPE="", HYPERLOOM_RECIPE_STUB="1")
+            env.update(HYPERLOOM_SS_RECIPE="")
         self.patch = mock.patch.dict(os.environ, env)
         self.patch.start()
         from hyperloom.cli import config_path
@@ -73,7 +77,7 @@ class Isolated:
 
 
 @contextmanager
-def isolated(core=False):
+def isolated(core=None):
     env = Isolated(core)
     try:
         yield env

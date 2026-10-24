@@ -120,7 +120,7 @@ class ContractTests(unittest.TestCase):
                 self.assertSameAsCli(document)
         status, refused = self.portal.request("POST", "recipes/validate", {"recipe": QWEN, "set": ["a.b=1"]})
         self.assertEqual((status, refused["exit_code"], refused["ok"]), (200, 1, False))
-        self.assertIn("not a settable path", refused["error"])
+        self.assertRegex(refused["error"], "not a settable path|is not settable")
 
     def test_drafts_saves_and_audit(self):
         draft = copy_of(QWEN, "draft-recipe")
@@ -314,3 +314,31 @@ class JobTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(os.environ.get("HYPERLOOM_TM_SRC"), "set HYPERLOOM_TM_SRC to a TensorMeld src/ with per-request "
+                     "route records (branch router/recipe-routes-recent)")
+class RouterRecordTests(unittest.TestCase):
+    """`recipe routes` against the real TensorMeld router (fake engine and prefill service from its own tests)."""
+
+    def test_routes_reads_the_routers_per_request_records(self):
+        source = Path(os.environ["HYPERLOOM_TM_SRC"])
+        sys.path[:0] = [str(source), str(source.parent / "tests")]
+        self.addCleanup(lambda: [sys.path.remove(p) for p in (str(source), str(source.parent / "tests"))])
+        import test_prefill_routes as tm
+        harness = tm.RoutesEndToEndTests("test_long_prompts_offload_short_ones_stay_local")
+        harness.setUp()
+        self.addCleanup(harness.doCleanups)
+        router, port = harness.router(harness.service(), harness.engines(1))
+        tm.call(port, "POST", "/v1/completions", {"prompt": list(range(5000))})
+        tm.call(port, "POST", "/v1/completions", {"prompt": list(range(100))})
+        record = {"recipe": "mm-example",
+                  "deploy": {"prefill": [{"id": "prefill_long", "place": "offload"}, {"id": "prefill_nodes", "place": "local"}]},
+                  "route_table": {"effective_sha256": "b" * 64, "state_file": harness.state_path,
+                                  "routes": [{"id": "prefill_long", "enabled": True}, {"id": "prefill_nodes", "enabled": True}]}}
+        states = {"mm": {"profile": "mm", "recipe": record, "router": {"endpoint": {"address": "127.0.0.1", "port": port}}}}
+        row = service.routes(None, states=states)["deployments"][0]
+        self.assertEqual(row["why"], {})
+        self.assertEqual((row["totals"]["rtx"], row["totals"]["nodes"]), (1, 1))
+        self.assertEqual([(r["route"], r["on"], r["outcome"], r["status"]) for r in row["recent"]],
+                         [("prefill_long", "rtx", "served", 200), ("prefill_nodes", "nodes", "served", 200)])
