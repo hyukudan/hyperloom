@@ -260,5 +260,41 @@
     "sidecar_bytes": 2786568256,
     "golden_sha256": "5db345508f79bda1af87a8c929ea463ca914f17dec3dd3b02273daf6ed7ce413"
   },
-  "receipt_note": "all-fixes replica campaign (2026-10-22 22:05): D-058 joint windows + D-059 persistence switches, the production replica set"
+  "receipt_note": "all-fixes replica campaign (2026-10-22 22:05): D-058 joint windows + D-059 persistence switches, the production replica set",
+  "diagnostics": {
+    "prefill-timing": {
+      "description": "Host milliseconds of each prefill phase, block download, scoring and spooling, on stderr.",
+      "env": {
+        "STRIX_PREFILL_TIMING": "1"
+      },
+      "output": "stderr",
+      "source": [
+        "src/known_prefix_prefill_runtime.cpp:51-56@9211b07e",
+        "src/hip_known_prompt_backend.cpp:105-109@9211b07e",
+        "src/hip_ple_launcher.hip:2477-2483@9211b07e",
+        "apps/hip_decode_token_main.cpp:829-833@9211b07e"
+      ]
+    },
+    "cycle-timing": {
+      "description": "Host time between named decode-cycle marks; totals on stderr at exit.",
+      "env": {
+        "STRIX_CYCLE_TIMING": "1"
+      },
+      "output": "stderr",
+      "source": [
+        "include/strix/host_phase_timing.hpp:12-27@9211b07e",
+        "src/hip_ple_launcher.hip:2575-2576@9211b07e"
+      ]
+    },
+    "prompt-batch-log": {
+      "description": "One stderr line per grouped prompt batch (blocks, rows, wall time).",
+      "env": {
+        "STRIX_PROMPT_BATCH_LOG": "1"
+      },
+      "output": "stderr",
+      "source": [
+        "apps/hip_mtp_decode_bridge.hpp:659-665@9211b07e"
+      ]
+    }
+  }
 }
