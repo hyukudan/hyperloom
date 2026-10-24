@@ -49,7 +49,7 @@
   const profiles = () => rows(doc("profiles").profiles);
   function selected() {
     const all = profiles();
-    return all.find(p => (p.id || p.name || p.profile) === state.selected) || all.find(p => (p.id || p.name || p.profile) === "qwen-replicas") || all[0];
+    return all.find(p => (p.id || p.name || p.profile) === state.selected) || all.find(p => p.family === "qwen-replicas") || all[0];
   }
   const profileId = p => p?.id || p?.name || p?.profile || "";
   function statusPill(status, why) {
@@ -168,7 +168,8 @@
   function profileBlocker(p) {
     if (!p) return "No configured profile";
     if (p.state == null) return reason(p, "state", "Profile state unavailable");
-    if ((p.configuration?.preset || profileId(p)) !== "qwen-replicas") return p.blocker || "later phase · Phase 2 / 3a / R14";
+    // The engine family (from the API), not the preset name: qwen-replicas-w5 starts like qwen-replicas.
+    if (p.family !== "qwen-replicas") return p.blocker || "later phase · Phase 2 / 3a / R14";
     return p.available === false ? p.blocker || "Profile not available" : "";
   }
   function capability(action) {

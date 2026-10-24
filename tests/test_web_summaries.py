@@ -177,7 +177,7 @@ class SummaryTests(unittest.TestCase):
         self.orch.load_cluster.return_value = self.cluster
         self.orch.status.return_value = {}
         self.orch._known_hosts.return_value = FIXTURE.parent / "absent-known-hosts"
-        self.api._statistics = lambda statuses: {"engines": [{"profile": "qwen-replicas", "status": {"memory": {"trellis_identity": "fixture-identity"}}}]}
+        self.api._statistics = lambda statuses, cluster=None: {"engines": [{"profile": "qwen-replicas", "status": {"memory": {"trellis_identity": "fixture-identity"}}}]}
         profile = self.api._snapshot()["profiles"]["profiles"][0]
         self.assertEqual(profile["identity"]["trellis"], ["fixture-identity"])
 

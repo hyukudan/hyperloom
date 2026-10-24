@@ -58,6 +58,20 @@ class APIError(ValueError):
         self.status = status
 
 
+LOOPBACK_UNAVAILABLE = "unavailable: engine bound to loopback on its node"
+
+
+def _binds_loopback(profile, status, cluster):
+    """True when the profile's engine family binds 127.0.0.1 on its node (no LAN listener to poll)."""
+    family = ((status or {}).get("launch") or {}).get("family")
+    try:
+        if family is None and cluster is not None and profile in cluster.profiles:
+            family = config.family(cluster.profiles[profile].get("preset", profile))
+        return family is not None and engines.adapter(family).bind == "loopback"
+    except (OSError, ValueError, KeyError):
+        return False
+
+
 def redact(value):
     """Redact structured secrets and command/log representations of them."""
     if isinstance(value, dict):
@@ -447,7 +461,13 @@ class API:
         rows = []
         for name, declared in cluster.profiles.items():
             status = statuses.get(name, {"profile": name, "state": "stopped"})
-            row = {"id": name, "name": name, "configuration": declared, "status": status,
+            preset_name = declared.get("preset", name)
+            try:
+                family = config.family(preset_name)
+            except (OSError, ValueError, KeyError):
+                family = None
+            row = {"id": name, "name": name, "preset": preset_name, "family": family,
+                   "configuration": declared, "status": status,
                    "state": status.get("state"), "processes": [], "leases": [],
                    "effective_configuration": None, "nodes": declared.get("nodes") or [declared[k] for k in ("rank0", "rank1") if k in declared],
                    "devices": None, "router": cluster.router.get("machine", "local"), "identity": None,
@@ -561,10 +581,11 @@ class API:
             rows.append(_missing(row, ("nodes", "devices", "router", "identity", "receipt", "release", "started_at", "parameters")))
         return rows
 
-    def _statistics(self, statuses):
+    def _statistics(self, statuses, cluster=None):
         engines, routers, recent = [], [], []
         now = self.clock()
         for profile, status in statuses.items():
+            loopback = _binds_loopback(profile, status, cluster)
             raw_router = status.get("router")
             if not isinstance(raw_router, dict) or raw_router.get("error"):
                 continue
@@ -593,6 +614,14 @@ class API:
                 item = {"id": rid, "profile": profile, "status": None, "metrics": None,
                         "throughput": None, "ttft_p50": None, "ttft_p95": None,
                         "draft_acceptance": None, "usb4_exchange_mean_us": None, "why": {}}
+                if loopback:
+                    # The router on rank 0 reaches the engine on its node's 127.0.0.1; probing that address here
+                    # would hit the control machine instead.
+                    for key in ("status", "metrics", "throughput", "ttft_p50", "ttft_p95", "draft_acceptance",
+                                "usb4_exchange_mean_us"):
+                        item["why"][key] = LOOPBACK_UNAVAILABLE
+                    engines.append(item)
+                    continue
                 window = self._windows.setdefault(rid, Window(clock=self.clock))
                 try:
                     from urllib.parse import urlsplit
@@ -747,7 +776,7 @@ class API:
             _missing(asset, ("verification", "revision", "quant"), "verification or manifest field unavailable")
         documents["models"]["why"]["proposals"] = "later phase 2.5 · R17 / TM-R15"
         documents["profiles"]["profiles"] = self._profiles(cluster, statuses)
-        documents["stats"] = self._statistics(statuses)
+        documents["stats"] = self._statistics(statuses, cluster)
         for profile in documents["profiles"]["profiles"]:
             trellis = list(dict.fromkeys(((item.get("status") or {}).get("memory") or {}).get("trellis_identity")
                                         for item in documents["stats"]["engines"] if item["profile"] == profile["id"]

@@ -272,6 +272,45 @@ class APITests(unittest.TestCase):
             self.assertIsNone(reset["value"])
             self.assertTrue(reset["reset"])
 
+    def test_profile_rows_expose_the_engine_family(self):
+        cluster = deepcopy(self.cluster)
+        cluster.profiles["w5"] = {"preset": "qwen-replicas-w5", "nodes": ["halo-1"]}
+        cluster.profiles["mm"] = {"preset": "minimax-pair", "rank0": "halo-1", "rank1": "halo-1"}
+        self.orch.load_cluster.return_value = cluster
+        rows = {row["id"]: row for row in self.api.read("profiles")["profiles"]}
+        self.assertEqual({name: (row["preset"], row["family"]) for name, row in rows.items()},
+                         {"qwen-replicas": ("qwen-replicas", "qwen-replicas"),
+                          "w5": ("qwen-replicas-w5", "qwen-replicas"), "mm": ("minimax-pair", "minimax-pair")})
+        script = (Path(__file__).resolve().parents[1] / "hyperloom" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+        # The UI gates on the family the API reports, never on a preset or profile name.
+        self.assertIn('p.family !== "qwen-replicas"', script)
+        self.assertIn('p.family === "qwen-replicas"', script)
+        self.assertNotIn('profileId(p)) !== "qwen-replicas"', script)
+        self.assertNotIn('p.profile) === "qwen-replicas"', script)
+
+    def test_loopback_engines_are_not_polled_from_the_control_machine(self):
+        raw = {"schema": "tensormeld/replica-router-status-v1", "status": "ok", "replicas": [
+            {"id": "rank0", "endpoint": "http://127.0.0.1:18441"}]}
+        cluster = deepcopy(self.cluster)
+        cluster.profiles["mm"] = {"preset": "minimax-pair", "rank0": "halo-1", "rank1": "halo-1"}
+        self.orch.load_cluster.return_value = cluster
+        self.orch.status.return_value = {"mm": {"router": raw}, "mm-launch": {"router": raw, "launch": {"family": "minimax-pair"}},
+                                         "qwen-replicas": {"router": raw}}
+        fetched = []
+        def fetch(endpoint, suffix, text=False):
+            fetched.append(suffix)
+            raise OSError("connection refused")
+        with patch("hyperloom.web.api._http", side_effect=fetch):
+            stats = self.api.read("stats")
+        rows = {row["profile"]: row for row in stats["engines"]}
+        for name in ("mm", "mm-launch"):
+            self.assertIsNone(rows[name]["status"])
+            self.assertEqual(rows[name]["why"]["status"], "unavailable: engine bound to loopback on its node")
+            self.assertEqual(rows[name]["why"]["metrics"], "unavailable: engine bound to loopback on its node")
+        # Only the LAN-bound qwen engine is probed.
+        self.assertEqual(fetched, ["/metrics"])
+        self.assertEqual(rows["qwen-replicas"]["why"]["status"], "connection refused")
+
     def test_redaction_keeps_measurements_and_key_file_paths(self):
         value = redact({"api_key": "hidden", "generated_tokens": 123, "api_key_file": "/opt/key", "argv": ["--api-key", "hidden"]})
         self.assertEqual(value["generated_tokens"], 123)
