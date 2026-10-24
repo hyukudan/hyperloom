@@ -99,13 +99,18 @@ not pushed. To install them:
    that borrows DIR's objects through `objects/info/alternates`, so DIR gains no ref, object or config. Shallow source
    checkouts work too.
 3. The node verb `bundle-prepare` creates `<root>/incoming` (0700) and returns a fresh staging name. `scp` copies the
-   bundle there.
+   bundle there. If the copy fails, the control machine asks the node to remove that stage (`bundle-discard`, best
+   effort). `bundle-prepare` also removes `.stage-*` files older than one hour left by interrupted uploads; it never
+   removes the stage it hands out or an accepted `<commit>.bundle`.
 4. `bundle-accept` checks size, sha256 and the single head, then renames the file to `<root>/incoming/<commit>.bundle`.
 5. In the install payload the component becomes `{"repo", "commit", "published": false, "bundle_sha256"}`. The node's
    `fetch_sources` re-verifies the bundle, marks the commit shallow and fetches `refs/hyperloom/source` from it, never
    from the remote. It then checks `rev-parse HEAD`.
-6. That component record goes into `MANIFEST.json`, so a release built from a bundle has a different release id from
-   a published build of the same commit.
+6. That component record goes into `MANIFEST.json`, so a release built from a bundle always has a different release
+   id from a published build of the same commit. The record includes `bundle_sha256`, and the bundle bytes depend on
+   the local git version and on pack threading and compression, not only on the commit. Re-installing the same commit
+   with `--source` may therefore produce a new unpublished release id; compare commits in the manifest, not release
+   ids, to tell whether two unpublished builds carry the same source.
 7. `up` records the release's unpublished components in `launch.unpublished_sources`, and `status` shows them as
    `unpublished_sources`.
 
