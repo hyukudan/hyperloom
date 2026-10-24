@@ -20,7 +20,7 @@ VERBS = {"version", "doctor", "gpu"}
 # Extension modules shipped beside this file (copied together by bootstrap). Each exposes
 # VERBS (set of names) and run(verb, payload: dict) -> dict; they get the raw JSON payload.
 EXTENSIONS = ("hyperloom_install", "hyperloom_lease", "hyperloom_download", "hyperloom_service",
-              "hyperloom_observe", "hyperloom_turns", "hyperloom_models", "hyperloom_logsearch")
+              "hyperloom_observe", "hyperloom_usb4", "hyperloom_turns", "hyperloom_models", "hyperloom_logsearch")
 
 
 def extension_for(verb):

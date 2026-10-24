@@ -1,9 +1,10 @@
-"""Read-only host and USB4 link telemetry (CPU/sensors, network, disks, GPU processes; USB4 sysfs, published layout, interrupt counts, kernel evidence). Never opens a stream device.
+"""Read-only host telemetry: CPU and sensors, memory domains, network, disks, GPU processes, listeners and the
+read-only engine status path for loopback engines.
 
 Python 3.10+, standard library only. Exposes VERBS and run(verb, payload) -> dict (node extension contract).
 """
 
-VERBS = {"host", "usb4"}
+VERBS = {"host"}
 
 
 def run(verb, payload):
