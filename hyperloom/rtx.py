@@ -30,6 +30,7 @@ PRESETS = Path(__file__).with_name("presets")
 GIB = 1 << 30
 WATCH_S = 2.0
 MEMORY_S = 0.5
+PRO_IDLE_MIB = 2048  # display and driver use only; more means another job holds the PRO
 MAX_WINDOW_S = 1200  # lab PC-BIG window unless main approves a longer one
 SMI_TIMEOUT_S = 5
 _SECRET = "<redacted>"
@@ -55,13 +56,21 @@ def service_preset(name):
 
 
 def parse_reservation(value, where="pc.cuda.reservation"):
-    r = record(value, where, ("owner", "approval", "expires_at", "vram_cap_gib", "host_gib", "free_commit_floor_gib"),
-               ("extended_approval",))
+    r = record(value, where, ("owner", "approval", "vram_cap_gib", "host_gib", "free_commit_floor_gib"),
+               ("extended_approval", "expires_at", "window_s"))
     text(r["owner"], f"{where}.owner")
     if "extended_approval" in r:
         text(r["extended_approval"], f"{where}.extended_approval")
     text(r["approval"], f"{where}.approval")
-    expires(r["expires_at"], f"{where}.expires_at")
+    # A fixed end (expires_at), or a window that opens when the service or build starts (window_s): a queued
+    # pair turn can start hours after the operator granted the PC-BIG slot.
+    if ("expires_at" in r) == ("window_s" in r):
+        raise ConfigError(f"{where}: give exactly one of expires_at or window_s")
+    if "expires_at" in r:
+        expires(r["expires_at"], f"{where}.expires_at")
+    else:
+        integer(r["window_s"], f"{where}.window_s", 60,
+                86400 if "extended_approval" in r else MAX_WINDOW_S)
     number(r["vram_cap_gib"], f"{where}.vram_cap_gib", 1, 1024)
     number(r["host_gib"], f"{where}.host_gib", 0, 4096)
     number(r["free_commit_floor_gib"], f"{where}.free_commit_floor_gib", 1, 4096)
@@ -75,6 +84,13 @@ def expires(value, where):
     except ValueError as exc:
         raise ConfigError(f"{where}: expected UTC time YYYY-MM-DDTHH:MM:SSZ") from exc
     return moment.timestamp()
+
+
+def reservation_end(reservation, now):
+    """End of the PC-BIG window: the fixed expires_at, or now + window_s when the window opens at start."""
+    if "window_s" in reservation:
+        return now + reservation["window_s"]
+    return expires(reservation["expires_at"], "pc.cuda.reservation.expires_at")
 
 
 def parse_profile_service(value, machines, where="profile.prefill_service"):
@@ -186,7 +202,7 @@ def render_service(cluster, profile_name, *, api_key, handoff_api_key, free_phys
             raise ConfigError("lab mode: the RTX service needs an operator-granted pc.cuda.reservation")
         deadline = math.inf
     else:
-        deadline = expires(reservation["expires_at"], "pc.cuda.reservation.expires_at")
+        deadline = reservation_end(reservation, now)
         if deadline <= now + 60:
             raise ConfigError("pc.cuda.reservation has expired (or ends within 60 s)")
         if deadline > now + MAX_WINDOW_S and "extended_approval" not in reservation:
@@ -274,6 +290,13 @@ def verify_pro(pro_uuid, run=subprocess.run):
     rows = _smi(["--query-gpu=uuid,name,pci.bus_id,memory.total", "--format=csv,noheader,nounits", "-i", pro_uuid], run)
     if len(rows) != 1 or rows[0][0] != pro_uuid or "RTX PRO 6000" not in rows[0][1]:
         raise ServiceError(f"{pro_uuid} is not one RTX PRO 6000: {rows}")
+    # One PC-BIG at a time across all users of the PRO: refuse a busy device rather than share it.
+    others = [pid for gpu, pid, _ in compute_apps(run) if gpu == pro_uuid]
+    if others:
+        raise ServiceError(f"RTX PRO busy: compute processes {sorted(others)}")
+    used = device_used_mib(pro_uuid, run)
+    if used > PRO_IDLE_MIB:
+        raise ServiceError(f"RTX PRO busy: {used} MiB in use (idle is <= {PRO_IDLE_MIB} MiB)")
     return {"uuid": rows[0][0], "name": rows[0][1], "pci_bus_id": rows[0][2], "memory_total_mib": int(rows[0][3])}
 
 
@@ -712,7 +735,7 @@ def build(cluster, profile_name, source, *, child_factory=procs.LocalChild, watc
     reservation = cluster.pc.get("cuda", {}).get("reservation")
     deadline = time.time() + BUILD_MAX_S
     if reservation is not None:
-        deadline = min(deadline, expires(reservation["expires_at"], "expires_at"))
+        deadline = min(deadline, reservation_end(reservation, time.time()))
     if machine.lab_mode and (reservation is None or deadline <= time.time() + 60):
         raise ServiceError("lab mode: the CUDA build needs a current pc.cuda.reservation")
     if source is None:
