@@ -344,7 +344,7 @@ def main(argv=None):
     install.add_argument("profile")
     install.add_argument("--build-on")
     install.add_argument("--config", type=Path, default=config_path())
-    assets = commands.add_parser("assets", help="verify assets or inspect the integrity cache")
+    assets = commands.add_parser("assets", help="verify assets, inspect the integrity cache, or run pinned downloads")
     asset_commands = assets.add_subparsers(dest="operation", required=True)
     for operation in ("verify", "status"):
         asset_command = asset_commands.add_parser(operation)
@@ -353,6 +353,20 @@ def main(argv=None):
         if operation == "verify":
             asset_command.add_argument("--include-large", action="store_true")
             asset_command.add_argument("--machine")
+    asset_sources = asset_commands.add_parser("sources", help="show each asset's pinned source (read-only)")
+    asset_sources.add_argument("profile")
+    asset_sources.add_argument("--config", type=Path, default=config_path())
+    asset_download = asset_commands.add_parser("download", help="show the exact download plan; run it only with --confirm")
+    asset_download.add_argument("profile")
+    asset_download.add_argument("asset")
+    asset_download.add_argument("--machine", required=True)
+    asset_download.add_argument("--confirm", help="the code printed by the plan; nothing runs without it")
+    asset_download.add_argument("--config", type=Path, default=config_path())
+    for name in ("job", "cancel"):
+        asset_job = asset_commands.add_parser(name, help="a download job's state" if name == "job" else "cancel a download job")
+        asset_job.add_argument("machine")
+        asset_job.add_argument("job")
+        asset_job.add_argument("--config", type=Path, default=config_path())
     nodes = commands.add_parser("nodes", help="node tool maintenance")
     node_commands = nodes.add_subparsers(dest="operation", required=True)
     update = node_commands.add_parser("update", help="redeploy the node tool to the profile's machines")
@@ -431,6 +445,19 @@ def main(argv=None):
         elif args.command == "nodes":
             _json(_module("hyperloom.orchestrate").nodes_update(_cluster(args.config), args.profile,
                                                                 machine=args.machine, force=args.force))
+        elif args.command == "assets" and args.operation in ("sources", "download", "job", "cancel"):
+            downloads = _module("hyperloom.downloads")
+            cluster = _cluster(args.config)
+            if args.operation == "sources":
+                _json(downloads.sources(cluster, args.profile))
+            elif args.operation in ("job", "cancel"):
+                if args.machine not in cluster.machines:
+                    raise ValueError("unknown machine: " + args.machine)
+                _json(downloads.job(cluster, args.machine, args.job, cancel=args.operation == "cancel"))
+            elif args.confirm is None:
+                _json(downloads.plan(cluster, args.profile, args.asset, args.machine))
+            else:
+                _json(downloads.start(cluster, args.profile, args.asset, args.machine, args.confirm))
         elif args.command == "assets":
             cluster = _cluster(args.config)
             assets = _module("hyperloom.assets")

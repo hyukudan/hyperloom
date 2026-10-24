@@ -230,6 +230,12 @@ class OrchestrationTests(unittest.TestCase):
         module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
         loader.exec_module(module)
         self.assertEqual(module.tool_digest(path.parent), orch.remote.tool_digest())
+        # One source of truth: both lists come from the node CLI's EXTENSIONS.
+        self.assertEqual(sorted(module.TOOL_FILES), sorted(orch.remote.NODE_FILES))
+        self.assertEqual(set(orch.remote.NODE_FILES),
+                         {"hyperloom-node", "build-node.sh", *(name + ".py" for name in module.EXTENSIONS)})
+        for name in orch.remote.NODE_FILES:
+            self.assertTrue((path.parent / name).is_file(), name)
 
     def test_down_cancels_queued_leases(self):
         orch.up(self.cluster, "qwen-replicas")

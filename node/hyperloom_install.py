@@ -218,8 +218,9 @@ def stat_asset(path):
     return result
 
 
-def hash_file(path):
-    """Keep model reads out of the page cache when the filesystem supports O_DIRECT."""
+def hash_file(path, check=None):
+    """Keep model reads out of the page cache when the filesystem supports O_DIRECT.
+    check, if given, runs before every block and aborts the hash by raising ValueError."""
     def read_hash(direct):
         flags = os.O_RDONLY | (os.O_DIRECT if direct else 0)
         fd = os.open(path, flags)
@@ -234,6 +235,8 @@ def hash_file(path):
             with mmap.mmap(-1, HASH_BLOCK) as buffer:
                 with memoryview(buffer) as view:
                     while total < before.st_size:
+                        if check is not None:
+                            check()
                         if direct:
                             count = os.readv(fd, [view])
                         else:
@@ -259,6 +262,36 @@ def hash_file(path):
             if exc.errno not in DIRECT_UNSUPPORTED:
                 raise
     return read_hash(False)
+
+
+def boot_id():
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+    except OSError:
+        return None
+
+
+def settle_stale(path, state):
+    """A queued or running job that recorded its boot (download jobs) but whose node rebooted, or whose
+    process is gone, can never finish: record it as failed instead of reporting it running forever."""
+    if state.get("state") not in {"queued", "running"} or "boot_id" not in state:
+        return state
+    reason = None
+    if state["boot_id"] != boot_id():
+        reason = "the node rebooted while the job ran"
+    elif os.name == "posix" and type(state.get("pid")) is int:
+        try:
+            os.kill(state["pid"], 0)
+        except ProcessLookupError:
+            reason = "the job process ended without recording a result"
+        except PermissionError:
+            pass
+    if reason is None:
+        return state
+    state = {**state, "state": "failed", "error": reason + "; partial files are kept, rerun the same plan to resume",
+             "finished": time.time()}
+    atomic_json(path, state)
+    return state
 
 
 def hash_asset(path):
@@ -627,7 +660,8 @@ def run(verb, payload):
             result.update(launch_job(root, verb, payload))
         elif verb == "job":
             job = identifier(payload.get("job"))
-            state = read_json(inside(root, "run", "job-" + job + ".json"))
+            state = settle_stale(inside(root, "run", "job-" + job + ".json"),
+                                 read_json(inside(root, "run", "job-" + job + ".json")))
             # A failed job is a successful query, not a protocol failure (exit 2).
             # Keep its diagnostic out of the response envelope's error field.
             if "error" in state:
