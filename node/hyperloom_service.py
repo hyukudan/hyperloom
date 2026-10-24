@@ -91,7 +91,7 @@ def lab_files(root):
     for directory in lab_search_dirs(root):
         for name in LAB_FILES:
             try:
-                if (directory / name).exists():
+                if os.path.lexists(directory / name):  # a dangling link still marks a lab machine
                     found.append(str(directory / name))
             except OSError:
                 pass
@@ -102,6 +102,8 @@ def non_lab_root(payload):
     """The marked root, only when it is provably non-lab (fails closed)."""
     if payload.get("lab_dir") is not None:
         raise ValueError("non-lab service mode refused: a lab directory was given (lab machines use leases)")
+    if os.name == "posix" and os.geteuid() == 0:
+        raise ValueError("non-lab service mode refused: user units only, never as root")
     root = lease.marked_root(payload.get("root"))
     policy_file = lease.inside(root, "etc", "install-policy.json")
     if not policy_file.is_file():
@@ -209,11 +211,11 @@ def service_records(root, profile):
     return rows
 
 
-def settle_records(root, profile, reason):
+def settle_records(root, profile, reason, only_stale=False):
     """Mark every non-terminal record of this unit failed: systemd runs one instance per unit, so a new start
-    (or an inactive unit) means earlier records can never finish."""
+    (or an inactive unit) means earlier records can never finish. only_stale: just those whose process is gone."""
     for filename, state in service_records(root, profile):
-        if state.get("state") not in lease.TERMINAL:
+        if state.get("state") not in lease.TERMINAL and (not only_stale or lease.service_stale(state)):
             lease.settle_service(root, filename, state, reason)
 
 
@@ -274,7 +276,8 @@ def service_run(spec_file):
     spec["lease"] = lid
     filename = lease.inside(root, "run", "spec-" + lid + ".json")
     with lease.root_lock(root):
-        settle_records(root, profile, "stale: superseded by a new start of the unit")
+        # A unit restart finds its previous process gone; a second, hand-run copy finds it alive and is refused.
+        settle_records(root, profile, "stale: superseded by a new start of the unit", only_stale=True)
         others = [state.get("label") for state in lease.live_records(root)]
         if others:
             raise ValueError("refused: a lease is live on this root (" + ", ".join(map(str, others)) + ")")

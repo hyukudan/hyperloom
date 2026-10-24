@@ -292,7 +292,7 @@ def _apply(out, apply, labels, outcome):
     if error is None:
         try:
             result = apply(out, labels, raw)
-        except SOURCE_ERRORS as exc:
+        except Exception as exc:  # noqa: BLE001 - one bad source is that source down, never a failed scrape
             error = exc
     return result, error, elapsed
 

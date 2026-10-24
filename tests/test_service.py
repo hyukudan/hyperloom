@@ -298,7 +298,7 @@ class ServiceRunTests(NodeCase):
         self.assertEqual([p.name for p in (self.root / "run").glob("spec-*.json")], [])
 
     def test_stale_records_are_settled_and_pruned(self):
-        stale = [self.record("hl-svc-qwen-replicas", state="ready", pid=os.getpid()),
+        stale = [self.record("hl-svc-qwen-replicas", state="ready", pid=os.getpid(), boot_id=OTHER_BOOT),
                  self.record("hl-svc-qwen-replicas", state="queued", boot_id=OTHER_BOOT)]
         old = [self.record("hl-svc-qwen-replicas", state="stopped", queued_at=index) for index in range(8)]
         self.assertEqual(self.run_with("stopped", "requested"), 0)
@@ -309,6 +309,13 @@ class ServiceRunTests(NodeCase):
         remaining = [state for _, state in node.service_records(self.root, "qwen-replicas")]
         self.assertEqual(len(remaining), node.KEEP_RECORDS + 1)
         self.assertFalse(any(node.lease.record_path(self.root, lid).exists() for lid in old[:5]))
+
+    def test_a_live_run_of_the_same_unit_refuses_a_second_start(self):
+        # A hand-run copy beside the active unit: its record's process is alive on this boot, so it is not stale.
+        lid = self.record("hl-svc-qwen-replicas", state="ready", pid=os.getpid())
+        with self.assertRaisesRegex(ValueError, "lease is live"):
+            self.run_with("stopped", "requested")
+        self.assertEqual(node.lease.read_json(node.lease.record_path(self.root, lid))["state"], "ready")
 
     def test_status_settles_records_of_an_inactive_unit(self):
         lid = self.record("hl-svc-qwen-replicas", state="ready", pid=os.getpid())
