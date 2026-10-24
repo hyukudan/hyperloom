@@ -284,9 +284,8 @@ def _lock_commits():
         return {}  # Unknown commits are left out rather than invented.
 
 
-def launch_commits():
-    """{profile: {engine_commit, tensormeld_commit}} of each saved launch: the running release's manifest components,
-    else the launched preset's engine pin. Missing values are left out."""
+def _launches():
+    """{profile: launch record} of each saved launch state."""
     result = {}
     for path in sorted(secrets.runtime_dir().glob("up-*.json")):
         try:
@@ -294,8 +293,39 @@ def launch_commits():
         except (OSError, ValueError):
             continue
         launch = state.get("launch") if isinstance(state, dict) else None
-        if not isinstance(launch, dict):
-            continue
+        if isinstance(launch, dict):
+            result[path.stem[3:]] = launch
+    return result
+
+
+def launch_families(launches=None):
+    """{profile: engine family} of each saved launch (its recorded family, else its preset's)."""
+    from .config import family as preset_family
+    result = {}
+    for name, launch in (_launches() if launches is None else launches).items():
+        family = launch.get("family")
+        if not isinstance(family, str):
+            try:
+                family = preset_family(launch.get("preset") or name)
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+        result[name] = family
+    return result
+
+
+def _loopback(family):
+    from . import engines
+    try:
+        return engines.adapter(family).bind == "loopback"
+    except (ValueError, KeyError):
+        return False
+
+
+def launch_commits():
+    """{profile: {engine_commit, tensormeld_commit}} of each saved launch: the running release's manifest components,
+    else the launched preset's engine pin. Missing values are left out."""
+    result = {}
+    for name, launch in _launches().items():
         components = launch.get("components") if isinstance(launch.get("components"), dict) else {}
         row = {}
         engine_commit = components.get("engine") or launch.get("engine_sha")
@@ -304,7 +334,7 @@ def launch_commits():
         if isinstance(components.get("tensormeld"), str):
             row["tensormeld_commit"] = components["tensormeld"]
         if row:
-            result[path.stem[3:]] = row
+            result[name] = row
     return result
 
 
@@ -337,11 +367,21 @@ def _apply(out, apply, labels, outcome):
     return result, error, elapsed
 
 
-def collect(routers=None, fetch=_get, profile=None, deadline_s=SCRAPE_DEADLINE_S, launches=None):
+LOOPBACK_UNAVAILABLE = "unavailable: engine bound to loopback on its node"
+
+
+def collect(routers=None, fetch=_get, profile=None, deadline_s=SCRAPE_DEADLINE_S, launches=None, families=None):
     """Return the exposition text for {profile: router endpoint or None}.
 
-    Routers, then every replica's engine sources, are fetched in parallel against one overall deadline."""
+    Routers, then every replica's engine sources, are fetched in parallel against one overall deadline. ``launches``
+    ({profile: commits}) and ``families`` ({profile: engine family}) default to the saved launch states. Replicas of
+    a loopback-bound family are never probed: their address is 127.0.0.1 on their node, not on this machine."""
     routers = running_routers() if routers is None else routers
+    if families is None:
+        try:
+            families = launch_families()
+        except (OSError, RuntimeError):
+            families = {}
     if profile is not None:
         routers = {profile: routers.get(profile)}
     out = Exposition()
@@ -362,6 +402,10 @@ def collect(routers=None, fetch=_get, profile=None, deadline_s=SCRAPE_DEADLINE_S
     jobs = []
     for name, rid, node, raw_endpoint in replicas:
         labels = {"profile": name, "replica": rid, "machine": node}
+        if _loopback(families.get(name)):
+            for source in ("engine_metrics", "engine_status"):
+                _source(out, {**labels, "source": source, "reason": LOOPBACK_UNAVAILABLE}, False, None)
+            continue
         try:
             endpoint = _replica_endpoint(raw_endpoint)
         except SOURCE_ERRORS:

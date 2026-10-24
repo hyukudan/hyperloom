@@ -44,6 +44,54 @@ def labels(**items):
 
 
 class ExportTests(unittest.TestCase):
+    def setUp(self):
+        # collect() reads saved launch states for build info and engine families: never the machine's real ones.
+        import tempfile
+        temporary = tempfile.TemporaryDirectory(prefix="hyperloom metrics run ")
+        self.addCleanup(temporary.cleanup)
+        self.run_dir = Path(temporary.name)
+        patcher = mock.patch.object(metrics_export.secrets, "runtime_dir", return_value=self.run_dir)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_tests_never_read_the_real_state_directory(self):
+        self.assertEqual(metrics_export.secrets.runtime_dir(), self.run_dir)
+        self.assertEqual((metrics_export.launch_commits(), metrics_export.launch_families()), ({}, {}))
+
+    def test_loopback_family_replicas_are_never_probed(self):
+        probed = []
+        documents = healthy()
+
+        def fetch(endpoint, suffix, text=False):
+            if suffix != "/api/status" or endpoint != ROUTER:
+                probed.append((endpoint["address"], suffix))
+            return fake_fetch(documents)(endpoint, suffix, text)
+        reason = "unavailable: engine bound to loopback on its node"
+        self.assertEqual(reason, metrics_export.LOOPBACK_UNAVAILABLE)
+        from hyperloom.web import api
+        self.assertEqual(reason, api.LOOPBACK_UNAVAILABLE)  # the same wording as the web view
+        # From the saved launch record (family), and from the families argument.
+        (self.run_dir / "up-mm.json").write_text(json.dumps({"launch": {"family": "minimax-pair"}}), encoding="utf-8")
+        (self.run_dir / "up-old.json").write_text(json.dumps({"launch": {"preset": "minimax-pair"}}), encoding="utf-8")
+        self.assertEqual(metrics_export.launch_families(), {"mm": "minimax-pair", "old": "minimax-pair"})
+        for routers, families in (({"mm": ROUTER, "old": ROUTER}, None),
+                                  ({"arg": ROUTER}, {"arg": "minimax-pair"})):
+            with self.subTest(families=families):
+                probed.clear()
+                samples = prom.parse(metrics_export.collect(routers, fetch, launches={}, families=families))
+                self.assertEqual(probed, [])
+                for name in routers:
+                    self.assertEqual(samples[("hyperloom_source_up", labels(source="router", profile=name))], 1)
+                    for source in ("engine_metrics", "engine_status"):
+                        for node in ("halo-1", "halo-2"):
+                            key = labels(source=source, profile=name, replica=node, machine=node, reason=reason)
+                            self.assertEqual(samples[("hyperloom_source_up", key)], 0)
+                self.assertFalse(any(key[0].startswith("hyperloom_engine_") for key in samples))
+        # A LAN-bound family is still probed.
+        probed.clear()
+        metrics_export.collect({"qwen": ROUTER}, fetch, launches={}, families={"qwen": "qwen-replicas"})
+        self.assertIn(("192.0.2.1", "/metrics"), probed)
+
     def test_round_trip_through_prometheus_parser(self):
         text = metrics_export.collect({"qwen": ROUTER}, fake_fetch(healthy()))
         samples = prom.parse(text)
