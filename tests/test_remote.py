@@ -167,6 +167,30 @@ class RemoteTests(unittest.TestCase):
         self.assertEqual(shlex.split(command), [self.client.node_path, "doctor"])
         self.assertNotIn("雪", command)
 
+    def test_ssh_config_is_written_once_and_never_rewritten_under_readers(self):
+        # Concurrent hyperloom processes (and their ssh children) read the config file; rewriting it on every call
+        # raced them (a Windows sharing violation aborted a queued up). It is written once, then left alone.
+        self.pin()
+        self.client.call("gpu", {}, 3)
+        config = self.known.config_path
+        self.assertEqual(config.read_text(encoding="utf-8"), remote.SSH_CONFIG)
+        stamp = config.stat().st_mtime_ns
+        with patch.object(remote, "_write", side_effect=AssertionError("rewritten")):
+            self.client.call("gpu", {}, 3)
+        self.assertEqual(config.stat().st_mtime_ns, stamp)
+
+    def test_atomic_write_retries_a_transient_sharing_violation(self):
+        target = self.directory / "state.txt"
+        real = os.replace
+        failures = [PermissionError(13, "in use")]
+        def flaky(src, dst):
+            if failures:
+                raise failures.pop()
+            return real(src, dst)
+        with patch.object(remote.os, "replace", side_effect=flaky):
+            remote._write(target, "ok\n")
+        self.assertEqual(target.read_text(encoding="utf-8"), "ok\n")
+
     def test_every_call_pins_alias_address_and_nondefault_port(self):
         self.pin()
         self.client.call("gpu", {}, 3)

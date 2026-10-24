@@ -20,7 +20,7 @@ import threading
 import time
 
 from .paths import repo_root
-from .winproc import no_window
+from .winproc import no_window, retry_sharing
 
 
 MAX_JSON = 256 * 1024
@@ -137,6 +137,16 @@ def _config_path(path):
     return '"' + value + '"' if any(c.isspace() for c in value) else value
 
 
+SSH_CONFIG = "# Hyperloom: ignore ambient SSH configuration.\n"
+
+
+def _read_or_none(path):
+    try:
+        return retry_sharing(lambda: Path(path).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+
+
 def _write(path, value):
     temporary = None
     try:
@@ -144,7 +154,8 @@ def _write(path, value):
                                          dir=path.parent, prefix=".hyperloom-", delete=False) as stream:
             temporary = Path(stream.name)
             stream.write(value)
-        os.replace(temporary, path)
+        # Another hyperloom process (or its ssh child reading the file) may hold it open for a moment on Windows.
+        retry_sharing(lambda: os.replace(temporary, path))
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
@@ -296,7 +307,7 @@ class KnownHosts:
 
     def _lines(self):
         try:
-            return self.path.read_text(encoding="utf-8").splitlines()
+            return retry_sharing(lambda: self.path.read_text(encoding="utf-8")).splitlines()
         except FileNotFoundError:
             return []
         except (OSError, UnicodeError) as exc:
@@ -333,7 +344,10 @@ class KnownHosts:
                    for line in self._lines()):
             raise RemoteError("unknown host key; confirm a fingerprint before connecting")
         try:
-            _write(self.config_path, "# Hyperloom: ignore ambient SSH configuration.\n")
+            # Written once: every ssh call of every concurrent hyperloom process reads this file, so rewriting it
+            # on each call races their readers (a sharing violation on Windows aborted a queued up).
+            if _read_or_none(self.config_path) != SSH_CONFIG:
+                _write(self.config_path, SSH_CONFIG)
         except OSError as exc:
             raise RemoteError("cannot write hyperloom ssh config") from exc
         return ["-F", str(self.config_path),
