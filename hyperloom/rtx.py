@@ -330,6 +330,7 @@ class Watchdog:
         self.interval, self.memory_interval, self.gpu = interval, memory_interval, gpu
         self.reason = None
         self.baseline_mib = None
+        self.smi_failures = 0
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
@@ -373,10 +374,17 @@ class Watchdog:
                     line["vram_mib"] = own[0]
                 elif self.baseline_mib is not None:
                     line["vram_mib"] = max(0, self.used(self.spec.pro_uuid) - self.baseline_mib)
+                elif reason is None:
+                    reason = "VRAM use cannot be measured (no per-process value and no device baseline)"
                 if reason is None and line.get("vram_mib", 0) > self.spec.vram_cap_gib * 1024:
                     reason = f"VRAM {line['vram_mib']} MiB above the {self.spec.vram_cap_gib:g} GiB cap"
+                self.smi_failures = 0
             except ServiceError as exc:
-                line["smi"] = str(exc)[:200]  # a transient nvidia-smi failure is logged, not fatal
+                # A transient nvidia-smi failure is logged; a persistent one would silently disable the GPU checks.
+                self.smi_failures += 1
+                line["smi"] = str(exc)[:200]
+                if self.smi_failures >= SMI_FAILURES_MAX:
+                    reason = f"nvidia-smi failed {self.smi_failures} times in a row: GPU checks unavailable"
         if reason:
             line["kill"] = reason
         self.log(line)
@@ -408,6 +416,18 @@ class Watchdog:
 
 
 # --- the owned service (a detached CLI helper holds the Job Object, like the local router) ------------------
+
+SMI_FAILURES_MAX = 3
+
+
+def _scrub(event, secrets):
+    """Remove secret values (keys from the argv) from an engine event before it is stored in state."""
+    text = json.dumps(event)
+    for secret in secrets:
+        if secret:
+            text = text.replace(json.dumps(secret)[1:-1], _SECRET)
+    return json.loads(text)
+
 
 def _retry(action):
     """Windows: a reader holding state.json briefly makes replace/read fail with a sharing violation."""
@@ -560,9 +580,9 @@ def service_run(spec_path, *, child_factory=procs.LocalChild, watchdog_factory=W
                 if event is not None:
                     try:
                         if health(spec.port).get("status") == "ok":
-                            ready = event
+                            ready = _scrub(event, [a for a, b in zip(spec.argv, redacted) if a != b])
                             _write(directory / "state.json", {"state": "ready", "pid": child.process.pid,
-                                                              "device": info, "ready": event, "argv": redacted})
+                                                              "device": info, "ready": ready, "argv": redacted})
                             next_health = now + HEALTH_INTERVAL_S
                     except (OSError, ValueError):
                         pass
@@ -635,7 +655,7 @@ def start_service(spec, *, detached, owner=None, timeout_s=None, check=lambda: N
     return launch_service(prepare_service(spec), spec, detached=detached, owner=owner, timeout_s=timeout_s, check=check)
 
 
-def stop_service(record, timeout_s=30):
+def stop_service(record, timeout_s=60):
     """Ask the helper to stop and wait for it. A helper that is not running (never started, or dead: its Job Object
     already ended the service) cannot start later either: it checks the stop file after taking its lifetime lock."""
     directory = Path(record["directory"])

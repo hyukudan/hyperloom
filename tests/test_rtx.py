@@ -161,6 +161,7 @@ class RenderTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "at most 1 decode replica"):
             rtx.render_service(cluster, "ds41-rtx", api_key=KEY_A, handoff_api_key=KEY_B, free_physical_gib=100.0)
 
+    @unittest.skipUnless(os.name == "nt", "the service runs on the Windows control machine; its files use Windows paths")
     def test_service_model_size_is_checked_on_every_start(self):
         with tempfile.TemporaryDirectory() as tmp:
             model = Path(tmp) / "model.gguf"
@@ -182,6 +183,7 @@ class RenderTests(unittest.TestCase):
         obj["pc"]["cuda"]["reservation"]["extended_approval"] = "coord 21:40 main ACK 30 min"
         self.render(obj)
 
+    @unittest.skipUnless(os.name == "nt", "the service runs on the Windows control machine; its files use Windows paths")
     def test_binary_sha_comes_from_the_release_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:
             obj = rtx_example()
@@ -283,6 +285,30 @@ class WatchdogTests(unittest.TestCase):
     def test_deadline(self):
         dog, _ = self.watchdog(spec=_spec(deadline=time.time() - 1))
         self.assertEqual(dog.check(), "deadline")
+
+    def test_persistent_smi_failure_is_fatal_transient_is_not(self):
+        def failing():
+            raise rtx.ServiceError("nvidia-smi timed out")
+        dog, lines = self.watchdog()
+        dog.apps = failing
+        self.assertIsNone(dog.check())
+        self.assertIsNone(dog.check())
+        self.assertIn("nvidia-smi failed 3 times", dog.check())
+        dog, _ = self.watchdog(apps=[(PRO, 42, 100)])
+        dog.smi_failures = 2
+        self.assertIsNone(dog.check())
+        self.assertEqual(dog.smi_failures, 0)
+
+    def test_unmeasurable_vram_is_fatal(self):
+        dog, _ = self.watchdog(apps=[(PRO, 42, None)])
+        dog.baseline_mib = None
+        self.assertIn("cannot be measured", dog.check())
+
+    def test_ready_event_is_scrubbed_of_keys(self):
+        event = {"event": "READY", "detail": "listening key=" + "ab" * 32, "argv": ["--api-key", "ab" * 32]}
+        clean = rtx._scrub(event, ["ab" * 32, ""])
+        self.assertNotIn("ab" * 32, json.dumps(clean))
+        self.assertEqual(clean["event"], "READY")
 
     def run_thread(self, **kw):
         kills = []
@@ -653,6 +679,7 @@ class AcceptanceToolTests(unittest.TestCase):
                                              health=lambda port: {"served": served["n"]})["pass"])
 
 
+@unittest.skipUnless(os.name == "nt", "the service runs on the Windows control machine; its files use Windows paths")
 class BuildTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

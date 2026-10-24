@@ -44,13 +44,14 @@ def _write(path, value):
     temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
     try:
         temporary.write_text(json.dumps(value, indent=2), encoding="utf-8")
-        temporary.replace(path)
+        # The prefill helper reads this file every 2 s; Windows refuses a replace while it is open.
+        rtx._retry(lambda: temporary.replace(path))
     finally:
         temporary.unlink(missing_ok=True)
 
 
 def _read(path):
-    return json.loads(path.read_text(encoding="utf-8"))
+    return rtx._retry(lambda: json.loads(path.read_text(encoding="utf-8")))
 
 
 def _known_hosts():
