@@ -85,7 +85,8 @@ What it does:
   copies the release to `%LOCALAPPDATA%\hyperloom\releases\<name>`, creates `%LOCALAPPDATA%\hyperloom\venvs\<name>`,
   and makes it the active release;
 - **checkout:** one venv at `%LOCALAPPDATA%\hyperloom\venv` with an editable install of the checkout;
-- installs TensorMeld from the bundled pinned source, then hyperloom; with a `wheels\` folder, pip runs offline;
+- installs TensorMeld from the bundled pinned source, then hyperloom, from the verified copy; with a `wheels\`
+  folder (verified like every other file), pip runs offline;
 - writes the launchers `%LOCALAPPDATA%\hyperloom\hyperloom.cmd` and `hloom.cmd`, and a Start-menu shortcut
   **Hyperloom** that opens the portal.
 
@@ -102,6 +103,9 @@ hloom --version
 ```
 
 Keep the unpacked directory: the install is editable, and the node tool is copied from it.
+
+There is no Linux installer: `sha256sum -c` checks the archive as a whole, but nothing checks the unpacked
+files against `RELEASE.json` (the Windows installer does). Unpack into an empty directory and do not edit it.
 
 ## 4. Describe the cluster
 
@@ -125,7 +129,7 @@ Per node, set:
   not be or contain your home directory, not be inside a git checkout, and not overlap the lab directory or any asset path.
   hyperloom marks it and writes only inside it (plus `~/.hyperloom-boot` for the node tool).
 - `lab_mode` and `lab_dir`: in the lab, `lab_mode: true` (the default) and the lab directory that holds the turn scripts;
-  every GPU process then runs inside a GPU turn. Outside the lab see `docs/non-lab-mode.md`.
+  every GPU process then runs inside a GPU turn. This guide covers lab mode only.
 - `assets`: per node, each file's path, size in bytes and sha256. Files are never downloaded or converted automatically.
 
 `config validate` rejects unknown keys, non-private addresses and malformed values, and names the field.
@@ -159,8 +163,11 @@ hloom doctor halo-1
 hloom doctor halo-2
 ```
 
-The first call copies the node tool to `~/.hyperloom-boot` on the node (fixed commands: `mkdir`, `scp`, `chmod`), then
-runs the read-only checks. Each check is `ok` or `unavailable` with the reason; `commands` lists everything that ran.
+On a node without the node tool, the first call copies it to `~/.hyperloom-boot` (fixed commands: `mkdir`, `scp`,
+`chmod`); after that `doctor` changes nothing on the node. It runs the read-only checks: each is `ok` or `unavailable`
+with the reason, and `commands` lists everything that ran. `node_tool` compares the deployed node tool with this
+release's: `stale` means it came from another release; `doctor` does not replace it (a lease may be running on it), so
+run `hloom nodes update <profile> --machine <machine>`, which refuses while a lease is live.
 Fix whatever your profile needs (section 1) before going on.
 
 ## 7. Build the engine and run a profile
@@ -201,7 +208,7 @@ are the only things hyperloom created; assets are never touched.
 | Symptom | Cause and fix |
 |---|---|
 | `hosts scan` fails with `OpenSSH command failed (exit 1)` | The `ssh-keyscan` bundled with Windows 11 (OpenSSH_for_Windows 9.5p2) aborts with `choose_kex: unsupported KEX method sntrup761x25519-sha512@openssh.com` against current servers. hyperloom then retries with Git for Windows' `ssh-keyscan` (`Git\usr\bin`); install Git for Windows if it is missing. |
-| `doctor` fails with `exit 127` | The node tool is missing on the node and this release does not bootstrap it from `doctor`; run a newer release, or `hloom install` once. |
+| `doctor` reports `node_tool` `stale`, or `up` says `node tool differs from this checkout` | The node tool on the node is from another release. Stop the profile, then `hloom nodes update <profile>` (add `--machine <machine>` for one node). |
 | `unknown host key; confirm a fingerprint before connecting` | Section 5 was skipped for this machine, or `http_address`/`ssh_port` changed since pinning. |
 | `Permission denied (publickey)` | Your public key is not in the node user's `~/.ssh/authorized_keys`, or `ssh_target` names the wrong user (it must be `<user>@...`, see section 4). |
 | `install root is or contains HOME`, `overlaps a git repository` | Choose another `install_root` (section 4). |
@@ -219,7 +226,7 @@ On 2026-10-23, with release `hyperloom-0.1.0-ga937c4c7c82b`:
 - **Linux**, a clean `python:3.11-slim` container as an unprivileged user: `sha256sum -c`, unpack, venv install,
   `--version`, `config validate`.
 - **Node first contact** against a fresh Debian 12 container with only `openssh-server`, `git` and Python 3.11:
-  `hosts scan` (this found the Windows `ssh-keyscan` failure fixed on branch `hl/phase4-keyscan`), fingerprint compared
-  with `ssh-keygen -lf` on the machine, `hosts pin`, `doctor` (this found the missing bootstrap, fixed on the same branch);
+  `hosts scan` (this found the Windows `ssh-keyscan` failure handled under Troubleshooting), fingerprint compared
+  with `ssh-keygen -lf` on the machine, `hosts pin`, `doctor` (this found that `doctor` did not bootstrap a fresh node; it does now);
   doctor then reported the missing node toolchain as `unavailable` with reasons.
 - Section 7 needs the real nodes and GPU turns; it follows the Phase 1a acceptance runs in `docs/acceptance-1a.md`.
