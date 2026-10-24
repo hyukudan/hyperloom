@@ -31,6 +31,12 @@ BOUND_FIELDS = ("max_context_tokens", "max_batch")   # admission bounds, checked
 # Placement fields a launch takes from a recipe; any other field must keep its schema default (refused otherwise).
 SERVICE_FIELDS = {"ds41-rtx-prefill": {"device_gib": "vram_cap_gib", "host_pinned_gib": "host_gib"}}
 NODE_FIELDS = {}   # no node preset takes a placement from recipes yet (plan-v1 input lands with the strix-stream adopters)
+# Node placement fields checked against the engine's own declaration instead of applied (no launch flag sets them).
+NODE_CHECKED = ("workspace_gib",)
+RUNTIME_TOLERANCE_GIB = 0.05
+# Fields a local prefill route may set differently from the decode route on the same processes (each has its own rule
+# in check_endpoints); every other field must be equal.
+PER_ROUTE_FIELDS = ("max_context_tokens", "max_batch", "chunk_tokens")
 
 
 @dataclass
@@ -245,6 +251,10 @@ def decode_route(recipe, ctx, bound, state, recipe_sha, select=None):
     """The one decode route hyperloom deploys: the same route for every workload region, running the profile's
     topology on the decode set; refused otherwise, naming the conflicting routes."""
     routes = [r for r in recipe["routes"] if r["phase"] == "decode"]
+    hetero = [r["id"] for r in routes if r["execute"] == "hetero"]
+    if hetero:
+        raise RecipeError(f"routes.{hetero[0]}: execute = hetero decode needs a profile whose engine runs it; no hyperloom "
+                          f"profile does (profile {ctx.profile} runs {ctx.topology} on the nodes)")
     chosen = {}
     for tokens in _boundaries(routes, "prompt_tokens_min", "prompt_tokens_max", 0):
         for batch in _boundaries(routes, "batch_min", "batch_max", 1):
@@ -269,19 +279,60 @@ def _placement_diff(a, b):
     return sorted(k for k in set(a) | set(b) if a.get(k) != b.get(k))
 
 
-def check_endpoints(recipe, bound, decode):
-    """Routes running on one process must share its effective placement (defaults included)."""
+def check_local_prefill(route, decode, ctx):
+    """A prefill route run by the decode processes: its context within the decode route's, its max_batch equal to the
+    prompts the engine's scheduler runs per prefill, its chunk_tokens equal to the engine's prefill pieces, and every
+    other field equal to the decode route's (one process has one placement)."""
     dset = decode["devices"][0]
-    base = decode["placement"][dset]
+    base, placement = decode["placement"][dset], route["placement"][dset]
+    where = f"routes.{route['id']}.placement.{dset}"
+    diff = [k for k in _placement_diff(base, placement) if k not in PER_ROUTE_FIELDS]
+    if diff:
+        raise RecipeError(f'routes.{route["id"]} and routes.{decode["id"]} run on the same "{dset}" processes with '
+                          f"different placements ({', '.join(diff)})")
+    if placement["max_context_tokens"] > base["max_context_tokens"]:
+        raise RecipeError(f"{where}.max_context_tokens: {placement['max_context_tokens']} > the decode route's "
+                          f"{base['max_context_tokens']} on the same processes")
+    limits = ctx.limits or {}
+    batch, why = limits.get("prefill_batch") or (None, "the engine's prefill concurrency is unknown")
+    if batch is None:
+        raise RecipeError(f"{where}.max_batch: {why}")
+    if placement["max_batch"] != batch:
+        raise RecipeError(f"{where}.max_batch: {placement['max_batch']} != the {batch} prompt(s) the engine's scheduler "
+                          "runs per prefill (a different bound is not enforced by the engine)")
+    chunk = limits.get("prefill_chunk")
+    if chunk is None:
+        raise RecipeError(f"{where}.chunk_tokens: the engine's prefill piece size is unknown for profile {ctx.profile}")
+    if placement["chunk_tokens"] != chunk:
+        shown = "0 (whole prompt)" if placement["chunk_tokens"] == 0 else str(placement["chunk_tokens"])
+        raise RecipeError(f"{where}.chunk_tokens: {shown} != the engine's prefill pieces of {chunk} rows")
+
+
+def check_runtime(route, set_id, ctx, bound):
+    """R4: a non-default workspace_gib on the nodes must equal the engine's declared runtime for each deployed member
+    (the engine sizes it itself; nothing applies it)."""
+    placement = route["placement"][set_id]
+    if placement["workspace_gib"] is None or placement["workspace_gib"] == _defaults()["workspace_gib"]:
+        return
+    where = f"routes.{route['id']}.placement.{set_id}.workspace_gib"
+    runtime = (ctx.limits or {}).get("node_runtime") or {}
+    for member in bound["binding"][set_id]:
+        row = runtime.get(member["id"]) or {"why": "no engine memory declaration"}
+        if "gib" not in row:
+            raise RecipeError(f"{where}: {member['id']}: {row['why']}; it is checked, not applied")
+        if abs(placement["workspace_gib"] - row["gib"]) > RUNTIME_TOLERANCE_GIB:
+            raise RecipeError(f"{where}: {placement['workspace_gib']:g} GiB != the {row['gib']:.2f} GiB the engine "
+                              f"declares on {member['id']} for this launch (it sizes its runtime itself)")
+
+
+def check_endpoints(recipe, bound, decode, ctx):
+    """Routes on the decode processes follow check_local_prefill; offload routes on one service share its placement."""
     offload = []
     for route in recipe["routes"]:
         if route["phase"] != "prefill":
             continue
         if classify(route, bound, decode) == "local":
-            diff = _placement_diff(base, route["placement"][dset])
-            if diff:
-                raise RecipeError(f'routes.{route["id"]} and routes.{decode["id"]} run on the same "{dset}" processes '
-                                  f"with different placements ({', '.join(diff)})")
+            check_local_prefill(route, decode, ctx)
         else:
             offload.append(route)
     for other in offload[1:]:
@@ -292,11 +343,13 @@ def check_endpoints(recipe, bound, decode):
                               f"placements ({', '.join(diff)})")
 
 
-def launch_flags(route, set_id, table, what, memory_min):
-    """The launch values a placement maps to; any other non-default field is refused, never dropped."""
+def launch_flags(route, set_id, table, what, memory_min, checked=()):
+    """The launch values a placement maps to; any other non-default field is refused, never dropped (``checked``
+    fields are verified elsewhere against the engine's declaration)."""
     placement = route["placement"][set_id]
     defaults = dict(_defaults(), device_gib=memory_min)
-    unmapped = sorted(k for k in placement if k not in table and k not in BOUND_FIELDS and placement[k] != defaults[k])
+    unmapped = sorted(k for k in placement if k not in table and k not in BOUND_FIELDS and k not in checked
+                      and placement[k] != defaults[k])
     if unmapped:
         raise RecipeError(f"routes.{route['id']}.placement.{set_id}: {', '.join(unmapped)} cannot be applied to {what} "
                           "(no launch flag); remove it or keep the default")
@@ -400,11 +453,12 @@ def deploy(recipe, ctx, bound, availability, recipe_sha, select=None):
     reqs = requirements(recipe, recipe_sha, ctx, bound)
     pre = admission_state(bound, availability, ctx, requirements=reqs)
     decode = decode_route(recipe, ctx, bound, pre, recipe_sha, select)
-    check_endpoints(recipe, bound, decode)
+    check_endpoints(recipe, bound, decode, ctx)
     check_bounds(decode, decode["devices"][0], "node", ctx)
     sets = {d["id"]: d for d in recipe["match"]["devices"]}
     decode_flags = launch_flags(decode, decode["devices"][0], NODE_FIELDS.get(ctx.profile, {}), f"profile {ctx.profile}",
-                                sets[decode["devices"][0]]["memory_min_gib"])
+                                sets[decode["devices"][0]]["memory_min_gib"], checked=NODE_CHECKED)
+    check_runtime(decode, decode["devices"][0], ctx, bound)
     # Prefill routes are judged as they will be once the decode processes run: their charge is taken out of the free
     # RAM figures and every route they serve is running (no charge, credited by plan id).
     _, decode_charge = reader.admissible(recipe, decode, pre, by_id, recipe_sha)

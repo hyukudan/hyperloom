@@ -307,7 +307,7 @@ def parse(obj: dict) -> Cluster:
         kind = p.get("preset", name)
         data = preset(kind)
         from . import engines
-        engine = engines.adapter(family(kind))
+        engine = engines.release_adapter(kind)
         engines.check_components(data, f"preset {kind}")
         if "receipt" in p and p["receipt"] != data["receipt"]:
             raise ConfigError("profile.receipt: does not match qualified preset")

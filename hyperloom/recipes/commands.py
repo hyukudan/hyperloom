@@ -81,6 +81,18 @@ def probe_command(cluster, args):
         if not path:
             raise RecipeError(f"--evidence {item}: {machine} has no model asset for this profile")
         out.setdefault("evidence", {})[machine] = cache().put_evidence(machine, path, receipt)
+    if args.describe_command or args.declaration:
+        rows = facts.describe_commands(cluster, args.profile)
+        if args.describe_command:
+            out["describe_commands"] = rows
+        by_machine = {r["machine"]: r for r in rows}
+        for item in args.declaration or []:
+            machine, _, receipt = item.partition("=")
+            if machine not in by_machine or not receipt:
+                raise RecipeError(f"--declaration {item}: expected NODE=RECEIPT with a node of the profile")
+            row = by_machine[machine]
+            out.setdefault("declarations", {})[machine] = cache().put_declaration(machine, row["rank"],
+                                                                                   row["launch_sha256"], receipt)
     inventory, gathered, raw, notes = facts.gather(cluster, ctx, call=node_call(cluster), cache=cache(),
                                                    measure_disks=args.disks)
     record = session.facts_record(args.profile, inventory, gathered, raw, notes)

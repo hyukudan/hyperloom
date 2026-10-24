@@ -31,7 +31,7 @@ def mm(old=None, new=None):
 
 
 LIMITS = {"node_context": 33024, "node_batch": 8, "node_flags": ("--context", "--slots"), "service_positions": 32768,
-          "default_generation_tokens": 1024}
+          "default_generation_tokens": 1024, "prefill_batch": (1, None), "prefill_chunk": 4096}
 
 
 def ctx(service=True, capabilities=("import-state-parked",), model="minimax-m3.1-flash"):
@@ -320,7 +320,7 @@ class ApplyTests(unittest.TestCase):
 
     def test_refusals_before_launch(self):
         with self.assertRaisesRegex(RecipeError, "units cannot be applied to the ds41-rtx-prefill service"):
-            self.deploy(MM.replace("chunk_tokens = 4096\n", ""))
+            self.deploy(MM.replace("chunk_tokens = 4096\n", "", 1))
         with self.assertRaisesRegex(RecipeError, "chunk_tokens, units cannot be applied"):
             self.deploy(MM)
         with self.assertRaisesRegex(RecipeError, "no parked import contract"):
@@ -333,17 +333,66 @@ class ApplyTests(unittest.TestCase):
                             '\n[[routes]]\nid = "decode_pair"')
         with self.assertRaisesRegex(RecipeError, "chooses decode by workload"):
             self.deploy(two)
-        local = PLAIN.replace('handoff_route = "decode_pair"\n\n[routes.placement.pair]\nmax_context_tokens = 32768\n'
-                              'max_batch = 8\n', 'handoff_route = "decode_pair"\n\n[routes.placement.pair]\n'
-                              'max_context_tokens = 32768\nmax_batch = 8\nstaging_mib = 128\n')
+        local = PLAIN.replace('max_batch = 1\nchunk_tokens = 4096\n', 'max_batch = 1\nchunk_tokens = 4096\nstaging_mib = 128\n')
         self.assertNotEqual(local, PLAIN)
         with self.assertRaisesRegex(RecipeError, "same \"pair\" processes with different placements \\(staging_mib\\)"):
             self.deploy(local)
+
+    def test_local_prefill_field_rules(self):
+        # R3 (design-r14 v3, Sol-10): one rule per field for a prefill route run by the decode processes.
+        prefill = 'max_context_tokens = 32768\nmax_batch = 1\nchunk_tokens = 4096\n'
+        self.assertIn(prefill, PLAIN)
+        self.deploy(PLAIN)                                                                  # equal to the engine facts
+        cases = [
+            (prefill.replace("max_batch = 1", "max_batch = 2"), "max_batch: 2 != the 1 prompt"),
+            (prefill.replace("max_context_tokens = 32768", "max_context_tokens = 33000"),
+             "max_context_tokens: 33000 > the decode route's 32768"),
+            (prefill.replace("chunk_tokens = 4096\n", ""), r"chunk_tokens: 0 \(whole prompt\) != the engine's prefill "
+                                                           "pieces of 4096"),
+            (prefill.replace("chunk_tokens = 4096", "chunk_tokens = 2048"), "chunk_tokens: 2048 != the engine's"),
+        ]
+        for text, why in cases:
+            with self.subTest(why=why), self.assertRaisesRegex(RecipeError, why):
+                self.deploy(PLAIN.replace(prefill, text))
+        # An engine that enforces 8 prompts per prefill: a recipe bound of 1 is not enforced, so it refuses too.
+        with self.assertRaisesRegex(RecipeError, "max_batch: 1 != the 8 prompt"):
+            self.deploy(context=dataclasses.replace(ctx(), limits=dict(LIMITS, prefill_batch=(8, None))))
+        for limits, why in ((dict(LIMITS, prefill_batch=(None, "known for engine 9211b07e13c6, the preset runs abc")),
+                             "max_batch: known for engine 9211b07e13c6"),
+                            (dict(LIMITS, prefill_chunk=None), "chunk_tokens: the engine's prefill piece size is unknown")):
+            with self.subTest(why=why), self.assertRaisesRegex(RecipeError, why):
+                self.deploy(context=dataclasses.replace(ctx(), limits=limits))
+
+    def test_prefill_facts_are_bound_to_the_engine_build_and_mode(self):
+        fact = facts.FAMILY_PREFILL_BATCH["ds41-pair"]
+        data = {"engine_sha": fact["engine_sha"], "argv": ["{binary}", "--prefill-path", "device"]}
+        self.assertEqual(facts._prefill_batch("ds41-pair", {}, data), (1, None))
+        self.assertIn("holds for --prefill-path device only",
+                      facts._prefill_batch("ds41-pair", {}, dict(data, argv=["--prefill-path", "rows"]))[1])
+        self.assertIn("the preset runs", facts._prefill_batch("ds41-pair", {}, dict(data, engine_sha="0" * 40))[1])
+        self.assertIn("no cited prefill concurrency", facts._prefill_batch("qwen-replicas", {}, data)[1])
+
+    def test_node_workspace_is_checked_against_the_declaration(self):
+        # R4: no launch flag sets it; it must equal the engine's declared runtime on every deployed member.
+        text = PLAIN.replace('max_context_tokens = 32768\nmax_batch = 8\n',
+                             'max_context_tokens = 32768\nmax_batch = 8\nworkspace_gib = 7.6\n')
+        text = text.replace('max_batch = 1\nchunk_tokens = 4096\n', 'max_batch = 1\nchunk_tokens = 4096\nworkspace_gib = 7.6\n')
+        self.assertEqual(text.count("workspace_gib = 7.6"), 2)
+        cases = [({}, "n1: no engine memory declaration"),
+                 ({"n1": {"gib": 7.6}, "n2": {"why": "no engine memory declaration for this exact launch"}},
+                  "n2: no engine memory declaration for this exact launch"),
+                 ({"n1": {"gib": 7.6}, "n2": {"gib": 7.7}}, r"7.6 GiB != the 7.70 GiB the engine declares on n2")]
+        for runtime, why in cases:
+            with self.subTest(why=why), self.assertRaisesRegex(RecipeError, why):
+                self.deploy(text, context=dataclasses.replace(ctx(), limits=dict(LIMITS, node_runtime=runtime)))
+        self.deploy(text, context=dataclasses.replace(ctx(), limits=dict(LIMITS, node_runtime={
+            "n1": {"gib": 7.62}, "n2": {"gib": 7.58}})))                                  # within 0.05 GiB
         low = availability(hosts={"pc": {"free_ram_gib": 100.0}, "n1": {"free_ram_gib": 100.0},
                                   "n2": {"free_ram_gib": 124.0}})
         with self.assertRaisesRegex(RecipeError, r"no admissible decode route \(decode_pair: host n1"):
             self.deploy(avail=low)
-        big = PLAIN.replace("max_context_tokens = 32768\nmax_batch = 1\n", "max_context_tokens = 65536\nmax_batch = 1\n")
+        big = PLAIN.replace("max_context_tokens = 32768\nmax_batch = 1\ndevice_gib",
+                            "max_context_tokens = 65536\nmax_batch = 1\ndevice_gib")
         with self.assertRaisesRegex(RecipeError, "max_context_tokens: 65536 > the service's 32768 positions"):
             self.deploy(big, context=dataclasses.replace(ctx(), limits=dict(LIMITS, service_positions=32768)))
         with self.assertRaisesRegex(RecipeError, "max_batch: 8 > the engine's --slots 4"):
@@ -351,8 +400,8 @@ class ApplyTests(unittest.TestCase):
         with self.assertRaisesRegex(RecipeError, "does not set --context and hyperloom does not know"):
             self.deploy(context=dataclasses.replace(ctx(), limits=dict(LIMITS, node_context=None)))
         with self.assertRaisesRegex(RecipeError, "runs one prompt at a time"):
-            self.deploy(PLAIN.replace("max_context_tokens = 32768\nmax_batch = 1\n",
-                                      "max_context_tokens = 32768\nmax_batch = 2\n"))
+            self.deploy(PLAIN.replace("max_context_tokens = 32768\nmax_batch = 1\ndevice_gib",
+                                      "max_context_tokens = 32768\nmax_batch = 2\ndevice_gib"))
 
     def test_planned_disk_tier_reaches_the_table_and_admission(self):
         eff = reader.resolve(PLAIN)
@@ -528,14 +577,31 @@ def saved_facts(path, profile="mm", model="minimax-m3.1-flash", **avail):
     return path
 
 
+MM_PREFILL_FACT = {"batch": 1, "engine_sha": "862a2f0d668a07660392f6d3008a750068eeece3", "mode": ("--capacity", "33024"),
+                   "source": "synthetic (session plumbing tests only)"}
+
+
 class SessionTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.dir = Path(temporary.name)
         self.cluster = fake_cluster()
+        # These tests exercise the session plumbing on a MiniMax-shaped profile; hyperloom has no cited MiniMax prefill
+        # facts (test_minimax_local_prefill_is_refused_without_engine_facts), so a synthetic one stands in here.
+        for patcher in (mock.patch.dict(facts.FAMILY_PREFILL_BATCH, {"minimax-pair": MM_PREFILL_FACT}),
+                        mock.patch.dict(facts.FAMILY_PREFILL_CHUNK, {"minimax-pair": ("--prefill-chunk", 4096)})):
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.recipe = self.dir / "mm.toml"
         self.recipe.write_text(PLAIN, encoding="utf-8")
+
+    def test_minimax_local_prefill_is_refused_without_engine_facts(self):
+        with mock.patch.dict(facts.FAMILY_PREFILL_BATCH, clear=True):
+            evaluation = session.evaluate(self.cluster, "mm", self.recipe, session.Layers(),
+                                          session.saved_source(saved_facts(self.dir / "f.json")))
+        self.assertIsNone(evaluation.decision)
+        self.assertIn("max_batch: hyperloom has no cited prefill concurrency for minimax-pair", evaluation.refusal)
 
     def test_evaluate_from_saved_facts_without_a_service(self):
         evaluation = session.evaluate(self.cluster, "mm", self.recipe, session.Layers(),
@@ -692,6 +758,78 @@ class LaunchTests(unittest.TestCase):
         with mock.patch.object(orchestrate, "_client"), mock.patch.object(orchestrate, "_call", side_effect=call):
             orchestrate.poll_nodes_once(state, polled)
         self.assertEqual(polled, {"n1": {"free_ram_gib": 20.0, "at": 1.0}})     # unchanged: both nodes age out
+
+    def test_engine_declaration_receipts(self):
+        launch_sha = "c" * 64
+        output = {"schema": "strix/engine-capabilities-v1", "executable_sha256": "e" * 64,
+                  "modes": [{"name": "ep2-tp", "memory": [
+                      {"rank": 0, "workspace_bytes": 3 << 30, "state_bytes_per_slot": 1 << 30, "kv_pool_bytes": 0},
+                      {"rank": 1, "workspace_bytes": 2 << 30, "state_bytes_per_slot": 1 << 30, "kv_pool_bytes": 0}]}]}
+        good = {"schema": facts.DECLARATION_SCHEMA, "machine": "n1", "rank": 0, "launch_sha256": launch_sha,
+                "output": output}
+        receipt = self.dir / "d.json"
+        cache = facts.Cache(self.dir / "facts.json")
+        receipt.write_text(json.dumps(good))
+        entry = cache.put_declaration("n1", 0, launch_sha, receipt)
+        self.assertEqual((entry["workspace_bytes"], entry["state_bytes_per_slot"]), (3 << 30, 1 << 30))
+        self.assertEqual(cache.declaration("n1", launch_sha)["rank"], 0)
+        self.assertIsNone(cache.declaration("n1", "d" * 64))                            # another launch: nothing
+        bad = [(dict(good, machine="n2"), "names n2"), (dict(good, rank=1), "rank 1"),
+               (dict(good, launch_sha256="d" * 64), "the launch changed"),
+               (dict(good, schema="x"), "expected hyperloom/engine-describe-v1"),
+               (dict(good, output=dict(output, schema="x")), "one strix/engine-capabilities-v1 mode"),
+               (dict(good, output=dict(output, modes=[output["modes"][0], output["modes"][0]])), "one strix"),
+               (dict(good, output={**output, "modes": [{"memory": [{"rank": 1}]}]}), "no memory entry for rank 0")]
+        for value, key in (("1" + "0" * 30, "workspace_bytes"), ("-1", "kv_pool_bytes"), ("1.5", "state_bytes_per_slot")):
+            text = json.dumps(good).replace(f'"{key}": {good["output"]["modes"][0]["memory"][0][key]}', f'"{key}": {value}', 1)
+            bad.append((json.loads(text), f"{key} must be an integer"))
+        for data, why in bad:
+            receipt.write_text(json.dumps(data))
+            with self.subTest(why=why), self.assertRaisesRegex(probe.ProbeError, why):
+                cache.put_declaration("n1", 0, launch_sha, receipt)
+        # The runtime the check compares: workspace + state per slot x launched slots + KV pool.
+        context = dataclasses.replace(ctx(), limits=dict(LIMITS, node_batch=2))
+        rows = [{"machine": "n1", "rank": 0, "launch_sha256": launch_sha}, {"machine": "n2", "rank": 1,
+                                                                            "launch_sha256": "f" * 64}]
+        with mock.patch.object(facts, "describe_commands", return_value=rows):
+            runtime = facts.node_runtime(fake_cluster(), dataclasses.replace(context, nodes=["n1", "n2"]), cache)
+        self.assertEqual(runtime["n1"]["gib"], 5.0)
+        self.assertIn("no engine memory declaration for this exact launch", runtime["n2"]["why"])
+
+    def test_describe_commands_are_the_exact_launch_plus_the_declaration_flag(self):
+        from tests import test_rtx
+        from hyperloom import render
+        from hyperloom.config import parse
+        obj = test_rtx.rtx_example()
+        cluster = parse(obj)
+        rows = facts.describe_commands(cluster, "ds41-rtx")
+        specs = render.render_processes(cluster, "ds41-rtx")
+        self.assertEqual([r["argv"] for r in rows], [s.argv + ["--describe-capabilities-json"] for s in specs])
+        self.assertEqual([r["rank"] for r in rows], [0, 1])
+        obj["profiles"]["ds41-rtx"].setdefault("overrides", {})["--default-max-tokens"] = 2048
+        changed = facts.describe_commands(parse(obj), "ds41-rtx")
+        self.assertNotEqual(rows[0]["launch_sha256"], changed[0]["launch_sha256"])  # a flag change = another launch
+        obj = test_rtx.rtx_example()
+        machine = rows[0]["machine"]
+        obj["assets"][machine]["ds41_model"]["sha256"] = "9" * 64                  # same path, another file
+        replaced = facts.describe_commands(parse(obj), "ds41-rtx")
+        self.assertNotEqual(rows[0]["launch_sha256"], replaced[0]["launch_sha256"])
+
+    def test_release_auth_binds_the_lan_only_for_that_release(self):
+        from hyperloom import engines
+        from hyperloom.config import ConfigError
+        presets = {"mm-old": {"family": "minimax-pair"}, "mm-new": {"family": "minimax-pair", "serve_auth": "key-file"},
+                   "ds-bad": {"family": "ds41-pair", "serve_auth": "key-file"},
+                   "mm-odd": {"family": "minimax-pair", "serve_auth": "token"}}
+        with mock.patch.object(engines, "load_preset", side_effect=presets.__getitem__):
+            old, new = engines.release_adapter("mm-old"), engines.release_adapter("mm-new")
+            self.assertEqual((old.bind, old.key_file), ("loopback", False))
+            self.assertEqual((new.bind, new.key_file), ("lan", True))
+            self.assertIn("key-file", new.capabilities)
+            self.assertEqual(engines.adapter("minimax-pair").bind, "loopback")          # the family row is unchanged
+            for name in ("ds-bad", "mm-odd"):
+                with self.subTest(name=name), self.assertRaisesRegex(ConfigError, "serve_auth"):
+                    engines.release_adapter(name)
 
     def test_idle_cuda_members_are_never_available(self):
         spec = dict(self.spec(None), idle=["GPU-4090"])
@@ -965,6 +1103,55 @@ def _core():
     if not executable or not Path(executable).is_file() or (executable.endswith(".exe") and os.name != "nt"):
         return None
     return core.CoreBackend(core.Core(executable))
+
+
+EXAMPLES = FIXTURES / "examples"       # strix-stream 4f95e1d recipes/examples, the deployable files, unchanged
+# What hyperloom knows of each family's engine today (facts.FAMILY_PREFILL_*): only DS has cited prefill facts.
+LAB = {"deepseek-v4.1-flash": dict(topology="pair", caps=("import-state-parked",), prefill_batch=(1, None),
+                                   prefill_chunk=4096),
+       "minimax-m3.1-flash": dict(topology="pair", caps=(), prefill_chunk=None,
+                                  prefill_batch=(None, "hyperloom has no cited prefill concurrency for minimax-pair")),
+       "qwen3.8-flash-next": dict(topology="replicas", caps=(), prefill_chunk=1024,
+                                  prefill_batch=(None, "hyperloom has no cited prefill concurrency for qwen-replicas"))}
+
+
+class LabExampleTests(unittest.TestCase):
+    """The deployable lab examples stay refused until their contracts and measurements exist (design-r14 v3, Sol-10):
+    each refusal is pinned here; no fixture is edited to reach "admitted"."""
+
+    def deploy(self, name, nodes_free=124.0):
+        recipe = reader.parse((EXAMPLES / f"{name}.toml").read_text(encoding="utf-8"), name)
+        lab = LAB[recipe["match"]["model"]]
+        context = dataclasses.replace(ctx(capabilities=lab["caps"], model=recipe["match"]["model"]),
+                                      topology=lab["topology"],
+                                      limits=dict(LIMITS, prefill_batch=lab["prefill_batch"],
+                                                  prefill_chunk=lab["prefill_chunk"]))
+        avail = availability(hosts={"pc": {"free_ram_gib": 100.0, "free_commit_gib": 150.0},
+                                    "n1": {"free_ram_gib": nodes_free, "free_commit_gib": nodes_free},
+                                    "n2": {"free_ram_gib": nodes_free, "free_commit_gib": nodes_free}})
+        bound = apply.bind(recipe, context, INVENTORY)
+        return apply.deploy(recipe, context, bound, avail, SHA)
+
+    def test_every_deployable_example_is_refused_with_its_reason(self):
+        self.assertEqual(sorted(p.stem for p in EXAMPLES.glob("*.toml")),
+                         ["deepseek-v4.1-flash.lab", "deepseek-v4.1-flash.lab-hetero", "minimax-m3.1-flash.lab",
+                          "qwen3.8-flash-next.lab"])
+        cases = [
+            # Node charge = device budget (memory_min_gib) + overhead: the conservative model (R1/R2 await main).
+            ("deepseek-v4.1-flash.lab", 124.0, r"decode_pair: host n1: free RAM 124.0 GiB - charge 105.0 GiB < floor 20"),
+            ("qwen3.8-flash-next.lab", 124.0, r"decode_replicas: host n1: free RAM 124.0 GiB - charge 121.0 GiB < floor 8"),
+            # With synthetic free RAM the next refusal is the recipe's own field (R3), still a refusal.
+            ("deepseek-v4.1-flash.lab", 300.0, r"prefill_pair.placement.pair.chunk_tokens: 0 \(whole prompt\) != the "
+                                               "engine's prefill pieces of 4096"),
+            ("qwen3.8-flash-next.lab", 300.0, r"prefill_replicas.placement.nodes.max_batch: hyperloom has no cited "
+                                              "prefill concurrency for qwen-replicas"),
+            ("minimax-m3.1-flash.lab", 124.0, r"prefill_pair.placement.pair.max_batch: hyperloom has no cited prefill "
+                                              "concurrency for minimax-pair"),
+            ("deepseek-v4.1-flash.lab-hetero", 124.0, r"execute = hetero decode needs a profile whose engine runs it"),
+        ]
+        for name, free, why in cases:
+            with self.subTest(name=name, free=free), self.assertRaisesRegex(RecipeError, why):
+                self.deploy(name, nodes_free=free)
 
 
 GRID_FULL = dict(tokens=(0, 4095, 4096, 4097, 30000), context=(None, 32769, 40000), gpu=(True, False),

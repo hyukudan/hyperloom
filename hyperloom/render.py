@@ -85,7 +85,7 @@ def diagnostic_env(data, names, values):
 def render_processes(cluster, profile_name, *, diagnostics=(), run=None) -> list[ProcessSpec]:
     """Production render; diagnostics (names from the preset table) add observation-only env under <root>/log."""
     profile, kind, data, mids = _profile(cluster, profile_name)
-    engine = engines.adapter(family(kind))
+    engine = engines.release_adapter(kind)
     replicas = engine.topology == "replicas"
     if diagnostics and (run is None or not re.fullmatch(r"[0-9a-f]{8,32}", run)):
         raise ConfigError("diagnostic runs need a hex run id")

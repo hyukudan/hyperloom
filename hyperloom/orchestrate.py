@@ -575,7 +575,7 @@ def prelaunch(cluster, profile, settings, kind, clients, mids):
                                  + ", ".join(f"{mid} {rid}" for mid, rid in releases.items()))
     node_values, node_paths = {}, {}
     # Engines without an API key option (MiniMax serve) bind loopback instead; they get no key file.
-    for mid in (mids if engines.adapter(kind).key_file else ()):
+    for mid in (mids if engines.release_adapter(_preset_name(cluster, profile)).key_file else ()):
         secret = _secret_name(profile, mid)
         node_values[mid] = secrets.ensure(secret)
         node_paths[mid] = _put(clients[mid], cluster.machines[mid], secret, node_values[mid])
@@ -589,8 +589,8 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
     if type(queue_timeout_s) is not int or not 60 <= queue_timeout_s <= MAX_QUEUE_S:
         raise ValueError(f"queue timeout must be 60..{MAX_QUEUE_S} seconds")
     settings, kind, defaults = _profile(cluster, profile)
-    engine = engines.adapter(kind)
     name = _preset_name(cluster, profile)
+    engine = engines.release_adapter(name)
     pair = engine.topology == "pair"
     diagnostics = list(dict.fromkeys(diagnostics or ()))
     unknown = set(diagnostics) - set(render.preset(name).get("diagnostics", {}))

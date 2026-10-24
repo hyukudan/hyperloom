@@ -16,7 +16,8 @@ router apply the prefill routes to every request.
 ```text
 hyperloom up <profile> --recipe FILE|auto [--recipe-profile P] [--recipe-overrides O]... [--recipe-set PATH=VALUE]...
                        [--recipe-workload NAME] [--recipe-dir DIR]...
-hyperloom recipe probe    <profile> [--disks] [--descriptors] [--evidence NODE=RECEIPT]... [--out FACTS.json]
+hyperloom recipe probe    <profile> [--disks] [--descriptors] [--evidence NODE=RECEIPT]...
+                          [--describe-command] [--declaration NODE=RECEIPT]... [--out FACTS.json]
 hyperloom recipe validate FILE [<profile>] [--facts FACTS.json] [layers]
 hyperloom recipe explain  FILE [<profile>] [--facts FACTS.json] [layers] [--all] [--prompt-tokens N]
                           [--unavailable DEVICE_ID]... [--link-down LINK]... [--free-ram HOST=GIB]...
@@ -38,6 +39,9 @@ hyperloom recipe pick     <profile> [--dir DIR]... [--facts FACTS.json] [layers]
 - **probe** prints the facts that are checked. It reads nothing from a model file unless asked: `--disks` measures
   the disk read speed of the service's model file and `--descriptors` saves the model's file headers for planning.
   `--out` saves the facts so `validate`, `explain` and `pick` can run offline with `--facts`.
+  `--describe-command` prints, for each node process, its launch sha256 and the exact command that makes the engine
+  declare its memory for that launch (the launch line plus `--describe-capabilities-json`; DS only today).
+  `--declaration NODE=RECEIPT` stores that declaration (see *Node placements*).
 
 `--recipe-workload` names the workload class the run serves. A profile that was tuned for a different class is
 stale. A stale profile is not applied: the run uses the recipe alone and is marked `untuned`.
@@ -151,9 +155,29 @@ refreshes it.
   overhead, plus the device budget on unified-memory nodes. The commit charge is the host bytes plus the device bytes
   of a discrete device.
 - **Node placements.** No node preset takes a placement from recipes yet. A node placement field that is not at its
-  default is refused until the engines read strix-stream plan-v1.
+  default is refused until the engines read strix-stream plan-v1, except:
+  - `workspace_gib` is **checked, not applied**: the native engines size their runtime themselves. It must equal,
+    within 0.05 GiB, the runtime the engine declares for the exact launch on every member (workspace + state per
+    slot x slots + KV pool). The declaration is a receipt: `hyperloom/engine-describe-v1` `{machine, rank,
+    launch_sha256, output}`, where `output` is the engine's `strix/engine-capabilities-v1` JSON. A changed flag,
+    engine build or asset is another launch, and its old receipt no longer counts. No receipt = refused.
+- **Prefill routes on the decode processes.** One process has one placement. A local prefill route must match the
+  decode route in every field except three, each with its own rule:
+  - `max_context_tokens` ≤ the decode route's;
+  - `max_batch` = the prompts the engine's scheduler runs per prefill, a cited fact bound to the preset's engine
+    build and prefill mode. DS 9211b07e with `--prefill-path device` = 1 (apps/deepseek41_serve_main.cpp:33-38,
+    :1516). No fact (Qwen, MiniMax today) = refused. A smaller recipe bound than the engine's is refused too: the engine
+    would not enforce it.
+  - `chunk_tokens` = the engine's prefill piece size as launched (DS `--prefill-rows`, Qwen
+    `--known-prefix-prefill-rows`). `0` means whole prompt and matches no engine here.
+- **Node RAM charge.** Still the conservative model above: the device budget (`memory_min_gib` when `device_gib` is
+  absent) + overhead. That refuses today's DS and Qwen lab examples on the nodes. A measured or enforced charge is
+  waiting for a decision (wave4 design-r14 v3, options A/B/C).
+- **Hetero decode.** `execute = "hetero"` decode routes are refused: no hyperloom profile runs one.
 - **Batch on prefill routes.** Batch predicates on prefill routes are refused: the router cannot see how many
   sequences are in a step.
 - **MiniMax.** The MiniMax pair binds loopback, so its router must run on rank 0. Because recipes need the local
-  router, `up --recipe` does not run it yet. Its offload routes also wait for its serve-side hand-off contract and the
+  router, `up --recipe` does not run it yet. A preset whose MiniMax serve takes an API key file declares
+  `"serve_auth": "key-file"`. That release then binds the LAN with a key file, like DS and Qwen, and other releases
+  stay loopback. Its offload routes also wait for its serve-side hand-off contract and the
   `import-state-parked` capability.

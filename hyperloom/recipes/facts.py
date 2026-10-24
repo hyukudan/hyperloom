@@ -33,6 +33,20 @@ FAMILY_BOUNDS = {"ds41-pair": (("--context", 4096), ("--slots", 4)),
                  "qwen-replicas": (("--context", None), ("--http-batch", None)),
                  "minimax-pair": (("--capacity", None), ("--slots", None))}
 EVIDENCE_SCHEMA_KEYS = {"disk_read_gbytes_ps", "method", "host", "path"}
+# The prompts one prefill forward of the decode engine runs, as ENFORCED by its scheduler, bound to the engine build and
+# the prefill mode it holds for (a recipe's local prefill max_batch must equal it; core §6 max_batch).
+FAMILY_PREFILL_BATCH = {"ds41-pair": {"batch": 1, "engine_sha": "9211b07e13c64ab80ae04fcbfcbeab50fe0cbf04",
+                                      "mode": ("--prefill-path", "device"),
+                                      "source": "apps/deepseek41_serve_main.cpp:33-38 (the other requests wait during "
+                                                "the prefill), :1516 (DevicePrefill holds one sequence)"}}
+# The prefill piece size the decode engine runs (flag, engine default or None): a local prefill route's chunk_tokens
+# must equal it (0 = whole prompt equals no engine here). strix-deepseek41-serve: --prefill-rows 4096 (:146).
+FAMILY_PREFILL_CHUNK = {"ds41-pair": ("--prefill-rows", 4096),
+                        "qwen-replicas": ("--known-prefix-prefill-rows", None),
+                        "minimax-pair": (None, None)}
+DECLARATION_SCHEMA = "hyperloom/engine-describe-v1"
+DESCRIBE_FLAG = {"ds41-pair": "--describe-capabilities-json"}     # the engine's memory declaration (:2100-2146)
+MAX_DECLARED_BYTES = 1 << 50
 
 
 def control_machine(cluster):
@@ -50,7 +64,7 @@ def context(cluster, profile):
     kind = render.family(settings.get("preset", profile))
     if kind not in FAMILY_MODELS:
         raise ConfigError(f"profile {profile}: family {kind} has no recipe model id")
-    adapter = engines.adapter(kind)
+    adapter = engines.release_adapter(settings.get("preset", profile))
     service = None
     if "prefill_service" in settings:
         s, data, _ = rtx._service(cluster, profile)
@@ -67,6 +81,9 @@ def context(cluster, profile):
               "node_batch": _flag_value(settings, data, batch_flag, batch_default),
               "node_flags": (context_flag, batch_flag),
               "default_generation_tokens": _flag_value(settings, data, *FAMILY_GENERATION[kind]),
+              "prefill_batch": _prefill_batch(kind, settings, data),
+              "prefill_chunk": (_flag_value(settings, data, *FAMILY_PREFILL_CHUNK[kind])
+                                if FAMILY_PREFILL_CHUNK[kind][0] else None),
               "commit_floor_gib": ((cluster.pc.get("cuda") or {}).get("reservation") or {}).get("free_commit_floor_gib", 4)}
     if service is not None:
         _, service_data, _ = rtx._service(cluster, profile)
@@ -80,6 +97,74 @@ def context(cluster, profile):
                          capabilities=adapter.capabilities, service=service,
                          node_overhead_gib=data.get("host_overhead_gib", DEFAULT_HOST_OVERHEAD_GIB),
                          descriptors=known, limits=limits)
+
+
+def _flag_text(settings, data, flag):
+    value = settings.get("overrides", {}).get(flag)
+    argv = data.get("argv", [])
+    if value is None and flag in argv:
+        value = argv[argv.index(flag) + 1]
+    return None if value is None else str(value)
+
+
+def _prefill_batch(kind, settings, data):
+    """(enforced prompts per prefill forward, None) or (None, why): only for the engine build and mode it was read at."""
+    fact = FAMILY_PREFILL_BATCH.get(kind)
+    if fact is None:
+        return None, f"hyperloom has no cited prefill concurrency for {kind}"
+    if data.get("engine_sha") != fact["engine_sha"]:
+        return None, (f"the prefill concurrency of {kind} is known for engine {fact['engine_sha'][:12]}, the preset runs "
+                      f"{str(data.get('engine_sha'))[:12]}")
+    flag, value = fact["mode"]
+    if _flag_text(settings, data, flag) != value:
+        return None, f"the prefill concurrency of {kind} holds for {flag} {value} only"
+    return fact["batch"], None
+
+
+def launch_sha256(spec, engine_sha, assets):
+    """One node process's launch identity: its rendered argv and env, the engine build and the sha256 of every asset
+    the preset loads (a file replaced at the same path is another launch)."""
+    return hashlib.sha256(json.dumps({"argv": spec.argv, "env": spec.env, "engine_sha": engine_sha, "assets": assets},
+                                     sort_keys=True).encode()).hexdigest()
+
+
+def describe_commands(cluster, profile):
+    """Per node process: its launch sha256 and the engine's own memory declaration command for that exact launch."""
+    settings = cluster.profiles[profile]
+    name = settings.get("preset", profile)
+    kind, data = render.family(name), render.preset(name)
+    if kind not in DESCRIBE_FLAG:
+        raise ConfigError(f"profile {profile}: the {kind} engine declares no memory model")
+    rows = []
+    for rank, spec in enumerate(render.render_processes(cluster, profile)):
+        assets = {name: cluster.assets.get(spec.machine_id, {}).get(name, {}).get("sha256") for name in data["assets"]}
+        rows.append({"machine": spec.machine_id, "rank": rank,
+                     "launch_sha256": launch_sha256(spec, data["engine_sha"], assets),
+                     "argv": spec.argv + [DESCRIBE_FLAG[kind]], "env": spec.env})
+    return rows
+
+
+def node_runtime(cluster, ctx, cache):
+    """Per node: {"gib": declared runtime} for the exact launch, or {"why"}: the engine's declaration receipt (R4),
+    runtime = workspace + state per slot x slots + KV pool of that rank."""
+    try:
+        rows = describe_commands(cluster, ctx.profile)
+    except ConfigError as exc:
+        return {mid: {"why": str(exc)} for mid in ctx.nodes}
+    slots = (ctx.limits or {}).get("node_batch")
+    out = {}
+    for row in rows:
+        entry = cache.declaration(row["machine"], row["launch_sha256"]) if cache is not None else None
+        if entry is None:
+            out[row["machine"]] = {"why": "no engine memory declaration for this exact launch (recipe probe "
+                                          "--describe-command, then --declaration NODE=RECEIPT)"}
+        elif slots is None:
+            out[row["machine"]] = {"why": "the launched slots are unknown"}
+        else:
+            out[row["machine"]] = {"gib": (entry["workspace_bytes"] + entry["state_bytes_per_slot"] * slots
+                                           + entry["kv_pool_bytes"]) / probe.GIB,
+                                   "receipt_sha256": entry["receipt_sha256"]}
+    return out
 
 
 def _flag_value(settings, data, flag, default):
@@ -183,7 +268,8 @@ def gather(cluster, ctx, *, call, gpus=None, memory=None, pro_busy=None, cache=N
         # USB4 bandwidth is not probed here: 0 Gb/s satisfies only a gbps_min of 0 (design §3).
         links.append({"kind": "usb4", "hosts": [a, b], "gbps": 0.0})
         notes.append("USB4 bandwidth not probed: reported as 0 Gb/s (only gbps_min = 0 passes)")
-    facts = {"model": ctx.model, "devices": devices, "links": links}
+    facts = {"model": ctx.model, "devices": devices, "links": links,
+             "node_runtime": node_runtime(cluster, ctx, cache)}
     availability = {"devices": avail_devices, "hosts": hosts, "lan": lan, "usb4": usb4}
     return inventory, facts, availability, notes
 
@@ -252,7 +338,50 @@ def availability(recipe, bound, raw):
 
 
 class Cache(probe.DiskCache):
-    """The probe cache plus saved node disk evidence (receipts)."""
+    """The probe cache plus saved node disk evidence and engine memory declarations (receipts)."""
+
+    def declaration(self, machine, launch):
+        entry = self._load().get(f"describe|{machine}|{launch}")
+        return entry if isinstance(entry, dict) and entry.get("launch_sha256") == launch else None
+
+    def put_declaration(self, machine, rank, launch, receipt_path):
+        """Store a node's engine memory declaration: `hyperloom/engine-describe-v1` {machine, rank, launch_sha256,
+        output = the engine's describe JSON}; refused unless it names this machine, rank and exact launch."""
+        raw = Path(receipt_path).read_bytes()
+        try:
+            receipt = json.loads(raw)
+        except (ValueError, RecursionError) as exc:
+            raise probe.ProbeError(f"{receipt_path}: not JSON") from exc
+        if not isinstance(receipt, dict) or receipt.get("schema") != DECLARATION_SCHEMA:
+            raise probe.ProbeError(f"{receipt_path}: expected {DECLARATION_SCHEMA}")
+        if (receipt.get("machine"), receipt.get("rank"), receipt.get("launch_sha256")) != (machine, rank, launch):
+            raise probe.ProbeError(f"{receipt_path}: names {receipt.get('machine')} rank {receipt.get('rank')} launch "
+                                   f"{str(receipt.get('launch_sha256'))[:12]}, not {machine} rank {rank} launch "
+                                   f"{launch[:12]} (the launch changed: run the describe command again)")
+        output = receipt.get("output")
+        modes = output.get("modes") if isinstance(output, dict) else None
+        if (not isinstance(output, dict) or output.get("schema") != "strix/engine-capabilities-v1"
+                or not isinstance(modes, list) or len(modes) != 1 or not isinstance(modes[0], dict)):
+            raise probe.ProbeError(f"{receipt_path}: output must be one strix/engine-capabilities-v1 mode")
+        memory = [m for m in modes[0].get("memory") or [] if isinstance(m, dict) and m.get("rank") == rank]
+        if len(memory) != 1:
+            raise probe.ProbeError(f"{receipt_path}: the declaration has no memory entry for rank {rank}")
+        fields = {}
+        for key in ("workspace_bytes", "state_bytes_per_slot", "kv_pool_bytes"):
+            value = memory[0].get(key)
+            if type(value) is not int or not 0 <= value < MAX_DECLARED_BYTES:
+                raise probe.ProbeError(f"{receipt_path}: {key} must be an integer in [0, 2^50)")
+            fields[key] = value
+        data = self._load()
+        key = f"describe|{machine}|{launch}"
+        data[key] = dict(fields, launch_sha256=launch, rank=rank, receipt=str(receipt_path),
+                         receipt_sha256=hashlib.sha256(raw).hexdigest(),
+                         executable_sha256=output.get("executable_sha256"))
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_name(self.path.name + ".tmp")
+        temporary.write_text(json.dumps(data, indent=1, sort_keys=True), encoding="utf-8")
+        temporary.replace(self.path)
+        return data[key]
 
     def evidence(self, machine, model_path, now=None):
         """The node's saved disk measurement for this model path, when it is younger than the cache TTL."""

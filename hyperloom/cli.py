@@ -532,6 +532,10 @@ def main(argv=None):
                               help="read and save the model's file headers for planning (explicit header read)")
     recipe_probe.add_argument("--evidence", action="append", metavar="NODE=RECEIPT",
                               help="a node's measured disk bandwidth from a receipt file (repeatable)")
+    recipe_probe.add_argument("--describe-command", action="store_true",
+                              help="print each node's exact engine memory declaration command and launch sha256")
+    recipe_probe.add_argument("--declaration", action="append", metavar="NODE=RECEIPT",
+                              help="store a node's engine memory declaration receipt for its exact launch (repeatable)")
     recipe_probe.add_argument("--out", type=Path, help="save the facts for offline validate/explain --facts")
     recipe_probe.add_argument("--config", type=Path, default=config_path())
     for name, text in (("validate", "schema, hardware match and the up decision"),

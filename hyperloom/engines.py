@@ -22,7 +22,7 @@ Fields:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import re
 
 from .config import PRESET_NAMES, ConfigError, preset as load_preset, read_json
@@ -71,6 +71,23 @@ def adapter(family):
         return FAMILIES[family]
     except KeyError as exc:
         raise ConfigError(f"unknown engine family: {family}") from exc
+
+
+# Families whose serve gained an API key option in some release: a preset of such a release declares
+# `"serve_auth": "key-file"` and binds the LAN with a key file; presets without it keep the family's loopback bind.
+AUTH_BY_RELEASE = ("minimax-pair",)
+
+
+def release_adapter(preset_name):
+    """The adapter for one preset (one qualified release): the family's, with the release's serve auth applied."""
+    data = load_preset(preset_name)
+    base = adapter(family_of(data, preset_name))
+    auth = data.get("serve_auth")
+    if auth is None:
+        return base
+    if auth != "key-file" or base.family not in AUTH_BY_RELEASE or base.key_file:
+        raise ConfigError(f"preset {preset_name}: serve_auth {auth!r} is not supported for {base.family}")
+    return replace(base, bind="lan", key_file=True, capabilities=base.capabilities + ("key-file",))
 
 
 def family_of(data, name):
