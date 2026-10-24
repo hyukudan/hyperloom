@@ -316,7 +316,15 @@ def _stage_bundles(cluster, client, build_machine, data, versions, sources):
             reply = _call(client, "bundle-prepare", {"root": machine.install_root, "lab_dir": _lab(cluster, build_machine),
                                                      "asset_paths": [a["path"] for a in cluster.assets.get(build_machine, {}).values()],
                                                      "commit": commit})
-            client.upload(bundle.path, reply["stage"])
+            try:
+                client.upload(bundle.path, reply["stage"])
+            except BaseException:
+                # Best effort: a partial stage is also swept by a later bundle-prepare after an hour.
+                try:
+                    _call(client, "bundle-discard", {"root": machine.install_root, "stage": reply["stage"]})
+                except Exception:
+                    pass
+                raise
             _call(client, "bundle-accept", {"root": machine.install_root, "commit": commit, "stage": reply["stage"],
                                             "sha256": bundle.sha256, "bytes": bundle.bytes}, timeout=3600)
             staged[name] = bundle

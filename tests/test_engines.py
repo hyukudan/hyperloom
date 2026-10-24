@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -338,6 +339,34 @@ class BundleTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 node_install.bundle_accept(root, bad)
 
+    def test_prepare_sweeps_stale_stages_and_discard_removes_one(self):
+        root = (self.base / "sweep root").resolve()
+        incoming = root / "incoming"
+        incoming.mkdir(parents=True)
+        old = incoming / (".stage-" + "1" * 32 + ".bundle")
+        young = incoming / (".stage-" + "2" * 32 + ".bundle")
+        accepted = incoming / (self.pinned + ".bundle")
+        for path in (old, young, accepted):
+            path.write_bytes(b"partial")
+        hours_ago = time.time() - 2 * 3600
+        os.utime(old, (hours_ago, hours_ago))
+        os.utime(accepted, (hours_ago, hours_ago))
+        prepared = node_install.bundle_prepare(root, {"commit": self.pinned})
+        self.assertFalse(old.exists())  # an interrupted upload older than an hour
+        self.assertTrue(young.exists())  # a concurrent upload in progress is kept
+        self.assertTrue(accepted.exists())  # accepted bundles are not stages
+        self.assertNotEqual(Path(prepared["stage"]), young)
+        self.assertEqual(node_install.sweep_stages(incoming, now=time.time() + 2 * 3600), [young.name])
+        stage = Path(prepared["stage"])
+        stage.write_bytes(b"partial")
+        self.assertEqual(node_install.bundle_discard(root, {"stage": str(stage)}), {"removed": True})
+        self.assertFalse(stage.exists())
+        self.assertEqual(node_install.bundle_discard(root, {"stage": str(stage)}), {"removed": False})
+        for bad in (str(accepted), str(root / ("x.stage-" + "3" * 32 + ".bundle"))):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                node_install.bundle_discard(root, {"stage": bad})
+        self.assertTrue(accepted.exists())
+
     def test_install_payload_validation_for_unpublished_components(self):
         payload = {"components": {"engine": {"repo": "r", "commit": "a" * 40, "published": False,
                                              "bundle_sha256": "b" * 64}},
@@ -478,6 +507,30 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(orch._knob_targets(settings, "ds41-pair-long"), orch._knob_targets(settings, "ds41-pair"))
         self.assertEqual(orch._recipe_preset("ds41-pair-long"), "ds41-pair")
         self.assertEqual(orch._recipe_preset("ds41-pair-w5"), "ds41-pair-w5")
+
+    @unittest.skipUnless(git_available(), "git unavailable")
+    def test_failed_upload_discards_its_stage_and_never_builds(self):
+        repo = self.directory / "w5 failed source"
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        run = lambda *a: subprocess.run(["git", *a], check=True, capture_output=True, text=True, env=env).stdout.strip()
+        run("init", "--quiet", str(repo))
+        (repo / "f").write_text("x", encoding="utf-8")
+        run("-C", str(repo), "add", "f")
+        run("-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "--quiet", "-m", "x")
+        commit = run("-C", str(repo), "rev-parse", "HEAD")
+        data = deepcopy(config.preset("ds41-pair-w5"))
+        data["components"]["engine"]["commit"] = data["engine_sha"] = commit
+        real = config.preset
+        failure = orch.remote.RemoteError("scp: connection lost")
+        with patch.object(orch.render, "preset", side_effect=lambda n: data if n == "ds41-pair-w5" else real(n)),                 patch.object(UploadRemote, "upload", side_effect=failure):
+            with self.assertRaisesRegex(orch.remote.RemoteError, "connection lost"):
+                orch.install(self.cluster, "halo-1", profile="ds41-pair-w5",
+                             sources={"engine": bundles.parse("engine=" + str(repo))})
+        prepare = next(p for _, v, p in self.calls if v == "bundle-prepare")
+        discard = next(p for _, v, p in self.calls if v == "bundle-discard")
+        self.assertEqual(discard, {"root": prepare["root"], "stage": prepare["root"] + "/incoming/.stage-" + "c" * 32 + ".bundle"})
+        self.assertNotIn("bundle-accept", self.verbs())
+        self.assertNotIn("install", self.verbs())
 
     def test_qwen_w5_install_recipe_and_published_fetch(self):
         orch.install(self.cluster, "halo-1", profile="qwen-replicas-w5")

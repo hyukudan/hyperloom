@@ -20,10 +20,11 @@ import uuid
 
 
 VERBS = {"install", "job", "releases", "activate", "uninstall", "verify-model", "stat-assets", "push-release",
-         "bundle-prepare", "bundle-accept"}
+         "bundle-prepare", "bundle-accept", "bundle-discard"}
 # The single ref a source bundle carries (hyperloom/bundles.py writes it; nothing else is in the bundle).
 BUNDLE_REF = "refs/hyperloom/source"
 MAX_BUNDLE = 64 * 1024 ** 3
+STAGE_MAX_AGE_S = 3600  # bundle-prepare removes older stages of interrupted uploads
 TRELLIS_MODES = {"ds41", "minimax"}
 HASH_BLOCK = 8 * 1024 ** 2
 DIRECT_UNSUPPORTED = {errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP, errno.ENOTSUP}
@@ -714,8 +715,45 @@ def bundle_prepare(root, payload):
     if incoming.is_symlink():
         raise ValueError("incoming must not be a symlink")
     incoming.mkdir(mode=0o700, exist_ok=True)
+    sweep_stages(incoming)
     return {"stage": str(inside(root, "incoming", ".stage-" + uuid.uuid4().hex + ".bundle")),
             "path": str(inside(root, "incoming", commit + ".bundle"))}
+
+
+def sweep_stages(incoming, now=None):
+    """Remove staging files of interrupted uploads: only `.stage-*` regular files older than STAGE_MAX_AGE_S. The
+    stage this call hands out is a new name, so it is never among them, and a concurrent upload (younger than the
+    limit) is kept."""
+    now = time.time() if now is None else now
+    removed = []
+    for entry in incoming.iterdir():
+        try:
+            info = entry.lstat()
+        except OSError:
+            continue
+        if (entry.name.startswith(".stage-") and stat.S_ISREG(info.st_mode)
+                and now - info.st_mtime > STAGE_MAX_AGE_S):
+            try:
+                entry.unlink()
+                removed.append(entry.name)
+            except OSError:
+                pass
+    return removed
+
+
+def stage_path(root, payload):
+    stage = absolute(payload.get("stage"))
+    if not re.fullmatch(r"\.stage-[0-9a-f]{32}\.bundle", stage.name) or stage.parent != inside(root, "incoming"):
+        raise ValueError("bundle stage must be a staging name in <root>/incoming")
+    return stage
+
+
+def bundle_discard(root, payload):
+    """Remove one staging name after a failed upload (the control machine's cleanup; absent is fine)."""
+    stage = stage_path(root, payload)
+    existed = stage.exists() or stage.is_symlink()
+    stage.unlink(missing_ok=True)
+    return {"removed": existed}
 
 
 def bundle_accept(root, payload):
@@ -728,9 +766,7 @@ def bundle_accept(root, payload):
         raise ValueError("bundle sha256 required")
     if type(size) is not int or not 0 < size <= MAX_BUNDLE:
         raise ValueError("bundle size out of bounds")
-    stage = absolute(payload.get("stage"))
-    if not re.fullmatch(r"\.stage-[0-9a-f]{32}\.bundle", stage.name) or stage.parent != inside(root, "incoming"):
-        raise ValueError("bundle stage must be a staging name in <root>/incoming")
+    stage = stage_path(root, payload)
     try:
         if stage.is_symlink() or not stage.is_file() or stage.stat().st_size != size or sha256(stage) != digest:
             raise ValueError("uploaded bundle size or sha256 mismatch")
@@ -779,6 +815,8 @@ def run(verb, payload):
             return {**result, **bundle_prepare(root, payload)}
         if verb == "bundle-accept":
             return {**result, **bundle_accept(root, payload)}
+        if verb == "bundle-discard":
+            return {**result, **bundle_discard(root, payload)}
         if verb in {"install", "verify-model"}:
             policy = read_json(root / "etc" / "install-policy.json")
             payload = {**payload, "lab_dir": payload.get("lab_dir") or policy.get("lab_dir")}
