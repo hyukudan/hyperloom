@@ -7,7 +7,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from . import apply, facts, reader
+from . import apply, core, facts, reader
 from .reader import RecipeError
 
 SUFFIXES = (".toml", ".json")
@@ -26,7 +26,8 @@ class Layers:
 class Evaluation:
     path: str
     reader: str
-    effective: reader.Effective
+    effective: core.Resolved
+    effective_sha256: str
     context: apply.Context
     bound: dict
     report: dict
@@ -42,8 +43,9 @@ class Evaluation:
 
     def summary(self):
         recipe = self.effective.recipe
-        return {"recipe": recipe["name"], "file": self.path, "reader": self.reader, "sha256": self.effective.sha256,
-                "effective_sha256": self.effective.canonical_sha256(), "profile": self.context.profile,
+        return {"recipe": recipe["name"], "file": self.path, "reader": self.reader,
+                "sha256": self.effective.file_sha256, "effective_sha256": self.effective_sha256,
+                "profile": self.context.profile,
                 "untuned": self.effective.untuned, "refused_layers": self.effective.refused,
                 "binding": self.bound["binding"], "roles": self.bound["roles"], "match": self.problems,
                 "availability": {"devices": self.availability["devices"], "links": self.availability["links"],
@@ -60,33 +62,43 @@ def read_text(path):
         raise RecipeError(f"{path}: {exc}") from exc
 
 
-def resolve(path, layers, report=None):
-    text = read_text(path)
-    profile = (read_text(layers.profile), str(layers.profile)) if layers.profile else None
-    overrides = [(read_text(p), str(p)) for p in layers.overrides]
-    return reader.resolve(text, Path(path).name, profile=profile, overrides=overrides, sets=layers.sets, probe=report)
+def resolve(path, layers, identity=None, backend=None):
+    """The effective recipe of a file with its layers (the core's when installed, else the stub's)."""
+    return (backend or core.StubBackend()).resolve(path, read_text(path), layers, identity)
 
 
-def evaluate(cluster, profile, path, layers, source, reader_label="stub (offline diagnostics)"):
-    """``source(ctx)`` -> (inventory, facts, raw availability, notes): live probes or a saved facts file."""
+def evaluate(cluster, profile, path, layers, source, backend=None):
+    """``source(ctx)`` -> (inventory, facts, raw availability, notes): live probes or a saved facts file. One resolved
+    document (the backend's) is used for binding, match, admission and the decision."""
+    backend = backend or core.StubBackend()
     ctx = facts.context(cluster, profile)
-    base = reader.resolve(read_text(path), Path(path).name)  # structure only: binding never depends on layers
+    base = resolve(path, Layers(), backend=backend).recipe   # structure only: binding never depends on layers
     inventory, gathered, raw, notes = source(ctx)
-    bound = apply.bind(base.recipe, ctx, inventory)
-    report = apply.probe_report(base.recipe, bound, gathered)
+    bound = apply.bind(base, ctx, inventory)
+    report = apply.probe_report(base, bound, gathered)
     identity = dict(report, binding=bound["binding"], workload=layers.workload,
                     descriptors=apply.descriptors(bound, ctx))
-    eff = resolve(path, layers, identity)
-    problems = apply.match(eff.recipe, report, bound)
-    availability = facts.availability(eff.recipe, bound, raw)
+    resolved = resolve(path, layers, identity, backend)
+    recipe = resolved.recipe
+    if isinstance(backend, core.CoreBackend):
+        problems, binding, effective_sha = backend.match(path, layers, report, identity)
+        if not problems and binding != bound["binding"]:
+            problems = [f"the core bound {binding}, hyperloom launches {bound['binding']}"]
+    else:
+        problems = apply.match(recipe, report, bound)
+        effective_sha = backend.effective_sha256(path, layers, resolved, report)
+    availability = facts.availability(recipe, bound, raw)
     decision, refusal = None, None
     if not problems:
+        def select(state):
+            return backend.select(path, layers, resolved, state, effective_sha, identity) \
+                if isinstance(backend, core.CoreBackend) else reader.select(recipe, state, effective_sha)
         try:
-            decision = apply.deploy(eff.recipe, ctx, bound, availability, eff.canonical_sha256())
+            decision = apply.deploy(recipe, ctx, bound, availability, effective_sha, select=select)
         except RecipeError as exc:
             refusal = str(exc)
-    return Evaluation(str(path), reader_label, eff, ctx, bound, report, problems, availability, decision, refusal,
-                      list(notes))
+    return Evaluation(str(path), backend.label, resolved, effective_sha or "", ctx, bound, report, problems,
+                      availability, decision, refusal, list(notes))
 
 
 def saved_source(path):
@@ -181,7 +193,7 @@ def specificity(recipe):
     return count
 
 
-def pick(cluster, profile, directories, layers, source):
+def pick(cluster, profile, directories, layers, source, backend=None):
     """Auto-pick: candidates for the profile's model that match and deploy; the most specific wins, ties by name.
     Returns (chosen Evaluation or None, rows for every candidate with why it was or was not chosen)."""
     ctx = facts.context(cluster, profile)
@@ -200,7 +212,7 @@ def pick(cluster, profile, directories, layers, source):
             out["result"] = f'other model ("{row["model"]}")'
         else:
             try:
-                evaluation = evaluate(cluster, profile, row["path"], layers, once)
+                evaluation = evaluate(cluster, profile, row["path"], layers, once, backend)
             except RecipeError as exc:
                 out["result"] = "refused: " + str(exc)
             else:

@@ -241,15 +241,15 @@ def _boundaries(routes, low, high, floor):
     return sorted(points)
 
 
-def decode_route(recipe, ctx, bound, state, recipe_sha):
+def decode_route(recipe, ctx, bound, state, recipe_sha, select=None):
     """The one decode route hyperloom deploys: the same route for every workload region, running the profile's
     topology on the decode set; refused otherwise, naming the conflicting routes."""
     routes = [r for r in recipe["routes"] if r["phase"] == "decode"]
     chosen = {}
     for tokens in _boundaries(routes, "prompt_tokens_min", "prompt_tokens_max", 0):
         for batch in _boundaries(routes, "batch_min", "batch_max", 1):
-            result = reader.select(recipe, dict(state, phase="decode", prompt_tokens=tokens, context_tokens=tokens,
-                                                batch=batch), recipe_sha)
+            region = dict(state, phase="decode", prompt_tokens=tokens, context_tokens=tokens, batch=batch)
+            result = select(region) if select else reader.select(recipe, region, recipe_sha)
             chosen.setdefault(result["route"], (tokens, batch))
     if len(chosen) > 1:
         cases = "; ".join(f'"{rid}" at prompt_tokens={t}, batch={b}' for rid, (t, b) in chosen.items())
@@ -292,10 +292,10 @@ def check_endpoints(recipe, bound, decode):
                               f"placements ({', '.join(diff)})")
 
 
-def launch_flags(route, set_id, table, what):
+def launch_flags(route, set_id, table, what, memory_min):
     """The launch values a placement maps to; any other non-default field is refused, never dropped."""
     placement = route["placement"][set_id]
-    defaults = _defaults()
+    defaults = dict(_defaults(), device_gib=memory_min)
     unmapped = sorted(k for k in placement if k not in table and k not in BOUND_FIELDS and placement[k] != defaults[k])
     if unmapped:
         raise RecipeError(f"routes.{route['id']}.placement.{set_id}: {', '.join(unmapped)} cannot be applied to {what} "
@@ -352,13 +352,16 @@ def requirements(recipe, recipe_sha, ctx, bound):
                         else (ctx.service or {}).get("host_overhead_gib", ctx.node_overhead_gib))
             gib = (placement["host_pinned_gib"] + placement["staging_buffers"] * placement["staging_mib"] / 1024.0
                    + overhead + (device if unified else 0.0))
+            host_bytes = int(round(gib * GIB))
+            # Windows bills a discrete device's allocations to commit (core §7.3): host bytes + device bytes there.
+            commit_bytes = host_bytes + (0 if unified else int(round(device * GIB)))
             for member, row in enumerate(bound["binding"].get(set_id, [])):
                 req = {"route": route["id"], "set": set_id, "member": member, "id": row["id"],
                        "effective_sha256": recipe_sha, "descriptor_sha256": in_use[set_id][member],
-                       "host_bytes": int(round(gib * GIB)), "model": CAP_MODEL}
+                       "host_bytes": host_bytes, "commit_bytes": commit_bytes, "disk_bytes": 0, "model": CAP_MODEL}
                 req["plan_id"] = hashlib.sha256(json.dumps(
                     [recipe_sha, route["id"], set_id, member, row["id"], req["descriptor_sha256"], CAP_MODEL,
-                     req["host_bytes"]]).encode()).hexdigest()
+                     host_bytes, commit_bytes]).encode()).hexdigest()
                 out.append(req)
     return out
 
@@ -368,17 +371,19 @@ def running_entry(route_id, recipe_sha, reqs):
             "plan_ids": sorted(r["plan_id"] for r in reqs if r["route"] == route_id)}
 
 
-def deploy(recipe, ctx, bound, availability, recipe_sha):
+def deploy(recipe, ctx, bound, availability, recipe_sha, select=None):
     """What `up` runs, decided before anything starts: the decode route (admitted against the nodes' free RAM before
     launch), each prefill route's place and admission at up, and whether the prefill service starts."""
     refuse_unsupported(recipe)
     by_id = {r["id"]: r for r in recipe["routes"]}
     reqs = requirements(recipe, recipe_sha, ctx, bound)
     pre = admission_state(bound, availability, ctx, requirements=reqs)
-    decode = decode_route(recipe, ctx, bound, pre, recipe_sha)
+    decode = decode_route(recipe, ctx, bound, pre, recipe_sha, select)
     check_endpoints(recipe, bound, decode)
     check_bounds(decode, decode["devices"][0], "node", ctx)
-    decode_flags = launch_flags(decode, decode["devices"][0], NODE_FIELDS.get(ctx.profile, {}), f"profile {ctx.profile}")
+    sets = {d["id"]: d for d in recipe["match"]["devices"]}
+    decode_flags = launch_flags(decode, decode["devices"][0], NODE_FIELDS.get(ctx.profile, {}), f"profile {ctx.profile}",
+                                sets[decode["devices"][0]]["memory_min_gib"])
     # Prefill routes are judged as they will be once the decode processes run: their charge is taken out of the free
     # RAM figures and every route they serve is running (no charge, credited by plan id).
     _, decode_charge = reader.admissible(recipe, decode, pre, by_id, recipe_sha)
@@ -413,7 +418,7 @@ def deploy(recipe, ctx, bound, availability, recipe_sha):
             else:
                 check_bounds(route, sid, "service", ctx)
                 flags = launch_flags(route, sid, SERVICE_FIELDS.get(ctx.service["engine"], {}),
-                                     f"the {ctx.service['engine']} service")
+                                     f"the {ctx.service['engine']} service", sets[sid]["memory_min_gib"])
                 service_flags = flags if service_flags is None else service_flags
         prefill.append({"id": route["id"], "place": place, "admitted": reason is None, "why": reason})
     offload = [p for p in prefill if p["place"] == "offload"]
@@ -434,7 +439,7 @@ def deploy(recipe, ctx, bound, availability, recipe_sha):
 
 # --- router table and state ---------------------------------------------------------------------------------------
 
-def route_table(eff_json, recipe_sha256, bound, decision, state_file, ctx):
+def route_table(eff_json, recipe_sha256, bound, decision, state_file, ctx, service_started=True):
     """`tensormeld/prefill-route-table-v1`: the decision table the router evaluates per request (core §7 over the prefill
     routes): per route the sets and links it needs (handoff route included, internal links of multi-host sets), its
     context/batch bounds, the handoff route's prompt bounds, the per-host charge of its members' requirements, and
@@ -452,24 +457,31 @@ def route_table(eff_json, recipe_sha256, bound, decision, state_file, ctx):
         links = list(dict.fromkeys(l for r in involved for l in r["links"]))
         links += [f"{s}.internal" for s in route_sets if sets[s]["internal_link"] is not None
                   and len({m["host"] for m in bound["binding"][s]}) >= 2]
-        charge = {}
+        charge, commit = {}, {}
         for req in decision["requirements"]:
             if req["route"] == route["id"]:
                 host = bound["binding"][req["set"]][req["member"]]["host"]
                 charge[host] = charge.get(host, 0.0) + req["host_bytes"] / GIB
+                commit[host] = commit.get(host, 0.0) + req["commit_bytes"] / GIB
+        hosts = list(dict.fromkeys(m["host"] for s in route_sets for m in bound["binding"][s]))
         handoff = by_id[route["handoff_route"]]["when"] if route["handoff_route"] else None
         routes.append({"id": route["id"], "place": place,
+                       # An offload route without a started service never admits (the nodes take every prompt).
+                       "enabled": route["enabled"] and (place == "local" or service_started)
+                       and (route["handoff_route"] is None or by_id[route["handoff_route"]]["enabled"]),
                        "when": {k: route["when"][k] for k in ("prompt_tokens_min", "prompt_tokens_max")},
                        "handoff_when": None if handoff is None else {
                            k: handoff[k] for k in ("prompt_tokens_min", "prompt_tokens_max")},
                        "max_context_tokens": min(r["placement"][s]["max_context_tokens"] for r in involved
                                                  for s in r["devices"]),
-                       "fallback": route["fallback"], "sets": route_sets, "links": links,
+                       "fallback": route["fallback"], "sets": route_sets, "links": links, "hosts": hosts,
                        "charges": {h: round(g, 6) for h, g in sorted(charge.items())},
+                       "commit_charges": {h: round(g, 6) for h, g in sorted(commit.items())},
                        "running_while": "decode" if place == "local" else "service"})
     limits = ctx.limits or {}
     return {"schema": ROUTE_TABLE_SCHEMA, "recipe": eff_json["name"], "recipe_sha256": recipe_sha256,
             "effective_sha256": decision["effective_sha256"], "floor_gib": eff_json["limits"]["host_free_ram_floor_gib"],
+            "commit_floor_gib": eff_json["limits"]["host_free_commit_floor_gib"],
             "binding": deepcopy(bound["binding"]), "roles": dict(bound["roles"]), "routes": routes,
             "default_generation_tokens": limits.get("default_generation_tokens", 1024),
             "state": {"file": str(state_file), "max_age_s": STATE_MAX_AGE_S},

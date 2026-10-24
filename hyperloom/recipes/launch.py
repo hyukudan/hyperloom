@@ -43,32 +43,33 @@ class Launch:
                         "routes": [r["id"] for r in self.table["routes"]]})
 
 
-def _reader_label(cluster):
-    executable = core.locate(cluster)
-    if executable is not None:
-        return f"core {executable}", True
+def _backend(cluster):
+    """(backend, production): the core when installed; the stub only with HYPERLOOM_RECIPE_STUB=1, non-production."""
+    chosen = core.backend(cluster)
+    if chosen.authoritative:
+        return chosen, True
     if os.environ.get(STUB_ENV) == "1":
-        return "stub (HYPERLOOM_RECIPE_STUB=1, non-production)", False
+        chosen.label = "stub (HYPERLOOM_RECIPE_STUB=1, non-production)"
+        return chosen, False
     raise RecipeError("up --recipe needs the strix-stream recipe core (ss-recipe: pc.recipe_core, "
                       f"HYPERLOOM_SS_RECIPE or PATH); {STUB_ENV}=1 runs the stub reader as a non-production launch")
 
 
 def prepare(cluster, profile, options, *, router, vram_cap_gib, state_dir, source=None):
     """Resolve, probe, match and decide; refuse with every reason before any lease or process exists."""
-    label, production = _reader_label(cluster)
+    backend, production = _backend(cluster)
     if vram_cap_gib is not None:
         raise RecipeError("--vram-cap-gib and --recipe both set the RTX cap: put it in the recipe (device_gib)")
     source = source or commands.live_source(cluster)
     if options.recipe == "auto":
         chosen, rows = session.pick(cluster, profile, commands.recipe_dirs(cluster, options.dirs), options.layers,
-                                    source)
+                                    source, backend)
         if chosen is None:
             raise RecipeError("no recipe fits: " + "; ".join(f"{r['path']}: {r['result']}" for r in rows)
                               if rows else "no recipe files in " + ", ".join(map(str, commands.recipe_dirs(cluster))))
         evaluation = chosen
     else:
-        evaluation = session.evaluate(cluster, profile, options.recipe, options.layers, source)
-    evaluation.reader = label
+        evaluation = session.evaluate(cluster, profile, options.recipe, options.layers, source, backend)
     if evaluation.problems:
         raise RecipeError("recipe does not match this hardware: " + "; ".join(evaluation.problems))
     if evaluation.refusal:
@@ -83,7 +84,7 @@ def prepare(cluster, profile, options, *, router, vram_cap_gib, state_dir, sourc
         raise RecipeError("the pinned TensorMeld router has no prefill policy \"routes\" (needed by this recipe's offload "
                           "routes); update third_party/tensormeld")
     if service["start"]:
-        table = apply.route_table(evaluation.effective.to_json(), evaluation.effective.sha256, evaluation.bound,
+        table = apply.route_table(evaluation.effective.to_json(), evaluation.effective.file_sha256, evaluation.bound,
                                   decision, Path(state_dir) / "route-state.json", evaluation.context)
     return Launch(evaluation, production and not evaluation.effective.untuned, service["start"], service["why"],
                   flags.get("vram_cap_gib"), flags.get("host_gib"), table)

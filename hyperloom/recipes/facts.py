@@ -155,10 +155,14 @@ def gather(cluster, ctx, *, call, gpus=None, memory=None, pro_busy=None, cache=N
         lan[mid] = {"up": lan_fact["up"], "why": lan_fact.get("why"), "gbps": lan_fact["value"]}
         usb4[mid] = usb4_fact
     for mid in ctx.nodes:
-        links.append({"kind": "ethernet", "hosts": [ctx.pc, mid], "gbps": lan.get(mid, {}).get("gbps")})
+        gbps = lan.get(mid, {}).get("gbps")
+        if gbps is not None:   # a link whose speed is unknown is not reported (the core then refuses it), never guessed
+            links.append({"kind": "ethernet", "hosts": [ctx.pc, mid], "gbps": gbps})
     if len(ctx.nodes) == 2:
         a, b = ctx.nodes
-        links.append({"kind": "usb4", "hosts": [a, b], "gbps": None})
+        # USB4 bandwidth is not probed here: 0 Gb/s satisfies only a gbps_min of 0 (design §3).
+        links.append({"kind": "usb4", "hosts": [a, b], "gbps": 0.0})
+        notes.append("USB4 bandwidth not probed: reported as 0 Gb/s (only gbps_min = 0 passes)")
     facts = {"model": ctx.model, "devices": devices, "links": links}
     availability = {"devices": avail_devices, "hosts": hosts, "lan": lan, "usb4": usb4}
     return inventory, facts, availability, notes

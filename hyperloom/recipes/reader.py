@@ -1,5 +1,5 @@
-"""Stub reader for strix-stream recipe-v1 (schema draft 5, Sol GO): strict parse, layered resolution
-(profile/overrides), explain trace and admission-time route selection.
+"""Stub reader for strix-stream recipe-v1 (the core's final schema, strix-stream docs/recipes.md): strict parse,
+layered resolution (profile/overrides), explain trace and admission-time route selection.
 
 The core library (`ss-recipe`, strix-stream) is the source of truth for these rules. This module mirrors the parts
 hyperloom needs so the offline tools and the tests run without it; parity tests hold the two together, and
@@ -57,9 +57,9 @@ LINK_REQ = {"kind": (_enum("usb4", "ethernet", "pcie", "other"), "other"), "gbps
 DEVICE = {"id": ("id", REQUIRED), "kind": (_enum("cuda", "hip", "cpu"), REQUIRED), "count": (_int(1, 64), 1),
           "name": ("str", None), "memory_min_gib": (_float(0, low_open=True), REQUIRED),
           "host_ram_min_gib": (_float(0), 0.0), "disk_read_gbytes_ps_min": (_float(0), 0.0),
-          "internal_link": ("internal_link", None)}
+          "h2d_gbytes_ps_min": (_float(0), 0.0), "internal_link": ("internal_link", None)}
 LINK = {"id": ("id", REQUIRED), "between": ("between", REQUIRED), **LINK_REQ}
-LIMITS = {"host_free_ram_floor_gib": (_float(0), 8.0)}
+LIMITS = {"host_free_ram_floor_gib": (_float(0), 8.0), "host_free_commit_floor_gib": (_float(0), 0.0)}
 WHEN = {"prompt_tokens_min": (_int(0), 0), "prompt_tokens_max": (_int(0), None),
         "batch_min": (_int(1), 1), "batch_max": (_int(1), None)}
 BUDGET = {"device_gib": (_float(0, low_open=True), None), "host_pinned_gib": (_float(0), 0.0),
@@ -67,7 +67,7 @@ BUDGET = {"device_gib": (_float(0, low_open=True), None), "host_pinned_gib": (_f
           "max_batch": (_int(1, 65536), REQUIRED),
           "margin_gib": (_float(0, 64), 2.0), "margin_fraction": (_float(0, 0.5), 0.03),
           "dynamic_slots_per_layer": (_int(0, 65536), 0), "ring_slots": (_int(0, 65536), 0),
-          "pinned_backing": ("bool", False)}
+          "pinned_backing": ("bool", False), "tier_mode": (_enum("inclusive", "exclusive"), "inclusive")}
 OPTIONS = {"policy": (_enum("lru", "scored"), "lru"), "lookahead_units": (_int(0, 64), 2),
            "reader_threads": (_int(1, 64), 2), "staging_buffers": (_int(2, 64), 4),
            "staging_mib": (_int(1, 16384), 256), "copy_piece_mib": (_int(1, 4096), 64),
@@ -75,21 +75,23 @@ OPTIONS = {"policy": (_enum("lru", "scored"), "lru"), "lookahead_units": (_int(0
            "direct_io": ("bool", True), "verify_hash": ("bool", False), "group_units": (_int(0, 65536), 0),
            "spec_persistent": ("bool", False)}
 ENGINE = {"prefetch_layers": (_int(0, 8), 1), "chunk_tokens": (_int(0, 1048576), 0),
-          "routed_only_max_tokens": (_int(0, 1048576), 0)}
+          "routed_only_max_tokens": (_int(0, 1048576), 0), "idle_preload_layers": (_int(0, 64), 0),
+          "max_copies_per_token": (_int(0, 65536), 0)}
 PLACEMENT = {**BUDGET, **OPTIONS, **ENGINE}
 UNITS = {"id": ("id", REQUIRED), "class": (_enum("moe", "blob"), REQUIRED), "layers": ("layers", None),
          "rank": (_enum("model", "list", "frequency"), "model"), "list": ("list", None),
          "resident": ("count", "fill"), "pinned": ("count", 0), "rest": (_enum("disk", "pinned", "peer"), "disk"),
          "peer": ("id", None)}
-ROUTE_KEYS = {"id", "phase", "devices", "execute", "handoff_route", "links", "when", "fallback", "placement"}
+ROUTE_KEYS = {"id", "phase", "devices", "execute", "handoff_route", "links", "when", "fallback", "placement",
+              "enabled"}
 TOP_KEYS = {"schema", "name", "description", "generated_by", "pin", "match", "limits", "routes"}
 MATCH_KEYS = {"model", "model_sha256", "engine", "devices", "links"}
 
 BUDGET_FIELDS = ("device_gib", "host_pinned_gib", "workspace_gib", "max_context_tokens", "max_batch", "margin_gib",
                  "margin_fraction", "dynamic_slots_per_layer", "ring_slots", "pinned_backing", "staging_buffers",
-                 "staging_mib")
+                 "staging_mib", "tier_mode")
 # §6.2: the only settable leaves besides limits, when, fallback and placement fields.
-SETTABLE_DEVICE = ("name", "memory_min_gib", "host_ram_min_gib", "disk_read_gbytes_ps_min")
+SETTABLE_DEVICE = ("name", "memory_min_gib", "host_ram_min_gib", "disk_read_gbytes_ps_min", "h2d_gbytes_ps_min")
 SETTABLE_UNITS = ("layers", "rank", "list", "resident", "pinned")
 
 
@@ -300,7 +302,10 @@ def parse(text, origin="recipe"):
     devices = []
     for raw, where in _items(match, "devices", "match", required=True):
         _check_keys(raw, set(DEVICE), where)
-        devices.append(_fields(raw, DEVICE, where))
+        device = _fields(raw, DEVICE, where)
+        if device["h2d_gbytes_ps_min"] > 0 and device["kind"] != "cuda":
+            raise RecipeError(f"{where}.h2d_gbytes_ps_min: cuda sets only")
+        devices.append(device)
     if not devices:
         raise RecipeError("match.devices: at least one device set")
     by_id = {d["id"]: d for d in devices}
@@ -353,6 +358,7 @@ def parse(text, origin="recipe"):
         route["when"] = _fields(when, WHEN, f"{where}.when")
         fallback = raw.get("fallback")
         route["fallback"] = None if fallback is None else _value("id", fallback, f"{where}.fallback")
+        route["enabled"] = _value("bool", raw.get("enabled", True), f"{where}.enabled")
         counts = [by_id[s]["count"] for s in sets]
         execute = route["execute"]
         if ((execute == "single" and (len(sets) != 1 or counts[0] != 1))
@@ -363,6 +369,9 @@ def parse(text, origin="recipe"):
         _check_keys(placements, set(sets), f"{where}.placement")
         route["placement"] = {d: _placement(p, route, f"{where}.placement.{d}")
                               for d, p in placements.items() if not d.startswith("x-")}
+        for d, placement in route["placement"].items():
+            if placement["device_gib"] is None:
+                placement["device_gib"] = by_id[d]["memory_min_gib"]   # the default, made explicit as the core does
         routes.append(route)
     recipe["routes"] = routes
     recipe["pin"] = list(pins)
@@ -459,13 +468,13 @@ def check(recipe):
 
 def settable_paths(recipe):
     """Every settable leaf (§6.2) of this recipe; placement paths exist for every set of a route."""
-    paths = ["limits.host_free_ram_floor_gib"]
+    paths = ["limits.host_free_ram_floor_gib", "limits.host_free_commit_floor_gib"]
     for d in recipe["match"]["devices"]:
         paths += [f"match.devices.{d['id']}.{k}" for k in SETTABLE_DEVICE]
     paths += [f"match.links.{l['id']}.gbps_min" for l in recipe["match"]["links"]]
     for route in recipe["routes"]:
         base = f"routes.{route['id']}"
-        paths.append(base + ".fallback")
+        paths += [base + ".fallback", base + ".enabled"]
         paths += [f"{base}.when.{k}" for k in WHEN]
         for set_id in route["devices"]:
             paths += [f"{base}.placement.{set_id}.{k}" for k in PLACEMENT]
@@ -481,8 +490,7 @@ def _written_paths(tree):
             written |= {f"match.{kind}.{item.get('id')}.{k}" for k in item}
     for route in tree["routes"]:
         base = f"routes.{route.get('id')}"
-        if "fallback" in route:
-            written.add(base + ".fallback")
+        written |= {f"{base}.{k}" for k in ("fallback", "enabled") if k in route}
         written |= {f"{base}.when.{k}" for k in route.get("when", {})}
         for set_id, placement in route.get("placement", {}).items():
             if set_id.startswith("x-"):
@@ -506,7 +514,7 @@ def _locate(recipe, path):
         return item, parts[3], table[parts[3]][0]
     route = next(r for r in recipe["routes"] if r["id"] == parts[1])
     if len(parts) == 3:
-        return route, "fallback", "id"
+        return route, parts[2], "bool" if parts[2] == "enabled" else "id"
     if parts[2] == "when":
         return route["when"], parts[3], WHEN[parts[3]][0]
     placement = route["placement"][parts[3]]
@@ -684,12 +692,23 @@ def resolve(text, origin="recipe", profile=None, overrides=(), sets=(), probe=No
             container[field] = checked
             entry.update(layer=layer["kind"],
                          origin=layer["origin"] + (f" ({layer['source']})" if layer["source"] else ""))
+        if layer["origin"] == "--set":
+            for path, _ in layer["set"]:
+                if path.endswith((".rank", ".list")) and ".units." in path:
+                    other = path[: path.rindex(".")] + (".list" if path.endswith(".rank") else ".rank")
+                    if other not in {q for q, _ in layer["set"]} and (path.endswith(".list") or value_of(candidate, path) == "list"):
+                        raise RecipeError(f"--set {path}: rank = \"list\" and its list change together (one overrides file)")
         try:
             check(candidate)
         except RecipeError as exc:
             raise RecipeError(f"{layer['origin']}: refused, the effective recipe would be invalid: {exc}") from exc
         eff.recipe, eff.trace = candidate, trace
     return eff
+
+
+def value_of(recipe, path):
+    container, field, _ = _locate(deepcopy(recipe), path)
+    return container.get(field)
 
 
 def explain(eff):
@@ -755,16 +774,22 @@ def _running_credit(recipe_sha, route, found, state):
 
 
 def admissible(recipe, route, state, by_id, recipe_sha):
-    """(None, charge per host in bytes) when the route (with its handoff route) can be admitted, else (why, {})."""
+    """(None, charge per host in bytes) when the route (with its handoff route) can be admitted, else (why, {}).
+    A route credited as running is charged 0 but every host it uses still keeps the floors (§7.3)."""
     binding = state.get("binding", {})
     devices, links, hosts = state.get("devices", {}), state.get("links", {}), state.get("hosts", {})
     sets_by_id = {d["id"]: d for d in recipe["match"]["devices"]}
+    if not route["enabled"]:
+        return "disabled", {}
     involved = [route] + ([by_id[route["handoff_route"]]] if route["handoff_route"] else [])
     context, batch = state.get("context_tokens", state.get("prompt_tokens", 0)), state.get("batch", 1)
-    if route["handoff_route"] and not when_holds(by_id[route["handoff_route"]]["when"], state.get("prompt_tokens", 0),
-                                                 batch):
-        return f'handoff route "{route["handoff_route"]}": when does not hold', {}
-    total = {}
+    if route["handoff_route"]:
+        handoff = by_id[route["handoff_route"]]
+        if not handoff["enabled"]:
+            return f'handoff route "{handoff["id"]}" is disabled', {}
+        if not when_holds(handoff["when"], state.get("prompt_tokens", 0), batch):
+            return f'handoff route "{handoff["id"]}": when does not hold', {}
+    charge, commit, used = {}, {}, set()
     for r in involved:
         for set_id in r["devices"]:
             members = binding.get(set_id)
@@ -775,6 +800,7 @@ def admissible(recipe, route, state, by_id, recipe_sha):
                 if not info or not info.get("available", False):
                     return (f'set "{set_id}" member {member["id"]} unavailable '
                             f'({(info or {}).get("why", "missing from the state")})'), {}
+                used.add(member["host"])
             if sets_by_id[set_id]["internal_link"] is not None and len({m["host"] for m in members}) >= 2:
                 info = links.get(f"{set_id}.internal")
                 if not info or not info.get("up", False):
@@ -792,20 +818,31 @@ def admissible(recipe, route, state, by_id, recipe_sha):
         found, why = counting_requirements(recipe_sha, r, state)
         if why is not None:
             return why, {}
+        for (set_id, member), req in found.items():
+            if req.get("disk_bytes", 0) > 0 and not devices.get(req["id"], {}).get("disk_available", False):
+                return f'set "{set_id}" member {req["id"]}: disk unavailable', {}
         if _running_credit(recipe_sha, r, found, state):
             continue
         for (set_id, member), req in found.items():
             host = binding[set_id][member]["host"]
-            total[host] = total.get(host, 0) + int(req["host_bytes"])
-    floor = recipe["limits"]["host_free_ram_floor_gib"]
-    for host, charge in sorted(total.items()):
+            charge[host] = charge.get(host, 0) + int(req["host_bytes"])
+            commit[host] = commit.get(host, 0) + int(req.get("commit_bytes", req["host_bytes"]))
+    floor, commit_floor = recipe["limits"]["host_free_ram_floor_gib"], recipe["limits"]["host_free_commit_floor_gib"]
+    for host in sorted(used):
         free = hosts.get(host, {}).get("free_ram_gib")
         if free is None:
             return f"host {host}: free RAM unknown", {}
-        if free - charge / GIB_BYTES < floor:
-            return (f"host {host}: free RAM {free:.1f} GiB - charge {charge / GIB_BYTES:.1f} GiB < floor "
+        if free - charge.get(host, 0) / GIB_BYTES < floor:
+            return (f"host {host}: free RAM {free:.1f} GiB - charge {charge.get(host, 0) / GIB_BYTES:.1f} GiB < floor "
                     f"{floor:g} GiB"), {}
-    return None, total
+        if commit_floor > 0:
+            free_commit = hosts.get(host, {}).get("free_commit_gib")
+            if free_commit is None:
+                return f"host {host}: free commit unknown", {}
+            if free_commit - commit.get(host, 0) / GIB_BYTES < commit_floor:
+                return (f"host {host}: free commit {free_commit:.1f} GiB - charge {commit.get(host, 0) / GIB_BYTES:.1f} "
+                        f"GiB < commit floor {commit_floor:g} GiB"), {}
+    return None, {h: charge.get(h, 0) for h in sorted(used) if charge.get(h, 0)}
 
 
 def select(recipe, state, recipe_sha):
@@ -829,6 +866,9 @@ def select(recipe, state, recipe_sha):
         if route["id"] in visited:
             continue
         visited.add(route["id"])
+        if not route["enabled"]:
+            trace.append({"route": route["id"], "verdict": "disabled", "why": None})
+            continue
         if not when_holds(route["when"], tokens, batch):
             trace.append({"route": route["id"], "verdict": "no match", "why": None})
             continue
@@ -838,12 +878,14 @@ def select(recipe, state, recipe_sha):
             if why is None:
                 trace.append({"route": step["id"], "verdict": "admitted", "why": None})
                 return result(step, charge, trace)
-            trace.append({"route": step["id"], "verdict": "refused", "why": why})
+            trace.append({"route": step["id"], "verdict": "not admitted", "why": why})
             target = by_id.get(step["fallback"]) if step["fallback"] else None
             step = None
             if target is not None and target["id"] not in visited:
                 visited.add(target["id"])
-                if when_holds(target["when"], tokens, batch):
+                if not target["enabled"]:
+                    trace.append({"route": target["id"], "verdict": "disabled", "why": "fallback target"})
+                elif when_holds(target["when"], tokens, batch):
                     step = target
                 else:
                     trace.append({"route": target["id"], "verdict": "no match", "why": "fallback target"})

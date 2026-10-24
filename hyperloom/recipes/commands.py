@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from .. import orchestrate
-from . import descriptors, facts, probe, reader, session
+from . import core, descriptors, facts, probe, reader, session
 from .reader import RecipeError
 
 
@@ -90,25 +90,29 @@ def probe_command(cluster, args):
 
 
 def validate_command(cluster, args):
+    backend = core.backend(cluster)
     if args.profile is None:
-        eff = session.resolve(args.file, layers_of(args))
-        return {"recipe": eff.recipe["name"], "reader": "stub (offline diagnostics)", "valid": True,
+        eff = session.resolve(args.file, layers_of(args), backend=backend)
+        return {"recipe": eff.recipe["name"], "reader": backend.label, "valid": True,
                 "untuned": eff.untuned, "refused_layers": eff.refused, "hardware": "not checked (no profile)"}, True
-    evaluation = session.evaluate(cluster, args.profile, args.file, layers_of(args), source_of(cluster, args))
+    evaluation = session.evaluate(cluster, args.profile, args.file, layers_of(args), source_of(cluster, args), backend)
     return dict(evaluation.summary(), valid=evaluation.ok), evaluation.ok
 
 
 def explain_command(cluster, args):
-    eff = session.resolve(args.file, layers_of(args))
-    trace = reader.explain(eff)
+    backend = core.backend(cluster)
+    eff = session.resolve(args.file, layers_of(args), backend=backend)
+    trace = eff.trace
     fields = trace["fields"] if args.all else [f for f in trace["fields"] if f["layer"] != "default" or f["shadowed"]]
-    out = {"recipe": eff.recipe["name"], "reader": "stub (offline diagnostics)", "file": str(args.file),
+    out = {"recipe": eff.recipe["name"], "reader": backend.label, "file": str(args.file),
            "untuned": eff.untuned, "refused_layers": eff.refused, "fields": fields,
            "routes": [{"id": r["id"], "phase": r["phase"], "devices": r["devices"], "execute": r["execute"],
                        "when": {k: v for k, v in r["when"].items() if v not in (None, 0, 1) or k == "prompt_tokens_min"},
-                       "fallback": r["fallback"], "handoff_route": r["handoff_route"]} for r in eff.recipe["routes"]]}
+                       "fallback": r["fallback"], "handoff_route": r["handoff_route"], "enabled": r["enabled"]}
+                      for r in eff.recipe["routes"]]}
     if args.profile is not None:
-        evaluation = session.evaluate(cluster, args.profile, args.file, layers_of(args), source_of(cluster, args))
+        evaluation = session.evaluate(cluster, args.profile, args.file, layers_of(args), source_of(cluster, args),
+                                      backend)
         _what_if(evaluation, args)
         out["hardware"] = evaluation.summary()
         if args.prompt_tokens is not None:
@@ -138,21 +142,22 @@ def _what_if(evaluation, args):
         from . import apply
         try:
             evaluation.decision = apply.deploy(evaluation.effective.recipe, evaluation.context, evaluation.bound,
-                                               evaluation.availability, evaluation.effective.canonical_sha256())
+                                               evaluation.availability, evaluation.effective_sha256)
             evaluation.refusal = None
         except RecipeError as exc:
             evaluation.decision, evaluation.refusal = None, str(exc)
 
 
 def diff_command(cluster, args):
-    a = session.resolve(args.a, session.Layers(sets=[reader.parse_set(s) for s in args.a_set or []]))
-    b = session.resolve(args.b, session.Layers(sets=[reader.parse_set(s) for s in args.b_set or []]))
+    backend = core.backend(cluster)
+    a = session.resolve(args.a, session.Layers(sets=[reader.parse_set(s) for s in args.a_set or []]), backend=backend)
+    b = session.resolve(args.b, session.Layers(sets=[reader.parse_set(s) for s in args.b_set or []]), backend=backend)
     return dict(session.diff(a, b), a=str(args.a), b=str(args.b))
 
 
 def pick_command(cluster, args):
     chosen, rows = session.pick(cluster, args.profile, recipe_dirs(cluster, args.dir or []), layers_of(args),
-                                source_of(cluster, args))
+                                source_of(cluster, args), core.backend(cluster))
     return {"profile": args.profile, "chosen": chosen.path if chosen else None, "candidates": rows}
 
 

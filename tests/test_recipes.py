@@ -17,7 +17,7 @@ from unittest import mock
 
 from hyperloom import cli, modelfiles
 from hyperloom.paths import repo_root
-from hyperloom.recipes import apply, descriptors, facts, launch, probe, reader, session
+from hyperloom.recipes import apply, core, descriptors, facts, launch, probe, reader, session
 from hyperloom.recipes.reader import GIB_BYTES, RecipeError, StaleProfile
 
 FIXTURES = Path(__file__).parent / "fixtures" / "recipes"
@@ -43,7 +43,7 @@ FACTS = {"model": "minimax-m3.1-flash",
                      "n2": {"name": "AMD Radeon 8060S", "memory_gib": 120.0, "host_ram_gib": 125.0}},
          "links": [{"kind": "ethernet", "hosts": ["pc", "n1"], "gbps": 2.5},
                    {"kind": "ethernet", "hosts": ["pc", "n2"], "gbps": 2.5},
-                   {"kind": "usb4", "hosts": ["n1", "n2"], "gbps": None}]}
+                   {"kind": "usb4", "hosts": ["n1", "n2"], "gbps": 0.0}]}
 
 
 def availability(**changes):
@@ -197,7 +197,7 @@ def select_state(recipe, tokens=8192, **changes):
             "binding": BINDING, "descriptors": {"rtx": ["0" * 64], "pair": ["0" * 64, "0" * 64]},
             "devices": {GPU: {"available": True}, "n1": {"available": True}, "n2": {"available": True}},
             "links": {"pc-nodes": {"up": True}, "pair.internal": {"up": True}},
-            "hosts": {"pc": {"free_ram_gib": 70.0}, "n1": {"free_ram_gib": 5.0}, "n2": {"free_ram_gib": 5.0}},
+            "hosts": {"pc": {"free_ram_gib": 70.0}, "n1": {"free_ram_gib": 20.0}, "n2": {"free_ram_gib": 20.0}},
             "running": running, "requirements": reqs}
     data.update(changes)
     return data
@@ -219,11 +219,17 @@ class SelectTests(unittest.TestCase):
         result = self.pick(devices={GPU: {"available": False, "why": "PRO busy"}, "n1": {"available": True},
                                     "n2": {"available": True}})
         self.assertEqual(result["route"], "prefill_nodes")
-        self.assertEqual(result["trace"][0]["verdict"], "refused")
+        self.assertEqual(result["trace"][0]["verdict"], "not admitted")
         self.assertIn("PRO busy", result["trace"][0]["why"])
 
     def test_ram_charge_running_credit_and_plan_binding(self):
-        low = {"hosts": {"pc": {"free_ram_gib": 55.0}}}                     # 48 pinned + 1 staging + 4 overhead + floor
+        low = {"hosts": {"pc": {"free_ram_gib": 55.0}, "n1": {"free_ram_gib": 20.0}, "n2": {"free_ram_gib": 20.0}}}
+        # 48 pinned + 1 staging + 4 overhead + floor 8 > 55; the nodes keep their floor too (running, charged 0).
+        nodes_low = {"hosts": {"pc": {"free_ram_gib": 70.0}, "n1": {"free_ram_gib": 5.0}, "n2": {"free_ram_gib": 20.0}}}
+        with self.assertRaisesRegex(RecipeError, "host n1: free RAM 5.0 GiB - charge 0.0 GiB < floor 8"):
+            self.pick(**nodes_low)
+        with self.assertRaisesRegex(RecipeError, "host n2: free RAM unknown"):
+            self.pick(hosts={"pc": {"free_ram_gib": 70.0}, "n1": {"free_ram_gib": 20.0}})
         self.assertIn("charge 53.0 GiB", self.pick(**low)["trace"][0]["why"])
         reqs, running = compiled(self.recipe)
         credited = running + [apply.running_entry("prefill_long", SHA, reqs)]
@@ -559,7 +565,7 @@ class SessionTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()), mock.patch("sys.stderr", err):
             code = cli.main(["recipe", "validate", str(self.recipe), "--recipe-set", "routes.prefill_long.execute=tp"])
         self.assertEqual(code, 1)
-        self.assertIn("not a settable path", err.getvalue())
+        self.assertRegex(err.getvalue(), "not a settable path|is not settable")           # stub or core wording
         bad = deepcopy(FACTS)
         bad["devices"]["n1"]["memory_gib"] = 64.0
         record = json.loads(Path(saved_facts(self.dir / "f.json")).read_text())
@@ -569,7 +575,7 @@ class SessionTests(unittest.TestCase):
         with redirect_stdout(out), mock.patch("hyperloom.cli._cluster", return_value=self.cluster):
             code = cli.main(["recipe", "validate", str(self.recipe), "mm", "--facts", str(self.dir / "bad.json")])
         self.assertEqual(code, 1)
-        self.assertIn("memory 64.00 GiB < 110", json.loads(out.getvalue())["match"][0])
+        self.assertRegex(json.loads(out.getvalue())["match"][0], r"memory 64(\.00)? GiB.*|.*110 GiB.*memory 64 GiB")
 
 
 class LaunchTests(unittest.TestCase):
@@ -634,7 +640,7 @@ class UpWithRecipeTests(unittest.TestCase):
         gathered["devices"]["halo-2"] = gathered["devices"].pop("n2")
         gathered["links"] = [{"kind": "ethernet", "hosts": ["workstation", "halo-1"], "gbps": 2.5},
                              {"kind": "ethernet", "hosts": ["workstation", "halo-2"], "gbps": 2.5},
-                             {"kind": "usb4", "hosts": ["halo-1", "halo-2"], "gbps": None}]
+                             {"kind": "usb4", "hosts": ["halo-1", "halo-2"], "gbps": 0.0}]
         devices = {GPU: {"available": True}, "halo-1": {"available": True}, "halo-2": {"available": True}}
         devices.update(self.avail)
         raw = {"devices": devices, "hosts": {"workstation": {"free_ram_gib": 100.0, "free_commit_gib": 150.0},
@@ -712,48 +718,101 @@ def _tensormeld_routes():
 
 
 
-class ConformanceTests(unittest.TestCase):
-    """The router's per-request selector equals the reader's §7 select on every state of a grid (design §9.1)."""
+def _core():
+    """The real recipe core (ss-recipe) named by HYPERLOOM_SS_RECIPE, when it can run here."""
+    executable = os.environ.get("HYPERLOOM_SS_RECIPE")
+    if not executable or not Path(executable).is_file() or (executable.endswith(".exe") and os.name != "nt"):
+        return None
+    return core.CoreBackend(core.Core(executable))
 
-    def test_router_equals_reader(self):
+
+GRID_FULL = dict(tokens=(0, 4095, 4096, 4097, 30000), context=(None, 32769, 40000), gpu=(True, False),
+                 n1=(True, False), link=(True, False), service=(True, False), stale=(False, True),
+                 pc=(7.0, 40.0, 70.0), nodes=(None, 5.0, 20.0))
+GRID_CORE = dict(tokens=(4095, 4096), context=(None, 40000), gpu=(True, False), n1=(True,), link=(True, False),
+                 service=(True, False), stale=(False, True), pc=(7.0, 70.0), nodes=(None, 5.0, 20.0))
+
+
+class ConformanceTests(unittest.TestCase):
+    """One admission rule: the router's per-request selector == the stub's §7 == the core's ss-recipe select
+    (design §9.1). The stub's document and decision come from the core when it is present."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.path = Path(temporary.name) / "mm.toml"
+        self.path.write_text(PLAIN, encoding="utf-8")
+
+    def states(self, bound, decision, sha, grid):
+        for v in itertools.product(*grid.values()):
+            case = dict(zip(grid, v))
+            tokens = case["tokens"]
+            context = tokens + 1024 if case["context"] is None else case["context"]
+            devices = {GPU: {"available": case["gpu"]}, "n1": {"available": case["n1"]}, "n2": {"available": True}}
+            links = {"pc-nodes": {"up": case["link"]}, "pair.internal": {"up": True}}
+            hosts = {"pc": {"free_ram_gib": case["pc"]}}
+            if case["nodes"] is not None:
+                hosts.update(n1={"free_ram_gib": case["nodes"]}, n2={"free_ram_gib": 20.0})
+            router_state = None if case["stale"] else {"devices": devices, "links": links, "hosts": hosts}
+            # The core/stub see the router's own health as availability (the PRO set needs the service up) and the
+            # service's routes as running while it is up.
+            running = decision["running"] + ([apply.running_entry("prefill_long", sha, decision["requirements"])]
+                                             if case["service"] else [])
+            state = apply.admission_state(
+                bound, {"devices": {} if case["stale"] else dict(devices, **{GPU: {"available": case["gpu"] and case["service"]}}),
+                        "links": {} if case["stale"] else links, "hosts": {} if case["stale"] else hosts},
+                ctx(), running=running, requirements=decision["requirements"], tokens=tokens, context=context)
+            yield case, tokens, context, router_state, state
+
+    def prepare(self, backend):
+        resolved = session.resolve(self.path, session.Layers(), backend=backend)
+        bound = apply.bind(resolved.recipe, ctx(), INVENTORY)
+        sha = SHA
+        if isinstance(backend, core.CoreBackend):
+            problems, binding, sha = backend.match(self.path, session.Layers(), apply.probe_report(resolved.recipe, bound, FACTS), None)
+            self.assertEqual((problems, binding), ([], bound["binding"]))
+        decision = apply.deploy(resolved.recipe, ctx(), bound, availability(), sha)
+        return resolved, bound, decision, sha
+
+    def test_router_equals_stub(self):
         routes = _tensormeld_routes()
         if routes is None:
             self.skipTest("TensorMeld without prefill_routes (set HYPERLOOM_TM_SRC to a src dir that has it)")
-        eff = reader.resolve(PLAIN)
-        sha = eff.canonical_sha256()
-        bound = apply.bind(eff.recipe, ctx(), INVENTORY)
-        decision = apply.deploy(eff.recipe, ctx(), bound, availability(), sha)
-        table = routes.RouteTable.parse(apply.route_table(eff.to_json(), eff.sha256, bound, decision, "s.json", ctx()))
+        resolved, bound, decision, sha = self.prepare(core.StubBackend())
+        table = routes.RouteTable.parse(apply.route_table(resolved.to_json(), resolved.file_sha256, bound, decision,
+                                                          "s.json", ctx()))
         checked = 0
-        for tokens, context, gpu, n1, link, service_up, stale, free in itertools.product(
-                (0, 4095, 4096, 4097, 30000), (None, 32769, 40000), (True, False), (True, False), (True, False),
-                (True, False), (False, True), (40.0, 70.0)):
-            context = tokens + 1024 if context is None else context
-            devices = {GPU: {"available": gpu}, "n1": {"available": n1}, "n2": {"available": True}}
-            links = {"pc-nodes": {"up": link}, "pair.internal": {"up": True}}
-            hosts = {"pc": {"free_ram_gib": free}}
-            state = None if stale else {"devices": devices, "links": links, "hosts": hosts}
+        for case, tokens, context, router_state, state in self.states(bound, decision, sha, GRID_FULL):
             try:
-                route, _ = routes.select(table, tokens, context, state, "stale",
-                                         routes.Health(service_up=service_up, replica_up=True))
-                router = route.id
+                router = routes.select(table, tokens, context, router_state, "stale",
+                                       routes.Health(service_up=case["service"], replica_up=True))[0].id
             except routes.NoRoute:
                 router = None
-            # The reader sees the router's own health as availability (the PRO set needs the service up) and the
-            # service's routes as running while it is up.
-            running = decision["running"] + ([apply.running_entry("prefill_long", sha, decision["requirements"])]
-                                             if service_up else [])
-            reader_state = apply.admission_state(
-                bound, {"devices": {} if stale else dict(devices, **{GPU: {"available": gpu and service_up}}),
-                        "links": {} if stale else links, "hosts": {} if stale else hosts},
-                ctx(), running=running, requirements=decision["requirements"], tokens=tokens, context=context)
             try:
-                expected = reader.select(eff.recipe, reader_state, sha)["route"]
+                expected = reader.select(resolved.recipe, state, sha)["route"]
             except RecipeError:
                 expected = None
-            self.assertEqual(router, expected, (tokens, context, gpu, n1, link, service_up, stale, free))
+            self.assertEqual(router, expected, case)
             checked += 1
-        self.assertEqual(checked, 5 * 3 * 2 ** 5 * 2)
+        self.assertEqual(checked, 5 * 3 * 2 ** 5 * 3 * 3)
+
+    def test_stub_equals_core(self):
+        backend = _core()
+        if backend is None:
+            self.skipTest("no ss-recipe here (set HYPERLOOM_SS_RECIPE to the core's executable)")
+        resolved, bound, decision, sha = self.prepare(backend)
+        stub = reader.parse(PLAIN)
+        self.assertEqual(resolved.recipe["routes"], stub["routes"])          # the core's document reads back the same
+        for case, tokens, context, _, state in self.states(bound, decision, sha, GRID_CORE):
+            try:
+                expected = reader.select(resolved.recipe, state, sha)["route"]
+            except RecipeError:
+                expected = None
+            try:
+                got = backend.select(self.path, session.Layers(), resolved, state, sha)["route"]
+            except RecipeError:
+                got = None
+            self.assertEqual(got, expected, case)
 
 
 if __name__ == "__main__":

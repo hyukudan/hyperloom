@@ -1,7 +1,13 @@
-"""The strix-stream recipe core through its CLI (`ss-recipe`, JSON on stdout). hyperloom never re-implements a rule
-the core owns once the core is present; until then the stub reader answers, labelled as such."""
+"""The strix-stream recipe core through its CLI (`ss-recipe`, JSON on stdout), and the two backends hyperloom
+evaluates recipes with: the core (authoritative) and the stub reader (offline diagnostics, tests).
+
+Both give one resolved document that every later step uses: the core's effective recipe is re-read by the stub
+parser into hyperloom's in-memory shape (a disagreement is a refusal), its effective sha256 is the core's, and match
+and select are the core's own."""
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -10,6 +16,7 @@ import subprocess
 import tempfile
 
 from ..winproc import no_window
+from . import reader
 from .reader import RecipeError
 
 TIMEOUT_S = 60
@@ -29,46 +36,135 @@ class Core:
         self.executable = executable
         self.run = run
 
-    def _call(self, args, inputs=None):
+    def call(self, args, inputs=None):
+        """JSON stdout of one ss-recipe call; exit 1 raises RecipeError with the core's message."""
         inputs = inputs or {}
         with tempfile.TemporaryDirectory(prefix="hl-recipe-") as directory:
             for name, value in inputs.items():
-                (Path(directory) / name).write_text(json.dumps(value), encoding="utf-8")
+                (Path(directory) / name).write_text(value if isinstance(value, str) else json.dumps(value),
+                                                    encoding="utf-8")
             # Input names in args stand for the temporary files written above.
             argv = [self.executable, *[str(Path(directory) / a) if a in inputs else a for a in args]]
             try:
                 out = self.run(argv, capture_output=True, text=True, timeout=TIMEOUT_S, **no_window())
             except (OSError, subprocess.TimeoutExpired) as exc:
                 raise RecipeError(f"ss-recipe unavailable: {exc}") from exc
+        message = out.stderr.strip().removeprefix("ss-recipe: ")
         if out.returncode == 1:
-            raise RecipeError(out.stderr.strip() or "ss-recipe refused")
+            raise RecipeError(message or "ss-recipe refused")
         if out.returncode != 0:
-            raise RecipeError(f"ss-recipe usage error: {out.stderr.strip()}")
+            raise RecipeError(f"ss-recipe usage error: {message}")
         try:
             return json.loads(out.stdout)
         except ValueError as exc:
             raise RecipeError(f"ss-recipe printed no JSON: {exc}") from exc
 
-    @staticmethod
-    def layers(profile=None, probe=None, overrides=(), sets=()):
+
+def _set_text(value):
+    """A --set value as TOML value text (JSON scalars and arrays are valid TOML)."""
+    return json.dumps(value)
+
+
+@dataclass
+class Resolved:
+    """The effective recipe every later step uses, with its explain trace."""
+    recipe: dict
+    file_sha256: str
+    trace: dict
+    untuned: bool = False
+    refused: list = field(default_factory=list)
+
+    def to_json(self):
+        doc = json.loads(json.dumps(self.recipe))
+        doc.pop("_written", None)
+        return doc
+
+
+class StubBackend:
+    label = "stub (offline diagnostics)"
+    authoritative = False
+
+    def resolve(self, path, text, layers, identity):
+        profile = (Path(layers.profile).read_text(encoding="utf-8"), str(layers.profile)) if layers.profile else None
+        overrides = [(Path(p).read_text(encoding="utf-8"), str(p)) for p in layers.overrides]
+        eff = reader.resolve(text, Path(path).name, profile=profile, overrides=overrides, sets=layers.sets,
+                             probe=identity)
+        return Resolved(eff.recipe, eff.sha256, reader.explain(eff), eff.untuned, eff.refused)
+
+    def effective_sha256(self, path, layers, resolved, report):
+        return hashlib.sha256(json.dumps(resolved.to_json(), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    def select(self, path, layers, resolved, state, effective_sha):
+        return reader.select(resolved.recipe, state, effective_sha)
+
+
+class CoreBackend:
+    authoritative = True
+
+    def __init__(self, core):
+        self.core = core
+        self.label = f"core {core.executable}"
+        self._profile_dropped = False
+
+    def _layer_args(self, layers, inputs, identity):
         args = []
-        if profile:
-            args += ["--profile", profile]
-            if probe:
-                args += ["--probe", "probe.json"]
-        for path in overrides:
-            args += ["--overrides", path]
-        for path, value in sets:
-            args += ["--set", f"{path}={json.dumps(value)}"]
+        if layers.profile and not self._profile_dropped:
+            inputs["identity.json"] = identity or {}
+            args += ["--profile", str(layers.profile), "--identity", "identity.json"]
+        for p in layers.overrides:
+            args += ["--overrides", str(p)]
+        for path, value in layers.sets:
+            args += ["--set", f"{path}={_set_text(value)}"]
         return args
 
-    def explain(self, recipe, profile=None, probe=None, overrides=(), sets=()):
-        return self._call(["explain", recipe, *self.layers(profile, probe, overrides, sets), "--json"],
-                          {"probe.json": probe} if probe else None)
+    def resolve(self, path, text, layers, identity):
+        self._profile_dropped, refused = False, []
+        while True:
+            inputs = {}
+            args = self._layer_args(layers, inputs, identity)
+            try:
+                effective = self.core.call(["validate", str(path), *args], inputs)
+                explain = self.core.call(["explain", str(path), *args, "--json"], inputs)
+                break
+            except RecipeError as exc:
+                if layers.profile and not self._profile_dropped and "profile stale" in str(exc):
+                    # The core refuses a stale profile; the run goes on with the recipe alone, untuned (§6.1).
+                    refused.append(str(exc))
+                    self._profile_dropped = True
+                    continue
+                raise
+        try:
+            recipe = reader.parse(json.dumps(effective), Path(path).name)
+        except RecipeError as exc:
+            raise RecipeError(f"the core's effective recipe does not read back in hyperloom: {exc}") from exc
+        rows = [{"path": f["path"], "value": f.get("value"), "layer": f.get("from"), "origin": f.get("origin"),
+                 "shadowed": [{"value": s.get("value"), "layer": s.get("from"), "origin": s.get("origin"),
+                               "why": s.get("reason")} for s in f.get("shadowed", [])]}
+                for f in explain.get("fields", [])]
+        trace = {"schema": "strix-stream/recipe-explain-v1", "recipe": recipe["name"], "fields": rows,
+                 "refused_layers": refused, "untuned": bool(refused)}
+        return Resolved(recipe, hashlib.sha256(text.encode("utf-8")).hexdigest(), trace, bool(refused), refused)
 
-    def match(self, recipe, report):
-        return self._call(["match", recipe, "probe.json"], {"probe.json": report})
+    def match(self, path, layers, report, identity):
+        """(problems, binding, effective_sha256) from the core's hardware check."""
+        inputs = {"probe.json": report}
+        args = self._layer_args(layers, inputs, identity)
+        try:
+            result = self.core.call(["match", str(path), "probe.json", *args], inputs)
+        except RecipeError as exc:
+            lines = [line.strip() for line in str(exc).splitlines() if line.strip()]
+            # One problem per unmet requirement, as the stub reports them (the core's header line ends with ":").
+            details = [line for line in lines if not line.endswith(":")]
+            return details or lines, None, None
+        return [], result.get("binding"), result.get("effective_sha256")
 
-    def select(self, recipe, state, profile=None, overrides=(), sets=()):
-        return self._call(["select", recipe, "state.json", *self.layers(profile, None, overrides, sets)],
-                          {"state.json": state})
+    def select(self, path, layers, resolved, state, effective_sha, identity=None):
+        inputs = {"state.json": state}
+        args = self._layer_args(layers, inputs, identity)
+        return self.core.call(["select", str(path), "state.json", *args], inputs)
+
+
+def backend(cluster=None):
+    """The core when it is installed, else the stub."""
+    executable = locate(cluster)
+    return CoreBackend(Core(executable)) if executable else StubBackend()
