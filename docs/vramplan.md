@@ -5,15 +5,18 @@ outputs) is in `wave4/vramplan/report.md` of the lab notes.
 
 ## What it does
 
-`hyperloom up <profile> --vram-cap-gib X` (or the reservation's `vram_cap_gib` when the flag is absent) now does two
-things for the RTX prefill service:
+`hyperloom up <profile> --vram-cap-gib X` now does two things for the RTX prefill service:
 
 1. **Plans** what the engine keeps on the RTX PRO for that cap and turns the plan into the engine's own flags.
 2. **Guards** it: the watchdog still kills the service above X (the hard stop is unchanged).
 
-The plan is recomputed on every start, so a different cap on the next `up` gives a different placement. `--vram-cap-gib`
-can lower the operator's reservation, never raise it. A cap that cannot hold the engine is refused before anything
-starts. The plan (flags, predicted peak, pinned host, per-layer residency and an `explain` text) is recorded on the
+The plan is recomputed on every capped start, so a different cap on the next `up` gives a different placement.
+`--vram-cap-gib` can lower the operator's reservation (or the 96 GiB default without one), never raise it. A cap that
+cannot hold the engine is refused before anything starts; the planner never returns a plan whose predicted peak is
+above cap − margin.
+
+Without `--vram-cap-gib` nothing is planned: the preset's `unplanned_argv` takes the `{placement}` slot, so the
+qualified launch line (the one the fidelity gates passed with) is unchanged, with the reservation's cap. The plan (flags, predicted peak, pinned host, per-layer residency and an `explain` text) is recorded on the
 service record in the profile's state.
 
 ```text
@@ -49,8 +52,8 @@ engines that have no hyperloom service preset yet.
 | `ds41-rtx-hot` | `strix-cuda-ds41-hot-decode` | placement JSON | experts ranked by measured routing frequency (a routes file); writes `tensormeld/hot-expert-placement-v1`. |
 
 Only `rtx-prefill-ds41` is a hyperloom service preset today; it carries
-`"placement": {"engine": "ds41-rtx-prefill", "model_asset": "ds41_model"}` and the argv token `{placement}`, which
-expands to the plan's flags. A future MiniMax or Qwen service preset adds the same block with its engine name.
+`"placement": {"engine": "ds41-rtx-prefill", "model_asset": "ds41_model", "unplanned_argv": [...]}` and the argv
+token `{placement}`, which expands to the plan's flags (capped start) or to `unplanned_argv` (no flag). A future MiniMax or Qwen service preset adds the same block with its engine name.
 
 ## Measured inputs (not derivable from the files)
 
@@ -59,4 +62,12 @@ expands to the plan's flags. A future MiniMax or Qwen service preset adds the sa
   (layers 0-19 stream, 20-39 keep 334..383 experts, slots 7.64 GB, experts 71.5 GB).
 - DS front: 96.0 GB at K=22. DS hot: 9.55 GiB reserve (W1), which reproduces W1's 5,442 / 6,521 / 7,600 / 8,678
   experts at 60 / 70 / 80 / 90 GiB.
-- CUDA context: 1.0 GiB (DS) / 0.6 GiB (MiniMax, Qwen) until the PC-BIG measures it.
+- CUDA context: 1.0 GiB (DS) / 0.6 GiB (MiniMax, Qwen) until the PC-BIG measures it. On the DS service ~2.5 GiB is
+  gone before planning (context + display + driver); the margin covers the difference. Re-check against the
+  on-device measurement before shrinking any margin.
+
+## Header readers
+
+Headers only, bounded: at most 256 MiB of GGUF header per file, metadata arrays skipped (recorded as their length),
+nested arrays refused, alignment a positive power of two; safetensors offsets checked against the file size; split
+GGUF shards matched exactly (`NAME-NNNNN-of-NNNNN.gguf`).
