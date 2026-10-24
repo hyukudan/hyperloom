@@ -82,6 +82,24 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "missing keys"):
             parse(obj)
 
+    def test_reservation_window_opens_at_start(self):
+        obj = rtx_example()
+        reservation = obj["pc"]["cuda"]["reservation"]
+        del reservation["expires_at"]
+        reservation["window_s"] = 1200
+        parse(obj)
+        for change in ({"window_s": 1201}, {"window_s": 30}, {"expires_at": "2026-10-24T10:00:00Z"}):
+            bad = rtx_example()
+            del bad["pc"]["cuda"]["reservation"]["expires_at"]
+            bad["pc"]["cuda"]["reservation"].update({"window_s": 1200, **change})
+            with self.assertRaises(ConfigError):
+                parse(bad)
+        del reservation["window_s"]
+        with self.assertRaisesRegex(ConfigError, "exactly one"):
+            parse(obj)
+        reservation.update(window_s=3600, extended_approval="coord main ACK 60 min")
+        parse(obj)
+
     def test_service_must_be_local_windows_nvidia_with_uuid(self):
         for change in ({"machine": "halo-1"}, {"device": "rtx-4090"}, {"device": "gpu"}):
             obj = rtx_example()
@@ -202,6 +220,13 @@ class RenderTests(unittest.TestCase):
             self.assertNotIn(name, spec.env)
         self.assertEqual(spec.env["CUDA_PATH"], "C:/cuda")
         self.assertEqual(spec.env["CUDA_VISIBLE_DEVICES"], PRO)
+
+    def test_window_deadline_starts_at_render(self):
+        obj = rtx_example()
+        del obj["pc"]["cuda"]["reservation"]["expires_at"]
+        obj["pc"]["cuda"]["reservation"]["window_s"] = 900
+        spec = self.render(obj, now=1_000_000.0)
+        self.assertEqual(spec.deadline, 1_000_900.0)
 
     def test_preview_has_no_infinite_deadline(self):
         obj = rtx_example(reservation_s=None)
@@ -540,9 +565,25 @@ class DeviceTests(unittest.TestCase):
     def smi(self, stdout, code=0):
         return lambda *a, **kw: mock.Mock(returncode=code, stdout=stdout, stderr="")
 
+    def smi_by_query(self, gpu, apps="", used="639"):
+        def run(argv, **kw):
+            query = next(a for a in argv if a.startswith("--query"))
+            out = {"--query-gpu=uuid,name,pci.bus_id,memory.total": gpu,
+                   "--query-compute-apps=gpu_uuid,pid,used_memory": apps,
+                   "--query-gpu=memory.used": used + "\n"}[query]
+            return mock.Mock(returncode=0, stdout=out, stderr="")
+        return run
+
     def test_verify_pro(self):
-        info = rtx.verify_pro(PRO, self.smi(f"{PRO}, NVIDIA RTX PRO 6000 Blackwell Workstation Edition, 00000000:01:00.0, 97887\n"))
+        row = f"{PRO}, NVIDIA RTX PRO 6000 Blackwell Workstation Edition, 00000000:01:00.0, 97887\n"
+        info = rtx.verify_pro(PRO, self.smi_by_query(row))
         self.assertEqual(info["memory_total_mib"], 97887)
+        # Another job on the PRO (listed, or only visible as device memory under WDDM) refuses the start.
+        with self.assertRaisesRegex(rtx.ServiceError, "busy: compute processes"):
+            rtx.verify_pro(PRO, self.smi_by_query(row, apps=f"{PRO}, 777, [N/A]\n"))
+        with self.assertRaisesRegex(rtx.ServiceError, "busy: 85000 MiB"):
+            rtx.verify_pro(PRO, self.smi_by_query(row, used="85000"))
+        rtx.verify_pro(PRO, self.smi_by_query(row, apps=f"{OTHER}, 777, 300\n"))
         with self.assertRaises(rtx.ServiceError):
             rtx.verify_pro(PRO, self.smi(f"{PRO}, NVIDIA GeForce RTX 4090, 00000000:02:00.0, 24564\n"))
         with self.assertRaises(rtx.ServiceError):
