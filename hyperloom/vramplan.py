@@ -33,11 +33,16 @@ class Unit:
     # (another device computes it on its own copy; never a weight transfer). On Strix (unified memory) "disk" is the
     # node's local NVMe and there is no pinned tier.
     host: str = "pinned"
-    host_bytes: int | None = None  # bytes on the host tiers when not resident (default: bytes)
+    host_bytes: int | None = None  # bytes the pinned tier allocates for it (default: bytes)
+    file_bytes: int | None = None  # bytes read from NVMe when it streams from the file (default: host_size)
 
     @property
     def host_size(self):
         return self.bytes if self.host_bytes is None else self.host_bytes
+
+    @property
+    def file_size(self):
+        return self.host_size if self.file_bytes is None else self.file_bytes
 
 
 @dataclass
@@ -137,7 +142,7 @@ def plan(model, inputs):
     used = sum(u.bytes for u in resident)
     check_peak(model.engine, fixed + slots + used, cap, margin)
     result = Plan(model.engine, cap, margin, fixed, slots, [u.key for u in resident], [u.key for u in streamed], used,
-                  pinned, sum(u.host_size for u in streamed if tiers[u.key] == "disk"), fixed + slots + used,
+                  pinned, sum(u.file_size for u in streamed if tiers[u.key] == "disk"), fixed + slots + used,
                   sum(u.benefit for u in resident), {}, list(model.fixed), list(model.notes), dict(model.source))
     result.tiers = {u.key: tiers[u.key] for u in streamed}
     result.flags = dict(model.flags([u.key for u in resident], result))

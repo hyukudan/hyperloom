@@ -420,7 +420,7 @@ GOLDEN = FIXTURES / "golden"
 
 class DescriptorTests(unittest.TestCase):
     """desc-v1 descriptors planned here must give the same tiers and totals as strix-stream's C++ ss_plan_make
-    (expected values recorded from ss-plan.exe at cf8705a)."""
+    (expected values recorded from ss-plan.exe built from 8a4ee8a: 4 KiB pinned billing, unconditional host check)."""
 
     @staticmethod
     def desc(name):
@@ -435,12 +435,6 @@ class DescriptorTests(unittest.TestCase):
             with self.subTest(descriptor=case["descriptor"], cap=case["cap_gib"], host=case["host_gib"]):
                 d, want = self.desc(case["descriptor"]), case["expected"]
                 inputs = Inputs(case["cap_gib"], host_gib=case["host_gib"])
-                if case["host_gib"] * GIB < sum(n["bytes"] for n in d.get("host_fixed", [])):
-                    # Known divergence (reported to strix-stream): ss_plan_make checks the host budget only when a
-                    # unit is pinned, so host_fixed tables (pinned in every placement) can exceed it; vramplan refuses.
-                    with self.assertRaises(PlanError):
-                        vramplan.plan(D.model(d), inputs)
-                    continue
                 if "refused" in want:
                     with self.assertRaises(PlanError):
                         vramplan.plan(D.model(d), inputs)

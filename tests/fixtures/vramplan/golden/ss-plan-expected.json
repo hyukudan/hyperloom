@@ -1,5 +1,5 @@
 {
- "source": "expected plans from strix-stream ss-plan.exe (cf8705a), the C++ ss_plan_make",
+ "source": "expected plans from strix-stream ss-plan.exe built from 8a4ee8a (4 KiB pinned billing, unconditional host check)",
  "cases": [
   {
    "descriptor": "moe-ranked",
@@ -23,7 +23,7 @@
      "RPRPDRRP"
     ],
     "peak_bytes": 4200009216,
-    "pinned_bytes": 2100000062,
+    "pinned_bytes": 2100072960,
     "disk_bytes": 900000032,
     "n_resident": 20,
     "n_pinned": 19,
@@ -44,7 +44,7 @@
      "RDRDDRRD"
     ],
     "peak_bytes": 4200009216,
-    "pinned_bytes": 500000007,
+    "pinned_bytes": 500011520,
     "disk_bytes": 2500000087,
     "n_resident": 20,
     "n_pinned": 3,
@@ -56,20 +56,7 @@
    "cap_gib": 8,
    "host_gib": 0,
    "expected": {
-    "tiers": [
-     "RRRRRRRR",
-     "RRRRRRRR",
-     "RRRRRRRR",
-     "RRRRRRRR",
-     "RRRRRRRR",
-     "RRRRRRRR"
-    ],
-    "peak_bytes": 5400012288,
-    "pinned_bytes": 200000000,
-    "disk_bytes": 0,
-    "n_resident": 48,
-    "n_pinned": 0,
-    "n_disk": 0
+    "refused": "host"
    }
   },
   {
@@ -140,7 +127,7 @@
      "D"
     ],
     "peak_bytes": 46815975424,
-    "pinned_bytes": 65882633728,
+    "pinned_bytes": 65882669056,
     "disk_bytes": 63018171392,
     "n_resident": 15,
     "n_pinned": 23,
@@ -215,7 +202,7 @@
      "P"
     ],
     "peak_bytes": 92647372800,
-    "pinned_bytes": 83069407744,
+    "pinned_bytes": 83069452288,
     "disk_bytes": 0,
     "n_resident": 31,
     "n_pinned": 29,
@@ -290,7 +277,7 @@
      "P"
     ],
     "peak_bytes": 98376297472,
-    "pinned_bytes": 77340483072,
+    "pinned_bytes": 77340524544,
     "disk_bytes": 0,
     "n_resident": 33,
     "n_pinned": 27,

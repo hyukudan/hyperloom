@@ -7,8 +7,9 @@ golden tests check that both give the same tiers and totals.
 
 Descriptor -> Model (design.md "Field mapping"):
 - fixed = fixed_device + every layer's fixed_bytes + non-streamable units (unit_bytes) + workspace + dynamic slots;
-- units = every (layer, unit) of streamable layers, key `L<l>.U<u>`, device bytes = unit_bytes rounded up to
-  unit_align, host bytes = unit_bytes;
+- units = every (layer, unit) of streamable layers, key `L<l>.U<u>`; device bytes = unit_bytes rounded up to
+  unit_align (the pool stride), pinned bytes = unit_bytes rounded up to 4 KiB (what strix-stream's pinned tier
+  allocates, its "exact billing" since 8a4ee8a), file bytes = unit_bytes;
 - rings = one class per unit stride; slots = the budget's, else the descriptor's ring_slots, else 2 x the most units
   of any streamable layer with that stride.
 """
@@ -23,6 +24,7 @@ SCHEMA = "strix-stream/desc-v1"
 PLAN_SCHEMA = "strix-stream/plan-v1"
 TIERS = ("pinned", "disk", "pinned|disk", "pair")
 LETTER = {"pinned": "P", "disk": "D", "pair": "X"}
+HOST_STRIDE = 4096  # strix-stream's pinned tier packs units at 4 KiB strides (plan.cpp kHostStride)
 
 
 def load(source):
@@ -100,7 +102,7 @@ def model(source, *, workspace_bytes=0, dynamic_slots_per_layer=0, ring_slots=0,
             if L in streamable:
                 b = benefit[g] if benefit is not None else (layer["benefit"][u] if "benefit" in layer else 1.0)
                 units.append(Unit(f"L{L}.U{u}", _stride(layer, align), float(b), host=tiers,
-                                  host_bytes=_unit_bytes(layer)))
+                                  host_bytes=_stride(layer, HOST_STRIDE), file_bytes=_unit_bytes(layer)))
             g += 1
     slots_for = {}
     for L in streamable:
