@@ -24,7 +24,7 @@ Every launch below reached `READY` on both ranks (51-74 s with a warm page cache
   - both decoys verified with `hyperloom assets verify` (same digest on both ranks);
   - one byte written into the `halo-2` decoy (same size and inode): `up` refused before any turn with `stale manifest: mtime_ns changed`;
   - with the mtime restored, the metadata cache passed (the documented limit), and after `assets verify --machine halo-2` the next `up` refused with `manifest sha256 mismatch between pair ranks`.
-- **A wrong layout, aborted after acquire:** see below.
+- **A wrong layout, aborted after acquire.** The real layout cannot be changed (no configfs changes), so an operator fault file `<install root>/fault/usb4-layout.json` naming layout `gpu-direct` was placed on `halo-1`. `up ds41-pair` queued, acquired its PAIR turn, and the supervisor aborted one second later, before starting any engine: lease state `aborted`, reason `USB4 layout mismatch: gpu-direct (fault file)`, no processes. The fault file was then removed.
 
 **5. Interleaved serve C1/C4 against the lab launch** (investigation threshold 3 %)
 
