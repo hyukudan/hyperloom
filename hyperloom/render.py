@@ -147,7 +147,7 @@ def launch_summary(cluster, profile_name) -> dict:
 
 def render_router(cluster, profile_name) -> dict:
     profile, kind, data, mids = _profile(cluster, profile_name)
-    engine = engines.adapter(family(kind))
+    engine = engines.release_adapter(kind)
     settings = cluster.router
     host = settings.get("machine", "local")
     default_listen = cluster.pc.get("router_listen", "127.0.0.1:18600")

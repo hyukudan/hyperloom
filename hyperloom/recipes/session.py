@@ -74,7 +74,7 @@ def evaluate(cluster, profile, path, layers, source, backend=None):
     ctx = facts.context(cluster, profile)
     base = resolve(path, Layers(), backend=backend).recipe   # structure only: binding never depends on layers
     inventory, gathered, raw, notes = source(ctx)
-    ctx.limits = dict(ctx.limits or {}, node_runtime=gathered.get("node_runtime") or {})
+    ctx.limits = dict(ctx.limits or {}, node_runtime=facts.current_runtime(cluster, ctx, gathered.get("node_runtime")))
     bound = apply.bind(base, ctx, inventory)
     report = apply.probe_report(base, bound, gathered)
     identity = dict(report, binding=bound["binding"], workload=layers.workload,

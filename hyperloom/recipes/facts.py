@@ -128,19 +128,61 @@ def launch_sha256(spec, engine_sha, assets):
                                      sort_keys=True).encode()).hexdigest()
 
 
+# `up` installs the release and writes the key files after the recipe check: the release id only picks the install
+# directory of the preset's engine build (engine_sha is hashed) and a key file is a secret's location, so the launch
+# identity renders both as these fixed placeholders; `up` re-checks the identity on its final render (launch.py).
+IDENTITY_RELEASE = "0" * 12
+IDENTITY_KEY = "{key_file}"
+
+
+def _identity_cluster(cluster, profile):
+    from copy import deepcopy
+    copy = deepcopy(cluster)
+    settings = copy.profiles[profile]
+    settings["release_id"] = IDENTITY_RELEASE
+    settings["api_key_files"] = {mid: IDENTITY_KEY for mid in engines.members(settings, render.family(
+        settings.get("preset", profile)))}
+    return copy
+
+
+def launch_identities(cluster, profile, processes=None):
+    """{machine: (rank, launch sha256, spec)} of the profile's node processes; ``processes`` = an already rendered
+    final launch (from a cluster whose release id and key paths are set), normalized the same way."""
+    settings = cluster.profiles[profile]
+    name = settings.get("preset", profile)
+    data = render.preset(name)
+    if processes is None:
+        processes = render.render_processes(_identity_cluster(cluster, profile), profile)
+    else:
+        release = settings.get("release_id")
+        keys = settings.get("api_key_files") or {}
+        normal = []
+        for spec in processes:
+            argv = [IDENTITY_KEY if keys.get(spec.machine_id) == a else
+                    a.replace(f"/releases/{release}/", f"/releases/{IDENTITY_RELEASE}/") if release else a
+                    for a in spec.argv]
+            normal.append(type(spec)(spec.machine_id, spec.role, argv, dict(spec.env), spec.ready))
+        processes = normal
+    out = {}
+    for rank, spec in enumerate(processes):
+        assets = {a: cluster.assets.get(spec.machine_id, {}).get(a, {}).get("sha256") for a in data["assets"]}
+        out[spec.machine_id] = (rank, launch_sha256(spec, data["engine_sha"], assets), spec)
+    return out
+
+
 def describe_commands(cluster, profile):
     """Per node process: its launch sha256 and the engine's own memory declaration command for that exact launch."""
     settings = cluster.profiles[profile]
     name = settings.get("preset", profile)
-    kind, data = render.family(name), render.preset(name)
+    kind = render.family(name)
     if kind not in DESCRIBE_FLAG:
         raise ConfigError(f"profile {profile}: the {kind} engine declares no memory model")
     rows = []
-    for rank, spec in enumerate(render.render_processes(cluster, profile)):
-        assets = {name: cluster.assets.get(spec.machine_id, {}).get(name, {}).get("sha256") for name in data["assets"]}
-        rows.append({"machine": spec.machine_id, "rank": rank,
-                     "launch_sha256": launch_sha256(spec, data["engine_sha"], assets),
-                     "argv": spec.argv + [DESCRIBE_FLAG[kind]], "env": spec.env})
+    for machine, (rank, sha, spec) in launch_identities(cluster, profile).items():
+        rows.append({"machine": machine, "rank": rank, "launch_sha256": sha,
+                     "argv": spec.argv + [DESCRIBE_FLAG[kind]], "env": spec.env,
+                     "note": f"{IDENTITY_KEY} and release {IDENTITY_RELEASE} stand for the key file and release `up` "
+                             "installs; run it with the installed binary and the node's key file path"})
     return rows
 
 
@@ -163,7 +205,23 @@ def node_runtime(cluster, ctx, cache):
         else:
             out[row["machine"]] = {"gib": (entry["workspace_bytes"] + entry["state_bytes_per_slot"] * slots
                                            + entry["kv_pool_bytes"]) / probe.GIB,
-                                   "receipt_sha256": entry["receipt_sha256"]}
+                                   "receipt_sha256": entry["receipt_sha256"], "launch_sha256": row["launch_sha256"]}
+    return out
+
+
+def current_runtime(cluster, ctx, rows):
+    """The runtime rows (live or from saved facts) that still describe this profile's launch: a row whose launch
+    sha256 is not the current one becomes a refusal reason (saved facts outlive flag changes)."""
+    try:
+        current = {mid: sha for mid, (_, sha, _) in launch_identities(cluster, ctx.profile).items()}
+    except ConfigError as exc:
+        return {mid: {"why": str(exc)} for mid in ctx.nodes}
+    out = {}
+    for mid, row in (rows or {}).items():
+        if "gib" in row and row.get("launch_sha256") != current.get(mid):
+            out[mid] = {"why": "the saved engine declaration is for another launch (a flag, asset or build changed)"}
+        else:
+            out[mid] = row
     return out
 
 

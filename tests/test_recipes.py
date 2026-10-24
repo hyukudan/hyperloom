@@ -803,9 +803,20 @@ class LaunchTests(unittest.TestCase):
         obj = test_rtx.rtx_example()
         cluster = parse(obj)
         rows = facts.describe_commands(cluster, "ds41-rtx")
-        specs = render.render_processes(cluster, "ds41-rtx")
-        self.assertEqual([r["argv"] for r in rows], [s.argv + ["--describe-capabilities-json"] for s in specs])
         self.assertEqual([r["rank"] for r in rows], [0, 1])
+        self.assertTrue(all(r["argv"][-1] == "--describe-capabilities-json" and facts.IDENTITY_KEY in r["argv"]
+                            for r in rows))
+        # Sol-11 #1: `up` sets another release id and its own key paths; the final render has the same identity.
+        final = deepcopy(cluster)
+        final.profiles["ds41-rtx"]["release_id"] = "abcdef012345"
+        final.profiles["ds41-rtx"]["api_key_files"] = {m: f"/opt/hl/secrets/{m}-new.key" for m in ("halo-1", "halo-2")}
+        processes = render.render_processes(final, "ds41-rtx")
+        identities = facts.launch_identities(final, "ds41-rtx", processes)
+        self.assertEqual([identities[r["machine"]][1] for r in rows], [r["launch_sha256"] for r in rows])
+        # Diagnostics (extra env) on the final render are another launch.
+        changed = [type(p)(p.machine_id, p.role, p.argv, dict(p.env, STRIX_X="1"), p.ready) for p in processes]
+        self.assertNotEqual(facts.launch_identities(final, "ds41-rtx", changed)[rows[0]["machine"]][1],
+                            rows[0]["launch_sha256"])
         obj["profiles"]["ds41-rtx"].setdefault("overrides", {})["--default-max-tokens"] = 2048
         changed = facts.describe_commands(parse(obj), "ds41-rtx")
         self.assertNotEqual(rows[0]["launch_sha256"], changed[0]["launch_sha256"])  # a flag change = another launch
@@ -814,6 +825,60 @@ class LaunchTests(unittest.TestCase):
         obj["assets"][machine]["ds41_model"]["sha256"] = "9" * 64                  # same path, another file
         replaced = facts.describe_commands(parse(obj), "ds41-rtx")
         self.assertNotEqual(rows[0]["launch_sha256"], replaced[0]["launch_sha256"])
+
+    def test_router_follows_the_release_auth(self):
+        # Sol-11 #2: a key-enabled MiniMax release is reached over the LAN with its key, from either router placement.
+        from tests import test_rtx
+        from hyperloom import engines, render
+        from hyperloom.config import parse
+        obj = test_rtx.rtx_example()
+        obj["profiles"]["mm"] = {"preset": "minimax-pair", "rank0": "halo-1", "rank1": "halo-2", "port": 18601,
+                                 "release_id": "0" * 12}
+        real = engines.load_preset
+        keyed = lambda name: dict(real(name), serve_auth="key-file") if name == "minimax-pair" else real(name)
+        for keyed_release in (False, True):
+            with mock.patch.object(engines, "load_preset", side_effect=keyed if keyed_release else real):
+                for host in ("local", "halo-1"):
+                    cluster = parse(deepcopy(obj))
+                    cluster.router.update(machine=host, api_key_file="/k/router.key",
+                                          replica_api_key_files={"halo-1": "/k/halo-1.key"})
+                    if host == "local":
+                        cluster.router["listen"] = "127.0.0.1:18600"
+                    with self.subTest(keyed=keyed_release, router=host):
+                        if not keyed_release and host == "local":
+                            with self.assertRaisesRegex(Exception, "bind loopback only"):
+                                render.render_router(cluster, "mm")
+                            continue
+                        replica = render.render_router(cluster, "mm")["replicas"][0]
+                        if keyed_release:
+                            self.assertEqual((replica["address"], replica["api_key_file"]),
+                                             (cluster.machines["halo-1"].http_address, "/k/halo-1.key"))
+                        else:
+                            self.assertEqual(replica["address"], "127.0.0.1")
+                            self.assertNotIn("api_key_file", replica)
+
+    def test_saved_declarations_and_the_final_launch_are_rechecked(self):
+        # Sol-11 #3: a saved runtime row for another launch is a refusal reason, not a pass.
+        from tests import test_rtx
+        from hyperloom import render
+        from hyperloom.config import parse
+        cluster = parse(test_rtx.rtx_example())
+        context = dataclasses.replace(ctx(), profile="ds41-rtx", nodes=["halo-1", "halo-2"])
+        current = {r["machine"]: r["launch_sha256"] for r in facts.describe_commands(cluster, "ds41-rtx")}
+        rows = {"halo-1": {"gib": 7.6, "launch_sha256": current["halo-1"]},
+                "halo-2": {"gib": 7.6, "launch_sha256": "0" * 64}}
+        out = facts.current_runtime(cluster, context, rows)
+        self.assertEqual(out["halo-1"]["gib"], 7.6)
+        self.assertIn("for another launch", out["halo-2"]["why"])
+        # Sol-11 #1: up refuses a final render that is not the checked launch (before any lease).
+        launch_obj = mock.Mock()
+        launch_obj.evaluation.context.limits = {"node_runtime": {m: {"gib": 7.6, "launch_sha256": s}
+                                                                 for m, s in current.items()}}
+        processes = render.render_processes(cluster, "ds41-rtx")
+        launch.verify_launch(launch_obj, cluster, "ds41-rtx", processes)                  # the checked launch: fine
+        altered = [type(p)(p.machine_id, p.role, p.argv + ["--extra"], p.env, p.ready) for p in processes]
+        with self.assertRaisesRegex(RecipeError, "differs from the one its engine declarations were checked"):
+            launch.verify_launch(launch_obj, cluster, "ds41-rtx", altered)
 
     def test_release_auth_binds_the_lan_only_for_that_release(self):
         from hyperloom import engines

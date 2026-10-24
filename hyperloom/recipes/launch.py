@@ -149,6 +149,20 @@ def prepare(cluster, profile, options, *, router, vram_cap_gib, state_dir, sourc
                   cap, host, table, plan)
 
 
+def verify_launch(launch, selected, profile, processes):
+    """The final render `up` is about to start must be the launch whose engine declarations admission checked (the
+    release id and key paths are normalized away); refused before any lease otherwise."""
+    rows = (launch.evaluation.context.limits or {}).get("node_runtime") or {}
+    checked = {mid: row["launch_sha256"] for mid, row in rows.items() if "gib" in row}
+    if not checked:
+        return
+    final = {mid: sha for mid, (_, sha, _) in facts.launch_identities(selected, profile, processes).items()}
+    changed = sorted(mid for mid, sha in checked.items() if final.get(mid) != sha)
+    if changed:
+        raise RecipeError("the launch about to start differs from the one its engine declarations were checked for on "
+                          + ", ".join(changed) + " (diagnostics or a changed flag); nothing was started")
+
+
 def recheck_before_service(launch, cluster, *, memory=None, pro_busy=None):
     """Immediately before the service starts: the PRO idle, the reservation valid, and the service's charge within
     free RAM and commit. Returns None (go) or why it is skipped; a failed device query skips too (fail closed)."""

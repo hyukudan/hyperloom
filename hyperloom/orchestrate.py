@@ -717,6 +717,7 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
             {"diagnostics": diagnostics, "run": state["token"][:12]} if diagnostics else {}))
         rendered = render.render_router(selected, profile)
         if launch is not None:
+            recipe_launch.verify_launch(launch, selected, profile, processes)
             key_file = selected.router["replica_api_key_files"].get(service["machine"]) if service else None
             rendered["prefill"] = recipe_launch.router_prefill(launch, selected, profile, key_file)
         state.update(release_id=prepared["release_id"], nodes=mids, devices=list(devices or []),
