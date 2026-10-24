@@ -487,7 +487,8 @@ def main(argv=None):
             rendered = renderer.render_router(cluster, args.profile)
             renderer.validate_router(rendered)
             result = {"router": rendered, "processes": [asdict(spec) for spec in
-                                                        renderer.render_processes(cluster, args.profile)]}
+                                                        renderer.render_processes(cluster, args.profile)],
+                      "launch": renderer.launch_summary(cluster, args.profile)}
             if "prefill_service" in cluster.profiles[args.profile]:
                 result["prefill_service"] = _module("hyperloom.rtx").render_preview(cluster, args.profile)
             _json(result)

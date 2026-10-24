@@ -37,6 +37,7 @@ class PresetTableTests(unittest.TestCase):
                     for key, value in row["env"].items():
                         self.assertRegex(key, r"^STRIX_[A-Z0-9_]+$")
                         self.assertNotIn(key, data["env"])
+                        self.assertNotIn(key, {knob["target"] for knob in data.get("advanced", {}).values()})
                         # File outputs only under the node's log directory.
                         if "/" in value or "{" in value:
                             self.assertTrue(value.startswith("{log_dir}/diag-{run}-{role}-"), value)

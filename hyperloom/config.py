@@ -299,7 +299,7 @@ def parse(obj: dict) -> Cluster:
     for name, p in profiles.items():
         identifier(name, "profile name")
         record(p, "profile", optional=("preset", "nodes", "rank0", "rank1", "port", "receipt", "overrides", "api_key_files",
-                                       "release_id", "prefill_service"))
+                                       "release_id", "prefill_service", "advanced"))
         kind = p.get("preset", name)
         data = preset(kind)
         if "receipt" in p and p["receipt"] != data["receipt"]:
@@ -332,6 +332,8 @@ def parse(obj: dict) -> Cluster:
             service = rtx.parse_profile_service(p["prefill_service"], machines)
             if family(kind) not in service["decode_presets"]:
                 raise ConfigError(f"profile.prefill_service: {service['name']} does not hand off to {kind}")
+        from . import knobs
+        knobs.validate(p.get("advanced", {}), data)
     pc = record(obj.get("pc", {}), "pc", optional=("router_listen", "ui_listen", "cuda"))
     for key in ("router_listen", "ui_listen"):
         if key in pc:

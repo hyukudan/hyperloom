@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 import re
 import sys
 
+from . import knobs
 from .config import ConfigError, family, listen, preset, validate_overrides
 from .paths import repo_root
 
@@ -30,6 +31,7 @@ def _profile(cluster, name):
     kind = p.get("preset", name)
     data = preset(kind)
     validate_overrides(p.get("overrides", {}), data)
+    knobs.validate(p.get("advanced", {}), data)
     mids = p["nodes"] if kind == "qwen-replicas" else [p["rank0"], p["rank1"]]
     return p, kind, data, mids
 
@@ -62,12 +64,14 @@ def _tokens(asset):
 def diagnostic_env(data, names, values):
     """Non-production diagnostic env from the preset's verified table; never replaces production env."""
     table = data.get("diagnostics", {})
+    # Advanced knob env belongs to the launch, not to an observation switch.
+    knob_env = {knob["target"] for knob in data.get("advanced", {}).values() if knob["kind"] == "env"}
     env = {}
     for name in names:
         if name not in table:
             raise ConfigError(f"unknown diagnostic for this preset: {name}")
         for key, value in table[name]["env"].items():
-            if key in data["env"] or key in env:
+            if key in data["env"] or key in env or key in knob_env:
                 raise ConfigError(f"diagnostic {name}: {key} is already set")
             env[key] = value.format_map(values)
     return env
@@ -119,6 +123,7 @@ def render_processes(cluster, profile_name, *, diagnostics=(), run=None) -> list
             else:
                 argv.extend((flag, str(value)))
         env = {key: value.format_map(values) for key, value in data["env"].items()}
+        knobs.apply(argv, env, profile, data)
         if diagnostics:
             env.update(diagnostic_env(data, diagnostics, {
                 "log_dir": str(PurePosixPath(machine.install_root) / "log"), "run": run,
@@ -126,6 +131,12 @@ def render_processes(cluster, profile_name, *, diagnostics=(), run=None) -> list
         result.append(ProcessSpec(mid, "replica" if kind == "qwen-replicas" else f"rank{rank}",
                                   argv, env, "qwen-stderr" if kind == "qwen-replicas" else "ds41-json"))
     return result
+
+
+def launch_summary(cluster, profile_name) -> dict:
+    """Whether a launch is the qualified production line, and which advanced knobs differ."""
+    profile, _, data, _ = _profile(cluster, profile_name)
+    return dict(knobs.summary(profile, data), receipt=data["receipt"], engine_sha=data["engine_sha"])
 
 
 def render_router(cluster, profile_name) -> dict:
