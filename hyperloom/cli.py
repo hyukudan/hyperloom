@@ -16,7 +16,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 import uuid
 
 from .paths import repo_root
-from .winproc import no_window
+from .winproc import no_window, retry_sharing
 
 
 _controllers = []
@@ -48,7 +48,8 @@ def _write(path, obj):
     temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
     try:
         temporary.write_text(json.dumps(obj, indent=2), encoding="utf-8")
-        temporary.replace(path)
+        # The router controller and the CLI read and replace the same state files.
+        retry_sharing(lambda: temporary.replace(path))
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -70,7 +71,7 @@ def _active(directory):
 
 def _state(directory):
     try:
-        return json.loads((directory / "router-state.json").read_text(encoding="utf-8"))
+        return retry_sharing(lambda: json.loads((directory / "router-state.json").read_text(encoding="utf-8")))
     except FileNotFoundError:
         return {}
 
