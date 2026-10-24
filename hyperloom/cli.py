@@ -313,7 +313,8 @@ def _hosts(args):
     return {"machine": machine.id, "pinned": match[0].sha256_fingerprint, "algorithm": match[0].algorithm}
 
 
-VRAMPLAN_ENGINES = ("minimax-rtx-prefill", "qwen-rtx-prefill", "ds41-rtx-prefill", "ds41-rtx-front", "ds41-rtx-hot")
+VRAMPLAN_ENGINES = ("minimax-rtx-prefill", "qwen-rtx-prefill", "ds41-rtx-prefill", "ds41-rtx-front", "ds41-rtx-hot",
+                    "ds41-node")
 
 
 def _vramplan(args):
@@ -327,10 +328,16 @@ def _vramplan(args):
         params["layers"] = args.layers
     if args.mtp:
         params["mtp_gguf"] = args.mtp
-    if args.engine == "ds41-rtx-hot":
+    if args.engine in ("ds41-rtx-hot", "ds41-node"):
         if not args.routes:
-            raise ValueError("ds41-rtx-hot needs --routes")
+            raise ValueError(f"{args.engine} needs --routes")
         params["routes"] = args.routes
+    if args.engine == "ds41-node":
+        if args.mode is None or args.fixed_gib is None:
+            raise ValueError("ds41-node needs --mode and --fixed-gib")
+        params.update(mode=args.mode, fixed_gib=args.fixed_gib)
+        if args.mode != "replica":
+            params["rest"] = args.rest
     inputs = vramplan.Inputs(args.vram_cap_gib, host_gib=args.host_gib, margin_gib=args.margin_gib)
     plan = placement.plan(args.engine, args.model, inputs, **params)
     result = dict(plan.to_dict(), explain=vramplan.explain(plan).splitlines())
@@ -477,6 +484,12 @@ def main(argv=None):
     vplan.add_argument("--routes", help="ds41-rtx-hot: routes file (measured routing frequency)")
     vplan.add_argument("--placement-out", type=Path, help="ds41-rtx-hot: write the hot-expert placement JSON here")
     vplan.add_argument("--expert-servers", help="ds41-rtx-hot: the two expert-server machine ids (rank 0,rank 1)")
+    vplan.add_argument("--mode", choices=("replica", "pair-rank0", "pair-rank1"),
+                       help="ds41-node: a full replica, or one rank of the EP pair")
+    vplan.add_argument("--fixed-gib", type=float,
+                       help="ds41-node: the node's measured non-routed-expert use (engine /api/status memory)")
+    vplan.add_argument("--rest", choices=("peer-computes", "disk"), default="peer-computes",
+                       help="ds41-node pair: the other half computed by the peer (EP) or streamed from local NVMe")
     vplan.add_argument("--margin-gib", type=float, default=2.0)
     # Internal controller entry point; not part of the public interface.
     helper = commands.add_parser("_prefill-run", help=argparse.SUPPRESS)

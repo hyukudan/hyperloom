@@ -242,6 +242,54 @@ def hot_model(model_gguf, *, routes, reserve_gib=HOT_RESERVE_GIB, sz=None):
                  source={"model": str(model_gguf), "expert_bytes": eb, "routes_selections": total})
 
 
+def node_model(model_gguf, *, routes, mode, fixed_gib, rest="peer-computes", sz=None):
+    """A Strix node: fill the budget with routed experts by measured hit rate; the rest is not resident.
+
+    On Strix the memory is unified (resident = mapped in the 128 GB LPDDR5X) and every node has the full model files,
+    so a non-resident expert's WEIGHTS only ever come from the node's LOCAL NVMe; weights are never fetched from the
+    peer over USB4 (main 18:01).
+    mode: "replica" (one node holds a full replica: every expert is a candidate, the rest streams from local NVMe),
+    "pair-rank0" / "pair-rank1" (today's EP pair: the node always holds its own half, ids < 192 on rank 0 and
+    >= 192 on rank 1, and may add the hottest experts of the other half). rest (pair only): "peer-computes" (today's
+    EP: the peer computes the other half on its own copy; only activations cross USB4, no weight transfer) or "disk"
+    (the node streams them from its local NVMe and computes them itself).
+    fixed_gib: the node's measured non-routed-expert use (dense, attention, shared, head, KV, workspaces), e.g. from
+    the engine's /api/status memory block; it is not derived here because the node engine's buffers are not in the
+    model file."""
+    sz = sz or sizes(model_gguf)
+    eb = sz["expert_bytes"]
+    counts = route_counts(routes) if isinstance(routes, str) else Counter(routes)
+    if mode == "replica":
+        own, where = set(), "disk"
+    elif mode in ("pair-rank0", "pair-rank1"):
+        rank0 = mode == "pair-rank0"
+        if rest not in ("peer-computes", "disk"):
+            raise PlanError(f"ds41 node rest {rest}: expected peer-computes or disk")
+        own = {(L, e) for L in range(LAYERS) for e in range(EXPERTS) if (e < 192) == rank0}
+        where = "pair" if rest == "peer-computes" else "disk"
+    else:
+        raise PlanError(f"ds41 node mode {mode}: expected replica, pair-rank0 or pair-rank1")
+    units = [Unit(f"{L}:{e}", eb, benefit=float(counts.get((L, e), 0)), host=where)
+             for L in range(LAYERS) for e in range(EXPERTS) if (L, e) not in own]
+    total = sum(counts.values())
+
+    def flags(resident, plan):
+        local = sum(counts.get(k, 0) for k in own) +             sum(counts.get(tuple(map(int, k.split(":"))), 0) for k in resident)
+        if total:
+            plan.notes.append(f"local share of the measured selections (in-sample): {local / total:.1%}")
+        return {"extra_experts": len(resident)}
+
+    fixed = [("measured non-expert use (dense, attention, shared, head, KV, workspaces)", int(fixed_gib * GIB))]
+    if own:
+        fixed.append(("own half of the routed experts", len(own) * eb))
+    return Model(engine=f"ds41-node-{mode}", fixed=fixed, units=units, order="ranked", flags=flags,
+                 notes=["held-out hit-rate curves: wave4/vramplan/curves (fit on half the sequences)",
+                        "non-resident weights come only from local NVMe on Strix; 'pair' = computed by the peer "
+                        "(EP activation exchange), never a weight fetch"],
+                 source={"model": str(model_gguf), "expert_bytes": eb, "mode": mode,
+                         "routes_selections": total})
+
+
 def placement_json(plan, *, model_file, budget_gib, servers, reserve_gib=HOT_RESERVE_GIB):
     """tensormeld/hot-expert-placement-v1 for a hot plan: rtx-pro experts; every other expert on the two AMD expert
     servers (machine ids from the cluster, rank 0 holds experts [0, 192), rank 1 [192, 384))."""

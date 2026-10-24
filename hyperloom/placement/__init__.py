@@ -7,7 +7,8 @@ from __future__ import annotations
 
 from .. import vramplan
 
-ENGINES = ("minimax-rtx-prefill", "qwen-rtx-prefill", "ds41-rtx-prefill", "ds41-rtx-front", "ds41-rtx-hot")
+ENGINES = ("minimax-rtx-prefill", "qwen-rtx-prefill", "ds41-rtx-prefill", "ds41-rtx-front", "ds41-rtx-hot",
+           "ds41-node")
 
 
 def plan(engine, model, inputs, **params):
@@ -29,4 +30,7 @@ def plan(engine, model, inputs, **params):
     if engine == "ds41-rtx-hot":
         from . import ds41
         return vramplan.plan(ds41.hot_model(model, **params), inputs)
+    if engine == "ds41-node":
+        from . import ds41
+        return vramplan.plan(ds41.node_model(model, **params), inputs)
     raise vramplan.PlanError(f"unknown placement engine {engine}; known: {', '.join(ENGINES)}")

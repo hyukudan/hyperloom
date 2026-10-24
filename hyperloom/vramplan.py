@@ -30,7 +30,8 @@ class Unit:
     benefit: float = 0.0
     # Where it lives when not resident: "pinned" (host RAM, counted against host_gib), "disk" (NVMe stream), "pinned|disk"
     # (three tiers: pinned while host_gib lasts, best benefit per byte first, else streamed from NVMe), or "pair"
-    # (another device).
+    # (another device computes it on its own copy; never a weight transfer). On Strix (unified memory) "disk" is the
+    # node's local NVMe and there is no pinned tier.
     host: str = "pinned"
 
 

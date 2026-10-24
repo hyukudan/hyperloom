@@ -385,6 +385,36 @@ class DeepSeekTests(unittest.TestCase):
         self.assertEqual(counts, {60: 5442, 70: 6521, 80: 7600, 90: 8678})  # hetero/w1-report.md
 
 
+class NodeTests(unittest.TestCase):
+    ROUTES = {(0, 1): 50, (0, 200): 40, (1, 300): 30, (2, 5): 20}
+
+    def test_pair_node_keeps_its_half_and_adds_the_hottest_of_the_other(self):
+        model = ds41.node_model("m.gguf", routes=self.ROUTES, mode="pair-rank0", fixed_gib=10, sz=DS41)
+        half = 40 * 192 * 9953280
+        cap = (10 * GIB + half + 2 * 9953280) / GIB + 1e-6
+        p = vramplan.plan(model, Inputs(cap, margin_gib=0, margin_fraction=0))
+        self.assertEqual(p.resident, ["0:200", "1:300"])  # the other half's experts, hottest first
+        self.assertEqual(p.flags, {"extra_experts": 2})
+        self.assertEqual(set(p.tiers.values()), {"pair"})  # computed by the peer, never fetched
+        self.assertEqual(p.disk_bytes, 0)
+
+    def test_pair_node_can_stream_the_rest_from_local_nvme(self):
+        model = ds41.node_model("m.gguf", routes=self.ROUTES, mode="pair-rank1", fixed_gib=10, rest="disk", sz=DS41)
+        p = vramplan.plan(model, Inputs((10 * GIB + 40 * 192 * 9953280) / GIB + 0.01, margin_gib=0, margin_fraction=0))
+        self.assertEqual(set(p.tiers.values()), {"disk"})
+        self.assertEqual(p.pinned_bytes, 0)
+
+    def test_replica_node_streams_the_rest_from_nvme(self):
+        model = ds41.node_model("m.gguf", routes=self.ROUTES, mode="replica", fixed_gib=10, sz=DS41)
+        p = vramplan.plan(model, Inputs((10 * GIB + 3 * 9953280) / GIB + 1e-6, margin_gib=0, margin_fraction=0))
+        self.assertEqual(p.resident, ["0:1", "0:200", "1:300"])
+        self.assertEqual(p.disk_bytes, (40 * 384 - 3) * 9953280)
+
+    def test_unknown_mode(self):
+        with self.assertRaises(PlanError):
+            ds41.node_model("m.gguf", routes={}, mode="tp4", fixed_gib=10, sz=DS41)
+
+
 class RegistryTests(unittest.TestCase):
     def test_unknown_engine(self):
         from hyperloom import placement
