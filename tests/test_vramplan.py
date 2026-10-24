@@ -410,6 +410,11 @@ class NodeTests(unittest.TestCase):
         self.assertEqual(p.resident, ["0:1", "0:200", "1:300"])
         self.assertEqual(p.disk_bytes, (40 * 384 - 3) * 9953280)
 
+    def test_fixed_gib_must_be_finite_and_non_negative(self):
+        for bad in (-50, float("nan"), float("inf"), "10"):
+            with self.subTest(fixed=bad), self.assertRaises(PlanError):
+                ds41.node_model("m.gguf", routes=self.ROUTES, mode="replica", fixed_gib=bad, sz=DS41)
+
     def test_unknown_mode(self):
         with self.assertRaises(PlanError):
             ds41.node_model("m.gguf", routes={}, mode="tp4", fixed_gib=10, sz=DS41)
@@ -427,23 +432,98 @@ class DescriptorTests(unittest.TestCase):
         with gzip.open(GOLDEN / f"{name}.desc.json.gz") as f:
             return json.load(f)
 
+    @staticmethod
+    def refusal(text):
+        if "nothing fits" in text or "exceeds" in text:
+            return "nothing-fits"
+        return "host" if "pinned on the host" in text else text
+
     def test_same_plans_as_strix_stream(self):
         from hyperloom.placement import desc as D
         cases = json.loads((GOLDEN / "ss-plan-expected.json").read_text())["cases"]
-        self.assertEqual(len(cases), 10)
+        self.assertEqual(len(cases), 34)
+        self.assertEqual({c["expected"].get("refused") for c in cases}, {None, "nothing-fits", "host"})
         for case in cases:
-            with self.subTest(descriptor=case["descriptor"], cap=case["cap_gib"], host=case["host_gib"]):
+            with self.subTest(descriptor=case["descriptor"], cap=case["cap_gib"], host=case["host_gib"],
+                              ring=case.get("ring_slots", 0)):
                 d, want = self.desc(case["descriptor"]), case["expected"]
                 inputs = Inputs(case["cap_gib"], host_gib=case["host_gib"])
+                model = D.model(d, ring_slots=case.get("ring_slots", 0))
                 if "refused" in want:
-                    with self.assertRaises(PlanError):
-                        vramplan.plan(D.model(d), inputs)
+                    with self.assertRaises(PlanError) as ctx:
+                        vramplan.plan(model, inputs)
+                    self.assertEqual(self.refusal(str(ctx.exception)), want["refused"])
                     continue
-                p = vramplan.plan(D.model(d), inputs)
+                p = vramplan.plan(model, inputs)
                 got = D.plan_v1(d, p)
                 self.assertEqual(got["tiers"], want["tiers"])
                 self.assertEqual((p.peak_bytes, p.pinned_bytes, p.disk_bytes),
                                  (want["peak_bytes"], want["pinned_bytes"], want["disk_bytes"]))
+
+    def test_dynamic_slots_same_tiers_conservative_peak(self):
+        from hyperloom.placement import desc as D
+        for case in json.loads((GOLDEN / "ss-plan-expected.json").read_text())["dynamic_cases"]:
+            with self.subTest(cap=case["cap_gib"]):
+                d = self.desc(case["descriptor"])
+                model = D.model(d, dynamic_slots_per_layer=case["dynamic_slots"])
+                inputs = Inputs(case["cap_gib"], host_gib=case["host_gib"])
+                if "refused" in case["expected"]:
+                    with self.assertRaises(PlanError) as ctx:
+                        vramplan.plan(model, inputs)
+                    self.assertEqual(self.refusal(str(ctx.exception)), case["expected"]["refused"])
+                    continue
+                p = vramplan.plan(model, inputs)
+                self.assertEqual(D.plan_v1(d, p)["tiers"], case["expected"]["tiers"])
+                self.assertGreaterEqual(p.peak_bytes, case["expected"]["peak_bytes"])
+
+    def test_non_streamable_units_billed_at_the_pool_stride(self):
+        from hyperloom.placement import desc as D
+        d = self.desc("mixed-pinned-disk")
+        fixed = dict(D.model(d).fixed)
+        self.assertEqual(fixed["non-streamable units (pool stride)"], 6 * (-(-70_000_001 // 4096) * 4096))
+
+    def test_malformed_descriptors_are_plan_errors(self):
+        from hyperloom.placement import desc as D
+        base = self.desc("mixed-pinned-disk")
+        layer2 = base["layers"][2]
+        bad_top = [{"fixed_device": [{"name": "x", "bytes": -100 * GIB}]}, {"host_fixed": [{"name": "x", "bytes": -1}]},
+                   {"unit_align": -256}, {"unit_align": 0}, {"unit_align": 3}, {"ring_slots": 1 << 21},
+                   {"fixed_device": [{"name": "x", "bytes": True}]}, {"state_bytes_per_position": None},
+                   {"surprise": 1}, {"layers": []}, {"layers": "no"}, {"sources": [{"path": 3}]}]
+        for change in bad_top:
+            with self.subTest(top=sorted(change)), self.assertRaises(PlanError):
+                D.load(dict(base, **change))
+        bad_layer = [{"fixed_bytes": -1}, {"n_units": 10 ** 9}, {"n_units": True}, {"top_k": 0},
+                     {"benefit": [float("inf")] + [1] * 9}, {"benefit": [1] * 3}, {"parts": ["not a dict"]},
+                     {"parts": [dict(layer2["parts"][0], format="Q9_Z")]},
+                     {"parts": [dict(layer2["parts"][0], source=5)]},
+                     {"parts": [dict(layer2["parts"][0], stride=1)]}, {"hash": ["xyz"] * 10}, {"streamable": "yes"},
+                     {"kind": "dense"}, {"unit_bytes": 1}, {"index": 7}]
+        for change in bad_layer:
+            layers = list(base["layers"])
+            layers[2] = dict(layer2, **change)
+            with self.subTest(layer=sorted(change)), self.assertRaises(PlanError):
+                D.load(dict(base, layers=layers))
+        self.assertEqual(D.load(dict(base, **{"x-note": "free"}))["x-note"], "free")
+
+    def test_descriptor_files_are_bounded_and_clean(self):
+        from hyperloom.placement import desc as D
+        with tempfile.TemporaryDirectory() as d:
+            deep = Path(d) / "deep.json"
+            deep.write_text("[" * 100000 + "]" * 100000)
+            junk = Path(d) / "junk.json"
+            junk.write_text("{not json")
+            for path in (deep, junk, Path(d) / "missing.json"):
+                with self.subTest(path=path.name), self.assertRaises(PlanError):
+                    D.load(path)
+            big = Path(d) / "big.json"
+            big.write_text(json.dumps(self.desc("moe-ranked")))
+            with mock.patch.object(D, "MAX_BYTES", 100), self.assertRaises(PlanError):
+                D.load(big)
+        with self.assertRaises(PlanError):
+            D.model(self.desc("moe-ranked"), benefit=[float("nan")] * 48)
+        with self.assertRaises(PlanError):
+            D.model(self.desc("moe-ranked"), ring_slots=-1)
 
     def test_descriptor_rules_match_strix_stream(self):
         from hyperloom.placement import desc as D
@@ -475,6 +555,18 @@ class RegistryTests(unittest.TestCase):
     def test_cli_lists_every_engine(self):
         from hyperloom import cli, placement
         self.assertEqual(cli.VRAMPLAN_ENGINES, placement.ENGINES)
+
+    def test_cli_refuses_flags_that_do_not_apply(self):
+        import contextlib
+        import io
+        from hyperloom import cli
+        for argv in (["vramplan", "ds41-node", "--model", "m.gguf", "--vram-cap-gib", "8", "--layers", "3"],
+                     ["vramplan", "ds41-node", "--model", "m.gguf", "--vram-cap-gib", "8",
+                      "--placement-out", "p.json"]):
+            err = io.StringIO()
+            with self.subTest(argv=argv[-2]), contextlib.redirect_stderr(err):
+                self.assertEqual(cli.main(argv), 1)
+            self.assertIn(argv[-2], err.getvalue())
 
     def test_ds41_prefill_needs_a_host_budget(self):
         from hyperloom import placement

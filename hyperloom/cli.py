@@ -325,7 +325,14 @@ def _vramplan(args):
             raise ValueError(f"{args.engine} needs --positions")
         params["positions"] = args.positions
     if args.layers is not None:
+        if args.engine != "minimax-rtx-prefill":
+            raise ValueError("--layers is the minimax-rtx-prefill validation subset only")
         params["layers"] = args.layers
+    if args.placement_out and args.engine not in ("ds41-rtx-hot", "desc-v1"):
+        raise ValueError("--placement-out is written for ds41-rtx-hot and desc-v1 only")
+    if args.engine == "desc-v1":
+        params.update(workspace_bytes=args.workspace_bytes, ring_slots=args.ring_slots,
+                      dynamic_slots_per_layer=args.dynamic_slots, positions=args.positions)
     if args.mtp:
         params["mtp_gguf"] = args.mtp
     if args.engine in ("ds41-rtx-hot", "ds41-node"):
@@ -496,6 +503,10 @@ def main(argv=None):
     vplan.add_argument("--rest", choices=("peer-computes", "disk"), default="peer-computes",
                        help="ds41-node pair: the other half computed by the peer (EP) or streamed from local NVMe")
     vplan.add_argument("--margin-gib", type=float, default=2.0)
+    vplan.add_argument("--workspace-bytes", type=int, default=0, help="desc-v1: the engine's workspace on the device")
+    vplan.add_argument("--ring-slots", type=int, default=0,
+                       help="desc-v1: stream slots per ring (0: the descriptor's, else the default)")
+    vplan.add_argument("--dynamic-slots", type=int, default=0, help="desc-v1: dynamic slots per layer")
     # Internal controller entry point; not part of the public interface.
     helper = commands.add_parser("_prefill-run", help=argparse.SUPPRESS)
     helper.add_argument("spec")

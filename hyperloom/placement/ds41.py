@@ -259,6 +259,8 @@ def node_model(model_gguf, *, routes, mode, fixed_gib, rest="peer-computes", sz=
     sz = sz or sizes(model_gguf)
     eb = sz["expert_bytes"]
     counts = route_counts(routes) if isinstance(routes, str) else Counter(routes)
+    if not (isinstance(fixed_gib, (int, float)) and math.isfinite(fixed_gib) and fixed_gib >= 0):
+        raise PlanError("ds41 node: fixed_gib must be a finite number >= 0 (the node's measured non-expert use)")
     if mode == "replica":
         own, where = set(), "disk"
     elif mode in ("pair-rank0", "pair-rank1"):
@@ -274,7 +276,8 @@ def node_model(model_gguf, *, routes, mode, fixed_gib, rest="peer-computes", sz=
     total = sum(counts.values())
 
     def flags(resident, plan):
-        local = sum(counts.get(k, 0) for k in own) +             sum(counts.get(tuple(map(int, k.split(":"))), 0) for k in resident)
+        local = sum(counts.get(k, 0) for k in own)
+        local += sum(counts.get(tuple(map(int, k.split(":"))), 0) for k in resident)
         if total:
             plan.notes.append(f"local share of the measured selections (in-sample): {local / total:.1%}")
         return {"extra_experts": len(resident)}
@@ -313,10 +316,12 @@ def placement_json(plan, *, model_file, budget_gib, servers, reserve_gib=HOT_RES
                     {"id": "pc-ram", "kind": "host", "role": "expert-cache", "budget_gib": 0, "expert_gib": 0,
                      "experts": 0},
                     {"id": "amd", "kind": "hip", "role": "expert-server",
-                     "servers": [{"node": servers[0], "experts": [0, 192]}, {"node": servers[1], "experts": [192, 384]}]}],
+                     "servers": [{"node": servers[0], "experts": [0, 192]},
+                                 {"node": servers[1], "experts": [192, 384]}]}],
         "layers": [{"layer": L, "rtx-pro": sorted(per[L]), "rtx-4090": [], "pc-ram": []} for L in range(LAYERS)],
         "combine": {"identity": "ds41-canonical-halves-v1",
-                    "remote_return": "raw-per-expert; a remote canonical prefix of a half may return one folded partial"},
+                    "remote_return": ("raw-per-expert; a remote canonical prefix of a half may return one folded "
+                                      "partial")},
         "fit": {"objective": "routing-frequency (hyperloom vramplan)", "budget_gib": budget_gib},
         "expected": {},
     }

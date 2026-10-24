@@ -28,7 +28,8 @@ class Unit:
     key: str
     bytes: int
     benefit: float = 0.0
-    # Where it lives when not resident: "pinned" (host RAM, counted against host_gib), "disk" (NVMe stream), "pinned|disk"
+    # Where it lives when not resident: "pinned" (host RAM, counted against host_gib), "disk" (NVMe stream),
+    # "pinned|disk"
     # (three tiers: pinned while host_gib lasts, best benefit per byte first, else streamed from NVMe), or "pair"
     # (another device computes it on its own copy; never a weight transfer). On Strix (unified memory) "disk" is the
     # node's local NVMe and there is no pinned tier.
@@ -94,7 +95,8 @@ class Plan:
                 "resident_gib": _gib(self.resident_bytes), "pinned_host_gib": _gib(self.pinned_bytes),
                 "disk_gib": _gib(self.disk_bytes), "resident_units": len(self.resident),
                 "streamed_units": len(self.streamed), "flags": self.flags,
-                "tier_units": {t: sum(1 for v in self.tiers.values() if v == t) for t in sorted(set(self.tiers.values()))},
+                "tier_units": {t: sum(1 for v in self.tiers.values() if v == t)
+                               for t in sorted(set(self.tiers.values()))},
                 "fixed": [[n, _gib(b)] for n, b in self.fixed], "notes": list(self.notes), "source": self.source}
 
     def argv(self):
@@ -159,7 +161,8 @@ def _host_tiers(model, streamed, inputs):
     if inputs.host_gib is None:
         tiers.update({u.key: "pinned" for u in spill})
         return tiers
-    left = inputs.host_gib * GIB - sum(b for _, b in model.host_fixed) -         sum(u.host_size for u in streamed if tiers.get(u.key) == "pinned")
+    left = inputs.host_gib * GIB - sum(b for _, b in model.host_fixed)
+    left -= sum(u.host_size for u in streamed if tiers.get(u.key) == "pinned")
     position = {u.key: i for i, u in enumerate(model.units)}
     for unit in sorted(spill, key=lambda u: (-(u.benefit / u.bytes if u.bytes else math.inf), position[u.key])):
         if unit.host_size <= left:

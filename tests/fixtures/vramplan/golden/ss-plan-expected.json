@@ -1,5 +1,5 @@
 {
- "source": "expected plans from strix-stream ss-plan.exe built from 8a4ee8a (4 KiB pinned billing, unconditional host check)",
+ "source": "expected plans from strix-stream ss-plan.exe built 19:43 (8a4ee8a..9d332aa): 4 KiB pinned billing, unconditional host check, non-streamable units at the pool stride",
  "cases": [
   {
    "descriptor": "moe-ranked",
@@ -447,6 +447,461 @@
     "n_resident": 7638,
     "n_pinned": 7722,
     "n_disk": 0
+   }
+  },
+  {
+   "descriptor": "mixed-pinned-disk",
+   "cap_gib": 5,
+   "host_gib": 4,
+   "ring_slots": 0,
+   "expected": {
+    "tiers": [
+     "",
+     "RRRRRR",
+     "PPPPPPPPPP",
+     "PPPPPPPPPP",
+     "PPPPPPPPPP",
+     "PPPPPPPPPP",
+     "PPPPPPPPPP"
+    ],
+    "peak_bytes": 3141748160,
+    "pinned_bytes": 4266860800,
+    "disk_bytes": 0,
+    "n_resident": 0,
+    "n_pinned": 50,
+    "n_disk": 0
+   }
+  },
+  {
+   "descriptor": "mixed-pinned-disk",
+   "cap_gib": 5,
+   "host_gib": 1,
+   "ring_slots": 0,
+   "expected": {
+    "tiers": [
+     "",
+     "RRRRRR",
+     "DDDDDPDDDD",
+     "PPDDDDDDDP",
+     "DPDDPPPDPD",
+     "DDDDDDPDDD",
+     "DDDDDPDDDD"
+    ],
+    "peak_bytes": 3141748160,
+    "pinned_bytes": 1016709376,
+    "disk_bytes": 3250000104,
+    "n_resident": 0,
+    "n_pinned": 11,
+    "n_disk": 39
+   }
+  },
+  {
+   "descriptor": "mixed-pinned-disk",
+   "cap_gib": 5,
+   "host_gib": 0.05,
+   "ring_slots": 0,
+   "expected": {
+    "refused": "host"
+   }
+  },
+  {
+   "descriptor": "mixed-pinned-disk",
+   "cap_gib": 3,
+   "host_gib": 4,
+   "ring_slots": 0,
+   "expected": {
+    "refused": "nothing-fits"
+   }
+  },
+  {
+   "descriptor": "mixed-pinned-disk",
+   "cap_gib": 5,
+   "host_gib": 4,
+   "ring_slots": 3,
+   "expected": {
+    "tiers": [
+     "",
+     "RRRRRR",
+     "PRPPRRPPRP",
+     "RRPPPPPPRR",
+     "PRPPRRRPRP",
+     "RPPPPPRPPP",
+     "PRPPPRPPPP"
+    ],
+    "peak_bytes": 3141748160,
+    "pinned_bytes": 2850128128,
+    "disk_bytes": 0,
+    "n_resident": 17,
+    "n_pinned": 33,
+    "n_disk": 0
+   }
+  },
+  {
+   "descriptor": "mixed-pinned-disk",
+   "cap_gib": 7,
+   "host_gib": 4,
+   "ring_slots": 0,
+   "expected": {
+    "tiers": [
+     "",
+     "RRRRRR",
+     "RRRRRRPPRR",
+     "RRPPRPPPRR",
+     "PRPRRRRPRP",
+     "RPPPPPRPRP",
+     "PRPRPRPRPP"
+    ],
+    "peak_bytes": 5308515776,
+    "pinned_bytes": 2100093184,
+    "disk_bytes": 0,
+    "n_resident": 26,
+    "n_pinned": 24,
+    "n_disk": 0
+   }
+  },
+  {
+   "descriptor": "mixed-pinned",
+   "cap_gib": 5,
+   "host_gib": 4,
+   "ring_slots": 0,
+   "expected": {
+    "tiers": [
+     "",
+     "RRRRRR",
+     "PPPPPPPPPP",
+     "PPPPPPPPPP",
+     "PPPPPPPPPP",
+     "PPPPPPPPPP",
+     "PPPPPPPPPP"
+    ],
+    "peak_bytes": 3141748160,
+    "pinned_bytes": 4266860800,
+    "disk_bytes": 0,
+    "n_resident": 0,
+    "n_pinned": 50,
+    "n_disk": 0
+   }
+  },
+  {
+   "descriptor": "mixed-pinned",
+   "cap_gib": 5,
+   "host_gib": 1,
+   "ring_slots": 0,
+   "expected": {
+    "refused": "host"
+   }
+  },
+  {
+   "descriptor": "mixed-pinned",
+   "cap_gib": 5,
+   "host_gib": 0.05,
+   "ring_slots": 0,
+   "expected": {
+    "refused": "host"
+   }
+  },
+  {
+   "descriptor": "mixed-pinned",
+   "cap_gib": 3,
+   "host_gib": 4,
+   "ring_slots": 0,
+   "expected": {
+    "refused": "nothing-fits"
+   }
+  },
+  {
+   "descriptor": "mixed-pinned",
+   "cap_gib": 5,
+   "host_gib": 4,
+   "ring_slots": 3,
+   "expected": {
+    "tiers": [
+     "",
+     "RRRRRR",
+     "RRPRRPPPPR",
+     "PPPRPRPPRP",
+     "PPPPPRRPRP",
+     "RRPPPPPPPR",
+     "PPPPPPRRPR"
+    ],
+    "peak_bytes": 3141748160,
+    "pinned_bytes": 2850128128,
+    "disk_bytes": 0,
+    "n_resident": 17,
+    "n_pinned": 33,
+    "n_disk": 0
+   }
+  },
+  {
+   "descriptor": "mixed-pinned",
+   "cap_gib": 7,
+   "host_gib": 4,
+   "ring_slots": 0,
+   "expected": {
+    "tiers": [
+     "",
+     "RRRRRR",
+     "RRRRRPRRPR",
+     "RPPRPRPRRP",
+     "PPPPPRRRRP",
+     "RRPPRPRRPR",
+     "PPPPPPRRPR"
+    ],
+    "peak_bytes": 5308515776,
+    "pinned_bytes": 2100093184,
+    "disk_bytes": 0,
+    "n_resident": 26,
+    "n_pinned": 24,
+    "n_disk": 0
+   }
+  },
+  {
+   "descriptor": "mixed-disk",
+   "cap_gib": 5,
+   "host_gib": 4,
+   "ring_slots": 0,
+   "expected": {
+    "tiers": [
+     "",
+     "RRRRRR",
+     "DDDDDDDDDD",
+     "DDDDDDDDDD",
+     "DDDDDDDDDD",
+     "DDDDDDDDDD",
+     "DDDDDDDDDD"
+    ],
+    "peak_bytes": 3141748160,
+    "pinned_bytes": 100000000,
+    "disk_bytes": 4166666800,
+    "n_resident": 0,
+    "n_pinned": 0,
+    "n_disk": 50
+   }
+  },
+  {
+   "descriptor": "mixed-disk",
+   "cap_gib": 5,
+   "host_gib": 1,
+   "ring_slots": 0,
+   "expected": {
+    "tiers": [
+     "",
+     "RRRRRR",
+     "DDDDDDDDDD",
+     "DDDDDDDDDD",
+     "DDDDDDDDDD",
+     "DDDDDDDDDD",
+     "DDDDDDDDDD"
+    ],
+    "peak_bytes": 3141748160,
+    "pinned_bytes": 100000000,
+    "disk_bytes": 4166666800,
+    "n_resident": 0,
+    "n_pinned": 0,
+    "n_disk": 50
+   }
+  },
+  {
+   "descriptor": "mixed-disk",
+   "cap_gib": 5,
+   "host_gib": 0.05,
+   "ring_slots": 0,
+   "expected": {
+    "refused": "host"
+   }
+  },
+  {
+   "descriptor": "mixed-disk",
+   "cap_gib": 3,
+   "host_gib": 4,
+   "ring_slots": 0,
+   "expected": {
+    "refused": "nothing-fits"
+   }
+  },
+  {
+   "descriptor": "mixed-disk",
+   "cap_gib": 5,
+   "host_gib": 4,
+   "ring_slots": 3,
+   "expected": {
+    "tiers": [
+     "",
+     "RRRRRR",
+     "DRRDDRRDDD",
+     "DDDDRDDDDD",
+     "RRRDDDDRDD",
+     "RDDDDDDDRR",
+     "DDRDDRRDRR"
+    ],
+    "peak_bytes": 3141748160,
+    "pinned_bytes": 100000000,
+    "disk_bytes": 2750000088,
+    "n_resident": 17,
+    "n_pinned": 0,
+    "n_disk": 33
+   }
+  },
+  {
+   "descriptor": "mixed-disk",
+   "cap_gib": 7,
+   "host_gib": 4,
+   "ring_slots": 0,
+   "expected": {
+    "tiers": [
+     "",
+     "RRRRRR",
+     "DRRDDRRRDR",
+     "RDDDRRDDDR",
+     "RRRDDDDRDD",
+     "RRDRDDDDRR",
+     "DDRRRRRDRR"
+    ],
+    "peak_bytes": 5308515776,
+    "pinned_bytes": 100000000,
+    "disk_bytes": 2000000064,
+    "n_resident": 26,
+    "n_pinned": 0,
+    "n_disk": 24
+   }
+  },
+  {
+   "descriptor": "mixed-pair",
+   "cap_gib": 5,
+   "host_gib": 4,
+   "ring_slots": 0,
+   "expected": {
+    "tiers": [
+     "",
+     "RRRRRR",
+     "RXRXRXXXRX",
+     "XXRRXRRRXR",
+     "XXXXRXXXXR",
+     "RRXRXXXXRR",
+     "RRRXXXXXXX"
+    ],
+    "peak_bytes": 3141748160,
+    "pinned_bytes": 100000000,
+    "disk_bytes": 0,
+    "n_resident": 20,
+    "n_pinned": 0,
+    "n_disk": 0
+   }
+  },
+  {
+   "descriptor": "mixed-pair",
+   "cap_gib": 5,
+   "host_gib": 1,
+   "ring_slots": 0,
+   "expected": {
+    "tiers": [
+     "",
+     "RRRRRR",
+     "RXRXRXXXRX",
+     "XXRRXRRRXR",
+     "XXXXRXXXXR",
+     "RRXRXXXXRR",
+     "RRRXXXXXXX"
+    ],
+    "peak_bytes": 3141748160,
+    "pinned_bytes": 100000000,
+    "disk_bytes": 0,
+    "n_resident": 20,
+    "n_pinned": 0,
+    "n_disk": 0
+   }
+  },
+  {
+   "descriptor": "mixed-pair",
+   "cap_gib": 5,
+   "host_gib": 0.05,
+   "ring_slots": 0,
+   "expected": {
+    "refused": "host"
+   }
+  },
+  {
+   "descriptor": "mixed-pair",
+   "cap_gib": 3,
+   "host_gib": 4,
+   "ring_slots": 0,
+   "expected": {
+    "refused": "nothing-fits"
+   }
+  },
+  {
+   "descriptor": "mixed-pair",
+   "cap_gib": 5,
+   "host_gib": 4,
+   "ring_slots": 3,
+   "expected": {
+    "tiers": [
+     "",
+     "RRRRRR",
+     "RXRXRXXXRX",
+     "XXRRXRRRXR",
+     "XXXXRXXXXR",
+     "RRXRXXXXRR",
+     "RRRXXXXXXX"
+    ],
+    "peak_bytes": 3141748160,
+    "pinned_bytes": 100000000,
+    "disk_bytes": 0,
+    "n_resident": 20,
+    "n_pinned": 0,
+    "n_disk": 0
+   }
+  },
+  {
+   "descriptor": "mixed-pair",
+   "cap_gib": 7,
+   "host_gib": 4,
+   "ring_slots": 0,
+   "expected": {
+    "tiers": [
+     "",
+     "RRRRRR",
+     "RRRRRRRRRR",
+     "RRRRRRRRRR",
+     "XRRXRRRRRR",
+     "RRRRRRRRRR",
+     "RRRRRRRXXR"
+    ],
+    "peak_bytes": 5308515776,
+    "pinned_bytes": 100000000,
+    "disk_bytes": 0,
+    "n_resident": 46,
+    "n_pinned": 0,
+    "n_disk": 0
+   }
+  }
+ ],
+ "dynamic_cases": [
+  {
+   "descriptor": "mixed-pinned-disk",
+   "cap_gib": 5,
+   "host_gib": 4,
+   "dynamic_slots": 2,
+   "expected": {
+    "refused": "nothing-fits"
+   }
+  },
+  {
+   "descriptor": "mixed-pinned-disk",
+   "cap_gib": 7,
+   "host_gib": 4,
+   "dynamic_slots": 2,
+   "expected": {
+    "tiers": [
+     "",
+     "RRRRRR",
+     "PRPPRRPPRP",
+     "RRPPPPPPRR",
+     "PRPPRRRPRP",
+     "PPPPPPRPPP",
+     "PRPPPRPPPP"
+    ],
+    "peak_bytes": 5308515776
    }
   }
  ]
