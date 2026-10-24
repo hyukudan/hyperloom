@@ -5,12 +5,13 @@ omitted, never written as zero. Each source reports hyperloom_source_up and its
 scrape duration. The listener is loopback-only: LAN exposure is a later phase.
 """
 
-from concurrent.futures import ThreadPoolExecutor
+from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import ipaddress
 import json
 import math
 import socket
+import threading
 import time
 from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, build_opener
@@ -24,10 +25,23 @@ from .paths import repo_root
 CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
 MAX_RESPONSE = 1024 * 1024
 TIMEOUT_S = 2
+# Whole-scrape budget, below Prometheus' default 10 s scrape timeout. A source still running at the
+# deadline is reported down; its worker thread is abandoned (daemon) and ends at its own socket timeout.
+SCRAPE_DEADLINE_S = 8
+WORKERS = 8
+# Concurrent scrapes served at once; further requests get 503 instead of piling up worker threads.
+MAX_CONCURRENT_SCRAPES = 2
 DEFAULT_LISTEN = "127.0.0.1:18701"
+# Everything a fetch or a parse may raise for a bad upstream: refused/reset sockets and timeouts (OSError),
+# bad JSON/UTF-8/schema (ValueError, AdapterError), malformed HTTP (HTTPException: BadStatusLine,
+# IncompleteRead, LineTooLong) and endpoints without address/port (KeyError, TypeError).
+SOURCE_ERRORS = (OSError, ValueError, HTTPException, KeyError, TypeError)
 
 _ENGINE_COUNTERS = {"completed", "failed", "cancelled", "prompt_tokens", "cached_tokens",
                     "generated_tokens", "busy_seconds", "batch_steps", "batch_rows", "group_exchanges"}
+# Engine status slots.* split by unit so one family never mixes counts, tokens and bytes.
+_SLOT_COUNTS = ("total", "busy", "free")
+_SLOT_POSITIONS = ("context_tokens", "pool_positions", "pool_largest_free")
 _HELP = {
     "hyperloom_build_info": "hyperloom version and pinned component commits.",
     "hyperloom_source_up": "1 when the telemetry source answered with a supported document.",
@@ -35,6 +49,7 @@ _HELP = {
     "hyperloom_router_waiting": "Requests waiting in the router queue.",
     "hyperloom_router_rejected_total": "Requests rejected by the router.",
     "hyperloom_router_held": "1 when the router holds admission.",
+    "hyperloom_router_duplicate_ids": "Replica or prefill service ids the router reported more than once (only the first is exported).",
     "hyperloom_router_replica_up": "1 when the router reports the replica state up.",
     "hyperloom_router_replica_admitting": "1 when the replica admits requests.",
     "hyperloom_router_replica_inflight": "Requests in flight on the replica.",
@@ -45,10 +60,19 @@ _HELP = {
     "hyperloom_router_replica_last_health_seconds": "Latency of the last replica health check.",
     "hyperloom_router_prefill_placements_total": "Prefill placement decisions by kind.",
     "hyperloom_router_prefill_offload_seconds_total": "Time spent in offloaded prefills.",
-    "hyperloom_engine_info": "Engine model, state and trellis identity from /api/status.",
+    "hyperloom_router_prefill_service_up": "1 when the router reports the prefill service state up.",
+    "hyperloom_router_prefill_service_inflight": "Offloaded prefills in flight on the service, as the router counts them.",
+    "hyperloom_router_prefill_service_max_inflight": "Configured in-flight limit of the prefill service.",
+    "hyperloom_router_prefill_service_assigned_total": "Prefills the router assigned to the service.",
+    "hyperloom_router_prefill_service_completed_total": "Prefills the service completed, as the router counts them.",
+    "hyperloom_router_prefill_service_failed_total": "Prefills the service failed, as the router counts them.",
+    "hyperloom_engine_info": "Engine model and trellis identity from /api/status.",
+    "hyperloom_engine_state": "1 for the engine's current state from /api/status.",
     "hyperloom_engine_uptime_seconds": "Engine uptime.",
     "hyperloom_engine_context_tokens": "Engine context length.",
-    "hyperloom_engine_slots": "Engine slot and pool figures by kind.",
+    "hyperloom_engine_slots": "Engine slot counts by kind (total, busy, free).",
+    "hyperloom_engine_slot_positions": "Engine slot context and pool sizes in token positions by kind.",
+    "hyperloom_engine_slot_pool_bytes": "Engine slot pool size in bytes.",
     "hyperloom_engine_memory_bytes": "Engine memory figures by kind.",
     "hyperloom_engine_group_bytes_sent_total": "Bytes sent by this rank in group exchanges.",
     "hyperloom_engine_group_exchange_seconds_total": "Time spent in group exchanges.",
@@ -123,17 +147,67 @@ def _replica_endpoint(raw):
     return {"address": url.hostname, "port": url.port}
 
 
-def _timed(fetch, endpoint, suffix, text=False):
-    start = time.monotonic()
-    try:
-        return fetch(endpoint, suffix, text), None, time.monotonic() - start
-    except (OSError, ValueError) as exc:
-        return None, exc, time.monotonic() - start
+class _Fetches:
+    """Runs fetches on daemon threads, at most WORKERS at a time, against one scrape deadline.
+
+    result() returns (value, error, elapsed). A fetch not finished by the deadline is an error; its
+    thread is left to end at its own socket timeout and its late result is discarded."""
+
+    def __init__(self, fetch, deadline):
+        self.fetch = fetch
+        self.deadline = deadline
+        self.slots = threading.BoundedSemaphore(WORKERS)
+
+    def submit(self, endpoint, suffix, text=False):
+        job = {"done": threading.Event(), "start": time.monotonic(), "result": None}
+
+        def run():
+            started = time.monotonic()
+            try:
+                if not self.slots.acquire(timeout=max(0.0, self.deadline - started)):
+                    raise TimeoutError("scrape deadline reached before the fetch started")
+                try:
+                    if time.monotonic() >= self.deadline:
+                        raise TimeoutError("scrape deadline reached before the fetch started")
+                    job["result"] = (self.fetch(endpoint, suffix, text), None)
+                finally:
+                    self.slots.release()
+            except SOURCE_ERRORS as exc:
+                job["result"] = (None, exc)
+            except Exception as exc:  # noqa: BLE001 - a fetch bug marks one source down, never the scrape.
+                job["result"] = (None, RuntimeError(f"fetch failed: {type(exc).__name__}"))
+            job["elapsed"] = time.monotonic() - job["start"]
+            job["done"].set()
+
+        threading.Thread(target=run, name="hyperloom-metrics-fetch", daemon=True).start()
+        return job
+
+    def result(self, job):
+        if not job["done"].wait(max(0.0, self.deadline - time.monotonic())):
+            return None, TimeoutError("scrape deadline exceeded"), time.monotonic() - job["start"]
+        value, error = job["result"]
+        return value, error, job["elapsed"]
 
 
 def _source(out, labels, ok, elapsed):
     out.add("hyperloom_source_up", "gauge", labels, 1 if ok else 0)
     out.add("hyperloom_source_scrape_seconds", "gauge", labels, elapsed)
+
+
+def _unique(rows, out, base, kind):
+    """First record per id; later records with an already seen id are counted, not exported."""
+    seen, duplicates, result = set(), 0, []
+    for row in rows or []:
+        if not row or row["id"] is None:
+            continue
+        if row["id"] in seen:
+            duplicates += 1
+            continue
+        seen.add(row["id"])
+        result.append(row)
+    if rows is not None:
+        out.add("hyperloom_router_duplicate_ids", "gauge", {**base, "kind": kind}, duplicates)
+    return result
 
 
 def _router(out, profile, raw):
@@ -142,9 +216,8 @@ def _router(out, profile, raw):
     out.add("hyperloom_router_waiting", "gauge", base, parsed.waiting)
     out.add("hyperloom_router_rejected_total", "counter", base, parsed.rejected)
     out.add("hyperloom_router_held", "gauge", base, parsed.held)
-    for replica in parsed.replicas or []:
-        if not replica or replica["id"] is None:
-            continue
+    replicas = _unique(parsed.replicas, out, base, "replica")
+    for replica in replicas:
         labels = {**base, "replica": replica["id"], "machine": replica["node"]}
         if replica["state"] is not None:
             out.add("hyperloom_router_replica_up", "gauge", labels, replica["state"] == "up")
@@ -160,7 +233,17 @@ def _router(out, profile, raw):
         out.add("hyperloom_router_prefill_placements_total", "counter", {**base, "placement": kind}, count)
     if prefill.get("offload_ms_total") is not None:
         out.add("hyperloom_router_prefill_offload_seconds_total", "counter", base, prefill["offload_ms_total"] / 1000)
-    return [(r["id"], r["node"], r["endpoint"]) for r in parsed.replicas or [] if r and r["id"] and r["endpoint"]]
+    # Prefill services (Phase 3a) are exported from the router's view only: the service itself has no
+    # /metrics or /api/status yet (SPEC R13), and its /v1/describe needs the service key.
+    for service in _unique(prefill.get("services"), out, base, "prefill_service"):
+        labels = {**base, "service": service["id"], "machine": service["node"]}
+        if service["state"] is not None:
+            out.add("hyperloom_router_prefill_service_up", "gauge", labels, service["state"] == "up")
+        for key in ("inflight", "max_inflight"):
+            out.add("hyperloom_router_prefill_service_" + key, "gauge", labels, service[key])
+        for key in ("assigned", "completed", "failed"):
+            out.add(f"hyperloom_router_prefill_service_{key}_total", "counter", labels, service[key])
+    return [(r["id"], r["node"], r["endpoint"]) for r in replicas if r["endpoint"]]
 
 
 def _engine_metrics(out, labels, text):
@@ -173,13 +256,18 @@ def _engine_metrics(out, labels, text):
 
 def _engine_status(out, labels, raw):
     parsed = engine.parse_status(raw)
-    info = {"model": parsed.model, "state": parsed.state,
-            "trellis_identity": (parsed.memory or {}).get("trellis_identity")}
+    info = {"model": parsed.model, "trellis_identity": (parsed.memory or {}).get("trellis_identity")}
     out.add("hyperloom_engine_info", "gauge", {**labels, **info}, 1)
+    if parsed.state is not None:
+        out.add("hyperloom_engine_state", "gauge", {**labels, "state": parsed.state}, 1)
     out.add("hyperloom_engine_uptime_seconds", "gauge", labels, parsed.uptime_seconds)
     out.add("hyperloom_engine_context_tokens", "gauge", labels, parsed.context_tokens)
-    for kind, value in (parsed.slots or {}).items():
-        out.add("hyperloom_engine_slots", "gauge", {**labels, "kind": kind}, value)
+    slots = parsed.slots or {}
+    for kind in _SLOT_COUNTS:
+        out.add("hyperloom_engine_slots", "gauge", {**labels, "kind": kind}, slots.get(kind))
+    for kind in _SLOT_POSITIONS:
+        out.add("hyperloom_engine_slot_positions", "gauge", {**labels, "kind": kind}, slots.get(kind))
+    out.add("hyperloom_engine_slot_pool_bytes", "gauge", labels, slots.get("pool_bytes"))
     for kind, value in (parsed.memory or {}).items():
         if kind != "trellis_identity":
             out.add("hyperloom_engine_memory_bytes", "gauge", {**labels, "kind": kind}, value)
@@ -198,46 +286,54 @@ def _build_info(out):
     out.add("hyperloom_build_info", "gauge", labels, 1)
 
 
-def collect(routers=None, fetch=_get, profile=None):
-    """Return the exposition text for {profile: router endpoint or None}."""
+def _apply(out, apply, labels, outcome):
+    raw, error, elapsed = outcome
+    result = None
+    if error is None:
+        try:
+            result = apply(out, labels, raw)
+        except SOURCE_ERRORS as exc:
+            error = exc
+    return result, error, elapsed
+
+
+def collect(routers=None, fetch=_get, profile=None, deadline_s=SCRAPE_DEADLINE_S):
+    """Return the exposition text for {profile: router endpoint or None}.
+
+    Routers, then every replica's engine sources, are fetched in parallel against one overall deadline."""
     routers = running_routers() if routers is None else routers
     if profile is not None:
         routers = {profile: routers.get(profile)}
     out = Exposition()
     _build_info(out)
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        replicas = []
-        for name, endpoint in sorted(routers.items()):
-            labels = {"source": "router", "profile": name}
-            if endpoint is None:
-                _source(out, labels, False, None)
-                continue
-            raw, error, elapsed = _timed(fetch, endpoint, "/api/status")
-            try:
-                if error is None:
-                    replicas += [(name, *row) for row in _router(out, name, raw)]
-            except ValueError as exc:
-                error = exc
-            _source(out, labels, error is None, elapsed)
-        jobs = []
-        for name, rid, node, raw_endpoint in replicas:
-            labels = {"profile": name, "replica": rid, "machine": node}
-            try:
-                endpoint = _replica_endpoint(raw_endpoint)
-            except ValueError:
-                endpoint = None
-            for source, suffix, text, apply in (("engine_metrics", "/metrics", True, _engine_metrics),
-                                                ("engine_status", "/api/status", False, _engine_status)):
-                future = pool.submit(_timed, fetch, endpoint, suffix, text) if endpoint else None
-                jobs.append((labels, source, future, apply))
-        for labels, source, future, apply in jobs:
-            raw, error, elapsed = future.result() if future else (None, ValueError("endpoint"), None)
-            try:
-                if error is None:
-                    apply(out, labels, raw)
-            except ValueError as exc:
-                error = exc
-            _source(out, {**labels, "source": source}, error is None, elapsed)
+    fetches = _Fetches(fetch, time.monotonic() + deadline_s)
+    jobs = []
+    for name, endpoint in sorted(routers.items()):
+        labels = {"source": "router", "profile": name}
+        if not isinstance(endpoint, dict):
+            _source(out, labels, False, None)
+        else:
+            jobs.append((name, labels, fetches.submit(endpoint, "/api/status")))
+    replicas = []
+    for name, labels, job in jobs:
+        rows, error, elapsed = _apply(out, lambda o, _labels, raw: _router(o, name, raw), labels, fetches.result(job))
+        replicas += [(name, *row) for row in rows or []]
+        _source(out, labels, error is None, elapsed)
+    jobs = []
+    for name, rid, node, raw_endpoint in replicas:
+        labels = {"profile": name, "replica": rid, "machine": node}
+        try:
+            endpoint = _replica_endpoint(raw_endpoint)
+        except SOURCE_ERRORS:
+            endpoint = None
+        for source, suffix, text, apply in (("engine_metrics", "/metrics", True, _engine_metrics),
+                                            ("engine_status", "/api/status", False, _engine_status)):
+            job = fetches.submit(endpoint, suffix, text) if endpoint else None
+            jobs.append((labels, source, job, apply))
+    for labels, source, job, apply in jobs:
+        outcome = fetches.result(job) if job else (None, ValueError("replica endpoint"), None)
+        _, error, elapsed = _apply(out, apply, labels, outcome)
+        _source(out, {**labels, "source": source}, error is None, elapsed)
     return out.text()
 
 
@@ -245,13 +341,14 @@ class MetricsServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, listen=DEFAULT_LISTEN, *, collector=collect):
+    def __init__(self, listen=DEFAULT_LISTEN, *, collector=collect, max_concurrent=MAX_CONCURRENT_SCRAPES):
         endpoint = parse_listen(listen, "metrics listen")
         if not ipaddress.ip_address(endpoint["address"]).is_loopback:
             raise ValueError("metrics listen must be a loopback address; LAN exposure is a later phase")
         if ":" in endpoint["address"]:
             self.address_family = socket.AF_INET6
         self.collector = collector
+        self.scrapes = threading.BoundedSemaphore(max_concurrent)
         super().__init__((endpoint["address"], endpoint["port"]), Handler)
         host = f"[{endpoint['address']}]" if ":" in endpoint["address"] else endpoint["address"]
         self.allowed_hosts = {f"{host}:{self.server_port}", f"localhost:{self.server_port}"}
@@ -277,6 +374,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         if status == 405:
             self.send_header("Allow", "GET")
+        if status == 503:
+            self.send_header("Retry-After", "5")
         self.send_header("Connection", "close")
         self.end_headers()
         self.close_connection = True
@@ -286,10 +385,19 @@ class Handler(BaseHTTPRequestHandler):
         hosts = self.headers.get_all("Host", [])
         if len(hosts) != 1 or hosts[0] not in self.server.allowed_hosts:
             self._send(403, "Host is not allowed\n")
-        elif self.path != "/metrics":
+        elif urlsplit(self.path).path != "/metrics":
             self._send(404, "not found\n")
+        elif not self.server.scrapes.acquire(blocking=False):
+            self._send(503, "too many concurrent scrapes\n")
         else:
-            self._send(200, self.server.collector(), CONTENT_TYPE)
+            try:
+                body = self.server.collector()
+            except Exception as exc:  # noqa: BLE001 - answer 500 rather than drop the connection.
+                self._send(500, f"collector failed: {type(exc).__name__}\n")
+            else:
+                self._send(200, body, CONTENT_TYPE)
+            finally:
+                self.server.scrapes.release()
 
     def _method(self):
         self._send(405, "only GET /metrics\n")
