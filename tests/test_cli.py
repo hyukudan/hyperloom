@@ -107,13 +107,35 @@ class CLITests(unittest.TestCase):
     def test_remote_doctor_uses_fixed_verb(self):
         machine = SimpleNamespace(access="ssh")
         self.cluster.machines["halo-1"] = machine
-        remote = SimpleNamespace(Remote=Mock())
-        remote.Remote.return_value.call.return_value = {"commands": []}
+        remote = SimpleNamespace(Remote=Mock(), tool_digest=Mock(return_value="d" * 64))
+        client = remote.Remote.return_value
+        version = {"checks": {"tool": {"status": "ok", "value": "d" * 64}}}
+        self.modules["hyperloom.remote"] = remote
+        # Fresh machine: no node tool yet, so doctor bootstraps it once, then runs the read-only checks.
+        client.has_tool.return_value = False
+        client.call.side_effect = [version, {"commands": []}]
+        status, out, err = self.invoke("doctor", "halo-1")
+        self.assertEqual(status, 0, err)
+        self.assertEqual(json.loads(out), {"commands": [], "node_tool": {
+            "expected": "d" * 64, "deployed": "d" * 64, "bootstrapped": True, "status": "current"}})
+        client.bootstrap.assert_called_once_with(timeout=60)
+        self.assertEqual(client.call.call_args_list[0].args[0], "version")
+        client.call.assert_called_with("doctor", {}, timeout=60)
+
+    def test_remote_doctor_reports_stale_tool_without_replacing_it(self):
+        self.cluster.machines["halo-1"] = SimpleNamespace(access="ssh")
+        remote = SimpleNamespace(Remote=Mock(), tool_digest=Mock(return_value="d" * 64))
+        client = remote.Remote.return_value
+        client.has_tool.return_value = True
+        client.call.side_effect = [{"checks": {"tool": {"status": "ok", "value": "e" * 64}}}, {"commands": []}]
         self.modules["hyperloom.remote"] = remote
         status, out, err = self.invoke("doctor", "halo-1")
         self.assertEqual(status, 0, err)
-        self.assertEqual(json.loads(out), {"commands": []})
-        remote.Remote.return_value.call.assert_called_once_with("doctor", {}, timeout=60)
+        tool = json.loads(out)["node_tool"]
+        self.assertEqual((tool["status"], tool["bootstrapped"], tool["deployed"]), ("stale", False, "e" * 64))
+        self.assertIn("hyperloom nodes update", tool["hint"])
+        # The live-lease guard of `nodes update` is never bypassed: doctor does not redeploy.
+        client.bootstrap.assert_not_called()
 
     def test_unknown_machine_fails_clearly(self):
         status, _, err = self.invoke("doctor", "halo-2")

@@ -50,6 +50,10 @@ class RemoteError(RuntimeError):
     pass
 
 
+class RemoteTimeout(RemoteError):
+    """The command ran out of time or was cancelled (not a failure of the tool itself)."""
+
+
 @dataclass(frozen=True)
 class HostKey:
     algorithm: str
@@ -147,9 +151,10 @@ def openssh_tool(name):
     return shutil.which(name) or name
 
 
-def _run(argv, data=b"", timeout=30, cancel_event=None, limit=MAX_JSON):
+def _run(argv, data=b"", timeout=30, cancel_event=None, limit=MAX_JSON, executable=None):
     """Drain bounded pipes while allowing timeout and cooperative cancellation."""
-    executable = openssh_tool(argv[0]) if argv and argv[0] in ("ssh", "scp", "ssh-keyscan") else None
+    if executable is None and argv and argv[0] in ("ssh", "scp", "ssh-keyscan"):
+        executable = openssh_tool(argv[0])
     if not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
         raise RemoteError("timeout must be positive and finite")
     if cancel_event is not None and cancel_event.is_set():
@@ -193,9 +198,9 @@ def _run(argv, data=b"", timeout=30, cancel_event=None, limit=MAX_JSON):
             if overflow.is_set():
                 raise RemoteError("OpenSSH output exceeds the size limit")
             if cancel_event is not None and cancel_event.is_set():
-                raise RemoteError("remote operation cancelled")
+                raise RemoteTimeout("remote operation cancelled")
             if time.monotonic() >= deadline:
-                raise RemoteError("remote operation timed out")
+                raise RemoteTimeout("remote operation timed out")
             time.sleep(0.01)
         if overflow.is_set():
             raise RemoteError("OpenSSH output exceeds the size limit")
@@ -215,7 +220,29 @@ def _run(argv, data=b"", timeout=30, cancel_event=None, limit=MAX_JSON):
 def keyscan(address, port):
     """Return candidates only; scanning never authorizes a key or bootstraps."""
     address, port = _address(address), _port(port)
-    raw = _run(["ssh-keyscan", "-t", "ed25519,ecdsa,rsa", "-p", str(port), address])
+    argv = ["ssh-keyscan", "-t", "ed25519,ecdsa,rsa", "-p", str(port), address]
+    try:
+        return _keys(_run(argv))
+    except RemoteTimeout:
+        # An unreachable or slow host times out with any tool: do not double the wait.
+        raise
+    except RemoteError:
+        # Windows' bundled ssh-keyscan 9.5 offers a key exchange it cannot complete
+        # (sntrup761) and finds no keys; retry with the one on PATH or Git for Windows'
+        # (which usually has only Git\cmd on PATH).
+        if os.name != "nt":
+            raise
+        native = ntpath.normcase(openssh_tool("ssh-keyscan"))
+        git = shutil.which("git")
+        candidates = [shutil.which("ssh-keyscan"),
+                      git and ntpath.join(ntpath.dirname(ntpath.dirname(git)), "usr", "bin", "ssh-keyscan.exe")]
+        fallback = next((c for c in candidates if c and os.path.isfile(c) and ntpath.normcase(c) != native), None)
+        if fallback is None:
+            raise
+        return _keys(_run(argv, executable=fallback))
+
+
+def _keys(raw):
     result = []
     try:
         for line in raw.decode("utf-8").splitlines():
@@ -334,6 +361,15 @@ class Remote:
         except (UnicodeError, ValueError) as exc:
             raise RemoteError("invalid remote boot path") from exc
         self.node_path = path
+
+    def has_tool(self, timeout=30, *, cancel_event=None):
+        """Whether ~/.hyperloom-boot/hyperloom-node exists (read-only; changes nothing on the node)."""
+        raw = self._ssh('if test -f "$HOME/.hyperloom-boot/hyperloom-node"; then printf \'yes\\n\'; '
+                        "else printf 'no\\n'; fi", timeout=timeout, cancel_event=cancel_event)
+        answer = raw.strip()
+        if answer not in (b"yes", b"no"):
+            raise RemoteError("unexpected reply to the node tool check")
+        return answer == b"yes"
 
     def bootstrap(self, source=None, timeout=30, *, scp="scp", cancel_event=None):
         source = Path(source) if source is not None else repo_root() / "node"
