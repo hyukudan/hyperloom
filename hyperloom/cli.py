@@ -15,6 +15,7 @@ import time
 from urllib.request import ProxyHandler, Request, build_opener
 import uuid
 
+from . import cliext
 from .paths import repo_root
 from .winproc import no_window, retry_sharing
 
@@ -697,12 +698,15 @@ def build_parser(parser_class=argparse.ArgumentParser):
     watch = commands.add_parser("_up-watch", help=argparse.SUPPRESS)
     watch.add_argument("path")
     watch.add_argument("token")
+    cliext.add_all(commands)
     return parser
 
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
+        if getattr(args, "ext_run", None) is not None:
+            return args.ext_run(args)
         if args.command == "ui":
             if not 0 <= args.port <= 65535:
                 raise ValueError("ui port must be in 0..65535")

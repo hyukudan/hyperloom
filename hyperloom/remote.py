@@ -34,7 +34,10 @@ VERBS = frozenset({"version", "doctor", "gpu",
                    # hyperloom_download (phase 4)
                    "download-plan", "download", "download-cancel",
                    # hyperloom_service (phase 4, non-lab only)
-                   "service-install", "service-start", "service-stop", "service-status", "service-remove"})
+                   "service-install", "service-start", "service-stop", "service-status", "service-remove",
+                   # observability (read-only) and the model library
+                   "host", "usb4", "turns", "logs-search",
+                   "models", "model-verify", "copy-plan", "copy", "copy-job", "copy-cancel"})
 
 
 def node_files(directory=None):
