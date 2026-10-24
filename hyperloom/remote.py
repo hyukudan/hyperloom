@@ -1,5 +1,6 @@
 """Pinned OpenSSH transport for the small hyperloom-node JSON protocol."""
 
+import ast
 from dataclasses import dataclass
 import base64
 import hashlib
@@ -31,8 +32,30 @@ VERBS = frozenset({"version", "doctor", "gpu",
                    "peer-run", "supervise-internal",
                    # hyperloom_download (phase 4)
                    "download-plan", "download", "download-cancel"})
-# Files bootstrap copies into ~/.hyperloom-boot (the node CLI and its extension modules).
-NODE_FILES = ("hyperloom-node", "hyperloom_install.py", "hyperloom_lease.py", "hyperloom_download.py", "build-node.sh")
+
+
+def node_files(directory=None):
+    """Files bootstrap copies into ~/.hyperloom-boot: the node CLI, the extension modules its EXTENSIONS
+    tuple declares, and build-node.sh. The tuple is read from the node CLI's source (never executed), and the
+    node derives its own TOOL_FILES from the same tuple, so the two lists cannot drift."""
+    path = (Path(directory) if directory is not None else Path(__file__).resolve().parent.parent / "node") / "hyperloom-node"
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, UnicodeError):
+        # bootstrap then refuses: hyperloom-node itself is missing or unreadable.
+        return ("hyperloom-node", "build-node.sh")
+    for statement in tree.body:
+        if (isinstance(statement, ast.Assign) and len(statement.targets) == 1
+                and isinstance(statement.targets[0], ast.Name) and statement.targets[0].id == "EXTENSIONS"):
+            extensions = ast.literal_eval(statement.value)
+            if (not isinstance(extensions, tuple)
+                    or not all(isinstance(name, str) and re.fullmatch(r"[a-z_][a-z0-9_]*", name) for name in extensions)):
+                raise RuntimeError("hyperloom-node EXTENSIONS must be a tuple of module names")
+            return ("hyperloom-node", *(name + ".py" for name in extensions), "build-node.sh")
+    raise RuntimeError("hyperloom-node declares no EXTENSIONS")
+
+
+NODE_FILES = node_files()
 
 
 def tool_digest(directory=None):

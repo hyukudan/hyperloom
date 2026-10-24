@@ -34,6 +34,7 @@ class NodeDownloadCase(unittest.TestCase):
         install.checked_root({"root": str(self.root)}, create=True)
         self.assets = self.base / "assets"
         self.assets.mkdir()
+        (self.assets / node.ASSET_MARKER).write_text("", encoding="utf-8")
         self.lab = self.base / "lab"
         (self.lab / ".gpu-turn").mkdir(parents=True)
         which = patch.object(node.shutil, "which", side_effect=lambda name, path=None:
@@ -87,6 +88,39 @@ class NodePlanTests(NodeDownloadCase):
         self.assertIn("already exists", reply["error"])
         self.assertEqual((self.assets / "part-1.gguf").read_bytes(), b"existing")
 
+    def test_only_a_marked_hyperloom_asset_directory(self):
+        # A lab model directory (no marker) is never written into, even outside lab_dir.
+        lab_models = self.base / "lab models"
+        lab_models.mkdir()
+        reply = node.run("download-plan", self.payload(self.item(directory=str(lab_models),
+                                                                 destination=str(lab_models / "part-1.gguf"))))
+        self.assertIn("not dedicated to hyperloom downloads", reply["error"])
+        (lab_models / node.ASSET_MARKER).mkdir()
+        reply = node.run("download-plan", self.payload(self.item(directory=str(lab_models),
+                                                                 destination=str(lab_models / "part-1.gguf"))))
+        self.assertIn("not dedicated to hyperloom downloads", reply["error"])
+
+    def test_active_lease_refuses_download(self):
+        code = node.run("download-plan", self.payload())["confirm"]
+        install.atomic_json(self.root / "run" / "lease-l1.json", {"lease": "l1", "state": "acquired"})
+        with patch.object(node.subprocess, "Popen") as popen:
+            reply = node.run("download", self.payload(confirm=code))
+        self.assertIn("lease is active: l1", reply["error"])
+        popen.assert_not_called()
+
+    def test_stale_running_job_is_settled(self):
+        path = self.root / "run" / "job-abc.json"
+        install.atomic_json(path, {"job": "abc", "kind": "download", "state": "running", "boot_id": "an-earlier-boot"})
+        self.assertEqual(node.run("download-cancel", {"root": str(self.root), "job": "abc"})["state"], "failed")
+        self.assertFalse((self.root / "run" / "job-abc.stop").exists())
+        state = install.read_json(path)
+        self.assertIn("rebooted", state["error"])
+        reply = install.run("job", {"root": str(self.root), "job": "abc"})
+        self.assertEqual(reply["state"], "failed")
+        # Jobs without a boot record (builds, hashing) are reported as they are.
+        install.atomic_json(path, {"job": "abc", "kind": "install", "state": "running"})
+        self.assertEqual(install.run("job", {"root": str(self.root), "job": "abc"})["state"], "running")
+
     def test_curl_missing(self):
         with patch.object(node.shutil, "which", return_value=None):
             self.assertIn("curl", node.run("download-plan", self.payload())["error"])
@@ -107,7 +141,8 @@ class NodePlanTests(NodeDownloadCase):
     def test_cancel_only_download_jobs(self):
         install.atomic_json(self.root / "run" / "job-abc.json", {"job": "abc", "kind": "install", "state": "running"})
         self.assertIn("not a download", node.run("download-cancel", {"root": str(self.root), "job": "abc"})["error"])
-        install.atomic_json(self.root / "run" / "job-abc.json", {"job": "abc", "kind": "download", "state": "running"})
+        install.atomic_json(self.root / "run" / "job-abc.json", {"job": "abc", "kind": "download", "state": "running",
+                                                                "boot_id": install.boot_id(), "pid": os.getpid()})
         self.assertEqual(node.run("download-cancel", {"root": str(self.root), "job": "abc"})["state"], "running")
         self.assertTrue((self.root / "run" / "job-abc.stop").exists())
 
@@ -133,13 +168,40 @@ class NodeJobTests(NodeDownloadCase):
         code, state = self.job(body=b"tampered")
         self.assertEqual((code, state["state"]), (1, "failed"))
         self.assertIn("verification failed", state["error"])
-        self.assertEqual(sorted(p.name for p in self.assets.iterdir()), [])
+        self.assertEqual(sorted(p.name for p in self.assets.iterdir()), [node.ASSET_MARKER])
 
     def test_failed_command_keeps_partial_for_resume(self):
         code, state = self.job(body=b"pay", FAKE_EXIT="22")
         self.assertIn("exited 22", state["error"])
         self.assertFalse((self.assets / "part-1.gguf").exists())
         self.assertEqual((self.assets / ".part-1.gguf.hyperloom-part").read_bytes(), b"pay")
+
+    def test_hash_uses_the_direct_hasher_and_stops_for_a_turn(self):
+        calls = []
+        original = install.hash_file
+
+        def hasher(path, check=None):
+            calls.append(path)
+            (self.lab / ".gpu-turn" / "holder").write_text("SINGLE sx-2 456\n")
+            return original(path, check=check)
+
+        with patch.object(install, "hash_file", side_effect=hasher):
+            code, state = self.job()
+        self.assertEqual(calls, [self.assets / ".part-1.gguf.hyperloom-part"])
+        self.assertIn("GPU turn is held", state["error"])
+        self.assertFalse((self.assets / "part-1.gguf").exists())
+        self.assertEqual((self.assets / ".part-1.gguf.hyperloom-part").read_bytes(), BODY)
+
+    @unittest.skipUnless(os.name == "posix", "flock")
+    def test_partial_file_has_one_writer(self):
+        part = self.assets / ".part-1.gguf.hyperloom-part"
+        held = node.lock_part(part)
+        try:
+            code, state = self.job()
+        finally:
+            os.close(held)
+        self.assertIn("another download job is writing", state["error"])
+        self.assertFalse((self.assets / "part-1.gguf").exists())
 
     @unittest.skipUnless(os.name == "posix", "process groups")
     def test_pair_turn_interrupts_running_download(self):
@@ -165,6 +227,15 @@ class ControlTests(unittest.TestCase):
             patcher = patch.object(downloads.orchestrate, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
+
+    def test_catalog_is_checked_at_the_engine_pin(self):
+        lock = json.loads((Path(__file__).resolve().parents[1] / "versions.lock").read_text(encoding="utf-8"))
+        self.assertEqual(downloads.catalog()["engine_sha"], lock["components"]["engine"]["commit"])
+        with patch.object(downloads, "read_json", side_effect=lambda path: (
+                dict(json.loads(Path(path).read_text(encoding="utf-8")), engine_sha="0" * 40)
+                if Path(path).name == "sources.json" else json.loads(Path(path).read_text(encoding="utf-8")))):
+            with self.assertRaisesRegex(downloads.ConfigError, "pinned engine"):
+                downloads.catalog()
 
     def test_catalog_pins_and_reasons(self):
         rows = downloads.sources(parse(self.obj), "qwen-replicas")

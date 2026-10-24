@@ -360,7 +360,9 @@ class Inspector:
                 "commands": self.commands, "checks": checks}
 
 
-TOOL_FILES = ("hyperloom-node", "hyperloom_install.py", "hyperloom_lease.py", "build-node.sh")
+# The deployed tool. The control machine derives its bootstrap copy list from EXTENSIONS too
+# (hyperloom/remote.py node_files), so adding an extension module updates both sides.
+TOOL_FILES = ("hyperloom-node", *(name + ".py" for name in EXTENSIONS), "build-node.sh")
 
 
 def tool_digest(directory):

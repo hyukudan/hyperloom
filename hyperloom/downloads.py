@@ -11,6 +11,7 @@ import re
 
 from . import orchestrate
 from .config import ConfigError, PRESETS, preset, read_json, record
+from .paths import repo_root
 
 
 STATUS = ("download", "unavailable")
@@ -21,6 +22,9 @@ def catalog():
     record(data, "sources", ("schema", "engine_sha", "note", "profiles"))
     if data["schema"] != "hyperloom/sources-v1":
         raise ConfigError("sources: unknown schema")
+    # Sources come from the ledgers at the pins: a pin move needs the catalog re-checked.
+    if data["engine_sha"] != read_json(repo_root() / "versions.lock")["components"]["engine"]["commit"]:
+        raise ConfigError("sources: catalog is not checked at the pinned engine commit")
     for profile, assets in data["profiles"].items():
         for name, row in assets.items():
             where = f"sources.{profile}.{name}"
