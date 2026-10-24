@@ -1,0 +1,92 @@
+{
+  "family": "ds41-pair",
+  "qualified": true,
+  "receipt": "integrate/ds41-w5 combined confirmation (wave4/dsint/report.md)",
+  "receipt_note": "integrate/ds41-w5 16841fe5 linked against strix-trellis c95a169 (RC2 892b26e + strix_weights_device_span), the bin-w5 build of the combined confirmation. Production line = docs/ds41-production-defaults.md at 16841fe5: serve --transport usb4gpu --prefill-path device --dspark --dspark-vocab auto:, identity env with the trellis attention sites (TRELLIS_SITES=all, TRELLIS_DENSE_FULL=1) that need STRIX_DS41_TRELLIS_API=dense_r1. Every integrate/ds41-w5 code default is on when unset, so none is set here.",
+  "engine_sha": "16841fe552c48e18c047c62576229f06f9b4b1b3",
+  "components": {
+    "engine": {
+      "repo": "https://github.com/hyukudan/strix-halo-engine-lab",
+      "commit": "16841fe552c48e18c047c62576229f06f9b4b1b3",
+      "note": "integrate/ds41-w5, local only: install with --source engine=<checkout>"
+    },
+    "strix-trellis": {
+      "repo": "https://github.com/hyukudan/strix-trellis",
+      "commit": "c95a169523dbf21ec636aab803f29d2c1d8a5eb0",
+      "note": "RC2 + strix_weights_device_span, local only: install with --source strix-trellis=<checkout>"
+    }
+  },
+  "build": {
+    "trellis_api": "dense_r1",
+    "trellis_configure": [
+      "-DSTRIX_TRELLIS_ENABLE_EXPERIMENTAL_TP=ON"
+    ]
+  },
+  "port": 18431,
+  "binary": "strix-deepseek41-serve",
+  "assets": [
+    "ds41_model",
+    "dspark",
+    "ds41_vocab",
+    "overlay",
+    "trellis_k4",
+    "trellis_k5"
+  ],
+  "argv": [
+    "{binary}",
+    "{ds41_model}",
+    "--rank",
+    "{rank}",
+    "--transport",
+    "usb4gpu",
+    "--prefill-path",
+    "device",
+    "--dspark",
+    "{dspark}",
+    "--dspark-vocab",
+    "auto:{ds41_vocab}",
+    "--http-bind",
+    "{address}",
+    "--http-port",
+    "{port}",
+    "--http-api-key-file",
+    "{key_file}"
+  ],
+  "env": {
+    "STRIX_DS41_OVERLAY": "{overlay}",
+    "STRIX_DS41_CB4": "1",
+    "STRIX_DS41_TRELLIS": "{trellis_k4}",
+    "STRIX_DS41_TRELLIS_MIX": "head={trellis_k5}",
+    "STRIX_DS41_TRELLIS_SITES": "all",
+    "STRIX_DS41_TRELLIS_DENSE_FULL": "1",
+    "STRIX_DS41_TRELLIS_HEADOUT": "1"
+  },
+  "knobs": {
+    "--default-max-tokens": {
+      "min": 1,
+      "max": 4096
+    },
+    "--peer-timeout": {
+      "min": 1,
+      "max": 3600
+    },
+    "--http-port": {
+      "min": 1,
+      "max": 65535
+    },
+    "--slots": {
+      "min": 4,
+      "max": 4,
+      "values": [
+        4
+      ]
+    },
+    "--context": {
+      "min": 4096,
+      "max": 4096,
+      "values": [
+        4096
+      ]
+    }
+  }
+}

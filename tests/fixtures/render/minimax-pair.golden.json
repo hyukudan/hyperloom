@@ -1,0 +1,58 @@
+[
+  {
+    "machine_id": "halo-1",
+    "role": "rank0",
+    "argv": [
+      "/opt/hyperloom/releases/000000000000/bin/strix-minimax-serve",
+      "/models/minimax-m3.1-flash-exl3",
+      "--rank",
+      "0",
+      "--transport",
+      "usb4-auto",
+      "--bind",
+      "127.0.0.1",
+      "--port",
+      "18441",
+      "--model-id",
+      "minimax-m3.1-flash",
+      "--slots",
+      "8",
+      "--capacity",
+      "8256",
+      "--max-rows",
+      "4096",
+      "--max-tokens",
+      "4096"
+    ],
+    "env": {},
+    "ready": "minimax-stdout"
+  },
+  {
+    "machine_id": "halo-2",
+    "role": "rank1",
+    "argv": [
+      "/opt/hyperloom/releases/000000000000/bin/strix-minimax-serve",
+      "/models/minimax-m3.1-flash-exl3",
+      "--rank",
+      "1",
+      "--transport",
+      "usb4-auto",
+      "--bind",
+      "127.0.0.1",
+      "--port",
+      "18441",
+      "--model-id",
+      "minimax-m3.1-flash",
+      "--slots",
+      "8",
+      "--capacity",
+      "8256",
+      "--max-rows",
+      "4096",
+      "--max-tokens",
+      "4096"
+    ],
+    "env": {},
+    "ready": "minimax-stdout"
+  }
+]

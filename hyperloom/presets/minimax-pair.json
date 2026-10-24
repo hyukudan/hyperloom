@@ -1,0 +1,82 @@
+{
+  "family": "minimax-pair",
+  "qualified": true,
+  "receipt": "MiniMax engine s2 serve, all defaults on (wave4/mmopt/fork-report.md section 3)",
+  "receipt_note": "minimax/engine 862a2f0d (= s2's 7a548a43 + spills inline, attention round 2, DSpark integ4). strix-minimax-serve TP2 over the USB4 host path (usb4-auto), greedy. s2: serve C1 TTFT 1.71 s, decode 18.19 tok/s; C4 / C8 aggregate 22.96 / 26.41 tok/s. The argv spells out the serve's own defaults (apps/minimax_serve_main.cpp at 862a2f0d) so that the launch is explicit; every STRIX_MM_* default is on in code and none is set. The serve takes no DSpark drafter (DSpark is only in strix-minimax-rank at this pin) and no API key: it binds 127.0.0.1 and is reached through a router on rank 0's machine.",
+  "engine_sha": "862a2f0d668a07660392f6d3008a750068eeece3",
+  "components": {
+    "engine": {
+      "repo": "https://github.com/hyukudan/strix-halo-engine-lab",
+      "commit": "862a2f0d668a07660392f6d3008a750068eeece3",
+      "note": "minimax/engine, local only: install with --source engine=<checkout>"
+    },
+    "strix-trellis": {
+      "repo": "https://github.com/hyukudan/strix-trellis",
+      "commit_prefix": "92cfd46e",
+      "note": "the strix-trellis 0.3 qualification-v03 tree the MiniMax engine links (STRIX_MINIMAX_TRELLIS_DIR); only its short id is recorded: install with --source strix-trellis=<checkout>@<full sha>"
+    }
+  },
+  "build": {
+    "configure": [
+      "-G",
+      "Ninja",
+      "-DCMAKE_BUILD_TYPE=Release",
+      "-DCMAKE_HIP_ARCHITECTURES=gfx1151",
+      "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++",
+      "-DSTRIX_ENABLE_HIP_RUNTIME=ON",
+      "-DSTRIX_FAMILY_MINIMAX=ON"
+    ]
+  },
+  "port": 18441,
+  "binary": "strix-minimax-serve",
+  "assets": [
+    "mm_model"
+  ],
+  "argv": [
+    "{binary}",
+    "{mm_model}",
+    "--rank",
+    "{rank}",
+    "--transport",
+    "usb4-auto",
+    "--bind",
+    "{address}",
+    "--port",
+    "{port}",
+    "--model-id",
+    "minimax-m3.1-flash",
+    "--slots",
+    "8",
+    "--capacity",
+    "8256",
+    "--max-rows",
+    "4096",
+    "--max-tokens",
+    "4096"
+  ],
+  "env": {},
+  "knobs": {
+    "--max-tokens": {
+      "min": 1,
+      "max": 4096
+    },
+    "--port": {
+      "min": 1,
+      "max": 65535
+    },
+    "--slots": {
+      "min": 8,
+      "max": 8,
+      "values": [
+        8
+      ]
+    },
+    "--capacity": {
+      "min": 8256,
+      "max": 8256,
+      "values": [
+        8256
+      ]
+    }
+  }
+}

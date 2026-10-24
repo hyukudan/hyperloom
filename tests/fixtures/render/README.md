@@ -30,3 +30,8 @@ placement, configure key paths on that machine. Rendering itself never reads
 keys; validate_router invokes the real TensorMeld parser, which reads them.
 
 Run: python -m unittest tests.test_config tests.test_render -v
+
+The qwen-replicas-w5, ds41-pair-w5 and minimax-pair goldens use the same abstraction (docs/adapters.md):
+qwen-replicas-w5 equals the qwen-replicas line; ds41-pair-w5 is the ds41-pair argv with the w5 identity
+environment; minimax-pair spells out the serve's defaults, binds 127.0.0.1 and takes no key file. Its model
+directory asset (mm_model) is added by tests/test_engines.py with a synthetic path.
