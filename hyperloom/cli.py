@@ -495,8 +495,11 @@ def main(argv=None):
         elif args.command == "hosts":
             _json(_hosts(args))
         elif args.command == "service":
-            _json(_module("hyperloom.service").run(_cluster(args.config), args.operation, args.profile,
-                                                   enable=args.enable))
+            result = _module("hyperloom.service").run(_cluster(args.config), args.operation, args.profile,
+                                                      enable=args.enable)
+            _json(result)
+            if not result["ok"]:
+                return 1
         elif args.command == "keys":
             if args.key_operation == "export":
                 _json(_module("hyperloom.orchestrate").export_key(args.profile, args.out))
