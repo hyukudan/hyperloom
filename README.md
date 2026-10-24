@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/img/hyperloom-banner.svg" alt="Hyperloom: an orbital H connecting two compute nodes — distributed AI inference" width="100%"></p>
+<p align="center"><img src="docs/img/hyperloom-banner.jpg" alt="Hyperloom: distributed AI inference" width="100%"></p>
 
 # Hyperloom
 
