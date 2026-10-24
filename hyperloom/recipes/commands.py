@@ -78,6 +78,8 @@ def probe_command(cluster, args):
         if machine not in ctx.nodes or not receipt:
             raise RecipeError(f"--evidence {item}: expected NODE=RECEIPT with a node of the profile")
         path = dict(model_paths(cluster, ctx)).get(machine)
+        if not path:
+            raise RecipeError(f"--evidence {item}: {machine} has no model asset for this profile")
         out.setdefault("evidence", {})[machine] = cache().put_evidence(machine, path, receipt)
     inventory, gathered, raw, notes = facts.gather(cluster, ctx, call=node_call(cluster), cache=cache(),
                                                    measure_disks=args.disks)

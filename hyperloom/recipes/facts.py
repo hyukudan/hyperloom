@@ -19,7 +19,15 @@ from . import apply, probe
 FAMILY_MODELS = {"qwen-replicas": ("qwen3.8-flash-next", "model"),
                  "ds41-pair": ("deepseek-v4.1-flash", "ds41_model"),
                  "minimax-pair": ("minimax-m3.1-flash", "mm_model")}
+FAMILY_MODELS_BY_ID = {model: asset for model, asset in FAMILY_MODELS.values()}
 DEFAULT_HOST_OVERHEAD_GIB = 4.0
+# The decode engine's per-sequence context and its concurrent sequences: (flag, engine default or None = unknown).
+# Defaults read from the engine at the pinned commit (strix-deepseek41-serve: context 4096, slots 4,
+# apps/deepseek41_serve_main.cpp:139); a family whose default hyperloom does not know refuses a recipe unless the
+# preset or the profile sets the flag.
+FAMILY_BOUNDS = {"ds41-pair": (("--context", 4096), ("--slots", 4)),
+                 "qwen-replicas": (("--context", None), ("--http-batch", None)),
+                 "minimax-pair": (("--capacity", None), ("--slots", None))}
 EVIDENCE_SCHEMA_KEYS = {"disk_read_gbytes_ps", "method", "host", "path"}
 
 
@@ -50,7 +58,10 @@ def context(cluster, profile):
                    "model_asset": (data.get("placement") or {}).get("model_asset")}
     data = render.preset(settings.get("preset", profile))
     nodes, pc = engines.members(settings, kind), control_machine(cluster)
-    limits = {"node_context": _node_context(settings, data), "default_generation_tokens": 1024,
+    (context_flag, context_default), (batch_flag, batch_default) = FAMILY_BOUNDS[kind]
+    limits = {"node_context": _flag_value(settings, data, context_flag, context_default),
+              "node_batch": _flag_value(settings, data, batch_flag, batch_default),
+              "node_flags": (context_flag, batch_flag), "default_generation_tokens": 1024,
               "commit_floor_gib": ((cluster.pc.get("cuda") or {}).get("reservation") or {}).get("free_commit_floor_gib", 4)}
     if service is not None:
         _, service_data, _ = rtx._service(cluster, profile)
@@ -65,15 +76,17 @@ def context(cluster, profile):
                          descriptors=known, limits=limits)
 
 
-def _node_context(settings, data):
-    """The decode engine's context (positions per sequence): the profile override, else the preset's argv; None when
-    the preset does not set it (then hyperloom cannot check a recipe's max_context_tokens against it)."""
-    value = settings.get("overrides", {}).get("--context")
+def _flag_value(settings, data, flag, default):
+    """A decode-engine bound as launched: the profile override, else the preset's argv, else the engine default;
+    None when none of them is known (a recipe bound is then refused, never assumed)."""
+    value = settings.get("overrides", {}).get(flag)
     argv = data.get("argv", [])
-    if value is None and "--context" in argv:
-        value = argv[argv.index("--context") + 1]
+    if value is None and flag in argv:
+        value = argv[argv.index(flag) + 1]
+    if value is None:
+        return default
     try:
-        return int(value) if value is not None else None
+        return int(value)
     except ValueError:
         return None
 
@@ -146,7 +159,8 @@ def gather(cluster, ctx, *, call, gpus=None, memory=None, pro_busy=None, cache=N
         node = probe.node_device(gpu_result)
         devices[mid] = {"name": node["name"]["value"], "memory_gib": _gtt(gpu_result),
                         "host_ram_gib": node["host_ram_gib"]["value"]}
-        evidence = cache.evidence(mid) if cache is not None else None
+        model = cluster.assets.get(mid, {}).get(FAMILY_MODELS_BY_ID.get(ctx.model, ""), {}).get("path")
+        evidence = cache.evidence(mid, model, now) if cache is not None and model else None
         if evidence is not None:
             devices[mid]["disk_read_gbytes_ps"] = evidence["disk_read_gbytes_ps"]
         avail_devices[mid] = {"available": True}
@@ -234,9 +248,13 @@ def availability(recipe, bound, raw):
 class Cache(probe.DiskCache):
     """The probe cache plus saved node disk evidence (receipts)."""
 
-    def evidence(self, machine):
-        entry = self._load().get(f"evidence|{machine}")
-        return entry if isinstance(entry, dict) else None
+    def evidence(self, machine, model_path, now=None):
+        """The node's saved disk measurement for this model path, when it is younger than the cache TTL."""
+        entry = self._load().get(f"evidence|{machine}|{model_path}")
+        now = time.time() if now is None else now
+        if not isinstance(entry, dict) or entry.get("path") != model_path or now - entry.get("measured_at", 0) > probe.CACHE_TTL_S:
+            return None
+        return entry
 
     def put_evidence(self, machine, model_path, receipt_path):
         """Store a node's measured disk bandwidth from a receipt (JSON: disk_read_gbytes_ps, method "direct", host,
@@ -257,11 +275,11 @@ class Cache(probe.DiskCache):
         if type(value) not in (int, float) or not value > 0:
             raise probe.ProbeError(f"{receipt_path}: disk_read_gbytes_ps must be > 0")
         data = self._load()
-        data[f"evidence|{machine}"] = {"disk_read_gbytes_ps": float(value), "method": "receipt",
-                                       "receipt": str(receipt_path), "receipt_sha256": hashlib.sha256(raw).hexdigest(),
-                                       "path": model_path, "measured_at": time.time()}
+        key = f"evidence|{machine}|{model_path}"
+        data[key] = {"disk_read_gbytes_ps": float(value), "method": "receipt", "receipt": str(receipt_path),
+                     "receipt_sha256": hashlib.sha256(raw).hexdigest(), "path": model_path, "measured_at": time.time()}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_name(self.path.name + ".tmp")
         temporary.write_text(json.dumps(data, indent=1, sort_keys=True), encoding="utf-8")
         temporary.replace(self.path)
-        return data[f"evidence|{machine}"]
+        return data[key]

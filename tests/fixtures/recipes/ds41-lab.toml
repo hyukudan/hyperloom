@@ -51,7 +51,7 @@ handoff_route = "decode_pair"
 
 [routes.placement.pair]
 max_context_tokens = 33024
-max_batch = 8
+max_batch = 2
 
 [[routes]]
 id = "decode_pair"
@@ -61,4 +61,4 @@ execute = "tp"
 
 [routes.placement.pair]
 max_context_tokens = 33024
-max_batch = 8
+max_batch = 2

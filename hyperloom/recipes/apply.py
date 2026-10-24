@@ -317,10 +317,15 @@ def check_bounds(route, set_id, kind, ctx):
             raise RecipeError(f"{where}.max_context_tokens: {placement['max_context_tokens']} > the service's "
                               f"{positions} positions")
     else:
-        context = limits.get("node_context")
-        if context is not None and placement["max_context_tokens"] > context:
-            raise RecipeError(f"{where}.max_context_tokens: {placement['max_context_tokens']} > the engine's context "
-                              f"{context}")
+        context_flag, batch_flag = limits.get("node_flags", ("--context", "--slots"))
+        for value, bound, flag, field in ((placement["max_context_tokens"], limits.get("node_context"), context_flag,
+                                           "max_context_tokens"),
+                                          (placement["max_batch"], limits.get("node_batch"), batch_flag, "max_batch")):
+            if bound is None:
+                raise RecipeError(f"{where}.{field}: profile {ctx.profile} does not set {flag} and hyperloom does not "
+                                  "know the engine's default; set it in the profile's overrides")
+            if value > bound:
+                raise RecipeError(f"{where}.{field}: {value} > the engine's {flag} {bound}")
 
 
 def refuse_unsupported(recipe):

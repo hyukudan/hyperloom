@@ -30,10 +30,14 @@ def mm(old=None, new=None):
     return MM if old is None else MM.replace(old, new)
 
 
+LIMITS = {"node_context": 33024, "node_batch": 8, "node_flags": ("--context", "--slots"), "service_positions": 32768,
+          "default_generation_tokens": 1024}
+
+
 def ctx(service=True, capabilities=("import-state-parked",), model="minimax-m3.1-flash"):
     return apply.Context("mm", model, "pair", ["n1", "n2"], "pc", capabilities=capabilities,
                          service={"machine": "pc", "device": "pro", "uuid": GPU, "engine": "ds41-rtx-prefill",
-                                  "host_overhead_gib": 4.0} if service else None)
+                                  "host_overhead_gib": 4.0} if service else None, limits=dict(LIMITS))
 
 
 INVENTORY = {"cuda": [{"uuid": GPU, "name": "NVIDIA RTX PRO 6000 Blackwell", "memory_gib": 95.6}]}
@@ -341,7 +345,11 @@ class ApplyTests(unittest.TestCase):
             self.deploy(avail=low)
         big = PLAIN.replace("max_context_tokens = 32768\nmax_batch = 1\n", "max_context_tokens = 65536\nmax_batch = 1\n")
         with self.assertRaisesRegex(RecipeError, "max_context_tokens: 65536 > the service's 32768 positions"):
-            self.deploy(big, context=dataclasses.replace(ctx(), limits={"service_positions": 32768}))
+            self.deploy(big, context=dataclasses.replace(ctx(), limits=dict(LIMITS, service_positions=32768)))
+        with self.assertRaisesRegex(RecipeError, "max_batch: 8 > the engine's --slots 4"):
+            self.deploy(context=dataclasses.replace(ctx(), limits=dict(LIMITS, node_batch=4)))
+        with self.assertRaisesRegex(RecipeError, "does not set --context and hyperloom does not know"):
+            self.deploy(context=dataclasses.replace(ctx(), limits=dict(LIMITS, node_context=None)))
         with self.assertRaisesRegex(RecipeError, "runs one prompt at a time"):
             self.deploy(PLAIN.replace("max_context_tokens = 32768\nmax_batch = 1\n",
                                       "max_context_tokens = 32768\nmax_batch = 2\n"))
@@ -423,7 +431,9 @@ class ProbeTests(unittest.TestCase):
         receipt = self.dir / "r.json"
         receipt.write_text(json.dumps({"disk_read_gbytes_ps": 6.1, "method": "direct", "host": "n1", "path": "/m.gguf"}))
         self.assertEqual(cache.put_evidence("n1", "/m.gguf", receipt)["method"], "receipt")
-        self.assertEqual(cache.evidence("n1")["disk_read_gbytes_ps"], 6.1)
+        self.assertEqual(cache.evidence("n1", "/m.gguf")["disk_read_gbytes_ps"], 6.1)
+        self.assertIsNone(cache.evidence("n1", "/other.gguf"))                       # bound to the model path
+        self.assertIsNone(cache.evidence("n1", "/m.gguf", now=time.time() + probe.CACHE_TTL_S + 1))   # and its age
         for bad in ({"host": "n2"}, {"method": "buffered"}, {"disk_read_gbytes_ps": 0}):
             receipt.write_text(json.dumps(dict({"disk_read_gbytes_ps": 6.1, "method": "direct", "host": "n1",
                                                 "path": "/m.gguf"}, **bad)))
@@ -485,7 +495,7 @@ def fake_cluster():
                               [{"id": "rtx-pro", "type": "nvidia", "uuid": GPU}]),
                 "n1": Machine("n1", "linux", "ssh", "192.0.2.10", "n1", 22, "/opt/hl", True, [{"id": "gpu"}]),
                 "n2": Machine("n2", "linux", "ssh", "192.0.2.11", "n2", 22, "/opt/hl", True, [{"id": "gpu"}])}
-    profiles = {"mm": {"preset": "minimax-pair", "rank0": "n1", "rank1": "n2"}}
+    profiles = {"mm": {"preset": "minimax-pair", "rank0": "n1", "rank1": "n2", "overrides": {"--capacity": 33024}}}
     return Cluster(machines, {}, profiles, {}, {}, {"pc": {}})
 
 
@@ -590,22 +600,62 @@ class LaunchTests(unittest.TestCase):
                 launch.prepare(fake_cluster(), "mm", launch.Options(str(FIXTURES / "minimax-lab.toml")),
                                router="local", vram_cap_gib=None, state_dir=self.dir)
 
-    def test_write_route_state(self):
+    def spec(self, service_dir):
+        return {"file": str(self.dir / "route-state.json"), "service_dir": service_dir, "uuids": [GPU],
+                "nodes": ["n1", "n2"], "pc": "pc", "links": ["pc-nodes"], "internal": ["pair.internal"],
+                "reservation_end": time.time() + 600, "max_age_s": 10, "machines": {}, "known_hosts": None}
+
+    def test_write_route_state_from_measurements_only(self):
         service = self.dir / "svc"
         service.mkdir()
         (service / "state.json").write_text(json.dumps({"state": "ready"}))
-        spec = {"file": str(self.dir / "route-state.json"), "service_dir": str(service), "uuid": GPU,
-                "nodes": ["n1", "n2"], "pc": "pc", "links": ["pc-nodes"], "reservation_end": time.time() + 600}
+        spec = self.spec(str(service))
         memory = lambda: {"free_physical_gib": 60.0, "free_commit_gib": 80.0}
-        data = launch.write_route_state(spec, memory=memory)
+        now = time.time()
+        fresh = {"n1": {"free_ram_gib": 20.0, "at": now}, "n2": {"free_ram_gib": 21.0, "at": now}}
+        data = launch.write_route_state(spec, memory=memory, nodes=fresh, replicas={"n1": "up"}, now=now)
         self.assertEqual(json.loads(Path(spec["file"]).read_text()), data)
-        self.assertTrue(data["devices"][GPU]["available"])
+        self.assertTrue(data["devices"][GPU]["available"] and data["devices"]["n2"]["available"])
+        self.assertEqual(data["hosts"]["n2"], {"free_ram_gib": 21.0})
+        self.assertEqual(data["links"], {"pc-nodes": {"up": True}, "pair.internal": {"up": True}})
+        # A node without a recent answer, or a replica the router reports down: unavailable, links down, no RAM.
+        stale = dict(fresh, n2={"free_ram_gib": 21.0, "at": now - 30})
+        data = launch.write_route_state(spec, memory=memory, nodes=stale, replicas={"n1": "up"}, now=now)
+        self.assertFalse(data["devices"]["n2"]["available"])
+        self.assertNotIn("n2", data["hosts"])
+        data = launch.write_route_state(spec, memory=memory, nodes=fresh, replicas={"n1": "down"}, now=now)
+        self.assertFalse(data["devices"]["n1"]["available"] or data["links"]["pair.internal"]["up"])
+        data = launch.write_route_state(spec, memory=memory, nodes=fresh, replicas={}, now=now)
+        self.assertFalse(data["links"]["pc-nodes"]["up"])                            # no router answer yet
         (service / "state.json").write_text(json.dumps({"state": "stopped"}))
         self.assertEqual(launch.write_route_state(spec, memory=memory)["devices"][GPU],
                          {"available": False, "why": "prefill service stopped"})
         (service / "state.json").write_text(json.dumps({"state": "ready"}))
         spec["reservation_end"] = time.time() + 30
         self.assertIn("reservation", launch.write_route_state(spec, memory=memory)["devices"][GPU]["why"])
+
+    def test_plan_service_refuses_instead_of_clamping(self):
+        from tests import test_rtx
+        from hyperloom.config import parse
+        cluster = parse(test_rtx.rtx_example())
+        with mock.patch.object(launch.rtx, "plan_placement", return_value=None):
+            self.assertEqual(launch.plan_service(cluster, "ds41-rtx", 88.0, 48.0, free_physical_gib=100.0), (None, None))
+            plan, why = launch.plan_service(cluster, "ds41-rtx", 95.0, 48.0, free_physical_gib=100.0)
+            self.assertIn("above the reservation", why)
+            plan, why = launch.plan_service(cluster, "ds41-rtx", 88.0, 80.0, free_physical_gib=100.0)
+            self.assertIn("host_pinned_gib 80 is above what this start allows", why)
+        with mock.patch.object(launch.rtx, "plan_placement", side_effect=launch.descriptors.DescriptorError("no saved header")):
+            self.assertEqual(launch.plan_service(cluster, "ds41-rtx", 88.0, 48.0, free_physical_gib=100.0),
+                             (None, "no saved header"))
+
+    def test_node_floors(self):
+        evaluation = mock.Mock()
+        evaluation.effective.recipe = {"limits": {"host_free_ram_floor_gib": 8.0}}
+        evaluation.context.nodes = ["n1", "n2"]
+        item = launch.Launch(evaluation, True, False, None, None, None, {})
+        self.assertIsNone(launch.node_floors(item, lambda mid: 20.0))
+        self.assertIn("n2: free RAM 6.0", launch.node_floors(item, lambda mid: 20.0 if mid == "n1" else 6.0))
+        self.assertIn("not reported", launch.node_floors(item, lambda mid: None))
 
 
 class UpWithRecipeTests(unittest.TestCase):
@@ -627,11 +677,32 @@ class UpWithRecipeTests(unittest.TestCase):
                    mock.patch.object(launch.core, "locate", return_value=None),
                    mock.patch.object(launch.render, "router_policies", return_value=("nodes", "rtx", "auto", "routes")),
                    mock.patch("hyperloom.render.validate_router"),
-                   mock.patch.object(launch.rtx, "pro_busy", return_value=None)]
+                   mock.patch.object(launch.rtx, "pro_busy", return_value=None),
+                   mock.patch.object(launch, "plan_service", side_effect=self.plan)]
         for patcher in patches:
             patcher.start()
             self.addCleanup(patcher.stop)
         self.avail = {}
+        self.node_free = 100.0
+        self.planned = []
+        self.plan_why = None
+        from tests import test_orchestrate
+        original = test_orchestrate.FakeRemote.call
+        harness = self
+
+        def call(remote_self, verb, payload, timeout=60):
+            if verb == "gpu":
+                remote_self.calls.append((remote_self.machine.id, verb, payload))
+                return {"checks": {"ram": {"status": "ok", "value": {"total_bytes": 128 * probe.GIB,
+                                                                       "available_bytes": int(harness.node_free * probe.GIB)}}}}
+            return original(remote_self, verb, payload, timeout)
+        patcher = mock.patch.object(test_orchestrate.FakeRemote, "call", call)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def plan(self, cluster, profile, cap, host, **kw):
+        self.planned.append((cap, host))
+        return ({"flags": {"--vram-cap-gib": "80"}}, None) if self.plan_why is None else (None, self.plan_why)
 
     def source(self, ctx_):
         gathered = deepcopy(FACTS)
@@ -658,6 +729,7 @@ class UpWithRecipeTests(unittest.TestCase):
 
     def test_service_starts_with_the_recipe_budget_and_the_routes_policy(self):
         state = self.up()
+        self.assertEqual(self.planned, [(88.0, 48.0)])                            # planned before any lease
         render_kw = next(p for _, verb, p in self.calls if verb == "service-render")
         self.assertEqual((render_kw["vram_cap_gib"], render_kw["host_gib_exact"]), (88.0, 48.0))
         rendered = next(p for _, verb, p in self.calls if verb == "router-start")["rendered"]
@@ -676,8 +748,28 @@ class UpWithRecipeTests(unittest.TestCase):
         self.assertNotIn("service-render", verbs)
         self.assertNotIn("service-start", verbs)
         rendered = next(p for _, verb, p in self.calls if verb == "router-start")["rendered"]
-        self.assertEqual(rendered["prefill"], {"policy": "nodes"})
+        # Node-only runs keep the recipe's admission per request; the offload route is compiled disabled.
+        self.assertEqual(rendered["prefill"]["policy"], "routes")
+        self.assertNotIn("services", rendered["prefill"])
+        self.assertEqual([(r["id"], r["enabled"]) for r in rendered["prefill"]["routes"]["routes"]],
+                         [("prefill_long", False), ("prefill_nodes", True)])
         self.assertIn("RTX PRO busy", state["recipe"]["service"]["why"])
+        self.assertEqual(self.planned, [])
+
+    def test_planner_refusal_skips_the_service_before_any_lease(self):
+        self.plan_why = "no saved header descriptor; run `hyperloom recipe probe <profile> --descriptors`"
+        state = self.up()
+        verbs = [verb for _, verb, _ in self.calls]
+        self.assertNotIn("service-render", verbs)
+        self.assertIn("planner: no saved header descriptor", state["recipe"]["service"]["why"])
+
+    def test_low_node_ram_after_load_stops_up(self):
+        orch = self.harness.modules()[0]
+        self.node_free = 6.0
+        with self.assertRaisesRegex(orch.OrchestrationError, "free RAM 6.0 GiB after the engine loaded < floor 8"):
+            self.up()
+        self.assertNotIn("service-start", [verb for _, verb, _ in self.calls])
+        self.assertTrue(all(row["state"] == "stopped" for row in self.harness.leases.values()))
 
     def test_recheck_at_launch_and_after_ready(self):
         with mock.patch.object(launch.rtx, "pro_busy", return_value="compute processes [9]"):
@@ -687,9 +779,10 @@ class UpWithRecipeTests(unittest.TestCase):
         orch = self.harness.modules()[0]
         orch.down("ds41-rtx")
         self.calls.clear()
-        memory = iter([{"free_physical_gib": 100.0, "free_commit_gib": 150.0}] + [
-            {"free_physical_gib": 6.0, "free_commit_gib": 150.0}] * 10)
-        with mock.patch.object(launch.rtx, "memory_status", side_effect=lambda: next(memory)):
+        def memory():
+            started = any(verb == "service-start" for _, verb, _ in self.calls)
+            return {"free_physical_gib": 6.0 if started else 100.0, "free_commit_gib": 150.0}
+        with mock.patch.object(launch.rtx, "memory_status", side_effect=memory):
             state = self.up()
         verbs = [verb for _, verb, _ in self.calls]
         self.assertLess(verbs.index("service-start"), verbs.index("service-stop"))

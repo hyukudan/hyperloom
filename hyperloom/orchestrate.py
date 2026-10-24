@@ -19,6 +19,7 @@ import uuid
 
 from .winproc import no_window
 from . import assets, bundles, engines, procs, remote, render, rtx, secrets
+from .config import ConfigError
 from .paths import repo_root
 
 
@@ -613,6 +614,9 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
         from .recipes import launch as recipe_launch
         if mids != list(defaults):
             raise ValueError("--recipe binds the profile's own nodes: drop --node")
+        if router != "local":
+            # The router reads the route state hyperloom writes on this machine every second.
+            raise ValueError("--recipe runs the router locally (it reads the route state written here): use --router local")
         launch = recipe_launch.prepare(cluster, profile, recipe, router=router, vram_cap_gib=vram_cap_gib,
                                        state_dir=_state_path(profile).parent)
         if not launch.service_start:
@@ -714,7 +718,7 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
         rendered = render.render_router(selected, profile)
         if launch is not None:
             key_file = selected.router["replica_api_key_files"].get(service["machine"]) if service else None
-            rendered["prefill"] = recipe_launch.router_prefill(launch, selected, profile, key_file)
+            rendered["prefill"] = recipe_launch.router_prefill(launch, cluster if service else selected, profile, key_file)
         state.update(release_id=prepared["release_id"], nodes=mids, devices=list(devices or []),
                      started_at=time.time(), process_specs=[asdict(spec) for spec in processes],
                      rendered_router=rendered, launch=render.launch_summary(selected, profile))
@@ -774,6 +778,19 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
             deadlines.append(ready.get("deadline") or time.time() + deadline_s)
         state["deadline"] = min(deadlines)
         _check_stop(path)
+        node_ram = {}
+        if launch is not None:
+            # The node engines' allocations are done: every node keeps the recipe's free-RAM floor (Sol-5 #4).
+            def read_ram(mid):
+                try:
+                    node_ram[mid] = {"free_ram_gib": recipe_launch.node_ram(
+                        _call(clients[mid], "gpu", {"lab_dir": _lab(cluster, mid)}, timeout=60)), "at": time.time()}
+                except (remote.RemoteError, OrchestrationError):
+                    return None
+                return node_ram[mid]["free_ram_gib"]
+            low = recipe_launch.node_floors(launch, read_ram)
+            if low is not None:
+                raise OrchestrationError("recipe: " + low)
         skip = None
         if service is not None and launch is not None:
             skip = recipe_launch.recheck_before_service(launch, selected)
@@ -782,12 +799,22 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
                 _write(path, state)
         if service is not None and skip is None:
             # After the decode side is READY (its import route is the handoff), before the router admits.
-            with recipe_launch.planning(selected) if launch is not None else ExitStack():
-                spec = rtx.render_service(
-                    selected, profile, api_key=secrets.ensure(_secret_name(profile, "prefill")),
-                    handoff_api_key=node_values[mids[0]], free_physical_gib=rtx.memory_status()["free_physical_gib"],
-                    vram_cap_gib=launch.vram_cap_gib if launch is not None else vram_cap_gib,
-                    host_gib_exact=launch.host_gib if launch is not None else None)
+            try:
+                with recipe_launch.planning(selected) if launch is not None else ExitStack():
+                    spec = rtx.render_service(
+                        selected, profile, api_key=secrets.ensure(_secret_name(profile, "prefill")),
+                        handoff_api_key=node_values[mids[0]],
+                        free_physical_gib=rtx.memory_status()["free_physical_gib"],
+                        vram_cap_gib=launch.vram_cap_gib if launch is not None else vram_cap_gib,
+                        host_gib_exact=launch.host_gib if launch is not None else None)
+            except (ConfigError, recipe_launch.descriptors.DescriptorError) as exc:
+                if launch is None:
+                    raise
+                # The recipe's budget no longer fits this start (memory moved since up began): skip, never clamp.
+                skip = "at launch: " + str(exc)
+                state["recipe"]["service"].update(start=False, why=skip)
+                _write(path, state)
+        if service is not None and skip is None:
             spec = rtx.ServiceSpec(**dict(spec.__dict__, deadline=min(spec.deadline, state["deadline"])))
             # Recorded before the helper exists, so down (or the watchdog) can always find and stop it.
             state["prefill_service"] = rtx.prepare_service(spec)
@@ -812,7 +839,8 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
                 reservation = cluster.pc.get("cuda", {}).get("reservation")
                 route_state = recipe_launch.route_state_spec(
                     launch, state.get("prefill_service") if state["recipe"]["service"]["start"] else None,
-                    rtx.reservation_end(reservation, time.time()) if reservation else None)
+                    rtx.reservation_end(reservation, time.time()) if reservation else None, state)
+                route_state["initial_nodes"] = node_ram
             state["router"] = _start_local_router(profile, rendered, keys, ownership=state, route_state=route_state)
         else:
             machine = cluster.machines[router]
@@ -892,9 +920,11 @@ def _start_local_router(profile, rendered, keys, *, ownership=None, route_state=
     directory.mkdir(parents=True)
     spec = directory / "spec.json"
     if route_state is not None:
-        # Fresh before the router's first request; the helper refreshes it every second.
+        # Fresh before the router's first request (the nodes as measured after their engines loaded; the replicas
+        # assumed up until the router reports them); the helper refreshes it every second.
         from .recipes import launch as recipe_launch
-        recipe_launch.write_route_state(route_state)
+        recipe_launch.write_route_state(route_state, nodes=route_state.get("initial_nodes"),
+                                        replicas={mid: "up" for mid in route_state["nodes"]})
     _write(spec, {"rendered": rendered, "keys": keys, "profile": profile, "route_state": route_state,
                   "ownership": ownership, "deadline": (ownership or {}).get("deadline", time.time() + 1140)})
     record = {"machine": "local", "directory": str(directory), "endpoint": rendered["listen"]}
@@ -952,8 +982,26 @@ def local_router_run(spec_path):
             signal.signal(getattr(signal, name), interrupt)
     route_state = spec.get("route_state")
     next_state = 0
+    polled = dict((route_state or {}).get("initial_nodes") or {})
+    replicas = {}
+    halt = threading.Event()
+
+    def poll_nodes():
+        # Free RAM of every node over ssh (the node tool's read-only `gpu` verb), every few seconds.
+        from .recipes import launch as recipe_launch
+        while not halt.wait(recipe_launch.NODE_POLL_S):
+            for mid, machine in route_state["machines"].items():
+                try:
+                    result = _call(_client(SimpleNamespace(**machine), route_state["known_hosts"]), "gpu", {}, timeout=5)
+                    polled[mid] = {"free_ram_gib": recipe_launch.node_ram(result), "at": time.time()}
+                except (OSError, remote.RemoteError, OrchestrationError, ValueError):
+                    pass  # no fresh answer: the node goes unavailable when its last one ages out (fail closed)
+
+    poller = threading.Thread(target=poll_nodes, daemon=True) if route_state else None
     try:
         child.start()
+        if poller is not None:
+            poller.start()
         end = time.monotonic() + 15
         ready = False
         next_check = 0
@@ -963,7 +1011,10 @@ def local_router_run(spec_path):
             if route_state is not None and time.monotonic() >= next_state:
                 from .recipes import launch as recipe_launch
                 try:
-                    recipe_launch.write_route_state(route_state)
+                    if ready:
+                        status = _http_json(rendered["listen"])
+                        replicas = {r.get("node"): r.get("state") for r in status.get("replicas", [])}
+                    recipe_launch.write_route_state(route_state, nodes=dict(polled), replicas=replicas)
                 except (OSError, ValueError):
                     pass  # a missed write ages the state; the router fails closed when it goes stale
                 next_state = time.monotonic() + 1
@@ -987,6 +1038,7 @@ def local_router_run(spec_path):
         except (OSError, ValueError):
             pass
     finally:
+        halt.set()
         try:
             child.stop(5)
         finally:
