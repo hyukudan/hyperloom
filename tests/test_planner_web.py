@@ -58,6 +58,12 @@ class ArgvTests(unittest.TestCase):
                                    ({"recipe": "a", "vary": {"a.x": [1, 2, 3, 4], "b.y": [1, 2, 3]}}, "13 variants"),
                                    ({"recipe": "a", "prompt_tokens": 0}, "prompt_tokens"),
                                    ({"recipe": "a", "prompt_tokens": True}, "prompt_tokens"),
+                                   ({"recipe": "a", "variants": [{"set": {}}]}, "1..256 settable paths"),
+                                   ({"recipe": "a", "variants": [{"set": {FLOOR: None}}]}, "null"),
+                                   ({"recipe": "a", "variants": [{"set": {FLOOR: {"x": 1}}}]}, "values are"),
+                                   ({"recipe": "a", "variants": [{"set": {"a b": 1}}]}, "not a settable path"),
+                                   ({"recipe": "a", "variants": [{"name": "", "set": {FLOOR: 1}}]}, "name"),
+                                   ({"recipe": "a", "variants": ["x"]}, "expected"),
                                    ([], "JSON object")):
             with self.assertRaisesRegex(ValueError, message):
                 feature.whatif_argv(FakeAPI(), arguments)
@@ -65,7 +71,7 @@ class ArgvTests(unittest.TestCase):
     def test_placement_argv(self):
         argv, stdin = feature.placement_argv(FakeAPI(), {"model": "qwen3.8-flash-next", "facts": "lab", "prompt": 4096,
                                                          "output": 64, "slots": 2, "objective": "decode", "top_k": 3})
-        self.assertEqual(argv, ["placement", "qwen3.8-flash-next", "--facts", "lab", "--prompt", "4096", "--output", "64",
+        self.assertEqual(argv, ["placement", "qwen3.8-flash-next", "--catalog-only", "--facts", "lab", "--prompt", "4096", "--output", "64",
                                 "--slots", "2", "--top-k", "3", "--objective", "decode", "--config", "cfg.json"])
         self.assertIsNone(stdin)
         for arguments, message in (({"model": "m", "slots": 65}, "slots"), ({"model": "m", "objective": "x"}, "objective"),
@@ -140,12 +146,13 @@ class PortalTests(unittest.TestCase):
         self.port = self.server.server_port
 
     def request(self, method, path, body=None):
-        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=170)
-        headers = {"Host": f"127.0.0.1:{self.port}"}
+        host = self.server.server_address[0]
+        connection = http.client.HTTPConnection(host, self.port, timeout=170)
+        headers = {"Host": f"{host}:{self.port}"}
         data = None
         if body is not None:
             data = json.dumps(body).encode()
-            headers.update({"Origin": f"http://127.0.0.1:{self.port}", "X-Hyperloom-CSRF": self.server.csrf_token,
+            headers.update({"Origin": self.server.origin, "X-Hyperloom-CSRF": self.server.csrf_token,
                             "Content-Type": "application/json", "Content-Length": str(len(data))})
         connection.request(method, path, body=data, headers=headers)
         response = connection.getresponse()

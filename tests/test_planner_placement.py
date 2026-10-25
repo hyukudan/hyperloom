@@ -104,6 +104,13 @@ class HardwareTests(unittest.TestCase):
         self.assertEqual(lent["workstation.host"], "available")
         self.assertEqual(hardware, before)                      # the base description is never modified
 
+    def test_host_ram_follows_the_template_memory_rule(self):
+        record = facts("deepseek-v4.1-flash", "ds41-rtx")
+        record["facts"]["devices"][PRO]["host_ram_gib"] = 1024.0
+        hardware, _, excluded, _ = self.build(record)
+        self.assertNotIn("workstation.host", {d["id"] for d in hardware["devices"]})
+        self.assertIn("no rate evidence", next(x for x in excluded if x.get("device") == "workstation.host")["why"])
+
     def test_missing_host_total_leaves_the_host_device_out(self):
         record = facts("qwen3.8-flash-next", "qwen-replicas")
         record["inventory"]["cuda"] = []

@@ -72,7 +72,8 @@ def add(commands):
     whatif.add_argument("--variants", help='a JSON file (- = stdin) {"variants": [{"name": ..., "set": {path: value}}]}')
     whatif.add_argument("--prompt-tokens", type=int, help="also the route a request of this many tokens would take")
     whatif.add_argument("--deadline-s", type=float, default=WHATIF_DEADLINE_S, help=argparse.SUPPRESS)
-    whatif.add_argument("--catalog-only", action="store_true", help=argparse.SUPPRESS)   # the portal: ids only
+    # The portal: a recipe is a catalog id and facts a name in the facts directory (never a file path).
+    whatif.add_argument("--catalog-only", action="store_true", help=argparse.SUPPRESS)
     whatif.add_argument("--config", type=Path, default=config_path())
     whatif.set_defaults(ext_run=run_whatif)
     placement = commands.add_parser("placement", help="candidate placements of a model on the saved hardware facts "
@@ -86,6 +87,7 @@ def add(commands):
     placement.add_argument("--objective", choices=OBJECTIVES, default="latency")
     placement.add_argument("--top-k", type=int, default=5)
     placement.add_argument("--deadline-s", type=float, default=PLACEMENT_DEADLINE_S, help=argparse.SUPPRESS)
+    placement.add_argument("--catalog-only", action="store_true", help=argparse.SUPPRESS)
     placement.add_argument("--config", type=Path, default=config_path())
     placement.set_defaults(ext_run=run_placement)
 
@@ -158,13 +160,13 @@ def _number(value, default=None):
     return value if type(value) in (int, float) and math.isfinite(value) else default
 
 
-def resolve_facts(ref, profiles):
+def resolve_facts(ref, profiles, names_only=False):
     """(name, path, record) of the facts to use: ``ref`` (a name in the facts directory, or a file), else the newest
     record of one of ``profiles``. Refused when there is none."""
     from hyperloom.recipes import service
     if ref:
         candidate = Path(ref)
-        if not (candidate.suffix == ".json" and candidate.is_file()):
+        if names_only or not (candidate.suffix == ".json" and candidate.is_file()):
             if not service.ID.fullmatch(ref) or Path(ref).name != ref:
                 raise Refused(f"--facts {ref}: a saved facts name or an existing file")
             candidate = service.facts_dir() / (ref.removesuffix(".json") + ".json")
@@ -456,7 +458,7 @@ def whatif(args):
         source = sys.stdin.read(MAX_VARIANTS_BYTES + 1) if args.variants == "-" else _read_bounded(args.variants)
         explicit = parse_variants(source)
     variants = build_variants(parse_vary(args.vary), explicit)
-    facts_name, facts_path, record = resolve_facts(args.facts, [profile])
+    facts_name, facts_path, record = resolve_facts(args.facts, [profile], names_only=args.catalog_only)
     recipe_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
     prune_layers()
     context = {"path": str(path), "shown": recipe_id or str(path), "profile": profile, "facts": facts_path,
@@ -849,12 +851,17 @@ def build_hardware(cluster, record, model, template):
     # The control machine's host RAM, for the parts the example host device runs (token lookups).
     host_total = next((_number(f.get("host_ram_gib")) for k, f in devices.items()
                        if k in inventory and isinstance(f, dict) and _number(f.get("host_ram_gib"))), None)
-    host_template = next((d for d in templates if d.get("kind") == "cpu" and d.get("backend") == "host"), None)
     free = _number((hosts.get(pc) or {}).get("free_ram_gib")) if isinstance(hosts.get(pc), dict) else None
-    if host_template is not None and (host_total is None or free is None):
+    has_host = any(d.get("kind") == "cpu" and d.get("backend") == "host" for d in templates)
+    host_template = None if host_total is None else _template(templates, "cpu", "host", int(host_total * GIB))
+    if has_host and (host_total is None or free is None):
         excluded.append({"device": f"{pc}.host", "name": "host RAM",
                          "why": "the control machine's host RAM total or free RAM is not in the saved facts"})
-    elif host_template is not None:
+    elif has_host and host_template is None:
+        excluded.append({"device": f"{pc}.host", "name": "host RAM",
+                         "why": f"no example host device with memory within {TEMPLATE_MEMORY_TOLERANCE:.0%} of "
+                                f"{host_total:.1f} GiB: no rate evidence for it"})
+    elif host_template is not None and free is not None:
         total = int(host_total * GIB)
         allowance = int(host_template.get("memory_bytes", 0)) - int(host_template.get("reserved_bytes", 0))
         usable = max(0, min(allowance, int(free * GIB), total))
@@ -1078,7 +1085,8 @@ def placement(args):
     if not parts.is_file():
         raise Refused(f"unavailable · the pinned TensorMeld has no model parts for {model}")
     profiles = service.model_profiles(cluster, model)
-    facts_name, _, record = resolve_facts(args.facts, profiles if not args.facts else [])
+    facts_name, _, record = resolve_facts(args.facts, profiles if not args.facts else [],
+                                          names_only=args.catalog_only)
     template = _load_json(template_file())
     hardware, sources, excluded, notes = build_hardware(cluster, record, model, template)
     pc = recipe_facts.control_machine(cluster)

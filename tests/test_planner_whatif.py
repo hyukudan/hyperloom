@@ -96,6 +96,12 @@ class FactsTests(unittest.TestCase):
                 planner.resolve_facts(None, ["ds41-pair"])
             with self.assertRaisesRegex(planner.Refused, "a saved facts name"):
                 planner.resolve_facts("../old", ["ds41-rtx"])
+            # The portal names facts only inside the facts directory, even when a same-named file is elsewhere.
+            outside = Path(env.root) / "outside.json"
+            outside.write_text(old.read_text())
+            self.assertEqual(planner.resolve_facts(str(outside), ["ds41-rtx"])[1], outside)       # CLI: a file
+            with self.assertRaises(planner.Refused):
+                planner.resolve_facts(str(outside), ["ds41-rtx"], names_only=True)
 
     def test_unreadable_or_odd_records_are_skipped(self):
         with isolated() as env:

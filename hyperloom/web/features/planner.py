@@ -30,7 +30,10 @@ def register(reg):
     reg.post("planner/whatif", whatif)
     reg.post("planner/placement", placement)
     reg.capability("planner-whatif", True, "recipe variants side by side on saved hardware facts (nothing deployed)")
+    from hyperloom.recipes import facts as recipe_facts
     available, why = cli_planner.planner_available()
+    if available and not any(cli_planner.parts_file(m).is_file() for m in recipe_facts.FAMILY_MODELS_BY_ID):
+        available, why = False, "the pinned TensorMeld has model parts for none of the recipe models"
     reg.capability("placement-preview", available,
                    "advisory placements from the pinned TensorMeld planner, not qualified" if available else why)
 
@@ -157,7 +160,24 @@ def whatif_argv(api, arguments):
     if variants is not None:
         if not isinstance(variants, list) or len(variants) > cli_planner.MAX_VARIANTS - 1:
             raise ValueError(f"variants: a list of at most {cli_planner.MAX_VARIANTS - 1} variants")
-        stdin = json.dumps({"variants": variants}).encode("utf-8")
+        checked = []
+        for index, item in enumerate(variants):
+            where = f"variants[{index}]"
+            if not isinstance(item, dict) or set(item) - {"name", "set"} or not isinstance(item.get("set"), dict):
+                raise ValueError(f'{where}: expected {{"name", "set": {{path: value}}}}')
+            name = item.get("name")
+            if name is not None and (not isinstance(name, str) or not name.strip() or len(name) > cli_planner.MAX_NAME
+                                     or "\n" in name or "\0" in name):
+                raise ValueError(f"{where}.name: a nonempty line of at most {cli_planner.MAX_NAME} characters")
+            if not 1 <= len(item["set"]) <= cli_planner.MAX_PATHS:
+                raise ValueError(f"{where}.set: 1..{cli_planner.MAX_PATHS} settable paths")
+            sets = {}
+            for path, value in item["set"].items():
+                if not PATH.fullmatch(path):
+                    raise ValueError(f"{where}.set: {path!r} is not a settable path")
+                sets[path] = json.loads(_value_text(value, f"{where}.set.{path}"))
+            checked.append({"name": name, "set": sets} if name is not None else {"set": sets})
+        stdin = json.dumps({"variants": checked}).encode("utf-8")
         argv += ["--variants", "-"]
     total = 1 + (combos if vary else 0) + len(variants or [])
     if total > cli_planner.MAX_VARIANTS:
@@ -175,7 +195,7 @@ def placement_argv(api, arguments):
     unknown = set(arguments) - PLACEMENT_KEYS
     if unknown:
         raise ValueError("unknown arguments: " + ", ".join(sorted(unknown)))
-    argv = ["placement", _name(arguments, "model", required=True)]
+    argv = ["placement", _name(arguments, "model", required=True), "--catalog-only"]
     if _name(arguments, "facts") is not None:
         argv += ["--facts", arguments["facts"]]
     for key, flag, low, high in (("prompt", "--prompt", 1, 1 << 20), ("output", "--output", 1, 65536),

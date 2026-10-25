@@ -249,9 +249,12 @@
     const rows = r.predictions?.rows || [];
     if (!rows.length) return H().card("Predictions", `<p>${H().unavailable(r.predictions?.error || "the recipe has no predictions")}</p>`);
     const body = rows.map(p => H().cells([esc(p.route || "—"), esc(p.label || p.metric), `${esc(num(p.value, 3) ?? p.value)} ${esc(p.unit || "")}`,
-      esc(p.at_prompt_tokens ?? "—"), `<span class="tag basis-${esc(p.basis || "")}">${esc(p.basis || "?")}</span>`,
-      `<span class="hide-n">${esc(Array.isArray(p.evidence) ? p.evidence.join(", ") : p.evidence || "—")}</span>`]));
-    return H().card("Predictions", `<p class="hint">The recipe's own predicted rows${r.predictions.inherited ? " (a copy: its base's numbers)" : ""}. They apply to the base as written; a variant's column says "base recipe prediction, not re-measured". Nothing here is re-measured.</p>${H().table(["Route", "Metric", "Value", "At prompt tokens", "Basis", ["Evidence", "hide-n"]], body, "Predictions")}`, "predicted");
+      esc([p.at_prompt_tokens != null ? `prompt ${p.at_prompt_tokens}` : "", p.batch != null ? `batch ${p.batch}` : "",
+        p.concurrency != null ? `concurrency ${p.concurrency}` : ""].filter(Boolean).join(" · ") || "—"),
+      `<span class="tag basis-${esc(p.basis || "")}">${esc(p.basis || "?")}</span>`,
+      `<span class="hide-n">${esc(p.scope || "—")}</span>`,
+      `<span class="hide-n">${esc(Array.isArray(p.evidence) ? p.evidence.join(", ") : p.evidence || "—")}</span>`])).join("");
+    return H().card("Predictions", `<p class="hint">The recipe's own predicted rows${r.predictions.inherited ? " (a copy: its base's numbers)" : ""}. They apply to the base as written; a variant's column says "base recipe prediction, not re-measured". Nothing here is re-measured.</p>${H().table(["Route", "Metric", "Value", "Conditions", "Basis", ["Scope", "hide-n"], ["Evidence", "hide-n"]], body, "Predictions")}`, "predicted");
   }
   function saveControl(v) {
     const s = V.save[v.id] || {};
@@ -302,7 +305,12 @@
   }
   const rate = (value, unit) => num(value, 1) == null ? H().unavailable("not reported") : `${num(value, 1)} ${unit}`;
   function candidateRows(list) {
-    return list.filter(Boolean).map(c => H().cells([`<code class="mono">${esc(c.name)}</code>`, esc(c.mode || ""), memoryCell(c.memory_gib),
+    const memory = c => {
+      const unreported = (c.devices || []).filter(d => !Object.hasOwn(c.memory_gib || {}, d));
+      return memoryCell(c.memory_gib) + (c.replicas_label ? `<br><span class="hint">${esc(c.replicas_label)}</span>` : "") +
+        (unreported.length ? `<br>${unreported.map(d => `${esc(d)} ${H().unavailable("not reported by the planner")}`).join("<br>")}` : "");
+    };
+    return list.filter(Boolean).map(c => H().cells([`<code class="mono">${esc(c.name)}</code>`, esc(c.mode || ""), memory(c),
       rate(c.decode_tok_s, "tok/s") + (c.aggregate_tok_s != null ? `<br><span class="hint">aggregate ${rate(c.aggregate_tok_s, "tok/s")}</span>` : ""),
       rate(c.prefill_tok_s, "tok/s"), num(c.ttft_s, 2) == null ? H().unavailable("not reported") : `${num(c.ttft_s, 2)} s`,
       `<span class="hide-n">${(c.uses_preemptible || []).map(d => H().tag(d)).join(" ") || "—"}</span>`])).join("");
