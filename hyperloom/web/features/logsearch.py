@@ -25,6 +25,7 @@ NAMESPACE = "logsearch"
 MAX_ROOTS = 16
 MAX_RESULTS = 500
 MACHINE_DEADLINE_S = 5.0
+QUERY_DEADLINE_S = 20.0     # a machine whose call has not returned by then is reported as not answering
 WINDOWS_S = (60, 30 * 86400)
 REGEX_RULES = ("at most 128 characters", "no backreferences or lookarounds", "no quantified group: quantify single "
                "characters or classes", "matched per line on lines cut at 4 KiB")
@@ -178,19 +179,25 @@ def query(api, arguments):
     plans, limit = build(api, arguments)
     started = time.monotonic()
     results, machines = [], []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(plans))) as pool:
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(plans)))
+    try:
         futures = {pool.submit(_search, api, machine, payload): (machine, labels) for machine, payload, labels in plans}
-        for future in concurrent.futures.as_completed(futures, timeout=30):
-            machine, labels = futures[future]
+        done, waiting = concurrent.futures.wait(futures, timeout=QUERY_DEADLINE_S)
+        for future, (machine, labels) in futures.items():
             row = {"machine": machine.id, "error": None, "report": None}
-            try:
-                reply = future.result()
-                row["report"] = reply.get("report")
-                for item in reply.get("results") or []:
-                    results.append({**item, "machine": machine.id, "root": labels.get(item.get("root"), item.get("root"))})
-            except Exception as exc:
-                row["error"] = str(exc)[:300]
+            if future in waiting:
+                row["error"] = f"no answer within {QUERY_DEADLINE_S:g} s"
+            else:
+                try:
+                    reply = future.result()
+                    row["report"] = reply.get("report")
+                    for item in reply.get("results") or []:
+                        results.append({**item, "machine": machine.id, "root": labels.get(item.get("root"), item.get("root"))})
+                except Exception as exc:
+                    row["error"] = str(exc)[:300]
             machines.append(row)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
     machines.sort(key=lambda r: r["machine"])
     results.sort(key=lambda r: (-(r.get("mtime") or 0), r["machine"], r.get("file") or "", r.get("line") or 0))
     truncated = len(results) > limit

@@ -234,14 +234,22 @@ def bench_holds(api, resources):
             and (resources & set(h["resources"]) or "*" in h["resources"] or "*" in resources)]
 
 
+def _placed_on(placement, mid, cluster):
+    """True when a router/service placement ("local" = the control machine) is this machine."""
+    if placement == "local" and cluster is not None:
+        return cluster.machines.get(mid) is not None and cluster.machines[mid].access == "local"
+    return placement == mid
+
+
 def snapshot_occupancy(api, mid):
     """Why a machine looks in use from the shared 2 s snapshot (GET documents), or None."""
     try:
         rows = api.snapshot()["profiles"].get("profiles") or []
+        cluster = api.cluster()
     except Exception:
         return "profile state unavailable"
     for row in rows:
-        on = mid in (row.get("nodes") or []) or row.get("router") == mid
+        on = mid in (row.get("nodes") or []) or _placed_on(row.get("router"), mid, cluster)
         if not on:
             continue
         if row.get("state") in RUNNING_PROFILE_STATES:
@@ -282,7 +290,8 @@ def occupancy(api, cluster, mid, inside_job=False):
             return f"saved launch of profile {profile} uses {mid}", False
         try:
             saved = api.orchestrate._read(api.orchestrate._state_path(profile))
-            if (saved.get("router") or {}).get("machine") == mid or mid in (saved.get("machines") or {}):
+            if (_placed_on((saved.get("router") or {}).get("machine"), mid, cluster) or mid in (saved.get("machines") or {})
+                    or (saved.get("prefill_service") and machine is not None and machine.access == "local")):
                 return f"saved launch of profile {profile} uses {mid}", False
         except FileNotFoundError:
             pass

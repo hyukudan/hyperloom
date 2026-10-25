@@ -226,6 +226,14 @@ class ConfigTests(Base, unittest.TestCase):
         self.api.feature_post("ops/config/save", {"op": "move", "id": "halo-2", "index": 0})       # order is not identity
         self.api.feature_post("ops/config/save", {"op": "edit", "id": "halo-2", "machine": {**row, "http_address": "192.0.2.99"}})
 
+    def test_the_control_machine_is_in_use_while_a_saved_launch_routes_there(self):
+        self.api.orchestrate.statuses = {"qwen-replicas": {"profile": "qwen-replicas", "nodes": {}}}
+        self.api.orchestrate._read = lambda path: {"router": {"machine": "local"}, "machines": {}}
+        row = RAW["machines"][0]
+        with self.assertRaises(Exception) as caught:
+            self.api.feature_post("ops/config/save", {"op": "edit", "id": "workstation", "machine": {**row, "http_address": "127.0.0.2"}})
+        self.assertIn("saved launch", str(caught.exception))
+
     def test_concurrent_saves_are_serialized(self):
         version = self.version()
         errors = []
