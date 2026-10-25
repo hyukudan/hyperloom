@@ -728,7 +728,8 @@ def _admission_hold(args):
         return lambda: None
     admission = _module("hyperloom.admission")
     resources = {"*"}
-    if getattr(args, "profile", None):
+    # A snapshot (--recipe-inputs) launches with the placement it was planned on: it holds everything.
+    if getattr(args, "profile", None) and not getattr(args, "recipe_inputs", None):
         try:
             cluster = _cluster(getattr(args, "config", None) or config_path())
             resources = admission.profile_resources(cluster, args.profile, _module("hyperloom.orchestrate"))

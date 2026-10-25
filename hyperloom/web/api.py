@@ -1740,6 +1740,8 @@ class API:
         resources = set()
         if occupying or stopping:
             resources = self._resources_of_profile(profile) if isinstance(profile, str) and profile else {"*"}
+            if action == "up" and arguments.get("recipe_inputs"):
+                resources = {"*"}       # a snapshot launches with the placement it was planned on: hold everything
         jid = uuid.uuid4().hex
         with self._job_lock:
             if self._active and not priority:

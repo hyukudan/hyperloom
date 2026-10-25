@@ -130,10 +130,21 @@ class GuardAndWorkerTests(unittest.TestCase):
         from types import SimpleNamespace
         cluster = SimpleNamespace(profiles={"rtx": {"prefill_service": {"machine": "workstation", "port": 1}},
                                             "plain": {}})
-        orchestrate = SimpleNamespace(_profile=lambda c, p: (None, None, ["halo-1", "halo-2"]))
-        self.assertEqual(admission.profile_resources(cluster, "rtx", orchestrate),
-                         {"halo-1", "halo-2", "workstation", "router"})
-        self.assertEqual(admission.profile_resources(cluster, "plain", orchestrate), {"halo-1", "halo-2", "router"})
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            orchestrate = SimpleNamespace(_profile=lambda c, p: (None, None, ["halo-1", "halo-2"]),
+                                          _state_path=lambda p: Path(directory, "up-" + p + ".json"))
+            self.assertEqual(admission.profile_resources(cluster, "rtx", orchestrate),
+                             {"halo-1", "halo-2", "workstation", "router"})
+            self.assertEqual(admission.profile_resources(cluster, "plain", orchestrate),
+                             {"halo-1", "halo-2", "router"})
+            # Running with the placement it was launched on (the configuration changed since): both are held.
+            Path(directory, "up-plain.json").write_text('{"machines": {"halo-9": {}}}', encoding="utf-8")
+            self.assertEqual(admission.profile_resources(cluster, "plain", orchestrate),
+                             {"halo-1", "halo-2", "halo-9", "router"})
+            Path(directory, "up-plain.json").write_text("{", encoding="utf-8")
+            with self.assertRaises(ValueError):                 # unreadable: the caller holds everything
+                admission.profile_resources(cluster, "plain", orchestrate)
 
     def test_the_ops_preview_counts_a_cancelled_benchmark(self):
         from hyperloom.web.features import ops

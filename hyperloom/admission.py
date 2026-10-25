@@ -199,11 +199,17 @@ def for_config(config_path, clock=time.time):
 
 def profile_resources(cluster, profile, orchestrate):
     """The resource ids a profile occupies: its nodes, the machine of its prefill service (when it has one) and the
-    router. Raises when the profile is unknown (callers then hold everything)."""
+    router, as configured, plus every machine its saved running state names (a running profile keeps the placement
+    it was launched with, also when the configuration changed since). Raises when the profile is unknown or its
+    saved state is unreadable (callers then hold everything)."""
     machines = [str(m) for m in orchestrate._profile(cluster, profile)[2]]
     service = (cluster.profiles.get(profile) or {}).get("prefill_service")
     if isinstance(service, dict) and service.get("machine"):
         machines.append(str(service["machine"]))
+    state = Path(orchestrate._state_path(profile))
+    if state.exists():
+        saved = json.loads(state.read_text(encoding="utf-8"))
+        machines += [str(m) for m in (saved.get("machines") or {})]
     return {*machines, "router"}
 
 
