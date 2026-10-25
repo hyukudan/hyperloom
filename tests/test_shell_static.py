@@ -192,6 +192,40 @@ class ShellScriptContractTests(unittest.TestCase):
         self.assertIn('r.status === "fulfilled" || extra.includes(names[i])', self.script)
 
 
+class ShellSeedTests(unittest.TestCase):
+    """The browser smoke's scenario wrapper answers the same whether or not a feature registers the document."""
+
+    def test_scenarios_override_registered_and_absent_documents(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("shell_seed", Path(__file__).with_name("ui") / "seeds" / "shell.py")
+        seed = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(seed)
+        api = mock.Mock()
+        api.document = lambda name, **fields: {"schema": name, **fields}
+        with tempfile.TemporaryDirectory() as directory:
+            for registered in (True, False):
+                def real_load(modules=features.MODULES):
+                    reg = features.Registry()
+                    if registered:
+                        reg.get("health/summary", lambda api, query: {"real": True})
+                    return reg
+                with mock.patch.object(features, "load", real_load):
+                    patched = dict(((owner, name), value) for owner, name, value in seed.patches(directory, 0))
+                    handler = patched[(features, "load")]().gets["health/summary"]
+                path = Path(directory) / "shell-scenario.json"
+                path.unlink(missing_ok=True)
+                if registered:
+                    self.assertEqual(handler(api, {}), {"real": True})
+                else:
+                    self.assertRaises(LookupError, handler, api, {})
+                path.write_text(json.dumps({"health/summary": "missing"}))
+                self.assertRaises(LookupError, handler, api, {})
+                path.write_text(json.dumps({"health/summary": "fail"}))
+                self.assertRaises(RuntimeError, handler, api, {})
+                path.write_text(json.dumps({"health/summary": {"counts": {}}}))
+                self.assertEqual(handler(api, {})["counts"], {})
+
+
 class ThemeTokenTests(unittest.TestCase):
     def test_light_dark_and_true_black_meet_aa(self):
         self.assertEqual(smoke.check_contrast(themes_checked=("light", "dark", "black")), 45)

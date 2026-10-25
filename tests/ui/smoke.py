@@ -726,11 +726,21 @@ def shell_walkthrough(client, server, output):
                                  + str(client.evaluate("[document.querySelector('#main [role=status]')?.textContent, JSON.stringify(window.Hyperloom.prefs())]"))) from None
 
     def scenario(content):
+        # The fixture process reads this file on every request; Windows refuses to replace or remove a file another
+        # process has open, so a refused attempt is repeated.
         path = server.directory / "shell-scenario.json"
-        if content is None:
-            path.unlink(missing_ok=True)
-        else:
-            path.write_text(json.dumps(content), encoding="utf-8")
+        for _ in range(100):
+            try:
+                if content is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    staged = path.with_suffix(".tmp")
+                    staged.write_text(json.dumps(content), encoding="utf-8")
+                    os.replace(staged, path)
+                return
+            except PermissionError:
+                time.sleep(0.05)
+        raise AssertionError("shell: the scenario file stayed locked")
 
     # A recording stand-in for the browser's notifications (headless Chrome shows none).
     client.call("Page.addScriptToEvaluateOnNewDocument", source="""
@@ -957,7 +967,7 @@ def shell_walkthrough(client, server, output):
     try:
         scenario({"health/summary": dict(base, evaluated_at=time.time()), "overview": overview})
         go("#/probe-owner", "document.getElementById('probe-owner')?.textContent === 'critical 1'", reload=True)
-        scenario({"overview": overview})
+        scenario({"health/summary": "missing", "overview": overview})
         wait("/Probe owner data unavailable/.test(document.querySelector('main').innerText) && document.getElementById('exceptions').hidden")
         scenario({"health/summary": dict(base, evaluated_at=time.time()), "overview": overview})
         wait("document.getElementById('probe-owner')?.textContent === 'critical 1' && !document.getElementById('exceptions').hidden")
@@ -985,8 +995,9 @@ def shell_walkthrough(client, server, output):
     go("#/settings")
     shot("settings", "light", 390)
     viewport(1440, "light")
-    scenario(None)
+    scenario({"health/summary": "missing", "overview": "missing"})
     go("#/devices", "document.getElementById('exceptions').hidden && !document.title.startsWith('(')", reload=True)
+    scenario(None)
     client.evaluate("localStorage.removeItem('hyperloom-notify')")
     if client.errors:
         raise AssertionError("shell: browser console/exception errors: " + json.dumps(client.errors))
@@ -1069,11 +1080,22 @@ def shell_service_worker(client, server):
         wait(f"{registered}.then(n => n === 1)")
         (restarted.directory / "no-sw").touch()
         client.call("ServiceWorker.enable")
-        client.call("ServiceWorker.stopAllWorkers")
-        time.sleep(1.5)                      # let the old instance stop: the next one starts with no recent check
-        client.call("Page.navigate", url=server.url + "not-a-page")
-        wait("document.readyState === 'complete' && !document.querySelector('meta[name=hyperloom-csrf]')")
-        wait(f"{registered}.then(n => n === 0)")
+        for attempt in range(3):
+            # A stopped worker starts again for the next navigation with no recent self-check. The stop command can
+            # take long on a loaded machine; a later attempt repeats it.
+            try:
+                client.call("ServiceWorker.stopAllWorkers")
+            except TimeoutError:
+                pass
+            time.sleep(1.5)
+            client.call("Page.navigate", url=server.url + f"not-a-page-{attempt}")
+            wait("document.readyState === 'complete' && !document.querySelector('meta[name=hyperloom-csrf]')")
+            try:
+                wait(f"{registered}.then(n => n === 0)", timeout=15)
+                break
+            except AssertionError:
+                if attempt == 2:
+                    raise
         wait(f"{shell_caches}.then(ks => ks.length === 0)")
         client.call("ServiceWorker.disable")
         if client.errors:

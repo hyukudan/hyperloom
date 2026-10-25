@@ -1,7 +1,8 @@
 """Portal shell fixtures for the browser smoke (no telemetry history).
 
 - Shell scenarios: while ``<fixture dir>/shell-scenario.json`` exists, the documents named in it (``health/summary``,
-  ``overview``) answer its content (the string ``"fail"`` makes that request fail); otherwise they answer what the registered feature answers, or 404 when no
+  ``overview``) answer its content (the string ``"fail"`` makes that request fail, ``"missing"`` answers 404 as when no feature
+  registers it); otherwise they answer what the registered feature answers, or 404 when no
   feature registers them. The walkthrough writes and removes the file, so its assertions do not depend on which
   other features are installed.
 - While ``<fixture dir>/no-sw`` exists, the static assets manifest omits ``sw.js`` (the portal then answers 404 for
@@ -10,6 +11,7 @@
 
 import json
 from pathlib import Path
+import time
 
 
 SHELL_DOCUMENTS = ("health/summary", "overview")
@@ -22,10 +24,14 @@ def patches(directory, now):
 
     def scenario():
         path = directory / "shell-scenario.json"
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return {}
+        for _ in range(40):
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                return {}
+            except (PermissionError, ValueError):
+                time.sleep(0.025)           # being replaced by the walkthrough: read it again
+        return {}
 
     def load(modules=features.MODULES):
         registry = real_load(modules)
@@ -37,6 +43,8 @@ def patches(directory, now):
                 if name in current:
                     if current[name] == "fail":
                         raise RuntimeError("fixture: " + name + " is failing")
+                    if current[name] == "missing":
+                        raise LookupError("unknown endpoint")      # as if no feature registered it
                     return api.document(name.replace("/", "-"), **current[name])
                 if real is not None:
                     return real(api, query)
