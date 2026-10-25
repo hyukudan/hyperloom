@@ -74,7 +74,7 @@ token `{placement}`, which expands to the plan's flags (capped start) or to `unp
   (layers 0-19 stream, 20-39 keep 334..383 experts, slots 7.64 GB, experts 71.5 GB).
 - DS front: 96.0 GB at K=22. DS hot: 9.55 GiB reserve (W1), which reproduces W1's 5,442 / 6,521 / 7,600 / 8,678
   experts at 60 / 70 / 80 / 90 GiB.
-- CUDA context: 1.0 GiB (DS) / 0.6 GiB (MiniMax, Qwen) until the PC-BIG measures it. On the DS service ~2.5 GiB is
+- CUDA context: 1.0 GiB (DS) / 0.6 GiB (MiniMax, Qwen) until it is measured on the device. On the DS service ~2.5 GiB is
   gone before planning (context + display + driver); the margin covers the difference. Re-check against the
   on-device measurement before shrinking any margin.
 
