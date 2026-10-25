@@ -669,7 +669,7 @@ def seed_fixtures(directory, now):
 
 
 def browser_smoke(chrome, server, output, *, keyboard=False, keyboard_only=False, recipes_only=False):
-    with tempfile.TemporaryDirectory(prefix="hyperloom-chrome-") as profile:
+    with tempfile.TemporaryDirectory(prefix="hyperloom-chrome-", ignore_cleanup_errors=True) as profile:
         port = free_port()
         command = [chrome, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-first-run", "--no-default-browser-check",
                    "--disable-background-networking", "--disable-component-update", "--disable-sync",
