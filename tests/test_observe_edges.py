@@ -7,7 +7,7 @@ import unittest
 from unittest import mock
 
 from hyperloom.web.features import observe
-from tests.fixtures.observe.fakes import NODE1, ROUTER, Env, fixture
+from tests.fixtures.observe.fakes import LOOPBACK, NODE1, NODE2, ROUTER, Env, fixture
 
 
 QWEN = [("halo-1", NODE1, 18501)]
@@ -191,3 +191,92 @@ class CadenceAndAgeTests(Base):
         env.collect()
         self.assertEqual(observe.requests_document(env.api, {})["inventory"]["omitted"]["profiles"], 3)
         self.assertEqual(observe.engines_document(env.api, {})["inventory"]["omitted"]["profiles"], 3)
+
+
+class RetainedReadingTests(unittest.TestCase):
+    """Node samples read through the fleet hand-off: their own times, retained histograms, failed-round cadence."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.env = Env(self.tmp.name).__enter__()
+        self.loopback = observe.str(observe.ipaddress.ip_address(observe.socket.INADDR_LOOPBACK)) \
+            if hasattr(observe, "str") else str(observe.ipaddress.ip_address(observe.socket.INADDR_LOOPBACK))
+        self.env.launch("lb", [("halo-1", self.loopback, 18502)], router=(NODE1, 18600))
+        self.env.router(base=f"http://{NODE1}:18600")
+
+    def tearDown(self):
+        self.env.__exit__(None, None, None)
+        self.tmp.cleanup()
+
+    def fleet(self, ts, status=None, metrics=None):
+        self.env.store.put("fleet/engine", "halo-1:lb:18502", {
+            "ts": ts, "machine": "halo-1", "profile": "lb", "port": 18502, "replica": "halo-1",
+            "outcomes": {"/health": "ok", "/api/status?detail=1": "ok", "/metrics": "ok"}, "health": True,
+            "status": status if status is not None else fixture("engine-status-c1.json"),
+            "metrics_text": metrics if metrics is not None else fixture("engine-metrics-c1.txt")})
+
+    def test_advancing_completions_at_the_samples_own_time(self):
+        env = self.env
+        self.fleet(env.clock() - 2)
+        self.assertEqual(env.collect(), [])
+        status = fixture("engine-status-c1.json")
+        status["completed"] = 60
+        self.fleet(env.clock() - 2, status, fixture("engine-metrics-c1.txt").replace(
+            "strix_requests_completed_total 59", "strix_requests_completed_total 60"))
+        self.assertEqual(env.collect(), [])
+        snapshot = env.store.get("observe/engine", "lb/halo-1")
+        self.assertIn("completed counter moved", snapshot["last_served_basis"])
+        self.assertEqual(snapshot["completed"], 60)
+        up = env.store.query("engine_up", 0, 2e9, tier="raw")["lines"][0]["points"]
+        self.assertEqual(len(up), 2)
+        completed = env.store.query("engine_completed_requests", 0, 2e9)["lines"]
+        self.assertEqual(sum(p[5] for line in completed for p in line["points"]), 1)
+
+    def test_retained_histograms_keep_their_payload_and_time(self):
+        env = self.env
+        metrics = "\n".join(line for line in fixture("engine-metrics-c1.txt").splitlines()
+                            if not line.startswith("strix_ttft_seconds"))
+        sampled = env.clock() - 2
+        self.fleet(sampled, metrics=metrics)
+        env.collect()
+
+        def status_ttft():
+            return [h for h in observe.latency_document(env.api, {})["histograms"]
+                    if h["observer"] == "engine" and h["family"] == "ttft_seconds"]
+        first = status_ttft()
+        self.assertTrue(first)
+        env.collect()                                   # the same node sample read again
+        again = status_ttft()
+        self.assertTrue(again)
+        self.assertEqual([h["as_of"] for h in again], [h["as_of"] for h in first])
+        self.assertEqual(env.store.get("observe/engine", "lb/halo-1")["histograms_at"]["status"], sampled)
+
+    def test_retained_metrics_histograms_after_an_unknown_reading(self):
+        env = self.env
+        env.launch("qwen", [("halo-1", NODE1, 18501)])
+        env.router()
+        env.engine(NODE1, 18501)
+        env.collect()
+        before = env.store.get("observe/engine", "qwen/halo-1")["histograms_at"]
+        for path in ("/health", "/api/status", "/metrics"):
+            env.http.routes[f"http://{NODE1}:18501{path}"] = TimeoutError("deadline")
+        env.collect()
+        snapshot = env.store.get("observe/engine", "qwen/halo-1")
+        self.assertEqual(snapshot["state"], "not read")
+        self.assertEqual(snapshot["histograms_at"], before)
+        self.assertTrue(snapshot["extra"]["histograms"])
+
+    def test_failed_rounds_use_the_configured_cadence(self):
+        env = self.env
+        env.store.delete("fleet/engine", "halo-1:lb:18502")
+        env.launch("lb", [("halo-1", NODE2, 18502)], router=(NODE1, 18600))     # a LAN engine that does not answer
+        for interval in (20.0, 30.0):
+            env.api.sampler = type("S", (), {"collectors": {"observe-engines": (None, interval)}})()
+            try:
+                with self.assertRaises(RuntimeError):
+                    observe.sample_engines(env.api, env.clock())
+            finally:
+                del env.api.sampler
+            point = env.store.query("engine_up", 0, 2e9, tier="raw")["lines"][0]["points"][-1]
+            self.assertEqual((point[6], point[8]), (0, interval))
+            env.clock.now += interval

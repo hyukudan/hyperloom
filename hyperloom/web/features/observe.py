@@ -840,9 +840,9 @@ def _engine_sample(store, launch, replica, reading, now, interval=INTERVAL):
               and observed_at <= previous["observed_at"] and reading["via"] != "direct")
     stale = bool(reading.get("stale"))
     if observed_at is None or repeat or stale or reading.get("unknown"):
-        keep = {k: previous.get(k) for k in ("status", "metrics", "observed", "extra", "model", "instance",
-                                             "instance_basis", "started_at", "last_served", "last_served_basis",
-                                             "completed", "state", "observed_at")}
+        keep = {k: previous.get(k) for k in ("status", "metrics", "observed", "extra", "status_histograms",
+                                             "histograms_at", "model", "instance", "instance_basis", "started_at",
+                                             "last_served", "last_served_basis", "completed", "state", "observed_at")}
         snapshot.update({k: v for k, v in keep.items() if v is not None})
         if observed_at is None:
             snapshot["state"] = "unavailable"
@@ -989,9 +989,10 @@ def _engine_sample(store, launch, replica, reading, now, interval=INTERVAL):
     if same and previous.get("last_served") is not None and (last is None or previous["last_served"] > last):
         last, last_basis = previous["last_served"], previous.get("last_served_basis")
     if same and previous.get("completed") is not None and completed is not None and completed > previous["completed"]:
-        interval = [previous.get("observed_at"), observed_at]
+        between = previous.get("observed_at")
         if last is None or observed_at > last:
-            last, last_basis = observed_at, f"completed counter moved between samples ({interval[0]:.0f}..{observed_at:.0f})"
+            last, last_basis = observed_at, (f"completed counter moved between samples ({between:.0f}..{observed_at:.0f})"
+                                             if between is not None else "completed counter moved since the last sample")
     status_histograms = {name: lines for name, lines in (observed.get("histograms") or {}).items()
                          if name not in ((extra or {}).get("histograms") or {})}
     snapshot["histograms_at"] = {"metrics": reading.get("metrics_at", observed_at), "status": reading.get("status_at", observed_at)}
@@ -1119,22 +1120,23 @@ def _service_sample(store, launch, now, deadline):
     return True
 
 
-def _sample(collect, api, now):
+def _sample(collect, api, now, name):
     store = _store(api)
     points, attempted, succeeded = collect(api, now, store)
     if attempted and not succeeded:
-        # Keep what was learned (engine_up = 0), then report the failure to the sampler (C10: source stale).
-        store.record(points, ts=now, interval=INTERVAL)
+        # Keep what was learned (engine_up = 0) at the collector's configured cadence, then report the failure to
+        # the sampler (C10: source stale).
+        store.record(points, ts=now, interval=collector_interval(api, name))
         raise RuntimeError(f"no source answered ({attempted} tried)")
     return points
 
 
 def sample_router(api, now):
-    return _sample(collect_router, api, now)
+    return _sample(collect_router, api, now, "observe-router")
 
 
 def sample_engines(api, now):
-    return _sample(collect_engines, api, now)
+    return _sample(collect_engines, api, now, "observe-engines")
 
 
 # ------------------------------------------------------------------------------------------------- documents
