@@ -24,6 +24,7 @@ WORDS = ("amber", "basin", "cedar", "delta", "ember", "fjord", "grove", "harbor"
          "yonder", "zephyr", "lantern", "compass", "granite", "harvest", "mosaic", "pioneer", "ripple", "saddle", "timber")
 CALIBRATION_CHARS = 4000
 MIN_SIZE = 1024
+MAX_CONTEXT = 4_194_304
 
 
 def filler(chars, seed):
@@ -65,7 +66,6 @@ def validate(api, arguments):
     if sizes is not None and (not isinstance(sizes, list) or not 1 <= len(sizes) <= 16
                               or any(type(v) is not int or not MIN_SIZE <= v <= 4_194_304 for v in sizes)):
         raise ValueError(f"sizes: 1..16 token counts in {MIN_SIZE}..4194304")
-    limit = row.get("context_tokens") or max_context
     args["sizes"] = sorted(set(sizes)) if sizes else None
     # The reported context is only known once the run starts: plan for the largest sweep it could allow.
     # (A declared max_context does not cap it: the endpoint's own report wins at run start.)
@@ -122,7 +122,7 @@ def trial(run, size, chars, reply_tokens):
 def run(run):
     args = run.arguments
     reply_tokens = args["max_tokens"]
-    limit = run.context_tokens or args.get("max_context")
+    limit = min(run.context_tokens or args.get("max_context") or 0, MAX_CONTEXT) or None     # the plan covers 4M at most
     run.summary.update(max_tokens=reply_tokens, trials=args["trials"], sizes=[],
                        context_limit=limit, context_basis="reported" if run.context_tokens else
                        ("declared" if args.get("max_context") else "unavailable"),
