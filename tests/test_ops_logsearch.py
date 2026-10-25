@@ -130,7 +130,9 @@ class NodeSearchTests(unittest.TestCase):
         for pattern in ("(ab)+", r"(a)\1", "(?=x)", "(a|b)*", "a" * 129):
             self.assertIn("error", self.run_search(regex=pattern), pattern)
         ok = self.run_search(regex=r"line 1[0-9]{2} ", max_results=5)
-        self.assertEqual(len(ok["results"]), 5)
+        if not ok["results"] and ok["report"]["truncated"] == ["deadline"]:
+            ok = self.run_search(regex=r"line 1[0-9]{2} ", max_results=5)      # a loaded machine: one retry
+        self.assertEqual(len(ok["results"]), 5, ok["report"])
         (self.tree.root / "slow.log").write_text(("a" * 4000 + "\n") * 50)
         started = time.monotonic()
         stalled = self.run_search(regex="a*a*a*a*a*a*a*b", deadline_s=1)

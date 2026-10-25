@@ -564,8 +564,8 @@ def _no_window():
 
 def _run_worker(opts, results, deadline):
     child = subprocess.Popen([sys.executable, "-I", str(Path(__file__).resolve()), "--worker"],
-                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, **_no_window())
-    lines, size = [], [0]
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **_no_window())
+    lines, size, errors = [], [0], bytearray()
 
     def read():
         try:
@@ -576,8 +576,17 @@ def _run_worker(opts, results, deadline):
                 lines.append(raw)
         except (OSError, ValueError):
             pass
+
+    def read_errors():
+        try:
+            while chunk := child.stderr.read(4096):
+                errors.extend(chunk[:max(0, 8192 - len(errors))])
+        except (OSError, ValueError):
+            pass
     reader = threading.Thread(target=read, daemon=True)
+    error_reader = threading.Thread(target=read_errors, daemon=True)
     reader.start()
+    error_reader.start()
     try:
         child.stdin.write(json.dumps(opts).encode("utf-8"))
         child.stdin.close()
@@ -589,7 +598,9 @@ def _run_worker(opts, results, deadline):
         child.kill()
     child.wait()
     reader.join(2)
+    error_reader.join(2)
     child.stdout.close()
+    child.stderr.close()
     report = None
     for raw in lines:
         try:
@@ -600,13 +611,17 @@ def _run_worker(opts, results, deadline):
             results.append(row["item"])
         elif row.get("type") == "report":
             report = row["report"]
-    if report is None:
-        report = {"files": None, "bytes": None, "results": len(results), "truncated": [], "roots": [],
-                  "skipped_binary": None}
-    if stopped or report.get("results") is None:
-        report["truncated"] = sorted(set(report["truncated"]) | {"deadline"})
-        report["why"] = "the regex worker was stopped at the deadline; results found so far are listed"
-    return report
+    if report is not None and not stopped:
+        return report
+    partial = {"files": None, "bytes": None, "results": len(results), "truncated": [], "roots": [], "skipped_binary": None}
+    if stopped:
+        partial["truncated"] = ["deadline"]
+        partial["why"] = "the regex worker was stopped at the deadline; results found so far are listed"
+    else:
+        last = errors.decode("utf-8", "replace").strip().splitlines()[-1:] or ["no report"]
+        partial["truncated"] = ["worker"]
+        partial["why"] = "the regex worker ended without a report (exit " + str(child.returncode) + "): " + redact(last[0])[:200]
+    return partial
 
 
 def worker_main():
