@@ -282,6 +282,12 @@ class ContractTests(unittest.TestCase):
             self.assertEqual(self.portal.request("GET", "recipes")[0], 500)
         with mock.patch.object(self.portal.api, "recipe_post", side_effect=TypeError("boom")):
             self.assertEqual(self.portal.request("POST", "recipes/validate", {"recipe": QWEN})[0], 500)
+        # The feature routes answer the same way (a GET document, a synchronous feature POST).
+        with mock.patch.object(self.portal.api, "read", side_effect=TypeError("boom")):
+            self.assertEqual(self.portal.request("GET", "planner")[0], 500)
+        with mock.patch.object(self.portal.api, "feature_post", side_effect=TypeError("boom")):
+            status, document = self.portal.request("POST", "planner/whatif", {"recipe": QWEN})
+        self.assertEqual((status, document["error"]), (500, "internal error (TypeError)"))
 
     def test_edits_are_one_overrides_layer(self):
         service.user_dir().mkdir(parents=True, exist_ok=True)
