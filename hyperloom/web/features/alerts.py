@@ -170,13 +170,13 @@ def _validated(arguments, existing):
     if not isinstance(name, str) or not 1 <= len(name.strip()) <= 64 or not name.isprintable():
         raise ValueError("name must be 1..64 printable characters")
     kind = arguments.get("kind", record.get("kind"))
-    if kind not in KINDS or existing is not None and kind != existing.get("kind"):
+    if not isinstance(kind, str) or kind not in KINDS or existing is not None and kind != existing.get("kind"):
         raise ValueError("kind must be webhook or push (and cannot change)")
     severity = arguments.get("min_severity", record.get("min_severity", "warning"))
-    if severity not in SEVERITIES:
+    if not isinstance(severity, str) or severity not in SEVERITIES:
         raise ValueError("min_severity must be info, warning or critical")
     reminders = arguments.get("reminders", record.get("reminders", "none"))
-    if reminders not in REMINDERS:
+    if not isinstance(reminders, str) or reminders not in REMINDERS:
         raise ValueError("reminders must be none, 1h, 4h, 12h or 24h")
     url = arguments.get("url")
     if url is None and existing is None:
@@ -429,8 +429,8 @@ def _when(ts):
     return time.strftime("%H:%M UTC", time.gmtime(ts)) if isinstance(ts, (int, float)) else "?"
 
 
-def text(items):
-    lines = []
+def text(items, message_id=None):
+    lines = [f"hyperloom alert {message_id}"] if message_id else []
     for item in items:
         lines.append(" · ".join(str(part) for part in (item.get("state", "").upper(), item.get("severity"), item.get("title"),
                                                       item.get("detail"), "since " + _when(item.get("since"))) if part))
@@ -441,7 +441,7 @@ def payload(kind, channel_kind, message_id, items, now):
     if channel_kind == "webhook":
         body = {"schema": "hyperloom/alert-v1", "message_id": message_id, "kind": kind, "sent_at": now, "items": items}
         return json.dumps(body, ensure_ascii=True, allow_nan=False, default=str).encode("utf-8"), "application/json"
-    return text(items).encode("utf-8"), "text/plain; charset=utf-8"
+    return text(items, message_id).encode("utf-8"), "text/plain; charset=utf-8"
 
 
 class Expired(Exception):
@@ -727,7 +727,7 @@ def _audit_arguments(arguments):
     if isinstance(name, str) and 1 <= len(name.strip()) <= 64 and name.isprintable():
         safe["name"] = name.strip()
     for key, allowed in (("kind", KINDS), ("min_severity", SEVERITIES), ("reminders", tuple(REMINDERS))):
-        if arguments.get(key) in allowed:
+        if isinstance(arguments.get(key), str) and arguments[key] in allowed:
             safe[key] = arguments[key]
     if "url" in arguments:
         try:

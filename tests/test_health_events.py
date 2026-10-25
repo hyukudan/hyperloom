@@ -171,6 +171,14 @@ class MirrorTests(Base):
         self.assertEqual(self.mirrored(), ["first", "ok", "after"])
         self.assertGreaterEqual(self.store.get(events.CURSOR, "audit")["skipped"], 2)
 
+    def test_a_malformed_entry_never_stalls_the_mirror(self):
+        self.append(audit_line("first", T0))
+        self.collect()
+        self.append(json.dumps({"when": "x", "action": "bad", "result": {"state": []}}) + "\n"
+                    + json.dumps({"action": "worse", "result": {"state": {}}, "arguments": []}) + "\n" + audit_line("after", T0))
+        self.collect()
+        self.assertEqual(self.mirrored()[-1], "after")
+
     def test_first_run_reads_only_the_recent_tail(self):
         self.append("".join(audit_line(f"old{i}", T0 - 100) for i in range(800)) + audit_line("newest", T0))
         self.collect()

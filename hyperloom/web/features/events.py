@@ -215,7 +215,7 @@ def entry_event(entry, now, cutoff):
         return None
     result = entry.get("result") if isinstance(entry.get("result"), dict) else {}
     arguments = entry.get("arguments") if isinstance(entry.get("arguments"), dict) else {}
-    state = result.get("state") if result.get("state") in STATES else None
+    state = result.get("state") if isinstance(result.get("state"), str) and result["state"] in STATES else None
     job = result.get("job") if isinstance(result.get("job"), str) and JOB.fullmatch(result["job"]) else None
     profile = health._clean(arguments.get("profile"))
     machine = health._clean(arguments.get("machine"))
@@ -278,7 +278,7 @@ def mirror(api, store, owner, generation, now):
             continue
         try:
             event = entry_event(json.loads(line.decode("utf-8")), now, cutoff)
-        except (UnicodeError, ValueError):
+        except (UnicodeError, ValueError, TypeError, AttributeError):   # malformed: skipped and counted, never a stall
             skipped += 1
             continue
         if event is not None:

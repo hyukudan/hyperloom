@@ -457,16 +457,23 @@ class RuleTests(Base):
         self.assertEqual([(e["data"]["new"], "new boot" in e["message"]) for e in self.store.events(category="usb4")],
                          [({"reset": 1}, True), ({"reset": 2}, False)])
 
-    def test_turns_document_is_read_when_registered(self):
-        self.assertIsNone(self.verdicts("turn-over-cap"))
-        registry = features.load()
+    def test_turns_follow_the_producers_fresh_verdicts_only(self):
+        registry = features.Registry()
         registry.gets["turns"] = lambda api, query: {"nodes": [
-            {"machine": "halo-1", "holder": {"label": "bench", "since": self.clock.now - 900, "cap_s": 480}},
-            {"machine": "halo-2", "holder": None}, {"machine": "halo-3", "holder": {"label": "x"}}]}
+            {"machine": "halo-1", "state": "ok", "holder": {"label": "bench", "parsed": True, "since": 0.0,
+                                                             "elapsed_s": 900.0, "cap_s": 480.0, "past_cap": True}},
+            # the node clock differs from ours: the producer's corrected verdict wins
+            {"machine": "halo-2", "state": "ok", "holder": {"label": "x", "since": self.clock.now - 9000,
+                                                             "elapsed_s": 60.0, "cap_s": 480.0, "past_cap": False}},
+            {"machine": "halo-3", "state": "unavailable", "holder": None},                 # unreadable: unknown
+            {"machine": "halo-4", "state": "stale", "holder": {"past_cap": True}},          # stale: unknown
+            {"machine": "halo-5", "state": "ok", "holder": None},                           # fresh, nobody holds
+            {"machine": "halo-6", "state": "ok", "holder": {"label": "y", "parsed": False}}]}
         features.reset(registry)
         self.addCleanup(features.reset)
-        self.assertEqual(self.verdicts("turn-over-cap"), {"halo-1/turn": (True, "warning"), "halo-2/turn": (False, "warning"),
-                                                         "halo-3/turn": (None, "warning")})
+        verdicts = {k: v[0] for k, v in self.verdicts("turn-over-cap").items()}
+        self.assertEqual(verdicts, {"halo-1/turn": True, "halo-2/turn": False, "halo-3/turn": None, "halo-4/turn": None,
+                                    "halo-5/turn": False, "halo-6/turn": None})
 
     def test_node_tool_from_the_operations_records_without_node_calls(self):
         from hyperloom import remote

@@ -767,32 +767,34 @@ def _usb4_evidence(ctx, p):
 
 
 def _turns(ctx, p):
+    """The operations package's turns document: per node {state, holder}. Only a node read fresh and successfully
+    (state "ok") is judged; its holder's ``past_cap`` (computed by the producer on the node's corrected clock) is the
+    verdict, and ``holder: null`` from such a node is positive evidence that no turn is held. Anything else is
+    unknown."""
     document = ctx.feature("turns")
     if not isinstance(document, dict) or not isinstance(document.get("nodes"), list):
         return None
     out = []
     for node in document["nodes"]:
         machine = _clean(node.get("machine")) if isinstance(node, dict) else None
-        if not machine or "holder" not in node:
+        if not machine:
+            continue
+        subject = _subject(machine, "turn")
+        if node.get("state") != "ok" or "holder" not in node:
+            out.append(Obs(subject, None))
             continue
         holder = node["holder"]
         if holder is None:
-            out.append(Obs(_subject(machine, "turn"), False, "warning", f"{machine}: no GPU turn held", machine))
+            out.append(Obs(subject, False, "warning", f"{machine}: no GPU turn held", machine))
             continue
-        if not isinstance(holder, dict):
+        if not isinstance(holder, dict) or not isinstance(holder.get("past_cap"), bool):
+            out.append(Obs(subject, None))
             continue
-        since = holder.get("since", holder.get("started_at"))
-        cap = holder.get("cap_s")
         label = holder.get("label") if isinstance(holder.get("label"), str) and len(holder["label"]) <= 80 else "holder"
-        if holder.get("past_cap") is True:
-            verdict = True
-        elif _number(since) is not None and _number(cap) is not None:
-            verdict = ctx.now - since > cap
-        else:
-            verdict = None
-        detail = f"{machine}: GPU turn {label}" + (f" held {(ctx.now - since) / 60:.0f} min of a {cap / 60:.0f} min cap"
-                                                  if _number(since) is not None and _number(cap) else "")
-        out.append(Obs(_subject(machine, "turn"), verdict, "warning", detail, machine))
+        elapsed, cap = _number(holder.get("elapsed_s")), _number(holder.get("cap_s"))
+        detail = f"{machine}: GPU turn {label}" + (f" held {elapsed / 60:.0f} min of a {cap / 60:.0f} min cap"
+                                                  if elapsed is not None and cap else "")
+        out.append(Obs(subject, holder["past_cap"], "warning", detail, machine))
     return out
 
 

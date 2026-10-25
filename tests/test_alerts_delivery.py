@@ -151,6 +151,10 @@ class URLTests(Base):
         self.assertEqual([a[2]["state"] for a in self.api.audits], ["succeeded"] + ["refused"] * len(bad))
         updated = alerts.channels_post(self.api, {"id": result["id"], "min_severity": "critical"})
         self.assertEqual((updated["min_severity"], updated["url_masked"]), ("critical", result["url_masked"]))
+        for odd in ({"reminders": {}}, {"reminders": []}, {"min_severity": {}}, {"kind": []}):
+            with self.assertRaises(ValueError):
+                alerts.channels_post(self.api, {"name": "x", "kind": "push", "url": self.receiver.url("/"), **odd})
+        self.assertEqual(self.api.audits[-1][2]["state"], "refused")
         with self.assertRaises(ValueError) as caught:
             alerts.channels_post(self.api, {"name": "x", "kind": "push", "url": self.receiver.url("/"), "password=" + TOKEN: 1})
         self.assertNotIn(TOKEN, str(caught.exception) + json.dumps(self.api.audits))
@@ -387,7 +391,9 @@ class DeliveryTests(Base):
         self.deliver()
         _, content_type, body = self.receiver.received[0]
         self.assertTrue(content_type.startswith("text/plain"))
-        self.assertTrue(body.decode().startswith("FIRING · critical · GPU hot"))
+        first, second = body.decode().split("\n")[:2]
+        self.assertTrue(first.startswith("hyperloom alert ") and len(first.split()[-1]) == 32)    # the stable message id
+        self.assertTrue(second.startswith("FIRING · critical · GPU hot"))
 
     def test_total_deadline_against_a_slow_receiver(self):
         self.receiver.delay = 3.0
