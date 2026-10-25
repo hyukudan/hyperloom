@@ -1,0 +1,283 @@
+{
+ "schema": "hyperloom/node-v1",
+ "verb": "host",
+ "checks": {
+  "boot_id": {
+   "status": "ok",
+   "value": "00000002-0000-4000-8000-000000000002"
+  },
+  "uptime_s": {
+   "status": "ok",
+   "value": 160836.99
+  },
+  "load": {
+   "status": "ok",
+   "value": [
+    1.68,
+    1.47,
+    1.55
+   ]
+  },
+  "cpu": {
+   "status": "ok",
+   "value": {
+    "busy_percent": 8.602150537634408,
+    "total": 515635285,
+    "idle": 500136609,
+    "cores": 32
+   }
+  },
+  "memory": {
+   "status": "ok",
+   "value": {
+    "MemTotal": 131745648640,
+    "MemFree": 25755914240,
+    "MemAvailable": 39800623104,
+    "Buffers": 13877248,
+    "Cached": 15118053376,
+    "SwapTotal": 8589930496,
+    "SwapFree": 8031440896,
+    "Shmem": 149528576
+   }
+  },
+  "gpus": {
+   "status": "ok",
+   "value": [
+    {
+     "card": "card0",
+     "busy_percent": 91,
+     "vram_used_bytes": 174448640,
+     "vram_total_bytes": 536870912,
+     "vis_vram_used_bytes": 174448640,
+     "vis_vram_total_bytes": 536870912,
+     "gtt_used_bytes": 88564572160,
+     "gtt_total_bytes": 125829120000,
+     "hwmon": "hwmon5",
+     "temps": [
+      {
+       "sensor": "edge",
+       "celsius": 71.0
+      }
+     ],
+     "power_w": 122.694,
+     "power_sensor": "PPT",
+     "power_field": "average",
+     "power_cap_w": null,
+     "sclk_mhz": 2746,
+     "why": {
+      "power_cap_w": "no readable power cap for this card"
+     }
+    }
+   ]
+  },
+  "sensors": {
+   "status": "ok",
+   "value": [
+    {
+     "hwmon": "hwmon0",
+     "name": "acpitz",
+     "device": "thermal_zone0",
+     "temps": [
+      {
+       "sensor": "temp1",
+       "celsius": 62.0
+      }
+     ],
+     "power": [],
+     "freq": []
+    },
+    {
+     "hwmon": "hwmon1",
+     "name": "nvme",
+     "device": "nvme0",
+     "temps": [
+      {
+       "sensor": "Composite",
+       "celsius": 54.85
+      },
+      {
+       "sensor": "Sensor 1",
+       "celsius": 54.85
+      },
+      {
+       "sensor": "Sensor 2",
+       "celsius": 56.85
+      }
+     ],
+     "power": [],
+     "freq": []
+    },
+    {
+     "hwmon": "hwmon2",
+     "name": "k10temp",
+     "device": "0000:00:18.3",
+     "temps": [
+      {
+       "sensor": "Tctl",
+       "celsius": 77.25
+      }
+     ],
+     "power": [],
+     "freq": []
+    },
+    {
+     "hwmon": "hwmon3",
+     "name": "r8169_0_c100:00",
+     "device": "r8169-0-c100:00",
+     "temps": [
+      {
+       "sensor": "temp1",
+       "celsius": 57.5
+      }
+     ],
+     "power": [],
+     "freq": []
+    },
+    {
+     "hwmon": "hwmon4",
+     "name": "mt7925_phy0",
+     "device": "phy0",
+     "temps": [
+      {
+       "sensor": "temp1",
+       "celsius": 49.0
+      }
+     ],
+     "power": [],
+     "freq": []
+    },
+    {
+     "hwmon": "hwmon5",
+     "name": "amdgpu",
+     "device": "0000:c5:00.0",
+     "temps": [
+      {
+       "sensor": "edge",
+       "celsius": 71.0
+      }
+     ],
+     "power": [
+      {
+       "sensor": "PPT",
+       "field": "average",
+       "watts": 122.907
+      },
+      {
+       "sensor": "PPT",
+       "field": "input",
+       "watts": 122.907
+      }
+     ],
+     "freq": [
+      {
+       "sensor": "sclk",
+       "mhz": 2749.0
+      }
+     ]
+    }
+   ]
+  },
+  "disks": {
+   "status": "ok",
+   "value": [
+    {
+     "mount": "/",
+     "fstype": "ext4",
+     "total_bytes": 1966736678912,
+     "used_bytes": 1463753531392,
+     "free_bytes": 403002896384
+    },
+    {
+     "mount": "/boot/efi",
+     "fstype": "vfat",
+     "total_bytes": 1124999168,
+     "used_bytes": 6606848,
+     "free_bytes": 1118392320
+    }
+   ]
+  },
+  "diskstats": {
+   "status": "ok",
+   "value": [
+    {
+     "device": "nvme0n1",
+     "read_bytes": 86729540541952,
+     "write_bytes": 821969724416
+    }
+   ]
+  },
+  "net": {
+   "status": "ok",
+   "value": [
+    {
+     "iface": "eno1",
+     "rx_bytes": 355791985241,
+     "tx_bytes": 144951382818,
+     "physical": true,
+     "operstate": "up"
+    },
+    {
+     "iface": "wlp195s0",
+     "rx_bytes": 0,
+     "tx_bytes": 0,
+     "physical": true,
+     "operstate": "down"
+    }
+   ]
+  },
+  "nics": {
+   "status": "ok",
+   "value": [
+    {
+     "iface": "eno1",
+     "mac": "02:00:00:00:02:00"
+    },
+    {
+     "iface": "wlp195s0",
+     "mac": "02:00:00:00:02:01"
+    }
+   ]
+  },
+  "gpu_processes": {
+   "status": "ok",
+   "value": [
+    {
+     "pid": 1647514,
+     "own": true,
+     "comm": "strix-deepseek4",
+     "vram_bytes": 88528355328
+    }
+   ]
+  },
+  "listeners": {
+   "status": "ok",
+   "value": [
+    {
+     "port": 22,
+     "family": "ipv4",
+     "scope": "any"
+    },
+    {
+     "port": 22,
+     "family": "ipv6",
+     "scope": "any"
+    },
+    {
+     "port": 53,
+     "family": "ipv4",
+     "scope": "loopback"
+    },
+    {
+     "port": 631,
+     "family": "ipv4",
+     "scope": "loopback"
+    },
+    {
+     "port": 631,
+     "family": "ipv6",
+     "scope": "loopback"
+    }
+   ]
+  }
+ }
+}
