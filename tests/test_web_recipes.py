@@ -241,6 +241,39 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(before, after)
         self.assertEqual(self.portal.request("GET", "recipes/active?profile=../x")[0], 400)
 
+    def test_answers_are_redacted_and_internal_errors_answer(self):
+        # A secret-named key of a launch record is redacted; the recipe's own numbers and prose are not.
+        state = orchestrate._state_path("qwen-replicas")
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text(json.dumps({"profile": "qwen-replicas", "phase": "running", "recipe": {
+            "recipe": QWEN, "inputs": [], "router_api_key": "sekrit-value", "argv": ["--api-key", "sekrit-value"]}}),
+            encoding="utf-8")
+        try:
+            status, document = self.portal.request("GET", "recipes/active")
+        finally:
+            state.unlink()
+        self.assertEqual(status, 200, document)
+        self.assertNotIn("sekrit-value", json.dumps(document))
+        self.assertEqual(document["result"]["deployments"][0]["record"]["router_api_key"], "[redacted]")
+        status, document = self.portal.request("GET", "recipes/" + QWEN)
+        when = next(r["when"] for r in document["result"]["structure"]["routes"] if r["id"] == "prefill_rtx")
+        self.assertEqual(when["prompt_tokens_min"], 1024)                   # a measurement is not a secret
+        self.assertSameAsCli(document)
+        with mock.patch.object(recipe_web, "COMMAND", [sys.executable, "-c", (
+                "import sys; sys.stderr.write('hyperloom: refused: Authorization: Bearer abc.def\\n'); sys.exit(1)")]):
+            status, document = self.portal.request("POST", "recipes/validate", {"recipe": QWEN})
+        self.assertEqual((status, document["exit_code"]), (200, 1))
+        self.assertNotIn("abc.def", document["error"])
+        # An unexpected error in an in-process GET is an answer (the CLI's exit 1), never a dropped connection.
+        with mock.patch.object(commands, "run", side_effect=TypeError("boom")):
+            status, document = self.portal.request("GET", "recipes")
+        self.assertEqual((status, document["exit_code"]), (200, 1))
+        self.assertIn("internal error (TypeError): boom", document["error"])
+        with mock.patch.object(self.portal.api, "recipe_get", side_effect=TypeError("boom")):
+            self.assertEqual(self.portal.request("GET", "recipes")[0], 500)
+        with mock.patch.object(self.portal.api, "recipe_post", side_effect=TypeError("boom")):
+            self.assertEqual(self.portal.request("POST", "recipes/validate", {"recipe": QWEN})[0], 500)
+
     def test_edits_are_one_overrides_layer(self):
         service.user_dir().mkdir(parents=True, exist_ok=True)
         (service.user_dir() / "mm-base.toml").write_text(MM_TEXT, encoding="utf-8")
@@ -443,6 +476,18 @@ class JobTests(unittest.TestCase):
                 self.orch.down.assert_called_once_with(profile)
         with self.assertRaises(APIError):
             self.api.mutate("up", {"recipe": DS})                       # two profiles serve it: name one
+
+    def test_detached_error_tail(self):
+        # A recipe launch's refusal keeps the CLI's whole explanation; the other actions keep their short tail.
+        child = mock.Mock(returncode=1)
+        child.communicate.return_value = (b"", b"y" + b"x" * 20000)
+        with mock.patch("hyperloom.web.api.subprocess.Popen", return_value=child):
+            for action, args, size in (("down", {"profile": "qwen-replicas"}, 400),
+                                       ("recipes/deploy", {"inputs": "0" * 64, "_job": "ab12cd34"}, 16384),
+                                       ("up", {"recipe": QWEN, "profile": "qwen-replicas"}, 16384)):
+                with self.subTest(action=action), self.assertRaises(APIError) as raised:
+                    self.api._run_detached(action, args)
+                self.assertEqual(len(str(raised.exception)), size)
 
     def test_detached_stop_cancels_a_running_switch(self):
         # The portal runs detached: `down` goes to its own CLI process, and still cancels the switch first.

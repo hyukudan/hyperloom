@@ -85,8 +85,9 @@ def _binds_loopback(profile, status, cluster):
         return False
 
 
-def redact(value):
-    """Redact structured secrets and command/log representations of them."""
+def redact(value, text=True):
+    """Redact structured secrets and command/log representations of them. ``text=False``: keys and argv only, free
+    text kept as it is (recipe documents: their prose would otherwise be rewritten, "per token: an upper bound")."""
     if isinstance(value, dict):
         result = {}
         for key, item in value.items():
@@ -94,16 +95,18 @@ def redact(value):
                 {"storage": "DPAPI", "values": "never shown"},
                 {"storage": "0600 files", "values": "never shown"})
             sensitive = re.search(r"password|secret|token|authorization|api[_-]?key|private[_-]?key", key, re.I)
-            result[key] = "[redacted]" if sensitive and not metadata and not key.endswith(
-                ("_file", "_path", "_tokens")) else redact(item)
+            # Numbers are measurements, never secrets (a recipe's prompt_tokens_min, max_copies_per_token).
+            measurement = item is None or isinstance(item, (bool, int, float))
+            result[key] = "[redacted]" if sensitive and not metadata and not measurement and not key.endswith(
+                ("_file", "_path", "_tokens")) else redact(item, text)
         return result
     if isinstance(value, (list, tuple)):
         result, hide = [], False
         for item in value:
-            result.append("[redacted]" if hide else redact(item))
+            result.append("[redacted]" if hide else redact(item, text))
             hide = isinstance(item, str) and item in ("--api-key", "--handoff-api-key", "--password", "--token")
         return result
-    if isinstance(value, str):
+    if isinstance(value, str) and text:
         value = re.sub(r"(?i)(Bearer\s+)\S+", r"\1[redacted]", value)
         return re.sub(r'''(?ix)((?:["']?(?:api[_-]?key|handoff[_-]?api[_-]?key|password|secret|token)["']?)\s*[:=]\s*|--(?:api-key|handoff-api-key|password|token)\s+)(?:"[^"]*"|'[^']*'|[^\s,;}]+)''',
                       r"\1[redacted]", value)
@@ -333,8 +336,9 @@ class API:
                 operation, argv = recipe_web.read_request(endpoint, query, config=self.config_path)
             except ValueError as exc:
                 raise APIError(str(exc)) from exc
-            return recipe_web.document(operation, argv, recipe_web.in_process(argv, self._recipe_loader),
-                                       now=self.clock())
+            status, document = recipe_web.document(operation, argv, recipe_web.in_process(argv, self._recipe_loader),
+                                                   now=self.clock())
+        return status, recipe_web.redacted(document, redact)
 
     def recipe_post(self, action, arguments, cancelled=lambda: False):
         """POST recipes/<query or write>: (status, document) of the CLI child; writes are audited."""
@@ -360,7 +364,7 @@ class API:
             self._audit(action, recipe_web.audit_arguments(arguments),
                         {"state": "succeeded" if document["ok"] else "refused", "exit_code": document["exit_code"],
                          "error": document["error"], "result": document["result"]})
-        return status, document
+        return status, recipe_web.redacted(document, redact)
 
     def _cluster(self):
         return self.orchestrate.load_cluster(self.config_path, config)
@@ -1123,7 +1127,10 @@ class API:
                                      stderr=subprocess.PIPE, **flags)
         out, err = child.communicate()
         if child.returncode != 0:
-            raise APIError((err or out).decode("utf-8", "replace").strip()[-16384:] or f"{action} failed", 500)
+            # A recipe launch's refusal is the CLI's whole explanation; other actions keep their short tail.
+            tail = 16384 if action == "recipes/deploy" or (action == "up" and (
+                args.get("recipe") or args.get("recipe_inputs"))) else 400
+            raise APIError((err or out).decode("utf-8", "replace").strip()[-tail:] or f"{action} failed", 500)
         try:
             return json.loads(out.decode("utf-8"))
         except ValueError:
