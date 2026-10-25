@@ -43,7 +43,10 @@ def collect(api, machine, rate=0, sleep=time.sleep, clock=time.time):
             raise RuntimeError((second or {}).get("error") or "node returned no USB4 report")
         later = usb4.summarise(second, second_at, summary)
         later.pop("journal_read")
-        later["journal"] = summary["journal"]
+        same = bool(first.get("boot_id")) and first.get("boot_id") == second.get("boot_id")
+        later["journal"] = summary["journal"] if same else {
+            "status": "unavailable", "why": "the node booted again between the samples (or reports no boot id); "
+                                            "run the command again for this boot's evidence"}
         summary = later
         summary["interrupts"]["nhis"] = rates(first, second, second_at - first_at)
     elif summary["interrupts"].get("status") == "ok":
@@ -58,11 +61,13 @@ def rates(first, second, gap):
         part = (report or {}).get("interrupts") or {}
         return part.get("vectors") or [] if part.get("status") == "ok" else []
     now, before = vectors(second or first), vectors(first)
-    if second is None or first.get("boot_id") != second.get("boot_id"):
+    if second is None or not first.get("boot_id") or first.get("boot_id") != second.get("boot_id"):
         rows = usb4.nhi_rates(now, {}, 0.0, None)
         for row in rows:
-            row["why"] = "counts since boot (pass --rate SECONDS for interrupts per second)" if second is None \
-                else "the node rebooted between the samples"
+            row["why"] = ("counts since boot (pass --rate SECONDS for interrupts per second)" if second is None
+                          else "the node reports no boot id: the two samples cannot be compared"
+                          if not first.get("boot_id") or not second.get("boot_id")
+                          else "the node rebooted between the samples")
         return rows
     old = {(v["nhi"], v["vector"]): v for v in before}
     table = {}

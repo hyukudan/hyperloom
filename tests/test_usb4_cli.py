@@ -88,6 +88,34 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(self.calls[1][1], {})                               # the second sample skips the journal
         self.assertEqual(summary["journal"]["status"], "ok")
 
+    def test_samples_across_a_reboot_or_without_boot_ids_are_not_combined(self):
+        api = FakeAPI()
+        machine = api.cluster().machines["halo-1"]
+        boots = {"value": None}
+        original = usb4.fetch
+
+        def fetch(api_, machine_, payload):
+            report = original(api_, machine_, payload)
+            if boots["value"] is not None:
+                report["boot_id"] = boots["value"]
+            return report
+
+        def reboot(seconds):
+            boots["value"] = "c" * 32
+            self.counts["halo-1"] = 500
+        with mock.patch.object(usb4, "fetch", fetch):
+            summary = command.collect(api, machine, rate=5, sleep=reboot, clock=iter([0.0, 5.0]).__next__)
+        self.assertEqual(summary["journal"]["status"], "unavailable")
+        self.assertTrue(all(row["rate_per_s"] is None and "rebooted" in row["why"] for row in summary["interrupts"]["nhis"]))
+
+        def no_boot(seconds):
+            boots["value"] = ""
+        with mock.patch.object(usb4, "fetch", fetch):
+            boots["value"] = ""
+            summary = command.collect(api, machine, rate=5, sleep=no_boot, clock=iter([0.0, 5.0]).__next__)
+        self.assertEqual(summary["journal"]["status"], "unavailable")
+        self.assertTrue(all("no boot id" in row["why"] for row in summary["interrupts"]["nhis"]))
+
 
 if __name__ == "__main__":
     unittest.main()

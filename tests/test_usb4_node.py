@@ -260,6 +260,17 @@ class NodeVerbTests(unittest.TestCase):
         report = node.Collector(reader).collect({})
         self.assertEqual(report["links"]["status"], "unavailable")
         self.assertIn("cannot list", report["links"]["why"])
+        reader = TreeReader(self.dir.name, FIXTURE, runner=Runner())
+        reader.listdir = lambda logical: None if logical.endswith("/parameters") else original(logical)
+        params = node.Collector(reader).collect({})["parameters"]
+        self.assertEqual(params["status"], "unavailable")
+        self.assertIn("cannot list its parameters", params["why"])
+        reader = TreeReader(self.dir.name, FIXTURE, runner=Runner())
+        reading = reader.read
+        reader.read = lambda logical, limit=node.SMALL: None if logical.endswith("0-2/rx_speed") or logical.endswith("0-2/tx_speed") else reading(logical, limit)
+        report = node.Collector(reader).collect({})
+        self.assertIn("0-2: unreadable rx_speed, tx_speed", report["why"]["links_failed"])
+        self.assertIsNone({l["router"]: l for l in report["links"]}["0-2"]["full_rate"])
         missing = node.Reader(self.dir.name).listdir("/sys/bus/thunderbolt/nothing-here")
         self.assertEqual(missing, [])
 

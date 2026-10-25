@@ -9,3 +9,4 @@
 .u4 .kv dd .tag{margin:0 4px 4px 0}
 .u4 .u4-stale table,.u4 .u4-stale .tag,.u4 .u4-stale b{color:var(--text-3)}
 .u4 tr.u4-stale-row td{color:var(--text-3)}
+.u4 .u4-stale .table-wrap .pill{color:var(--text-3);background:var(--surface-2)}

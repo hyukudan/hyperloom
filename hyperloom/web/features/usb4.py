@@ -461,7 +461,9 @@ def sample(api, now):
         if not payloads[machine.id]:
             summary["journal_read"] = {"status": "skipped", "why": "not requested in this call"}
         layout = result.get("layout") if isinstance(result.get("layout"), dict) else {}
-        attempted = {"links": result.get("links"), "layout": result.get("layout"),
+        links_failed = (result.get("why") or {}).get("links_failed")
+        attempted = {"links": _unavailable(links_failed) if links_failed else result.get("links"),
+                     "layout": result.get("layout"),
                      "live": layout.get("live") or _unavailable(layout.get("why") or "no published layout to check"),
                      "parameters": result.get("parameters"), "interrupts": result.get("interrupts")}
         if summary["journal_read"].get("status") != "skipped":

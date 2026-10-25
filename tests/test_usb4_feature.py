@@ -262,6 +262,24 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(node["sources"]["links"]["status"], "unavailable")
         self.assertEqual(node["sources"]["links"]["last_ok"], 1_800_000_000.0)
 
+    def test_failed_inspections_never_advance_a_source(self):
+        good = report("halo-1")
+        self.replies = {"halo-1": good, "halo-2": report("halo-2")}
+        self.run_at(1_800_000_000.0)
+        failing = report("halo-1")
+        failing["why"] = {"links_failed": "0-2: unreadable rx_speed, tx_speed"}
+        failing["parameters"] = {"status": "unavailable", "why": "thunderbolt: cannot list its parameters", "modules": {}}
+        self.replies["halo-1"] = failing
+        for step in range(1, 12):
+            self.run_at(1_800_000_000.0 + 10 * step)
+        sources = self.store.get(usb4.NODE_NS, "halo-1")["sources"]
+        self.assertEqual((sources["links"]["status"], sources["links"]["last_ok"]), ("unavailable", 1_800_000_000.0))
+        self.assertIn("unreadable", sources["links"]["why"])
+        self.assertEqual(sources["parameters"]["status"], "unavailable")
+        view = usb4.document(self.api, {})["machines"][0]
+        self.assertTrue(view["stale"]["links"] and view["stale"]["parameters"])
+        self.assertFalse(view["stale"]["interrupts"])
+
     def test_link_changes_are_compared_within_one_boot(self):
         self.replies = {"halo-1": report("halo-1"), "halo-2": report("halo-2")}
         self.run_at(1_800_000_000.0)

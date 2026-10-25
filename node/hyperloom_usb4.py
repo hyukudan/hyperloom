@@ -377,8 +377,11 @@ class Collector:
 
     # -- links -----------------------------------------------------------------------------------------------
     def links(self, domains):
+        """Trained links; inspection failures (an entry that does not resolve inside sysfs, speed attributes
+        that exist but cannot be read) are listed in self.link_failures and make the part unavailable."""
         base = "/sys/bus/thunderbolt/devices"
         out = []
+        self.link_failures = []
         names = self.io.listdir(base)
         if names is None:
             return unavailable("cannot list " + base)
@@ -388,7 +391,8 @@ class Collector:
                 continue
             self.check()
             if self.io.parent_name(base + "/" + name) is None:
-                continue                    # not resolvable inside the allowed sysfs locations
+                self.link_failures.append(name + ": does not resolve inside sysfs")
+                continue
             entry = base + "/" + name
             raw = {f: self.io.read(entry + "/" + f) for f in ("rx_speed", "rx_lanes", "tx_speed", "tx_lanes")}
             if raw["rx_speed"] is None and raw["tx_speed"] is None:
@@ -396,6 +400,7 @@ class Collector:
                 if not present:
                     continue                # host routers and devices without a trained link of their own
                 raw["unreadable"] = present  # the attributes exist but could not be read: an unknown rate
+                self.link_failures.append(name + ": unreadable " + ", ".join(present))
             rx = link_direction(raw["rx_speed"], raw["rx_lanes"])
             tx = link_direction(raw["tx_speed"], raw["tx_lanes"])
             domain, route = int(match[1]), int(match[2], 16)
@@ -516,17 +521,20 @@ class Collector:
 
     # -- module parameters -----------------------------------------------------------------------------------
     def parameters(self):
-        out = {}
+        out, failed = {}, []
         for module in ("thunderbolt", "thunderbolt_stream"):
             base = "/sys/module/" + module + "/parameters"
             state, why = self.io.probe("/sys/module/" + module)
             if state != "present":
                 out[module] = unavailable("module not loaded" if state == "absent" else "module check failed: " + str(why))
+                if state != "absent":
+                    failed.append(module + ": " + out[module]["why"])
                 continue
             values, write_only, unreadable = {}, [], []
             names = self.io.listdir(base)
             if names is None:
                 out[module] = unavailable("cannot list " + base)
+                failed.append(module + ": cannot list its parameters")
                 continue
             for name in names[:MAX_PARAMS]:
                 self.check()
@@ -542,7 +550,9 @@ class Collector:
                 if values[name] is None:
                     unreadable.append(name)
             out[module] = {"status": "ok", "values": values, "write_only": write_only, "unreadable": unreadable}
-        # A module that is not loaded is an observation too: the part itself is always observed.
+        # A module that is not loaded is an observation; a failed check or listing makes the part unavailable.
+        if failed:
+            return {"status": "unavailable", "why": "; ".join(failed)[:300], "modules": out}
         return {"status": "ok", "modules": out}
 
     # -- interrupts ------------------------------------------------------------------------------------------
@@ -714,7 +724,9 @@ class Collector:
                 result[name] = part()
             except Deadline:
                 result[name] = unavailable("node deadline reached")
-        if isinstance(result.get("links"), list) and not result["links"]:
+        if getattr(self, "link_failures", None):
+            result["why"]["links_failed"] = "; ".join(self.link_failures)[:300]
+        if isinstance(result.get("links"), list) and not result["links"] and not result["why"].get("links_failed"):
             result["why"]["links"] = ("thunderbolt driver not loaded" if self.io.stat("/sys/bus/thunderbolt") is None
                                       else "no USB4 link reports a trained speed (no cable or no peer)")
         if result["layout"].get("status") == "ok":
