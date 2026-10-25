@@ -140,6 +140,35 @@ class CatalogTests(unittest.TestCase):
                 service.locate("no-such.recipe")
             self.assertNotIn(service._key(service.PENDING_DIR), [service._key(d) for d in service.candidate_dirs()])
 
+    def test_an_id_never_names_a_file(self):
+        # A recipe id is a catalog lookup: a file of the working directory with that name is not consulted or read.
+        with isolated() as env:
+            here = env.root / "cwd"
+            here.mkdir()
+            (here / "evil").write_text(copy_of(QWEN, "evil"), encoding="utf-8")
+            (here / "evil.toml").write_text(copy_of(QWEN, "evil"), encoding="utf-8")
+            asked = []
+            real = Path.is_file
+            cwd = os.getcwd()
+            os.chdir(here)
+            try:
+                with mock.patch.object(Path, "is_file", lambda p: asked.append(str(p)) or real(p)):
+                    with self.assertRaises(service.NotFound):
+                        service.locate("evil")
+                    self.assertNotIn("evil", asked)
+                    self.assertEqual(service.locate("evil.toml"), Path("evil.toml"))   # the CLI's FILE argument
+                code, _, err = run_cli("recipe", "show", "evil", "--config", str(env.config))
+            finally:
+                os.chdir(cwd)
+            self.assertEqual(code, 3, err)
+            for ref in ("x.toml", "x.JSON", "a/b", "a\\b", "C:x", "x:y", "..", "-x", "auto", "con"):
+                with self.subTest(ref=ref), self.assertRaises(RecipeError):
+                    service.check_id(ref)
+            for ref in ("C:\\x.toml", "//host/share/x.toml", "x.toml", "x:y"):
+                with self.subTest(ref=ref), self.assertRaises(ValueError):
+                    service.argv("diff", {"a": QWEN, "b": ref}, config=env.config)
+            self.assertIn("auto", service.argv("plan", {"recipe": "auto", "profile": "ds41-rtx"}, config=env.config))
+
     def test_storage_follows_the_config_in_use(self):
         with isolated() as env:
             other = env.root / "elsewhere" / "cluster.json"

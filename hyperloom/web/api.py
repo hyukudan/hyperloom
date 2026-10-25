@@ -1040,10 +1040,13 @@ class API:
         for key, flag in (("node", "--node"), ("device", "--device")):
             if args.get(key):
                 argv += [flag, *args[key]]
+        # Recipe references are ids (or auto) and snapshot digests: never a path from the client.
         if args.get("recipe_inputs"):
+            if not service.DIGEST.fullmatch(str(args["recipe_inputs"])):
+                raise ValueError("recipe_inputs must be a 64-hex snapshot digest")
             argv += ["--recipe-inputs", args["recipe_inputs"]]
         if args.get("recipe"):
-            argv += ["--recipe", args["recipe"]]
+            argv += ["--recipe", service.recipe_ref("recipe", args["recipe"], auto=True)]
         for item in args.get("recipe_set") or []:
             argv += ["--recipe-set", item]
         for item in args.get("recipe_overrides") or []:

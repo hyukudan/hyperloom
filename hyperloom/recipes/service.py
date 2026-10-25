@@ -31,6 +31,7 @@ BUILTIN_MANIFEST = Path(__file__).with_name("builtin.json")      # source commit
 PENDING_DIR = BUILTIN_DIR / "pending"
 SUFFIXES = (".toml", ".json")
 ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+DIGEST = re.compile(r"[0-9a-f]{64}")
 # Ids that would shadow a portal endpoint (GET recipes/<id>) or read as a CLI keyword.
 RESERVED = frozenset(("active", "routes", "probe", "validate", "explain", "check", "diff", "select", "plan", "save",
                       "delete", "list", "show", "pick", "auto", "layers", "save-layer", "delete-layer"))
@@ -206,6 +207,8 @@ def catalog(cluster=None, extra=()):
     for row in rows:
         if row["id"].lower() in RESERVED and not row["error"]:
             row["error"] = f'recipe id "{row["id"]}" is reserved'
+        elif not row.get("overflow") and not row["error"] and not is_recipe_id(row["id"]):
+            row["error"] = f'recipe id "{row["id"]}" is not an id (letters, digits, ".", "_", "-", no file suffix)'
     return rows
 
 
@@ -300,14 +303,22 @@ def find(ref, cluster=None, extra=()):
     return same[0]
 
 
+def is_recipe_id(ref):
+    """True for a reference that is a recipe id: [A-Za-z0-9][A-Za-z0-9._-]{0,63} without a .toml/.json suffix. It has
+    no separator, drive, stream (':') or file suffix, so it is never read as a file name."""
+    return isinstance(ref, str) and bool(ID.fullmatch(ref)) and not ref.casefold().endswith(SUFFIXES)
+
+
 def locate(ref, cluster=None, *, for_up=False, extra=()):
-    """A recipe reference -> its file: an existing file path as it is (the CLI's FILE arguments), else a recipe id.
+    """A recipe reference -> its file. A recipe id is looked up in the catalog only: the file system is never asked
+    about it (a file of the working directory with that name is not read). Anything else is the CLI's FILE argument
+    (a path with a .toml/.json name or a directory part). The portal passes ids only (``argv`` refuses the rest).
     ``for_up``: a pending built-in is refused, whether it is named by id or by path."""
     ref = str(ref)
-    if Path(ref).is_file():
-        path = Path(ref)
-    elif ID.fullmatch(ref) and "/" not in ref and "\\" not in ref:
+    if is_recipe_id(ref):
         path = Path(find(ref, cluster, extra)["path"])
+    elif Path(ref).is_file():
+        path = Path(ref)
     else:
         raise NotFound(f"{ref}: no such recipe file or id")
     if for_up and pending(path):
@@ -472,6 +483,8 @@ def _prune_snapshots(keep):
 
 def _new_pin(digest):
     """A holder's own pin on a snapshot (caller holds the runtime lock, as pruning does)."""
+    if not DIGEST.fullmatch(str(digest)):
+        raise RecipeError(f"recipe inputs {digest!r}: expected a 64-hex digest")
     if not (runtime_dir() / "recipe-inputs" / digest).is_dir():
         raise NotFound(f"recipe inputs {digest}: no snapshot (it may have expired: plan again)")
     pins = runtime_dir() / "recipe-inputs" / "pins"
@@ -513,7 +526,7 @@ def cancel_marker(job):
 
 def load_inputs(digest):
     """(root, manifest) of a published snapshot, every file checked against the manifest."""
-    if not re.fullmatch(r"[0-9a-f]{64}", str(digest)):
+    if not DIGEST.fullmatch(str(digest)):
         raise RecipeError(f"recipe inputs {digest!r}: expected a 64-hex digest")
     root = runtime_dir() / "recipe-inputs" / digest
     try:
@@ -570,7 +583,11 @@ def _recipe_files(directory, limit=None):
 @contextmanager
 def snapshot_args(args, names=("file", "a", "b", "recipe_profile", "recipe_overrides")):
     """Copy the files a read-only operation reads into a private temporary directory and point ``args`` at the copies;
-    yields a function that maps copy paths in a result back to the originals."""
+    yields a function that maps copy paths in a result back to the originals. Nothing to copy (list, show, active,
+    routes: the portal's GETs) creates nothing."""
+    if not any(getattr(args, name, None) for name in names):
+        yield lambda result: result
+        return
     with tempfile.TemporaryDirectory(prefix="hl-recipe-") as directory:
         mapping = {}
         for name in names:
@@ -977,10 +994,10 @@ def routes(cluster, profile=None, *, states=None, router_status=None):
 # --- writes: the user directory only, one cross-process transaction -----------------------------------------------
 
 def check_id(recipe_id, what="recipe id"):
-    if not isinstance(recipe_id, str) or not ID.fullmatch(recipe_id) or recipe_id.endswith(".") \
-            or DEVICES.fullmatch(recipe_id) or recipe_id.lower() in RESERVED:
-        raise RecipeError(f"{what} {recipe_id!r}: expected [A-Za-z0-9][A-Za-z0-9._-]{{0,63}}, not ending in '.', not a "
-                          "reserved or device name")
+    if not is_recipe_id(recipe_id) or recipe_id.endswith(".") or DEVICES.fullmatch(recipe_id) \
+            or recipe_id.lower() in RESERVED:
+        raise RecipeError(f"{what} {recipe_id!r}: expected [A-Za-z0-9][A-Za-z0-9._-]{{0,63}}, not ending in '.', "
+                          "'.toml' or '.json', not a reserved or device name")
     return recipe_id
 
 
@@ -1305,8 +1322,9 @@ def delete_layer(cluster, layer_name, sha256):
 
 # --- portal request -> command line ------------------------------------------------------------------------------
 
-# JSON argument -> (flag, kind). Positionals in order; "?" = optional. Kinds: string, strings, int, flag, and names of
-# files in hyperloom's own directories (layer, layers, facts, out, receipts) - never paths from the browser.
+# JSON argument -> (flag, kind). Positionals in order; "?" = optional. Kinds: string, strings, int, flag, recipe (a
+# recipe id, never a path), profile(s) and names of files in hyperloom's own directories (layer, layers, facts, out,
+# receipts) - never paths from the browser.
 LAYER_ARGS = {"set": ("--recipe-set", "strings"), "workload": ("--recipe-workload", "string"),
               "overrides": ("--recipe-overrides", "layers"), "tuning_profile": ("--recipe-profile", "layer")}
 HARDWARE = {"facts": ("--facts", "facts")}
@@ -1323,20 +1341,23 @@ OPERATIONS = {
                                          "free_ram": ("--free-ram", "strings")}),
     "diff": (("a", "b"), {"a_set": ("--a-set", "strings"), "b_set": ("--b-set", "strings")}),
     "pick": (("profile",), {**LAYER_ARGS, **HARDWARE}),
-    "select": (("model",), {**LAYER_ARGS, **HARDWARE, "profile": ("--profile", "string")}),
+    "select": (("model",), {**LAYER_ARGS, **HARDWARE, "profile": ("--profile", "profile")}),
     "plan": (("recipe", "profile"), {**LAYER_ARGS, **HARDWARE}),
     "probe": (("profile",), {"disks": ("--disks", "flag"), "descriptors": ("--descriptors", "flag"),
                              "evidence": ("--evidence", "receipts"), "out": ("--out", "out")}),
-    "save": (("id",), {"base": ("--base", "string"), "base_sha256": ("--base-sha256", "string"),
+    "save": (("id",), {"base": ("--base", "recipe"), "base_sha256": ("--base-sha256", "string"),
                        "set": ("--set", "strings"), "name": ("--name", "string"),
                        "replace": ("--replace", "string")}),
     "delete": (("id",), {"sha256": ("--sha256", "string")}),
-    "save-layer": (("name",), {"recipe": ("--recipe", "string"), "set": ("--set", "strings"),
+    "save-layer": (("name",), {"recipe": ("--recipe", "recipe"), "set": ("--set", "strings"),
                                "replace": ("--replace", "string")}),
     "save-receipt": (("name",), {"replace": ("--replace", "string")}),
     "delete-layer": (("name",), {"sha256": ("--sha256", "string")}),
-    "deploy": (("inputs",), {"stop": ("--stop", "strings"), "job": ("--job", "string")}),
+    "deploy": (("inputs",), {"stop": ("--stop", "profiles"), "job": ("--job", "string")}),
 }
+# Positionals that name a recipe (an id; "auto" where the CLI takes it), a profile or a snapshot digest.
+POSITIONAL_KINDS = {"recipe": "recipe", "a": "recipe", "b": "recipe", "profile": "profile", "inputs": "digest"}
+AUTO = frozenset(("plan",))
 # Positionals that may be "-": the recipe text comes on stdin (the portal's draft checks and text saves).
 STDIN = {"validate": "recipe", "explain": "recipe", "save": "text", "save-layer": "text", "save-receipt": "text"}
 
@@ -1345,6 +1366,37 @@ def _string(key, value):
     if not isinstance(value, str) or not value or len(value) > 4096 or "\0" in value or value.startswith("-"):
         raise ValueError(f"{key} must be a nonempty string (at most 4096 characters, not starting with '-')")
     return value
+
+
+def recipe_ref(key, value, *, auto=False):
+    """A recipe reference from the portal: a catalog id (or "auto" where allowed), never a path: no '/', '\\', ':',
+    drive, stream, '..' component or file suffix (the CLI then looks it up in the catalog only)."""
+    value = _string(key, value)
+    if (auto and value == "auto") or is_recipe_id(value):
+        return value
+    raise ValueError(f"{key} {value!r}: a recipe id ([A-Za-z0-9][A-Za-z0-9._-]{{0,63}}, no .toml/.json suffix"
+                     f"{', or auto' if auto else ''}), not a path")
+
+
+def _profile(key, value):
+    value = _string(key, value)
+    if not ID.fullmatch(value):
+        raise ValueError(f"{key} {value!r}: a profile name ([A-Za-z0-9][A-Za-z0-9._-]{{0,63}})")
+    return value
+
+
+def _positional(operation, key, value):
+    kind = POSITIONAL_KINDS.get(key)
+    if kind == "recipe":
+        return recipe_ref(key, value, auto=operation in AUTO)
+    if kind == "profile":
+        return _profile(key, value)
+    if kind == "digest":
+        value = _string(key, value)
+        if not DIGEST.fullmatch(value):
+            raise ValueError(f"{key} must be a 64-hex snapshot digest")
+        return value
+    return _string(key, value)
 
 
 def _named(key, value, directory, suffix=".json"):
@@ -1374,7 +1426,7 @@ def argv(operation, arguments, *, config, stdin=False):
                 raise ValueError(f"{key} and the text are exclusive")
             out.append("-")
         elif arguments.get(key) is not None:
-            out.append(_string(key, arguments[key]))
+            out.append(_positional(operation, key, arguments[key]))
         elif not name.endswith("?"):
             raise ValueError(f"{key} is required")
     if stdin and operation in ("save", "save-layer", "save-receipt"):
@@ -1393,12 +1445,18 @@ def argv(operation, arguments, *, config, stdin=False):
             out += [flag, str(value)]
         elif kind == "string":
             out += [flag, _string(key, value)]
-        elif kind in ("strings", "layers", "receipts"):
+        elif kind == "recipe":
+            out += [flag, recipe_ref(key, value)]
+        elif kind == "profile":
+            out += [flag, _profile(key, value)]
+        elif kind in ("strings", "layers", "receipts", "profiles"):
             if not isinstance(value, list) or len(value) > 256:
                 raise ValueError(f"{key} must be an array of at most 256 strings")
             for item in value:
                 if kind == "layers":
                     item = str(_named(key, item, layers_dir(), _suffix_of(item)))
+                elif kind == "profiles":
+                    item = _profile(key, item)
                 elif kind == "receipts":
                     node, _, receipt = _string(key, item).partition("=")
                     item = f"{node}={_named(key, receipt, receipts_dir(), _suffix_of(receipt))}"

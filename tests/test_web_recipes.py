@@ -162,6 +162,63 @@ class ContractTests(unittest.TestCase):
         self.portal.api._active = "job"
         self.assertEqual(self.portal.request("POST", "recipes/validate", {"recipe": QWEN})[0], 200)
 
+    BAD_REFS = ("//attacker.host/share/x.toml", "\\\\attacker.host\\share\\x.toml", "\\\\?\\UNC\\attacker.host\\s\\x",
+                "C:x.toml", "C:\\x.toml", "/etc/x.toml", "x.toml:stream", "x::$DATA", "..", "../x", "a/b", "a\\b",
+                "pyproject.toml", "x.JSON", "-h")
+
+    def test_recipe_references_are_ids_never_paths(self):
+        # A recipe file outside the catalog (a share, any local file): never read through a portal reference.
+        outside = self.env.root / "share" / "x.toml"
+        outside.parent.mkdir()
+        outside.write_text(copy_of(QWEN, "outside"), encoding="utf-8")
+        opened = []
+        real_is_file, real_read = Path.is_file, Path.read_bytes
+
+        def is_file(path):
+            opened.append(str(path))
+            return real_is_file(path)
+
+        def read_bytes(path):
+            opened.append(str(path))
+            return real_read(path)
+        for ref in self.BAD_REFS + (str(outside), outside.as_posix()):
+            with self.subTest(ref=ref):
+                opened.clear()
+                with mock.patch.object(Path, "is_file", is_file), mock.patch.object(Path, "read_bytes", read_bytes):
+                    status, document = self.portal.request("GET", "recipes/" + ref)
+                self.assertEqual(status, 400, document)
+                self.assertFalse([p for p in opened if "attacker" in p or "share" in p or p.endswith(ref)], opened)
+                for operation, body in (("validate", {"recipe": ref}), ("explain", {"recipe": ref}),
+                                        ("plan", {"recipe": ref, "profile": "ds41-rtx"}),
+                                        ("diff", {"a": QWEN, "b": ref}), ("diff", {"a": ref, "b": QWEN}),
+                                        ("save", {"id": "copy", "base": ref, "base_sha256": "0" * 64}),
+                                        ("save-layer", {"name": "layer", "recipe": ref, "set": ["limits.x=1"]})):
+                    with self.assertRaises(ValueError):
+                        recipe_web.Request("recipes/" + operation, body, config=self.env.config)
+                    self.assertEqual(self.portal.request("POST", "recipes/" + operation, body)[0], 400)
+        # "auto" picks a recipe only where the CLI takes it (plan, up); elsewhere it is an unknown (reserved) id.
+        self.assertEqual(self.portal.request("GET", "recipes/auto")[0], 404)
+        self.assertEqual(self.portal.request("POST", "recipes/validate", {"recipe": "auto"})[0], 404)
+        # An id-shaped reference is looked up in the catalog only, even when a file of that name exists where the
+        # command runs (the children's working directory has NOTICE, LICENSE, README.md...).
+        status, document = self.portal.request("POST", "recipes/validate", {"recipe": "NOTICE"})
+        self.assertEqual((status, document["exit_code"]), (404, 3), document)
+        status, document = self.portal.request("GET", "recipes/NOTICE")
+        self.assertEqual((status, document["exit_code"]), (404, 3), document)
+
+    def test_gets_have_no_side_effects(self):
+        before = sorted((str(p), p.stat().st_mtime_ns) for p in self.env.root.rglob("*") if p.is_file())
+        with mock.patch("tempfile.TemporaryDirectory", side_effect=AssertionError("a GET made a directory")), \
+                mock.patch("tempfile.mkdtemp", side_effect=AssertionError("a GET made a directory")), \
+                mock.patch("tempfile.mkstemp", side_effect=AssertionError("a GET made a file")):
+            for endpoint in ("recipes", "recipes/" + QWEN, "recipes/ds-user", "recipes/active", "recipes/routes",
+                             "recipes?model=deepseek-v4.1-flash", "recipes/active?profile=ds41-rtx"):
+                status, document = self.portal.request("GET", endpoint)
+                self.assertEqual((status, document["exit_code"]), (200, 0), document)
+        after = sorted((str(p), p.stat().st_mtime_ns) for p in self.env.root.rglob("*") if p.is_file())
+        self.assertEqual(before, after)
+        self.assertEqual(self.portal.request("GET", "recipes/active?profile=../x")[0], 400)
+
     def test_edits_are_one_overrides_layer(self):
         service.user_dir().mkdir(parents=True, exist_ok=True)
         (service.user_dir() / "mm-base.toml").write_text(MM_TEXT, encoding="utf-8")
@@ -300,6 +357,20 @@ class JobTests(unittest.TestCase):
         self.assertIn("later phase", plain["error"])                         # the replica gate stays for plain up
         with self.assertRaises(APIError):
             self.api.mutate("up", {"recipe": "ds-user", "recipe_overrides": ["../x.json"]})
+        # Recipe references and snapshot digests from the client are ids, never paths (nothing is opened).
+        with mock.patch.object(service, "locate", side_effect=AssertionError("a client path reached locate")), \
+                mock.patch.object(service, "load_inputs", side_effect=AssertionError("a client path was opened")):
+            for ref in ContractTests.BAD_REFS:
+                with self.subTest(ref=ref), self.assertRaises(APIError):
+                    self.api.mutate("up", {"recipe": ref, "profile": "ds41-rtx"})
+            for digest in ("../" + "0" * 61, "//attacker.host/share/" + "0" * 42, "0" * 63 + "G", "x"):
+                with self.subTest(digest=digest), self.assertRaises(APIError):
+                    self.api.mutate("up", {"recipe_inputs": digest})
+                with self.subTest(digest=digest), self.assertRaises(APIError):
+                    self.api.mutate("recipes/deploy", {"inputs": digest})
+            with self.assertRaises(APIError):
+                self.api.mutate("recipes/deploy", {"inputs": "0" * 64, "stop": ["../x"]})
+        self.assertIsNone(self.api._active)
 
     def test_config_in_use_is_per_call(self):
         # An in-process up with its own "config" does not move the recipe directories of concurrent requests.

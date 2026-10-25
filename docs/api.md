@@ -55,6 +55,12 @@ Recipe sources, all listed by `GET recipes`:
 Layers are in `<config dir>/recipes/layers/`, disk receipts in `<config dir>/run/receipts/`, saved hardware
 observations in `<config dir>/run/facts/`. The API names these files by **name only**; it never takes a path.
 
+Recipe references (`GET recipes/<id>`, `recipe`, `a`, `b`, `base`, and `up`'s `recipe`) are **ids only**:
+`[A-Za-z0-9][A-Za-z0-9._-]{0,63}` without a `.toml`/`.json` suffix, plus `auto` where the CLI takes it (`plan`, `up`).
+Anything with `/`, `\`, `:`, a drive or a file suffix is refused (400) before anything runs, and snapshot digests
+(`inputs`, `recipe_inputs`) must be 64 hex digits. The CLI looks an id up in the catalog only, never as a file of its
+working directory; recipe FILE arguments (a `.toml`/`.json` name or a path) are for the command line only.
+
 A recipe id or a recipe name used by two files makes every one of those files an error (`error` in the list); nothing
 silently wins, and `pick` and `up --recipe auto` refuse them the same way.
 
@@ -290,8 +296,8 @@ POST up {"recipe_inputs": "055e5fe5...d8cbd"}
 ```
 
 Any model with a recipe can be started this way (the portal's plain `up` stays limited to Qwen replica profiles).
-Without `profile`, the recipe's model must be served by exactly one deployment profile. `recipe` is an id, a file
-under the CLI only, or `auto`. Refusals come back as the job's `error`, with the CLI's text. A pending recipe is
+Without `profile`, the recipe's model must be served by exactly one deployment profile. `recipe` is an id or
+`auto` (a file only on the command line). Refusals come back as the job's `error`, with the CLI's text. A pending recipe is
 refused. Some profiles cannot run a recipe yet; the refusal says why (for example, a MiniMax pair binds loopback and
 needs its router on rank 0, while recipes need the local router).
 
