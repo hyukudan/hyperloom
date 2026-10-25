@@ -129,6 +129,17 @@ class APIDispatchTests(unittest.TestCase):
         with self.assertRaises(APIError):
             self.api.read("nothing", {})
 
+    def test_node_by_machine_id_and_cached_snapshot(self):
+        from types import SimpleNamespace
+        machine = SimpleNamespace(id="halo-1", access="ssh")
+        self.api.orchestrate.load_cluster.return_value = SimpleNamespace(machines={"halo-1": machine})
+        with mock.patch.object(self.api, "_node", return_value={"verb": "host"}) as node:
+            self.assertEqual(self.api.node("halo-1", "host"), {"verb": "host"})
+            node.assert_called_once_with(machine, "host", None)
+            with self.assertRaises(LookupError):
+                self.api.node("nope", "host")
+        self.assertIsNone(self.api.cached_snapshot())
+
     def test_sync_post_is_audited(self):
         self.assertEqual(self.api.feature_post("demo/echo", {"a": 1}), (200, {"echo": {"a": 1}}))
         lines = (Path(self.dir.name) / "audit.jsonl").read_text().splitlines()

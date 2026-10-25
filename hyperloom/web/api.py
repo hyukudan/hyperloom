@@ -1033,13 +1033,20 @@ class API:
                 self._expires = self.clock() + POLL_INTERVAL
             return self._cached
 
+    def cached_snapshot(self):
+        """The last core snapshot if one exists (never builds one: no node calls); None otherwise."""
+        with self._poll_lock:
+            return self._cached
+
     def cluster(self):
         return self._cluster()
 
     def node(self, machine, verb, payload=None):
         """Run a node verb on a configured machine (id or Machine)."""
         if isinstance(machine, str):
-            machines = {m.id: m for m in self._cluster().machines}
+            machines = self._cluster().machines
+            if not isinstance(machines, dict):
+                machines = {m.id: m for m in machines}
             if machine not in machines:
                 raise LookupError("unknown machine " + machine)
             machine = machines[machine]
