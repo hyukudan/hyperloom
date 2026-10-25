@@ -90,7 +90,7 @@ class LedgerDocumentTests(unittest.TestCase):
         self.assertEqual(doc["timezone"], "Europe/Madrid")
 
     def test_coverage_counts_unreachable_time_as_expected(self):
-        full_record(self.store, HOUR, 10, 100, 0, record=1800.0, observed=1800.0)
+        full_record(self.store, HOUR, 10, 100, 0, span=1800.0, record=1800.0, observed=1800.0)
         self.store.execute("INSERT INTO ledger_intervals(source, start, end, observed) VALUES ('qwen/halo-1', ?, ?, 1)",
                            (HOUR, HOUR + 1800))
         self.store.execute("INSERT INTO ledger_unreachable(source, profile, replica, machine, since, until, why) "
@@ -118,6 +118,26 @@ class LedgerDocumentTests(unittest.TestCase):
         put(self.store, HOUR, "imported", 0)
         doc = ledger.ledger(self.api, {"range": "86400"})
         self.assertAlmostEqual(doc["kpis"]["cached_share"], 0.4)
+
+    def test_a_truncated_range_is_never_an_exact_value(self):
+        self.store.put(ledger.PREFS, "prices", {"currency": "EUR", "default": {"input": 1.0, "cached": 0.1, "output": 1.0}, "models": {}})
+        full_record(self.store, HOUR - 3600, 10, 100, 0)
+        full_record(self.store, HOUR, 10, 100, 0)
+        with mock.patch.object(ledger, "MAX_ROWS", 4):
+            value = ledger.value(self.api, {"range": "86400"})
+        self.assertFalse(value["totals"]["exact"])
+        self.assertIn("range too long: only the newest records were aggregated", value["totals"]["qualifiers"])
+
+    def test_buckets_distinguish_observed_zero_from_unobserved_time(self):
+        full_record(self.store, HOUR, 0, 0, 0)
+        self.store.execute("INSERT INTO ledger_intervals(source, start, end, observed) VALUES ('qwen/halo-1', ?, ?, 1)",
+                           (HOUR, HOUR + 1800))
+        self.store.execute("INSERT INTO ledger_listed(source, start, end) VALUES ('qwen/halo-1', ?, ?)",
+                           (HOUR - 7200, HOUR - 3600))
+        self.clock.now = HOUR + 3600
+        doc = ledger.ledger(self.api, {"range": "86400"})
+        states = {b["start"]: b["state"] for b in doc["buckets"]}
+        self.assertEqual(states, {HOUR - 7200: "expected, not observed", HOUR: "observed"})
 
     def test_empty_and_missing_store(self):
         doc = ledger.ledger(self.api, {})

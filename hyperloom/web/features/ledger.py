@@ -105,9 +105,12 @@ CREATE INDEX IF NOT EXISTS ledger_intervals_end ON ledger_intervals(end);
 CREATE TABLE IF NOT EXISTS ledger_rates (source TEXT NOT NULL, start REAL NOT NULL, end REAL NOT NULL,
   tokens REAL NOT NULL, instance TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ledger_rates_source ON ledger_rates(source, end);
+CREATE TABLE IF NOT EXISTS ledger_listed (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL, start REAL NOT NULL,
+  end REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS ledger_listed_source ON ledger_listed(source, end);
 """
 TABLES = ("ledger", "ledger_counters", "ledger_instances", "ledger_gaps", "ledger_unreachable", "ledger_resets",
-          "ledger_intervals", "ledger_rates")
+          "ledger_intervals", "ledger_rates", "ledger_listed")
 UPSERT = ("INSERT INTO ledger(hour, profile, replica, machine, model, kind, tokens, span_s, record_s, observed_s, "
           "uncertain_tokens, blind_s, late_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
           "ON CONFLICT(hour, profile, replica, machine, model, kind) DO UPDATE SET tokens=tokens+excluded.tokens, "
@@ -550,6 +553,7 @@ def collect(api, now):
     store = _prepared(telemetry.open_store(api))
     sources = [source for state in _states(api) for source in sources_of(state)]
     _reconcile(store, {source["key"] for source in sources}, now)
+    _mark_listed(store, [source["key"] for source in sources], now)
     if sources:
         offset = _rounds["n"] % len(sources)
         sources = sources[offset:] + sources[:offset]
@@ -570,6 +574,20 @@ def collect(api, now):
     if failures:
         raise RuntimeError("ledger: " + "; ".join(failures)[:600])
     return []
+
+
+def _mark_listed(store, keys, now):
+    """Every round, each engine a launch record lists is expected: its listed lifetime grows by the round, whatever
+    its read gives (skipped by the round deadline, unreachable, refused or counted)."""
+    statements = []
+    for key in keys:
+        row = store.execute("SELECT id, end FROM ledger_listed WHERE source=? ORDER BY end DESC LIMIT 1", (key,))
+        if row and 0 <= now - row[0][1] <= 3 * INTERVAL:
+            statements.append(("UPDATE ledger_listed SET end=? WHERE id=?", (now, row[0][0])))
+        elif not row or now > row[0][1]:
+            statements.append(("INSERT INTO ledger_listed(source, start, end) VALUES (?, ?, ?)", (key, now, now)))
+    if statements:
+        store.transaction(statements)
 
 
 def _reconcile(store, listed, now):
@@ -740,15 +758,15 @@ def _gaps(store, start, end, limit=50):
     for s, e, profile, replica, machine, model, kind, reason, tokens, instance in rows:
         item = merged.setdefault((e, profile, replica, reason), {"start": s, "end": e, "profile": profile,
                                                                  "replica": replica, "machine": machine, "model": model,
-                                                                 "reason": reason, "instance": instance, "tokens": {}})
-        item["tokens"][kind] = tokens
+                                                                 "reason": reason, "instance": instance, "counts": {}})
+        item["counts"][kind] = tokens
     for source, profile, replica, machine, since, until, why in store.execute(
             "SELECT source, profile, replica, machine, since, until, why FROM ledger_unreachable "
             "WHERE since <= ? AND (until IS NULL OR until >= ?) ORDER BY since DESC LIMIT 500", (end, start)):
         merged[(until or end, profile, replica, "unreachable", since)] = {
             "start": since, "end": until, "profile": profile, "replica": replica, "machine": machine, "model": None,
             "reason": "engine unreachable" + ("" if until else " (still)") + (f": {why}" if why else ""),
-            "instance": None, "tokens": {}}
+            "instance": None, "counts": {}}
     gaps = sorted(merged.values(), key=lambda g: g["end"] if g["end"] is not None else end, reverse=True)
     return gaps[:limit], len(gaps), gaps
 
@@ -793,7 +811,8 @@ def ledger(api, query):
     if by not in ("kind", "model", "machine"):
         raise ValueError("by must be kind, model or machine")
     text, start, end = _range(query, now, store)
-    base = {"range": text, "by": by, "timezone": zone_name, "timezone_source": zone_source, "start": start, "end": end,
+    base = {"range": text, "by": by, "timezone": zone_name, "timezone_iana": zone_name if zone is not None else None,
+            "timezone_source": zone_source, "start": start, "end": end,
             "range_note": "whole UTC hours from the start shown (the first hour may begin before the nominal range)",
             "observer": OBSERVER}
     if store is None or not _tables_exist(store):
@@ -818,6 +837,9 @@ def ledger(api, query):
         return document
 
 
+SPAN_ROWS = 100_000
+
+
 def _merge(items):
     out = []
     for lo, hi in sorted(items):
@@ -836,22 +858,35 @@ def _spans(store, start, end, now):
     valid, certain generated-counter delta. Both come from durable tables independent of chart retention."""
     reset_at = store.execute("SELECT MAX(at) FROM ledger_resets")[0][0]
     lo_bound = max(start, -1.0 if reset_at is None else reset_at)
-    expected, observed = {}, {}
-    for source, lo, hi, valid in store.execute(
-            "SELECT source, start, end, observed FROM ledger_intervals WHERE end >= ? AND start <= ? LIMIT 200000",
-            (lo_bound, end)):
+    expected, observed, truncated = {}, {}, []
+    rows = store.execute("SELECT source, start, end, observed FROM ledger_intervals WHERE end >= ? AND start <= ? "
+                         "ORDER BY end DESC LIMIT ?", (lo_bound, end, SPAN_ROWS + 1))
+    if len(rows) > SPAN_ROWS:
+        truncated.append("scrape intervals")
+    listed = store.execute("SELECT source, start, end FROM ledger_listed WHERE end >= ? AND start <= ? ORDER BY end DESC "
+                           "LIMIT ?", (lo_bound, end, SPAN_ROWS + 1))
+    if len(listed) > SPAN_ROWS:
+        truncated.append("listed lifetimes")
+    for source, lo, hi in listed[:SPAN_ROWS]:
+        lo, hi = max(lo, lo_bound), min(hi, end)
+        if hi > lo:
+            expected.setdefault(source, []).append((lo, hi))
+    for source, lo, hi, valid in rows[:SPAN_ROWS]:
         lo, hi = max(lo, lo_bound), min(hi, end)
         if hi > lo:
             expected.setdefault(source, []).append((lo, hi))
             if valid:
                 observed.setdefault(source, []).append((lo, hi))
-    for source, since, until in store.execute(
-            "SELECT source, since, until FROM ledger_unreachable WHERE since <= ? AND (until IS NULL OR until >= ?) "
-            "LIMIT 20000", (end, lo_bound)):
+    unreachable = store.execute("SELECT source, since, until FROM ledger_unreachable WHERE since <= ? AND "
+                                "(until IS NULL OR until >= ?) ORDER BY since DESC LIMIT ?", (end, lo_bound, SPAN_ROWS + 1))
+    if len(unreachable) > SPAN_ROWS:
+        truncated.append("unreachable intervals")
+    for source, since, until in unreachable[:SPAN_ROWS]:
         lo, hi = max(since, lo_bound), min(until if until is not None else now, end)
         if hi > lo:
             expected.setdefault(source, []).append((lo, hi))
-    return {source: (_merge(items), _merge(observed.get(source, []))) for source, items in expected.items()}
+    spans = {source: (_merge(items), _merge(observed.get(source, []))) for source, items in expected.items()}
+    return spans, truncated
 
 
 def _overlap(intervals, lo, hi):
@@ -864,12 +899,16 @@ def summarize(store, records, zone, by, start, end, now, truncated=False):
     hourly = (end - start) <= HOURLY_MAX
     total = lambda k, rows=records: sum(r[k] for r in rows)
     generated, inputs, uncertain = total("generated"), total("prompt"), total("uncertain")
+    # Completeness is carried by the flags, never inferred from amounts: a record whose input or output counter was
+    # missing for part of it makes the totals partial and stays out of every ratio.
+    complete = [r for r in records if r["full"]["prompt"] and r["full"]["generated"]]
+    input_partial = any(not r["full"]["prompt"] for r in records)
+    output_partial = any(not r["full"]["generated"] for r in records)
     measured = sum(r["computed"] for r in records if r["computed_tag"] == "measured")
     estimated = sum(r["computed"] for r in records if r["computed_tag"] == "estimated")
     unavailable_input = total("computed_unavailable_input")
+    computed_missing = sum(1 for r in records if r["computed"] is None)
     cached_known = [r for r in records if r["has_cached"]]
-    # Shares need whole-record evidence on both sides; a total is "measured" only when every record with input had
-    # its cached counter for the whole record (a record without any cached count makes the total partial).
     cached_full = [r for r in records if r["full"]["cached"] and r["full"]["prompt"]]
     imported_known = [r for r in records if r["has_imported"]]
     blind_tokens = sum(r["prompt"] + r["generated"] for r in records if r["blind_s"] > 0)
@@ -877,68 +916,82 @@ def summarize(store, records, zone, by, start, end, now, truncated=False):
     grand = inputs + generated
     label_of = lambda ts: _local(ts, zone).strftime("%Y-%m-%d %H:00" if hourly else "%Y-%m-%d")
     buckets, days = {}, {}
+    drawn_from = start if hourly else max(start, end - MAX_DAY_BUCKETS * 86400)
 
     def bucket_for(hour):
         label = label_of(hour)
         bucket = buckets.setdefault(label, {"label": label, "start": hour, "end": hour + 3600, "values": {},
-                                            "tokens": 0.0, "observed_s": 0.0, "record_s": 0.0, "estimated": 0.0,
-                                            "unavailable_input": 0.0, "uncertain": 0.0, "expected_s": 0.0})
+                                            "unavailable": [], "partial": False, "tokens": 0.0, "observed_s": 0.0,
+                                            "expected_s": 0.0, "estimated": 0.0, "unavailable_input": 0.0,
+                                            "uncertain": 0.0, "records": 0, "_has": set()})
         bucket["start"], bucket["end"] = min(bucket["start"], hour), max(bucket["end"], hour + 3600)
         return bucket
     for r in records:
+        day = _local(r["hour"], zone).strftime("%Y-%m-%d")
+        days[day] = days.get(day, 0.0) + r["prompt"] + r["generated"]
+        if r["hour"] + 3600 <= drawn_from:
+            continue
         bucket = bucket_for(r["hour"])
+        bucket["records"] += 1
         if by == "kind":
             values = [("generated", r["generated"]), ("computed", r["computed"] or 0.0), ("cached", r["cached"]),
                       ("imported", r["imported"])]
+            for kind, present in (("generated", r["has_generated"]), ("computed", r["computed"] is not None),
+                                  ("cached", r["has_cached"]), ("imported", r["has_imported"])):
+                if present:
+                    bucket["_has"].add(kind)
         else:
             values = [(r[by], r["prompt"] + r["generated"])]
         for name, amount in values:
             bucket["values"][name] = bucket["values"].get(name, 0.0) + amount
+        bucket["partial"] = bucket["partial"] or not (r["full"]["prompt"] and r["full"]["generated"])
         bucket["tokens"] += r["prompt"] + r["generated"]
-        bucket["observed_s"] += r["observed_s"]
-        bucket["record_s"] += r["record_s"]
         bucket["uncertain"] += r["uncertain"]
         bucket["unavailable_input"] += r["computed_unavailable_input"]
         if r["computed_tag"] == "estimated":
             bucket["estimated"] += r["computed"]
-        day = _local(r["hour"], zone).strftime("%Y-%m-%d")
-        days[day] = days.get(day, 0.0) + r["prompt"] + r["generated"]
-    # Expected time never scraped (an engine listed but unreadable) counts against coverage, also in hours without
-    # any record: those buckets exist with coverage 0 and no values.
-    spans = _spans(store, start, end, now)
+    # Expected time counts against coverage, also in hours without any record (those buckets exist without values).
+    spans, spans_truncated = _spans(store, start, end, now)
     for expected, _ in spans.values():
         for lo, hi in expected:
-            hour = int(lo // 3600) * 3600
+            hour = int(max(lo, drawn_from) // 3600) * 3600
             while hour < hi:
                 bucket_for(hour)
                 hour += 3600
     ordered = sorted(buckets.values(), key=lambda b: b["start"])
     for bucket in ordered:
+        if by == "kind":
+            bucket["unavailable"] = [k for k in ("generated", "computed", "cached", "imported") if k not in bucket["_has"]]
+        del bucket["_has"]
         # Per engine, the union of its expected and observed intervals inside this bucket (hours split exactly).
         bucket["expected_s"] = sum(_overlap(exp, bucket["start"], bucket["end"]) for exp, _ in spans.values())
         bucket["observed_s"] = sum(_overlap(obs, bucket["start"], bucket["end"]) for _, obs in spans.values())
         bucket["coverage"] = min(1.0, bucket["observed_s"] / bucket["expected_s"]) if bucket["expected_s"] else None
-    dropped = 0
-    if not hourly and len(ordered) > MAX_DAY_BUCKETS:
-        dropped = len(ordered) - MAX_DAY_BUCKETS
-        ordered = ordered[-MAX_DAY_BUCKETS:]
+        bucket["state"] = ("not expected" if not bucket["expected_s"] and not bucket["records"] else
+                           "expected, not observed" if not bucket["observed_s"] and not bucket["tokens"] else "observed")
+    dropped = sum(1 for d in days if d < label_of(drawn_from)[:10]) if not hourly else 0
     busiest = max(days.items(), key=lambda item: item[1]) if days else None
     partial_cached = any(not r["full"]["cached"] for r in records if r["has_prompt"] or r["has_cached"])
-    kpis = {"total": grand, "generated": generated, "input": inputs, "computed": measured + estimated,
-            "computed_measured": measured, "computed_estimated": estimated, "computed_unavailable_input": unavailable_input,
-            "computed_tag": "measured" if not estimated and not unavailable_input else "partly estimated",
+    complete_input, complete_output = total("prompt", complete), total("generated", complete)
+    kpis = {"total": grand, "generated": generated, "input": inputs,
+            "input_tag": "partial (input not reported for part of the time)" if input_partial else "measured",
+            "output_tag": "partial (output not reported for part of the time)" if output_partial else "measured",
+            "computed": measured + estimated, "computed_measured": measured, "computed_estimated": estimated,
+            "computed_unavailable_input": unavailable_input,
+            "computed_tag": "measured" if not estimated and not unavailable_input and not computed_missing else "partly estimated",
             "cached": cached if cached_known else None,
             "cached_tag": None if not cached_known else "partial (some engines reported it for part of the time)"
             if partial_cached else "measured",
             "imported": total("imported", imported_known) if imported_known else None,
             "uncertain": uncertain, "unverified_identity_tokens": blind_tokens,
-            "generated_share": _share(generated, grand),
+            "generated_share": _share(complete_output, complete_input + complete_output),
             "cached_share": _share(total("aligned_cached", cached_full), total("aligned_prompt", cached_full)) if cached_full else None,
-            "tokens_saved": cached if cached_known else None, "output_input": _share(generated, inputs),
+            "tokens_saved": cached if cached_known else None, "output_input": _share(complete_output, complete_input),
+            "ratio_basis": "ratios use only hour records where input and output were reported for the whole record",
             "avg_per_day": grand / len(days) if days else None, "observed_days": len(days),
             "busiest_day": {"day": busiest[0], "tokens": busiest[1]} if busiest else None}
     why = {}
-    reasons = {"generated_share": "no tokens in range", "output_input": "no input tokens in range",
+    reasons = {"generated_share": "no complete record in range", "output_input": "no complete record with input in range",
                "avg_per_day": "no observed day in range", "busiest_day": "no observed day in range",
                "cached": "no engine in range reports cache-restored tokens",
                "cached_share": "no engine in range reported cache-restored tokens for a whole hour record (or no input)",
@@ -953,9 +1006,16 @@ def summarize(store, records, zone, by, start, end, now, truncated=False):
                                            "estimated": 0.0, "unavailable_input": 0.0, "cached": 0.0, "imported": 0.0,
                                            "uncertain": 0.0, "observed_s": 0.0, "machines": set(), "profiles": set(),
                                            "full_cached": 0.0, "full_input": 0.0, "has_cached": False,
-                                           "cached_partial": False, "blind_tokens": 0.0})
+                                           "cached_partial": False, "blind_tokens": 0.0, "input_partial": False,
+                                           "output_partial": False, "computed_missing": False,
+                                           "complete_input": 0.0, "complete_output": 0.0})
         for name in ("generated", "prompt", "imported", "uncertain", "observed_s"):
             m[name] += r[name]
+        m["input_partial"] = m["input_partial"] or not r["full"]["prompt"]
+        m["output_partial"] = m["output_partial"] or not r["full"]["generated"]
+        if r["full"]["prompt"] and r["full"]["generated"]:
+            m["complete_input"] += r["prompt"]
+            m["complete_output"] += r["generated"]
         if r["has_cached"]:
             m["cached"] += r["cached"]
             m["has_cached"] = True
@@ -968,6 +1028,8 @@ def summarize(store, records, zone, by, start, end, now, truncated=False):
             m["computed"] += r["computed"]
             if r["computed_tag"] == "estimated":
                 m["estimated"] += r["computed"]
+        else:
+            m["computed_missing"] = True
         m["unavailable_input"] += r["computed_unavailable_input"]
         if r["blind_s"] > 0:
             m["blind_tokens"] += r["prompt"] + r["generated"]
@@ -977,25 +1039,30 @@ def summarize(store, records, zone, by, start, end, now, truncated=False):
     for m in models.values():
         m.update(input=m["prompt"], total=m["prompt"] + m["generated"],
                  cached_share=_share(m["full_cached"], m["full_input"]) if m["full_input"] else None,
-                 cached_input=m["full_input"], output_input=_share(m["generated"], m["prompt"]),
+                 cached_input=m["full_input"], output_input=_share(m["complete_output"], m["complete_input"]),
                  machines=sorted(m["machines"]), profiles=sorted(m["profiles"]),
-                 computed_tag="measured" if not m["estimated"] and not m["unavailable_input"] else "partly estimated",
-                 cached_tag=None if not m["has_cached"] else "partial" if m["cached_partial"] else "measured")
+                 computed_tag="measured" if not m["estimated"] and not m["unavailable_input"] and not m["computed_missing"]
+                 else "partly estimated",
+                 cached_tag=None if not m["has_cached"] else "partial" if m["cached_partial"] else "measured",
+                 input_tag="partial" if m["input_partial"] else "measured",
+                 output_tag="partial" if m["output_partial"] else "measured")
         if not m["has_cached"]:
             m["cached"] = None
         table.append(m)
     table.sort(key=lambda m: m["total"], reverse=True)
     coverage = {"observed_s": sum(_overlap(obs, start, end) for _, obs in spans.values()),
                 "expected_s": sum(_overlap(exp, start, end) for exp, _ in spans.values()), "span_s": max(1.0, end - start),
-                "note": "coverage = seconds with a valid generated-token interval / expected seconds (every scrape "
-                        "interval of a listed engine plus its listed-but-unreadable time, per engine, split exactly "
-                        "across hours); hours without any engine listed were not expected and are drawn as gaps, "
-                        "never as zero"}
+                "note": "coverage = seconds with a valid generated-token interval / expected seconds (every second an "
+                        "engine was listed by a launch record, read or not, per engine, split exactly across hours); "
+                        "hours without any engine listed were not expected and are drawn as empty, never as zero"}
     notes = [n for n in (_offset_note(zone, now),
                          f"{dropped} older day(s) not drawn (the newest {MAX_DAY_BUCKETS} are shown; KPIs cover all)" if dropped else None,
-                         f"range too long: only the newest {MAX_ROWS} rows were aggregated" if truncated else None) if n]
+                         f"range too long: only the newest {MAX_ROWS} rows were aggregated" if truncated else None,
+                         ("coverage incomplete: only the newest " + str(SPAN_ROWS) + " " + ", ".join(spans_truncated)
+                          + " were used") if spans_truncated else None) if n]
     return {"kpis": kpis, "buckets": ordered, "bucket": "hour" if hourly else "day", "models": table, "gaps": gaps,
             "gap_count": gap_count, "coverage": coverage, "sources": sources, "notes": notes,
+            "complete": not truncated and not spans_truncated,
             "insights": insights(kpis, table, gap_count, all_gaps, sources), "why": why}
 
 
@@ -1015,8 +1082,11 @@ def insights(kpis, models, gap_count, gaps, sources):
     """Plain-language observations, each derived from the numbers in the same document."""
     if not kpis["total"]:
         return ["No tokens were counted in this range."]
-    out = [f"{_n(kpis['total'])} tokens in range: {_n(kpis['input'])} input and {_n(kpis['generated'])} generated "
-           f"({_pct(kpis['generated_share'])} generated)."]
+    share = f" ({_pct(kpis['generated_share'])} generated in complete records)" if kpis["generated_share"] is not None else ""
+    out = [f"{_n(kpis['total'])} tokens in range: {_n(kpis['input'])} input and {_n(kpis['generated'])} generated{share}."]
+    for name, tag in (("input", kpis.get("input_tag", "")), ("output", kpis.get("output_tag", ""))):
+        if tag.startswith("partial"):
+            out.append(f"The {name} counter was not reported for part of the time: {name} totals are a lower bound.")
     if models:
         top = models[0]
         out.append(f"{top['model']} accounts for {_pct(top['total'] / kpis['total'])} of all tokens.")
@@ -1032,7 +1102,7 @@ def insights(kpis, models, gap_count, gaps, sources):
     if kpis["busiest_day"]:
         out.append(f"Busiest day: {kpis['busiest_day']['day']} with {_n(kpis['busiest_day']['tokens'])} tokens.")
     if gap_count:
-        outside = sum(v for g in gaps for k, v in g["tokens"].items() if k in ("prompt", "generated") and _finite(v)
+        outside = sum(v for g in gaps for k, v in g["counts"].items() if k in ("prompt", "generated") and _finite(v)
                       and not g["reason"].startswith(("collection gap", "counter missing")))
         out.append(f"{gap_count} unobserved interval(s) in range (engine starts, restarts, unreachable engines or a "
                    f"reset): {_n(outside)} tokens the engines counted there are not in the ledger.")
@@ -1115,6 +1185,7 @@ def reset(api, arguments):
                        ("DELETE FROM ledger_unreachable WHERE until IS NOT NULL", ()),
                        ("UPDATE ledger_unreachable SET since=MAX(since, ?) WHERE until IS NULL", (at,)),
                        ("DELETE FROM ledger_intervals", ()), ("DELETE FROM ledger_rates", ()),
+                       ("DELETE FROM ledger_listed WHERE end < ?", (at - 3 * INTERVAL,)),
                        ("INSERT INTO ledger_resets(at) VALUES (?)", (at,))])
     _invalidate(store)
     return {"reset": True, "at": at, "records_deleted": rows, "gaps_deleted": gaps,
@@ -1631,6 +1702,11 @@ def _snapshot(api, name, fields, query):
         why = NO_STORE if store is None else SNAPSHOT_NEEDS
         return api.document("ledger-" + name, **dict.fromkeys(fields), snapshot_ts=None, why={f: why for f in fields})
     fields_ = dict(snap["fields"])
+    stalled = store.get(SNAPSHOT, "stalled")
+    if isinstance(stalled, dict):
+        fields_.setdefault("notes", []).append(
+            f"the last rebuild has not finished within {FILES_DEADLINE:.0f} s (a directory or service is blocking); "
+            "this is the previous snapshot")
     age = api.clock() - snap["ts"]
     if age > 4 * FILES_INTERVAL:
         fields_.setdefault("notes", []).append(f"snapshot is {age:.0f} s old (the ledger-files collector is behind)")
@@ -1651,9 +1727,33 @@ def collect_files(api, now):
     """The `ledger-files` collector: census directory, run-log listing and RTX service reads, each bounded, into
     snapshots that the GETs read."""
     store = _prepared(telemetry.open_store(api))
-    store.put(SNAPSHOT, "census", {"ts": now, "fields": build_census(api, now)})
-    store.put(SNAPSHOT, "rtx", {"ts": now, "fields": build_rtx(api, now)})
+    previous = _file_builds.get(id(store))
+    if previous is not None and previous.is_alive():
+        # The last build is still blocked (a filesystem or service call that cannot be interrupted): never start a
+        # second one; the GETs keep the last snapshot and say it is stalled.
+        store.put(SNAPSHOT, "stalled", {"since": previous.started, "ts": now})
+        return []
+    result = {}
+
+    def work():
+        result["census"] = build_census(api, now)
+        result["rtx"] = build_rtx(api, now)
+    worker = threading.Thread(target=work, name="hyperloom-ledger-files", daemon=True)
+    worker.started = now
+    _file_builds[id(store)] = worker
+    worker.start()
+    worker.join(FILES_DEADLINE)
+    if worker.is_alive():
+        store.put(SNAPSHOT, "stalled", {"since": now, "ts": now})
+        return []
+    store.put(SNAPSHOT, "census", {"ts": now, "fields": result["census"]})
+    store.put(SNAPSHOT, "rtx", {"ts": now, "fields": result["rtx"]})
+    store.delete(SNAPSHOT, "stalled")
     return []
+
+
+_file_builds = {}
+FILES_DEADLINE = 10.0
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -1933,12 +2033,15 @@ def value(api, query):
             row["total"] = row["input_cost"] + (row["cached_cost"] or 0.0) + row["output_cost"]
             for key in keys:
                 totals[key] += row[key] or 0.0
-        row["qualifiers"] = _qualifiers(model)
+        row["qualifiers"] = _qualifiers(model) + (["range too long: only the newest records were aggregated"]
+                                                  if report.get("complete") is False else [])
         row["exact"] = not row["qualifiers"]
         rows.append(row)
     if unpriced:
         why["totals"] = "totals exclude unpriced models: " + ", ".join(unpriced)
     total_qualifiers = sorted({q for row in rows if row["total"] is not None for q in row["qualifiers"]})
+    if report.get("complete") is False:
+        total_qualifiers = sorted(set(total_qualifiers) | {"range too long: only the newest records were aggregated"})
     if prices:
         totals.update(qualifiers=total_qualifiers, exact=not total_qualifiers and not unpriced)
     return api.document("ledger-value", range=report["range"], timezone=report["timezone"], prices=prices,
@@ -1952,6 +2055,10 @@ def value(api, query):
 def _qualifiers(model):
     """The material uncertainty of a model's priced quantities, in words (empty when every quantity is exact)."""
     out = []
+    if model["input_partial"]:
+        out.append("input not reported for part of the range (input tokens are a lower bound)")
+    if model["output_partial"]:
+        out.append("output not reported for part of the range (output tokens are a lower bound)")
     if model["estimated"]:
         out.append("input partly an upper bound (cache-restored or imported tokens not reported)")
     if model["unavailable_input"]:

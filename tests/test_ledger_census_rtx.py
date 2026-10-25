@@ -128,6 +128,26 @@ class CensusTests(Base):
         self.assertIn("larger than", reasons["big.json"])
 
 
+class FilesCollectorTests(Base):
+    def test_a_blocked_build_is_cut_at_its_deadline_and_never_doubled(self):
+        import threading
+        release = threading.Event()
+        started = []
+
+        def blocked(api, now):
+            started.append(now)
+            release.wait(5)
+            return {"artifacts": None, "why": {"artifacts": "x"}}
+        fresh(self.api, "census")                # a first snapshot
+        with mock.patch.object(ledger, "build_census", blocked), mock.patch.object(ledger, "FILES_DEADLINE", 0.2):
+            ledger.collect_files(self.api, self.clock())
+            ledger.collect_files(self.api, self.clock())
+            self.assertEqual(len(started), 1)    # the second round did not start another build
+            doc = ledger.census(self.api, {})
+            self.assertTrue(any("has not finished" in n for n in doc["notes"]))
+            release.set()
+
+
 class DirectoryTests(Base):
     def test_file_replaced_between_listing_and_open_is_refused(self):
         directory = self.configure("census", ["census-qwen.json"])

@@ -39,8 +39,8 @@
   function runs(doc) {
     const {card, esc, button} = H();
     const draft = view.draft ?? doc.logs_dir ?? "";
-    const form = `<form class="lg-form" data-page-form="rtx-dir"><label class="field" for="rtx-dir">Run logs directory<input class="inp" id="rtx-dir" name="dir" value="${esc(draft)}" autocomplete="off" spellcheck="false" placeholder="absolute path"></label><div class="row"><button type="submit" class="btn pri">Save directory</button>${doc.logs_dir_set ? button("Clear", "", {extra: 'data-page-action="rtx-clear"'}) : ""}</div></form>`;
-    const list = doc.runs == null ? `<p>${H().unavailable(doc.why.runs)}</p>` : `<div class="table-wrap" tabindex="0" role="region" aria-label="Batch run logs"><table><thead><tr><th scope="col">Run log</th><th scope="col" class="lg-num">Size</th><th scope="col">Modified</th><th scope="col">Stats</th></tr></thead><tbody>${doc.runs.map(r => `<tr><td class="lg-wrap">${esc(r.name)}</td><td class="lg-num">${esc(bytes(r.bytes))}</td><td>${esc(new Date(r.mtime * 1000).toLocaleString())}</td><td>${button(view.busy === r.id ? "Reading…" : "Read last stats", "", {disabled: view.busy ? "another log is being read" : "", extra: `data-page-action="rtx-parse" data-id="${esc(r.id)}"`})}</td></tr>`).join("") || `<tr><td colspan="4">No .log, .txt or .out files in the directory.</td></tr>`}</tbody></table></div>`;
+    const form = `<form class="lg-form" data-page-form="rtx-dir"><label class="field" for="rtx-dir">Run logs directory<input class="inp" id="rtx-dir" name="dir" value="${esc(draft)}" autocomplete="off" spellcheck="false" placeholder="absolute path"></label><div class="row">${submit("Save directory")}${doc.logs_dir_set ? button("Clear", "", {disabled: H().mutationReason(), extra: 'data-page-action="rtx-clear"'}) : ""}</div></form>`;
+    const list = doc.runs == null ? `<p>${H().unavailable(doc.why.runs)}</p>` : `<div class="table-wrap" tabindex="0" role="region" aria-label="Batch run logs"><table><thead><tr><th scope="col">Run log</th><th scope="col" class="lg-num">Size</th><th scope="col">Modified</th><th scope="col">Stats</th></tr></thead><tbody>${doc.runs.map(r => `<tr><td class="lg-wrap">${esc(r.name)}</td><td class="lg-num">${esc(bytes(r.bytes))}</td><td>${esc(new Date(r.mtime * 1000).toLocaleString())}</td><td>${button(view.busy === r.id ? "Reading…" : "Read last stats", "", {disabled: view.busy ? "another log is being read" : H().mutationReason(), extra: `data-page-action="rtx-parse" data-id="${esc(r.id)}"`})}</td></tr>`).join("") || `<tr><td colspan="4">No .log, .txt or .out files in the directory.</td></tr>`}</tbody></table></div>`;
     return card("Batch RTX runs", form + list + (doc.notes || []).map(n => `<p class="hint">${esc(n)}</p>`).join("") + (view.message ? `<p role="status" class="hint lg-wrap">${esc(view.message)}</p>` : "") + `<p class="hint">Only files listed here can be read; the portal finds the last <code>ss stats</code> line in the last 8 MiB of the chosen log.</p>`);
   }
 
@@ -63,7 +63,17 @@
     },
   };
 
-  const post = (action, body) => H().request(action, {method: "POST", headers: {"Content-Type": "application/json", "X-Hyperloom-CSRF": H().csrf() || ""}, body: JSON.stringify(body)});
+  // Writes wait for authoritative state and never overlap another action (the shell's gate), then refresh.
+  async function guarded(action, body) {
+    const blocker = H().mutationReason();
+    if (blocker) throw new Error(blocker);
+    H().state.busy = true; H().render();
+    try {
+      return await H().request(action, {method: "POST", headers: {"Content-Type": "application/json", "X-Hyperloom-CSRF": H().csrf() || ""}, body: JSON.stringify(body)});
+    } finally { H().state.busy = false; H().state.fresh = false; }
+  }
+  const submit = label => { const blocker = H().mutationReason(); return blocker ? `<span class="disabled-control"><button type="submit" class="btn pri" disabled title="${H().esc(blocker)}">${H().esc(label)}</button><span class="hint">${H().esc(blocker)}</span></span>` : `<button type="submit" class="btn pri">${H().esc(label)}</button>`; };
+  const post = guarded;
   async function saveDirectory(value) {
     try { await post("ledger/settings", {logs_dir: value}); view.message = value ? "Run logs directory saved." : "Run logs directory cleared."; view.draft = null; }
     catch (error) { view.message = `Not saved: ${error.message}`; }

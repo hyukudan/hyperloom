@@ -486,6 +486,49 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(buckets[HOUR + 3600]["expected_s"], 3600.0)
         self.assertEqual(buckets[HOUR + 7200]["expected_s"], 110.0)
 
+    def test_time_skipped_by_the_round_deadline_is_still_expected(self):
+        times = iter([0.0, 9.0])                 # the round starts past its deadline: the engine is not read
+        with mock.patch.object(ledger.time, "monotonic", lambda: next(times, 9.0)):
+            self.collect()
+            for _ in range(6):
+                times = iter([0.0, 9.0])
+                self.collect(10)
+        self.engine.text[18080] = metrics(0, 0)
+        self.collect(0)
+        self.engine.text[18080] = metrics(10, 0)
+        self.collect(10)
+        doc = ledger.ledger(self.api, {"range": "3600"})
+        self.assertAlmostEqual(doc["coverage"]["observed_s"] / doc["coverage"]["expected_s"], 10 / 70)
+
+    def test_time_after_a_reset_in_a_fenced_interval_is_expected(self):
+        self.engine.text[18080] = metrics(0, 0)
+        self.collect()
+        self.engine.text[18080] = metrics(10, 0)
+        self.collect(10)
+        self.clock.now += 5
+        ledger.reset(self.api, {"confirm": "reset"})
+        self.engine.text[18080] = metrics(15, 0)
+        self.collect(5)                          # fenced: 5 s after the reset, not observed
+        self.engine.text[18080] = metrics(25, 0)
+        self.collect(10)
+        doc = ledger.ledger(self.api, {"range": "3600"})
+        self.assertAlmostEqual(doc["coverage"]["observed_s"] / doc["coverage"]["expected_s"], 10 / 15)
+
+    def test_a_missing_prompt_counter_is_never_measured_or_exact(self):
+        self.engine.text[18080] = metrics(0, 0)
+        self.collect()
+        self.engine.text[18080] = "strix_generated_tokens_total 1000000\n"      # prompt counter missing
+        self.collect(10)
+        doc = ledger.ledger(self.api, {"range": "3600"})
+        self.assertTrue(doc["kpis"]["input_tag"].startswith("partial"))
+        self.assertEqual(doc["kpis"]["computed_tag"], "partly estimated")
+        self.assertIsNone(doc["kpis"]["output_input"])
+        self.api.telemetry.put(ledger.PREFS, "prices", {"currency": "EUR", "default": {"input": 1.0, "cached": 0.1, "output": 1.0}, "models": {}})
+        value = ledger.value(self.api, {"range": "3600"})
+        self.assertFalse(value["models"][0]["exact"])
+        self.assertIn("input not reported for part of the range (input tokens are a lower bound)", value["models"][0]["qualifiers"])
+        self.assertFalse(value["totals"]["exact"])
+
     def test_stopped_engine_closes_its_unreachable_interval(self):
         self.engine.text[18080] = metrics(100, 1000)
         self.collect()

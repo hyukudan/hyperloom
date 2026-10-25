@@ -4,7 +4,7 @@
 (() => {
   const H = () => window.Hyperloom;
   const ranges = [["24 h", "86400"], ["7 d", "604800"], ["30 d", "2592000"], ["All", "all"]];
-  const view = {range: "2592000", draft: null, message: "", error: ""};
+  const view = {range: "2592000", draft: null, message: "", error: "", errors: {}};
   try { view.range = localStorage.getItem("hyperloom-value-range") || view.range; } catch (_) { /* storage may be disabled */ }
   const endpoint = () => `ledger/value?${new URLSearchParams({range: view.range})}`;
   const money = (value, currency) => value == null || !Number.isFinite(value) ? null : `${value.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} ${currency || ""}`.trim();
@@ -17,11 +17,14 @@
   function editor(doc) {
     const {esc, button, card} = H();
     const d = view.draft ||= draftFrom(doc.prices);
-    const field = (id, label, value) => `<label class="field" for="${id}">${esc(label)}<input class="inp" id="${id}" inputmode="decimal" value="${esc(value)}" autocomplete="off"></label>`;
+    const field = (id, label, value) => {
+      const error = view.errors?.[id];
+      return `<label class="field" for="${id}">${esc(label)}<input class="inp" id="${id}" inputmode="decimal" value="${esc(value)}" autocomplete="off"${error ? ` aria-invalid="true" aria-describedby="${id}-error"` : ""}>${error ? `<span class="field-error lg-error" id="${id}-error">${esc(error)}</span>` : ""}</label>`;
+    };
     const models = d.models.map((m, i) => `<div class="lg-form" style="margin-top:8px">${field(`value-m${i}-name`, "Model", m.name)}${field(`value-m${i}-input`, "Input (computed)", m.input)}${field(`value-m${i}-cached`, "Input (cache-restored)", m.cached)}${field(`value-m${i}-output`, "Output", m.output)}<div>${button("Remove", "", {extra: `data-page-action="value-remove" data-index="${i}"`})}</div></div>`).join("");
     return card("Price table", `<form data-page-form="value-prices"><div class="lg-form">${field("value-currency", "Currency", d.currency)}<label class="field" for="value-use-default"><span><input type="checkbox" id="value-use-default" ${d.useDefault ? "checked" : ""}> Default price for every other model</span></label></div>
 <div class="lg-form" style="margin-top:8px">${field("value-d-input", "Default input (computed)", d.default.input)}${field("value-d-cached", "Default input (cache-restored)", d.default.cached)}${field("value-d-output", "Default output", d.default.output)}</div>
-${models}<div class="row" style="margin-top:10px">${button("Add model price", "", {extra: 'data-page-action="value-add"'})}<button type="submit" class="btn pri">Save prices</button></div></form>
+${models}<div class="row" style="margin-top:10px">${button("Add model price", "", {extra: 'data-page-action="value-add"'})}${submit("Save prices")}</div></form>
 ${view.error ? `<p class="lg-error" role="alert">${esc(view.error)}</p>` : ""}${view.message ? `<p role="status" class="hint">${esc(view.message)}</p>` : ""}<p class="hint">Prices per million tokens. Saving is validated by the portal and recorded in the audit log.</p>`, "local, edited here or with hyperloom token-value set");
   }
   function report(doc) {
@@ -54,6 +57,20 @@ ${view.error ? `<p class="lg-error" role="alert">${esc(view.error)}</p>` : ""}${
     },
   };
 
+  // Writes wait for authoritative state and never overlap another action (the shell's gate), then refresh.
+  async function guarded(action, body) {
+    const blocker = H().mutationReason();
+    if (blocker) throw new Error(blocker);
+    H().state.busy = true; H().render();
+    try {
+      return await H().request(action, {method: "POST", headers: {"Content-Type": "application/json", "X-Hyperloom-CSRF": H().csrf() || ""}, body: JSON.stringify(body)});
+    } finally { H().state.busy = false; H().state.fresh = false; }
+  }
+  const submit = label => { const blocker = H().mutationReason(); return blocker ? `<span class="disabled-control"><button type="submit" class="btn pri" disabled title="${H().esc(blocker)}">${H().esc(label)}</button><span class="hint">${H().esc(blocker)}</span></span>` : `<button type="submit" class="btn pri">${H().esc(label)}</button>`; };
+  function focusError() {
+    const first = Object.keys(view.errors || {})[0];
+    if (first) document.getElementById(first)?.focus();
+  }
   function readDraft() {
     const d = view.draft;
     const get = id => document.getElementById(id)?.value ?? "";
@@ -83,12 +100,27 @@ ${view.error ? `<p class="lg-error" role="alert">${esc(view.error)}</p>` : ""}${
     const d = view.draft, set = p => ({input: number(p.input), cached: number(p.cached), output: number(p.output)});
     const body = {currency: d.currency.trim(), default: d.useDefault ? set(d.default) : null,
                   models: Object.fromEntries(d.models.filter(m => m.name.trim()).map(m => [m.name.trim(), set(m)]))};
-    const invalid = [body.default, ...Object.values(body.models)].filter(Boolean).some(p => Object.values(p).some(v => !Number.isFinite(v)));
-    if (invalid) { view.error = "Every price must be a number (per million tokens)."; view.message = ""; H().render(); return; }
+    view.errors = {};
+    if (!body.currency) view.errors["value-currency"] = "Give a currency (letters or a currency sign).";
+    if (d.useDefault) for (const k of ["input", "cached", "output"]) if (!Number.isFinite(body.default[k]) || body.default[k] < 0) view.errors[`value-d-${k}`] = "A price per million tokens (0 or more).";
+    d.models.forEach((m, i) => {
+      if (!m.name.trim() && (m.input || m.cached || m.output)) view.errors[`value-m${i}-name`] = "Name the model or remove the row.";
+      if (m.name.trim()) for (const k of ["input", "cached", "output"]) { const v = number(m[k]); if (!Number.isFinite(v) || v < 0) view.errors[`value-m${i}-${k}`] = "A price per million tokens (0 or more)."; }
+    });
+    if (Object.keys(view.errors).length) { view.error = "Some prices are not valid: see the marked fields."; view.message = ""; H().render(); focusError(); return; }
     try {
-      await H().request("ledger/prices", {method: "POST", headers: {"Content-Type": "application/json", "X-Hyperloom-CSRF": H().csrf() || ""}, body: JSON.stringify(body)});
-      view.error = ""; view.message = "Prices saved."; view.draft = null;
-    } catch (error) { view.error = `Not saved: ${error.message}`; view.message = ""; }
-    H().announce(view.error || view.message); H().refresh();
+      await guarded("ledger/prices", body);
+      view.error = ""; view.errors = {}; view.message = "Prices saved."; view.draft = null;
+    } catch (error) {
+      // The portal names the rejected field (e.g. "models.x.cached" or "currency"): point at it.
+      view.error = `Not saved: ${error.message}`; view.message = ""; view.errors = {};
+      const where = /^(currency|default\.(input|cached|output)|models\.(.+)\.(input|cached|output))\b/.exec(error.message);
+      if (where) {
+        const index = where[3] ? view.draft.models.findIndex(m => m.name.trim() === where[3]) : -1;
+        const id = where[1] === "currency" ? "value-currency" : where[2] ? `value-d-${where[2]}` : index >= 0 ? `value-m${index}-${where[4]}` : "";
+        if (id) view.errors[id] = error.message;
+      }
+    }
+    H().announce(view.error || view.message); await H().refresh(); focusError();
   });
 })();

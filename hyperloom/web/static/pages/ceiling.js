@@ -31,7 +31,7 @@
   function directoryCard(doc) {
     const {card, esc, button} = H();
     const draft = view.draft ?? doc.directory ?? "";
-    return card("Census directory", `<form class="lg-form" data-page-form="ceiling-dir"><label class="field" for="ceiling-dir">Directory with census JSON files<input class="inp" id="ceiling-dir" name="dir" value="${esc(draft)}" autocomplete="off" spellcheck="false" placeholder="absolute path"></label><div class="row"><button type="submit" class="btn pri">Save directory</button>${doc.directory_set ? button("Clear", "", {extra: 'data-page-action="ceiling-clear"'}) : ""}</div></form>${view.message ? `<p role="status" class="hint lg-wrap">${esc(view.message)}</p>` : ""}<p class="hint">Read by the portal only from this saved directory (plain directory, no links); at most 64 files of 1 MiB.</p>`);
+    return card("Census directory", `<form class="lg-form" data-page-form="ceiling-dir"><label class="field" for="ceiling-dir">Directory with census JSON files<input class="inp" id="ceiling-dir" name="dir" value="${esc(draft)}" autocomplete="off" spellcheck="false" placeholder="absolute path"></label><div class="row">${submit("Save directory")}${doc.directory_set ? button("Clear", "", {disabled: H().mutationReason(), extra: 'data-page-action="ceiling-clear"'}) : ""}</div></form>${view.message ? `<p role="status" class="hint lg-wrap">${esc(view.message)}</p>` : ""}<p class="hint">Read by the portal only from this saved directory (plain directory, no links); at most 64 files of 1 MiB.</p>`);
   }
   function live(doc) {
     const {esc, unavailable} = H();
@@ -63,9 +63,19 @@
     },
   };
 
+  // Writes wait for authoritative state and never overlap another action (the shell's gate), then refresh.
+  async function guarded(action, body) {
+    const blocker = H().mutationReason();
+    if (blocker) throw new Error(blocker);
+    H().state.busy = true; H().render();
+    try {
+      return await H().request(action, {method: "POST", headers: {"Content-Type": "application/json", "X-Hyperloom-CSRF": H().csrf() || ""}, body: JSON.stringify(body)});
+    } finally { H().state.busy = false; H().state.fresh = false; }
+  }
+  const submit = label => { const blocker = H().mutationReason(); return blocker ? `<span class="disabled-control"><button type="submit" class="btn pri" disabled title="${H().esc(blocker)}">${H().esc(label)}</button><span class="hint">${H().esc(blocker)}</span></span>` : `<button type="submit" class="btn pri">${H().esc(label)}</button>`; };
   async function saveDirectory(value) {
     try {
-      await H().request("ledger/settings", {method: "POST", headers: {"Content-Type": "application/json", "X-Hyperloom-CSRF": H().csrf() || ""}, body: JSON.stringify({census_dir: value})});
+      await guarded("ledger/settings", {census_dir: value});
       view.message = value ? "Census directory saved." : "Census directory cleared.";
       view.draft = null;
     } catch (error) { view.message = `Not saved: ${error.message}`; }
