@@ -1,0 +1,15 @@
+# HELP strix_requests_completed_total Generations completed.
+# TYPE strix_requests_completed_total counter
+strix_requests_completed_total 3
+strix_requests_failed_total 1
+strix_requests_cancelled_total 0
+strix_prompt_tokens_total 12878
+strix_prompt_tokens_cached_total 20
+strix_generated_tokens_total 9910
+strix_engine_busy_seconds_total 2.5
+strix_queue_waiting 1
+strix_queue_running 2
+strix_slots_busy 2
+strix_batch_steps_total 10
+strix_batch_rows_total 20
+strix_group_exchanges_total 12

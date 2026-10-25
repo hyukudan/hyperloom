@@ -1,0 +1,14 @@
+/* Endpoints page (endpoints.js). */
+.ep-counts{gap:6px 14px}
+.ep-form{margin-top:14px;border-top:1px solid var(--border);padding-top:12px}
+.ep-fields{grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
+.ep-h{font-size:13px;margin:10px 0 6px}
+@media(max-width:900px){.ep-fields{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:560px){.ep-fields{grid-template-columns:1fr}}
+@media(max-width:700px){
+  .ep-stack thead{display:none}
+  .ep-stack tr{display:block;border-bottom:1px solid var(--border);padding:8px 0}
+  .ep-stack td{display:grid;grid-template-columns:minmax(90px,38%) 1fr;gap:8px;border:0;padding:3px 4px}
+  .ep-stack td::before{content:attr(data-label);color:var(--text-2);font-size:12px;font-weight:550}
+  .ep-stack td[data-label=""]::before{content:none}
+}
