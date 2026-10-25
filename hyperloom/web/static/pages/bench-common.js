@@ -109,12 +109,12 @@
     const entry = previews[kind] ||= {key: "", command: "", pending: false};
     if (entry.key !== key && !entry.pending && H().csrf() && H().csrf() !== "__HYPERLOOM_CSRF__") {
       entry.pending = true;
-      post("bench/preview", {kind, arguments: args}).then(r => { entry.command = r.command; entry.key = key; })
+      post("bench/preview", {kind, arguments: args}).then(r => { entry.command = r.command; entry.shell = r.shell; entry.key = key; })
         .catch(e => { entry.command = `unavailable · ${e.message}`; entry.key = key; })
         .finally(() => { entry.pending = false; H().render(); });
     }
     const command = entry.key === key ? entry.command : entry.command ? `${entry.command} (updating)` : "";
-    return `<div class="cli bench-cli"><span class="hint">Same run from a terminal</span> <code>${H().esc(command || "hyperloom bench " + kind + " …")}</code></div>`;
+    return `<div class="cli bench-cli"><span class="hint">Same run from a terminal${entry.shell ? ` (${entry.shell === "powershell" ? "PowerShell" : "POSIX shell"} quoting)` : ""}</span> <code>${H().esc(command || "hyperloom bench " + kind + " …")}</code></div>`;
   }
 
   // The run a page shows: the one it started or opened, else the newest stored run of its kind.

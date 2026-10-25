@@ -14,6 +14,7 @@ Engine figures come only from the final usage / ``strix`` object of the response
 """
 
 from dataclasses import dataclass, field
+import _socket
 import http.client
 import json
 import socket
@@ -222,7 +223,8 @@ class _Watchdog:
     """Shuts a connection's socket down on cancellation or when the request's time is up."""
 
     def __init__(self, connection, cancelled, deadline):
-        self.connection, self.cancelled_fn, self.deadline = connection, cancelled, deadline
+        # The socket itself is kept: http.client detaches connection.sock from a "Connection: close" response.
+        self.sock, self.cancelled_fn, self.deadline = connection.sock, cancelled, deadline
         self.reason = None
         self._done = threading.Event()
         self._thread = threading.Thread(target=self._run, name="hyperloom-bench-watchdog", daemon=True)
@@ -240,10 +242,15 @@ class _Watchdog:
                 self.reason = "request timed out"
             else:
                 continue
-            sock = getattr(self.connection, "sock", None)
-            if sock is not None:
+            if self.sock is not None:
                 try:
-                    sock.shutdown(socket.SHUT_RDWR)
+                    self.sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                try:
+                    # A blocked read on some platforms only returns once the descriptor itself is closed; the
+                    # response's file object still references the socket, so close it at the descriptor level.
+                    _socket.socket.close(self.sock)
                 except OSError:
                     pass
             return
@@ -444,6 +451,8 @@ def chat(endpoint, body, *, timeout=600.0, cancelled=lambda: False, request_id=N
         reply.end_s = time.monotonic() - sent
         if watchdog.reason and not done:
             reply.error, reply.cancelled = watchdog.reason, watchdog.reason == "cancelled"
+        elif not done and reply.finish_reason is None and reply.error is None:
+            reply.error = "stream ended before completion (no finish reason and no end marker)"
     except (OSError, http.client.HTTPException, ValueError, ClientError) as exc:
         reply.end_s = time.monotonic() - sent
         if watchdog is not None and watchdog.reason:

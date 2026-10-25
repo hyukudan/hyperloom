@@ -66,11 +66,9 @@ def validate(api, arguments):
                               or any(type(v) is not int or not MIN_SIZE <= v <= 4_194_304 for v in sizes)):
         raise ValueError(f"sizes: 1..16 token counts in {MIN_SIZE}..4194304")
     limit = row.get("context_tokens") or max_context
-    if sizes is None and limit is None:
-        # The reported context is only known once the run starts; plan for the sweep up to 128k at most.
-        limit = 131072
     args["sizes"] = sorted(set(sizes)) if sizes else None
-    planned_sizes = args["sizes"] or default_sizes((limit or 131072) - (args["max_tokens"] + 64))
+    # The reported context is only known once the run starts: plan for the largest sweep it could allow.
+    planned_sizes = args["sizes"] or default_sizes((limit or 4_194_304) - (args["max_tokens"] + 64))
     planned = 1 + len(planned_sizes) * args["trials"] * args["max_tokens"]     # calibration + every trial
     return runs.check_plan(args, planned)
 

@@ -11,6 +11,8 @@ one word per token, usage counts prompt characters / 4, and the final stream chu
     diverge_at: int (change the token id at this index; only for prompts containing diverge_match when given)
     prefix_cache: bool (cached tokens for a repeated prefix)   prefill_rate: tokens/s for the reported prefill_ms
     context_tokens: int (reported by /v1/models)          model: str
+    stall_after: int (stop sending after this many content events, keep the connection open)
+    truncate_after: int (close the connection after this many content events, without a finish)
 """
 
 import hashlib
@@ -179,9 +181,15 @@ class FakeServer:
             send({"choices": [{"index": 0, "delta": {"role": "assistant"}}]})
             if custom.get("reasoning"):
                 send({"choices": [{"index": 0, "delta": {"reasoning_content": custom["reasoning"]}}]})
-            for piece in pieces:
+            for index, piece in enumerate(pieces):
                 if delay:
                     time.sleep(delay)
+                if index == self.config.get("stall_after"):
+                    time.sleep(30)
+                    return
+                if index == self.config.get("truncate_after"):
+                    handler.close_connection = True
+                    return
                 send({"choices": [{"index": 0, "delta": {"content": piece}}]})
             for index, call in enumerate(custom.get("tool_calls") or []):
                 send({"choices": [{"index": 0, "delta": {"tool_calls": [{"index": index, "id": call.get("id", f"call_{index}"),

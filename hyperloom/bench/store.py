@@ -57,6 +57,8 @@ def write(store, run):
     """Insert or replace a run row; run = {id, kind, target_key, target_label, state, started, finished, model,
     recipe_digest, summary, detail}."""
     _table(store)
+    from hyperloom.web.api import redact      # idempotent: what is stored equals what any GET returns
+    run = {**run, "summary": redact(run.get("summary") or {}), "detail": redact(run.get("detail"))}
     detail = run.get("detail")
     try:
         blob = pack(detail) if detail is not None else None

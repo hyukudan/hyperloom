@@ -462,6 +462,7 @@ def hold(config_path, resources, label):
         yield db, hold_id
     finally:
         stop.set()
+        thread.join(5)
         db.release(hold_id)
 
 

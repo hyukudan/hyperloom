@@ -136,6 +136,9 @@ class ReceiptTests(unittest.TestCase):
             "speed": lambda r: r["speed"][1].__setitem__("delta_b_vs_a", 0.9),
             "ids on error": lambda r: r["trials"][0].__setitem__("outcome", "error"),
             "stop policy": lambda r: r["corpus"]["stop_policy"].__setitem__("max_tokens", 17),
+            "short array": lambda r: r["trials"][3].__setitem__("token_ids", []),
+            "count mismatch": lambda r: r["trials"][3].__setitem__("completion_tokens", 7),
+            "extra case": lambda r: r["trials"].append({**r["trials"][0], "case": 999}),
         }
         for name, tamper in cases.items():
             with self.subTest(name=name):
@@ -145,6 +148,9 @@ class ReceiptTests(unittest.TestCase):
                 self.assertFalse(result["ok"], name)
                 self.assertTrue(result["problems"])
         self.assertFalse(ab.verify({"schema": "something else"})["ok"])
+        for broken in ({"schema": ab.SCHEMA, "arms": [], "corpus": {"cases": []}, "trial_order": ab.ORDER, "trials": []},
+                       {**built, "trials": [None]}, {**built, "corpus": None}):
+            self.assertFalse(ab.verify(broken)["ok"])
 
 
 class PortalRoundTripTests(unittest.TestCase):

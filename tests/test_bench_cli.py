@@ -35,12 +35,12 @@ class FormsTests(unittest.TestCase):
             "ab": ["--a-profile", "qwen", "--b-target", "fake", "--b-tokenizer", "tok-1", "--cases", "4", "--seed", "9"],
             "quality": ["--profile", "qwen", "--categories", "qa,recall", "--concurrency", "2"],
             "tools": ["--target", "fake", "--preset", "hard", "--repeats", "3", "--temperature", "0.5", "--sample-seed", "4"],
-            "demo": ["--profile", "qwen", "--text", "one prompt", "--text", "another prompt", "--max-tokens", "100"],
+            "demo": ["--profile", "qwen", "--text", "it's $HOME `id` $(id)", "--text", "another prompt", "--max-tokens", "100"],
         }
         for kind, argv in cases.items():
             with self.subTest(kind=kind):
                 arguments = commands.arguments_from(kind, parse(["bench", kind, *argv]))
-                line = commands.command_line(kind, arguments)
+                line = commands.command_line(kind, arguments, shell="posix")
                 again = commands.arguments_from(kind, parse(["bench", kind, *__import__("shlex").split(line)[3:]]))
                 self.assertEqual(again, arguments)
         decoded = commands.arguments_from("quality", parse(["bench", "quality", "--profile", "q", "--categories", "qa,recall"]))

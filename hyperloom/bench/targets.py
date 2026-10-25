@@ -237,11 +237,11 @@ def _entry(api, target_id, readonly=False):
     return entry
 
 
-def resources(api, parsed, readonly=False):
+def resources(api, parsed, readonly=False, entry=None):
     """The physical resources a target occupies (C11). Unknown placement is conservative: everything."""
     if parsed[0] == "profile":
         return set(api._resources_of_profile(parsed[1]))
-    entry = _entry(api, parsed[1], readonly)
+    entry = entry or _entry(api, parsed[1], readonly)
     if entry["machines"] == "external":
         return {"host:" + entry["host"]}
     if not entry["machines"]:
@@ -253,18 +253,26 @@ def resources(api, parsed, readonly=False):
     return set(entry["machines"]) if all(m in configured for m in entry["machines"]) else {"*"}
 
 
-def digest(api, parsed):
-    """Freezes what a validated run will talk to: the allow-list entry, or the profile's router record."""
+def snapshot(api, parsed):
+    """One read of what a target is now: (material, digest). The material (the profile's router record, or the
+    allow-list entry, plus the resource set) is what a run then uses; the digest freezes it."""
     if parsed[0] == "profile":
         try:
             located = api.orchestrate.endpoint(parsed[1])
         except Exception as exc:
             raise PermissionError(f"profile {parsed[1]} has no running router: {exc}") from None
-        material = {"profile": parsed[1], "url": located.get("url"), "key_name": located.get("key_name")}
+        material = {"profile": parsed[1], "url": located.get("url"), "key_name": located.get("key_name"),
+                    "resources": sorted(resources(api, parsed))}
     else:
-        material = {"entry": _entry(api, parsed[1])}
-    material["resources"] = sorted(resources(api, parsed))
-    return hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()
+        entry = _entry(api, parsed[1])
+        material = {"entry": entry, "resources": sorted(resources(api, parsed, entry=entry))}
+    return material, hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()
+
+
+def digest(api, parsed):
+    """Freezes what a validated run will talk to: the allow-list entry, or the profile's router record, and the
+    resources it occupies."""
+    return snapshot(api, parsed)[1]
 
 
 @dataclass
@@ -294,10 +302,11 @@ def resolve(api, parsed, frozen=None):
     """Resolve at run start (inside the job): endpoint with its key and the identity known without the network.
     With ``frozen`` (the validated target digest) a target that changed since validation is refused."""
     row = describe(api, parsed)
-    if frozen is not None and digest(api, parsed) != frozen:
+    material, found = snapshot(api, parsed)       # checked and used: the same single read
+    if frozen is not None and found != frozen:
         raise PermissionError("the target or its resources changed after this run was accepted; start it again")
     if parsed[0] == "profile":
-        located = api.orchestrate.endpoint(parsed[1])
+        located = material
         scheme, host, port = _split_url(located.get("url"))
         key = secrets.get(located["key_name"]) if located.get("key_name") else None
         endpoint = client.Endpoint(scheme, host, port, key)
@@ -316,7 +325,7 @@ def resolve(api, parsed, frozen=None):
                     "recipe_digest": recipe_digest, "recipe_source": _source(recipe_digest, "launch-record"),
                     "router_policy": policy, "router_policy_source": _source(policy, "router-status")}
         return Resolved(key_of(parsed), row["label"], "profile", endpoint, row.get("family"), row, None, identity)
-    entry = _entry(api, parsed[1])
+    entry = material["entry"]
     key = None
     if entry["key"]:
         key = secrets.get(entry["key"])
@@ -342,5 +351,5 @@ def probe_model(resolved, cancelled, wanted=None):
     context = next((chosen.get(k) for k in ("max_model_len", "context_length", "context_tokens")
                     if type(chosen.get(k)) is int and chosen.get(k) > 0), None)
     tokenizer = next((chosen.get(k) for k in ("tokenizer_id", "tokenizer")
-                      if isinstance(chosen.get(k), str) and re.fullmatch(r"\S{1,200}", chosen.get(k))), None)
+                      if isinstance(chosen.get(k), str) and 1 <= len(chosen.get(k)) <= 1000), None)
     return chosen["id"], context, tokenizer

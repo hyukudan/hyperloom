@@ -169,6 +169,49 @@ class KindsTests(unittest.TestCase):
         self.assertTrue(follow and all("temperature_c" in b["messages"][-1]["content"] for b in follow))
         stable(self, self.bench.api.read("bench/runs/" + run["id"]))
 
+    def test_schema_invalid_arguments_fail(self):
+        def respond(body):
+            if body["messages"][-1]["role"] == "tool":
+                return {"text": "27"}
+            return {"text": "", "tool_calls": [{"id": "c0", "function": {"name": "get_weather", "arguments": '{"city": "Paris", "unit": "kelvin"}'}},
+                                               {"id": "c1", "function": {"name": "get_weather", "arguments": '{"city": "Rome", "unit": "kelvin"}'}}]}
+        self.bench.server.config["responder"] = respond
+        _, run = self.bench.run("bench/tools", {"target": {"target": "fake"}, "preset": "short"})
+        weather = next(r for r in run["detail"]["results"] if r["scenario"] == "parallel-weather")
+        self.assertFalse(weather["passed"])
+        self.assertIn("is not one of celsius, fahrenheit", weather["reason"])
+
+    def test_stored_errors_are_redacted(self):
+        self.bench.server.config.update(status=500)
+        from hyperloom.bench import client as bench_client
+        original = bench_client._error_text
+        with mock.patch.object(bench_client, "_error_text", lambda data: ": upstream said Bearer sk-secret-value-123"):
+            _, run = self.bench.run("bench/decode", {"target": {"profile": "qwen"}, "levels": [1], "max_tokens": 16, "trace": True})
+        self.assertIs(bench_client._error_text, original)
+        from hyperloom.bench import store as bench_store
+        stored = bench_store.get(self.bench.api.telemetry, run["id"])
+        self.assertNotIn("sk-secret-value-123", json.dumps(stored))
+
+    def test_cancelled_ab_keeps_its_trials(self):
+        self.bench.server.config["token_delay"] = 0.05
+        job = self.bench.start("bench/ab", {"arms": {"a": {"profile": "qwen"}, "b": {"target": "fake"}}, "cases": 4, "max_tokens": 8})
+        import time
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            try:
+                run = self.bench.api.read("bench/runs/" + job["arguments"]["run_id"])["run"]
+            except APIError:        # the job has not written its row yet
+                run = {}
+            if len((run.get("detail") or {}).get("trials") or []) >= 2:
+                break
+            time.sleep(0.1)
+        self.bench.api.mutate("cancel", {"job": job["id"]})
+        self.bench.wait(job, 20)
+        run = self.bench.api.read("bench/runs/" + job["arguments"]["run_id"])["run"]
+        self.assertEqual(run["state"], "cancelled")
+        self.assertGreaterEqual(len(run["detail"]["trials"]), 2)
+        self.assertIsNone(run["detail"]["receipt"])
+
     def test_demo_session(self):
         self.bench.server.config["responder"] = responders.demo_responder()
         record, run = self.bench.run("bench/demo", {"target": {"target": "fake"}, "texts": ["Tell a story.", "List three rivers."], "max_tokens": 64})
@@ -256,6 +299,9 @@ class DocumentsTests(unittest.TestCase):
     def test_preview_and_corpus(self):
         _, document = self.bench.api.feature_post("bench/preview", {"kind": "tools", "arguments": {"target": {"profile": "qwen"}, "preset": "hard", "repeats": 3}})
         self.assertEqual(document["command"], "hyperloom bench tools --profile qwen --preset hard --repeats 3")
+        from hyperloom.bench import commands
+        self.assertEqual(commands._quote("it's $HOME", "powershell"), "'it''s $HOME'")
+        self.assertEqual(commands._quote("it's $(id)", "posix"), "'it'\"'\"'s $(id)'")
         corpus = self.bench.api.read("bench/corpus")
         self.assertEqual(sorted(corpus["prompt_sets"]), ["code", "json", "prose", "structured"])
         self.assertEqual(len(corpus["tools"]["presets"]["short"]), 6)
@@ -281,7 +327,7 @@ class HistoryUnitTests(unittest.TestCase):
         share = history.share(run)
         self.assertIsNone(share["recipe_digest"])
         self.assertIsNone(share["numbers"]["levels"][0]["aggregate_rate"])
-        run["summary"]["prompt_set"] = "http://192.0.2.1/x"
+        run["summary"]["prompt_set"] = "http://halo-1/x"
         self.assertIsNone(history.share(run)["numbers"]["prompt_set"])
         run["summary"]["family"] = "my-secret-host"
         self.assertEqual(history.share(run)["target"], "ad-hoc endpoint")

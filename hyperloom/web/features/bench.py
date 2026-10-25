@@ -122,7 +122,7 @@ def _clear(api, arguments):
 def _preview(api, arguments):
     if not isinstance(arguments, dict) or set(arguments) != {"kind", "arguments"}:
         raise ValueError("preview takes {kind, arguments}")
-    return {"command": commands.command_line(arguments["kind"], arguments["arguments"])}
+    return {"command": commands.command_line(arguments["kind"], arguments["arguments"]), "shell": commands.SHELL}
 
 
 def _job(kind):

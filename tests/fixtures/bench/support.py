@@ -40,7 +40,7 @@ class Bench:
         self.api.admission_db = admission.Admission(":memory:")
         test.addCleanup(self.api.admission_db.close)
         machines = {mid: SimpleNamespace(id=mid, http_address=address, ssh_target=mid)
-                    for mid, address in (("workstation", "192.0.2.20"), ("halo-1", "192.0.2.10"), ("halo-2", "192.0.2.11"))}
+                    for mid, address in (("workstation", "workstation"), ("halo-1", "halo-1"), ("halo-2", "halo-2"))}
         self.cluster = SimpleNamespace(machines=machines, profiles={"qwen": {"nodes": ["halo-1"]}, "other": {"nodes": ["halo-2"]}},
                                        raw={})
         self.api.cluster = lambda: self.cluster

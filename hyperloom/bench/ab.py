@@ -224,7 +224,7 @@ def passes(run, arms, arguments):
     bodies = [case_body(m, arguments["max_tokens"]) for m in messages]
     timeout = 120 + arguments["max_tokens"] * 0.5
     trials = []
-    run.detail["receipt"] = None
+    run.detail.update(receipt=None, trials=trials)       # kept (and stored live) if the run stops before the end
     for step in ORDER:
         for case, body in enumerate(bodies):
             if run.cancelled():
@@ -235,6 +235,7 @@ def passes(run, arms, arguments):
             run.summary["trials_done"] = len(trials)
             run.live()
     receipt = build(arms, arguments, bodies, trials)
+    run.detail.pop("trials")
     run.detail["receipt"] = receipt
     run.summary.update(receipt["summary"], cases=len(bodies), prompt_set=arguments["prompt_set"],
                        max_tokens=arguments["max_tokens"])
@@ -344,7 +345,15 @@ def derive(receipt):
 
 
 def verify(receipt):
-    """Recompute every equality and derived figure of a receipt; returns {ok, problems, summary}."""
+    """Recompute every equality and derived figure of a receipt; returns {ok, problems, summary}. Malformed input is
+    reported as a problem, never raised."""
+    try:
+        return _verify(receipt)
+    except (TypeError, AttributeError, KeyError, ValueError, IndexError, OSError, EOFError) as exc:
+        return {"ok": False, "problems": [f"malformed receipt: {type(exc).__name__}: {exc}"[:300]], "summary": None}
+
+
+def _verify(receipt):
     problems = []
 
     def problem(text):
@@ -393,8 +402,15 @@ def verify(receipt):
         bodies.append(body)
     if None not in bodies and sha(canonical(bodies)) != corpus_part.get("corpus_digest"):
         problem("corpus_digest does not match the case bodies")
+    if not isinstance(arms, dict) or not isinstance(cases, list) or not isinstance(trials, list):
+        return {"ok": False, "problems": ["arms, cases or trials have the wrong type"], "summary": None}
     seen = {}
     for trial in trials:
+        if not isinstance(trial, dict):
+            problem("a trial is not an object")
+            continue
+        if trial.get("case") not in range(len(cases)):
+            problem(f"trial pass {trial.get('pass')} names case {trial.get('case')}, outside the corpus")
         key = (trial.get("pass"), trial.get("case"))
         if key in seen:
             problem(f"trial pass {key[0]} case {key[1]} appears twice")
@@ -406,9 +422,13 @@ def verify(receipt):
             problem(f"trial pass {key[0]} case {key[1]}: unknown outcome")
         if trial.get("outcome") == "ok":
             try:
-                decode_ids(trial["token_ids"])
+                ids = decode_ids(trial["token_ids"])
             except (KeyError, ValueError, TypeError, OSError, EOFError):
                 problem(f"trial pass {key[0]} case {key[1]}: token ids missing or malformed")
+            else:
+                if type(trial.get("completion_tokens")) is not int or len(ids) != trial["completion_tokens"]:
+                    problem(f"trial pass {key[0]} case {key[1]}: {len(ids)} token ids for "
+                            f"{trial.get('completion_tokens')} reported completion tokens")
         elif "token_ids" in trial:
             problem(f"trial pass {key[0]} case {key[1]}: ids on a trial whose outcome is {trial.get('outcome')}")
     for step in ORDER:

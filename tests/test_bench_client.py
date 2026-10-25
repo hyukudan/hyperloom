@@ -93,6 +93,21 @@ class ClientTests(unittest.TestCase):
         self.assertTrue(reply.cancelled)
         self.assertEqual(reply.error, "cancelled")
 
+    def test_cancel_interrupts_a_stalled_body(self):
+        self.server.config["stall_after"] = 1
+        stop = threading.Event()
+        threading.Timer(0.4, stop.set).start()
+        started = time.monotonic()
+        reply = client.chat(self.endpoint, BODY, cancelled=stop.is_set)
+        self.assertLess(time.monotonic() - started, 3.0)
+        self.assertEqual((reply.error, reply.cancelled), ("cancelled", True))
+
+    def test_truncated_stream_is_an_error(self):
+        self.server.config["truncate_after"] = 2
+        reply = client.chat(self.endpoint, BODY)
+        self.assertFalse(reply.ok)
+        self.assertIn("ended before completion", reply.error)
+
     def test_request_timeout_closes_the_stream(self):
         self.server.config["token_delay"] = 0.2
         started = time.monotonic()

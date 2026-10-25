@@ -2,6 +2,7 @@
 pages: ``arguments_from(kind, namespace)`` turns parsed CLI options into the same JSON arguments a portal POST sends,
 and ``command_line(kind, arguments)`` renders the CLI command for portal arguments (F28's live preview)."""
 
+import os
 import re
 
 from . import ab, decode, demo, prefill, quality, tools
@@ -101,28 +102,39 @@ def arguments_from(kind, namespace):
     return arguments
 
 
-def _quote(value):
+SHELL = "powershell" if os.name == "nt" else "posix"
+
+
+def _quote(value, shell=None):
+    """Literal quoting: single quotes, in which neither PowerShell nor a POSIX shell expands anything."""
     text = str(value)
-    return text if re.fullmatch(r"[A-Za-z0-9._,:/=+-]+", text) else '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    if re.fullmatch(r"[A-Za-z0-9._,:/=+-]+", text):
+        return text
+    if (shell or SHELL) == "powershell":
+        for mark in "'\u2018\u2019\u201a\u201b":      # PowerShell treats each of these as a single quote
+            text = text.replace(mark, mark * 2)
+        return "'" + text + "'"
+    return "'" + text.replace("'", "'\"'\"'") + "'"
 
 
-def command_line(kind, arguments):
+def command_line(kind, arguments, shell=None):
     """The CLI command equivalent to portal ``arguments`` (no validation; unknown keys are ignored)."""
     if kind not in OPTIONS or not isinstance(arguments, dict):
         raise ValueError("unknown bench kind")
     parts = ["hyperloom", "bench", kind]
+    _q = lambda value: _quote(value, shell)
 
     def target(prefix, value):
         if isinstance(value, dict) and value.get("profile"):
-            parts.extend([f"--{prefix}profile", _quote(value["profile"])])
+            parts.extend([f"--{prefix}profile", _q(value["profile"])])
         elif isinstance(value, dict) and value.get("target"):
-            parts.extend([f"--{prefix}target", _quote(value["target"])])
+            parts.extend([f"--{prefix}target", _q(value["target"])])
     if kind == "ab":
         for arm in ("a", "b"):
             target(f"{arm}-", (arguments.get("arms") or {}).get(arm))
             tokenizer = (arguments.get("tokenizers") or {}).get(arm)
             if tokenizer:
-                parts.extend([f"--{arm}-tokenizer", _quote(tokenizer)])
+                parts.extend([f"--{arm}-tokenizer", _q(tokenizer)])
     else:
         target("", arguments.get("target"))
         if arguments.get("thinking") is not None:
@@ -130,7 +142,7 @@ def command_line(kind, arguments):
         for flag, key, _ in SAMPLING:
             value = (arguments.get("sampling") or {}).get(key)
             if value is not None:
-                parts.extend([flag, _quote(value)])
+                parts.extend([flag, _q(value)])
     for flag, key, value in COMMON + OPTIONS[kind]:
         item = arguments.get(key)
         if item is None or item is False:
@@ -143,7 +155,7 @@ def command_line(kind, arguments):
             parts.extend([flag, ",".join(NAMES.get(v, v) for v in item)])
         elif value == "strs":
             for text in item:
-                parts.extend([flag, _quote(text)])
+                parts.extend([flag, _q(text)])
         else:
-            parts.extend([flag, _quote(item)])
+            parts.extend([flag, _q(item)])
     return " ".join(parts)

@@ -5,9 +5,10 @@ tool result. Every tool is an inert mock: the runner sends the tool schemas, rea
 for a scenario with a follow-up, answers with the scenario's canned result; nothing is ever executed. At most one
 follow-up turn per scenario (two requests per trial).
 
-Scoring: every expected call must match a distinct call (name and argument matchers; arguments must be valid
-JSON; arguments outside the tool's schema fail), no other call may be made; a declining scenario passes when none
-of its listed tools is called; a follow-up passes when the final reply contains the canned value.
+Scoring: every call must name an offered tool and satisfy its schema (types, enums, required and no extra
+arguments); every expected call must match a distinct call (name and argument matchers); no other call may be
+made; a declining scenario passes when none of its listed tools is called; a follow-up passes when the final reply
+contains the canned value.
 
 Repeats: with greedy decoding the repeats are a determinism check (are the calls and the reply identical across
 trials?). pass@k is offered only on a target that declares sampling; each trial then uses seed = base + trial index
@@ -101,13 +102,46 @@ def parse_calls(tool_calls):
     return calls
 
 
-def check_calls(expect, calls):
-    """(passed, reason) for the first turn."""
+def schema_problem(schema, value, path="arguments"):
+    """The first way ``value`` breaks the tool's JSON schema (the subset our scenarios use), or None."""
+    kind = schema.get("type")
+    if kind and not _is_type(value, kind):
+        return f"{path} is not of type {kind}"
+    if "enum" in schema and value not in schema["enum"]:
+        return f"{path} is not one of {', '.join(map(str, schema['enum']))}"
+    if kind == "object":
+        properties = schema.get("properties") or {}
+        missing = [k for k in schema.get("required") or [] if k not in value]
+        if missing:
+            return f"{path} lacks {', '.join(missing)}"
+        extra = [k for k in value if k not in properties]
+        if extra:
+            return f"{path} has arguments outside the schema: {', '.join(extra)}"
+        for key, item in value.items():
+            found = schema_problem(properties[key], item, f"{path}.{key}")
+            if found:
+                return found
+    if kind == "array" and isinstance(schema.get("items"), dict):
+        for index, item in enumerate(value):
+            found = schema_problem(schema["items"], item, f"{path}[{index}]")
+            if found:
+                return found
+    return None
+
+
+def check_calls(expect, calls, offered=None):
+    """(passed, reason) for the first turn; ``offered`` maps the scenario's tool names to their schemas."""
     if "no_call" in expect:
         made = sorted({c["name"] for c in calls if c["name"] in expect["no_call"]})
         return (not made, "called " + ", ".join(made) if made else "declined")
     if any(c["arguments"] is None for c in calls):
         return False, "a call's arguments are not a JSON object"
+    for call in calls if offered is not None else []:
+        if call["name"] not in offered:
+            return False, f"called {call['name'] or '?'}, a tool that was not offered"
+        found = schema_problem(offered[call["name"]], call["arguments"])
+        if found:
+            return False, f"{call['name']}: {found}"
     remaining = list(calls)
     for wanted in expect["calls"]:
         hit = next((c for c in remaining if c["name"] == wanted["name"] and match_arguments(wanted["arguments"], c["arguments"])), None)
@@ -164,7 +198,8 @@ def trial(run, scenario, index):
     if not reply.ok:
         result.update(passed=None, status="error", reason=redact((reply.error or f"HTTP {reply.status}")[:200]))
         return result
-    passed, reason = check_calls(scenario["expect"], parse_calls(reply.tool_calls))
+    offered = {name: catalogue()["tools"][name]["parameters"] for name in scenario["tools"]}
+    passed, reason = check_calls(scenario["expect"], parse_calls(reply.tool_calls), offered)
     signature = _signature(reply)
     follow = scenario.get("follow_up")
     if passed and follow:
