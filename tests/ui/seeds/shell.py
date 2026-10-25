@@ -2,7 +2,8 @@
 
 - Shell scenarios: while ``<fixture dir>/shell-scenario.json`` exists, the documents named in it (``health/summary``,
   ``overview``) answer its content (the string ``"fail"`` makes that request fail, ``"missing"`` answers 404 as when no feature
-  registers it, a ``delay_s`` field delays the answer); otherwise they answer what the registered feature answers, or 404 when no
+  registers it, a ``delay_s`` field delays the answer, ``missing: true`` in it makes that late answer a 404; a
+  top-level ``jobs_delay_s`` delays the core jobs document); otherwise they answer what the registered feature answers, or 404 when no
   feature registers them. The walkthrough writes and removes the file, so its assertions do not depend on which
   other features are installed.
 - While ``<fixture dir>/no-sw`` exists, the static assets manifest omits ``sw.js`` (the portal then answers 404 for
@@ -48,7 +49,9 @@ def patches(directory, now):
                     answer = dict(current[name])
                     delay = answer.pop("delay_s", 0)
                     if delay:
-                        time.sleep(min(float(delay), 20))     # a slow producer
+                        time.sleep(min(float(delay), 20))     # a slow producer (answers what was asked for)
+                    if answer.pop("missing", False):
+                        raise LookupError("unknown endpoint")
                     return api.document(name.replace("/", "-"), **answer)
                 if real is not None:
                     return real(api, query)
@@ -62,4 +65,14 @@ def patches(directory, now):
             return tuple(name for name in names if name != "sw.js")
         return names
 
-    return [(features, "load", load), (server, "manifest", manifest)]
+    from hyperloom.web import api as web_api
+    real_read = web_api.API.read
+
+    def read(self, screen, query=None):
+        # ``jobs_delay_s`` in the scenario: the jobs document answers late (a slow core document).
+        delay = scenario().get("jobs_delay_s") if screen == "jobs" else None
+        if delay:
+            time.sleep(min(float(delay), 20))
+        return real_read(self, screen, query)
+
+    return [(features, "load", load), (server, "manifest", manifest), (web_api.API, "read", read)]

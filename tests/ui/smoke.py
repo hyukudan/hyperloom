@@ -986,6 +986,21 @@ def shell_walkthrough(client, server, output):
         wait("/Probe owner data unavailable/.test(document.querySelector('main').innerText) && document.getElementById('exceptions').hidden")
         scenario({"health/summary": dict(base, evaluated_at=time.time()), "overview": overview})
         wait("document.getElementById('probe-owner')?.textContent === 'critical 1' && !document.getElementById('exceptions').hidden")
+        # An answer older than one already applied is dropped: a slow optional request sent from another page
+        # arrives after the owning page's newer answer (content, then a 404) and changes nothing.
+        for late in (dict(base, evaluated_at=time.time(), counts={"critical": 1}, delay_s=6),
+                     dict(base, evaluated_at=time.time(), missing=True, delay_s=6)):
+            go("#/devices")
+            scenario({"health/summary": late, "overview": overview})
+            client.evaluate("new Promise(resolve => setTimeout(resolve, 2500))")   # an optional round is now waiting
+            scenario({"health/summary": dict(base, evaluated_at=time.time(), counts={"critical": 2}), "overview": overview})
+            client.call("Page.navigate", url=server.url + "#/probe-owner")
+            wait("document.getElementById('probe-owner')?.textContent === 'critical 2'")
+            client.evaluate("new Promise(resolve => setTimeout(resolve, 7000))")
+            if client.evaluate("document.getElementById('probe-owner')?.textContent") != "critical 2":
+                raise AssertionError("shell: a superseded answer replaced a newer one: "
+                                     + str(client.evaluate("document.querySelector('main').innerText"))[:300])
+        scenario({"health/summary": dict(base, evaluated_at=time.time()), "overview": overview})
     finally:
         client.call("Page.removeScriptToEvaluateOnNewDocument", identifier=owner)
     # A slow optional document never holds back the screen's own documents nor makes the view stale.
@@ -997,6 +1012,18 @@ def shell_walkthrough(client, server, output):
         if age > 4500 or not client.evaluate("document.getElementById('connection').hidden && !document.getElementById('add-machine').disabled"):
             raise AssertionError(f"shell: a slow optional document delayed the screen ({age} ms since the last devices answer)")
     scenario({"health/summary": dict(base, evaluated_at=time.time()), "overview": overview})
+    # A slow core document: controls are blocked whenever a current document is older than the stale limit, at
+    # any moment (not only after the next one-second check).
+    scenario({"health/summary": dict(base, evaluated_at=time.time()), "overview": overview, "jobs_delay_s": 8})
+    samples = client.evaluate("""new Promise(resolve => { const out = {aged: 0, violations: 0}; const started = Date.now();
+      const timer = setInterval(() => {
+        const age = Date.now() - (window.Hyperloom.state.fetched.devices || Date.now());
+        if (age > 6000) { out.aged++; if (!window.Hyperloom.mutationReason()) out.violations++; }
+        if (Date.now() - started > 9000) { clearInterval(timer); resolve(out); } }, 100); })""")
+    if not samples["aged"] or samples["violations"]:
+        raise AssertionError("shell: controls were enabled with an old document: " + json.dumps(samples))
+    scenario({"health/summary": dict(base, evaluated_at=time.time()), "overview": overview})
+    wait("!window.Hyperloom.mutationReason()", timeout=40)
     # Info tooltips: shown on focus, dismissed by Escape and kept dismissed across a poll; the pointer can move
     # from the button into the tooltip.
     go("#/stats", "!!document.querySelector('main .info-btn')")
