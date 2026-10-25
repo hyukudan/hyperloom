@@ -182,7 +182,7 @@
     order: 40,
     icon: '<path d="M3 10h4M13 10h4"/><rect x="7" y="7" width="6" height="6" rx="1.5"/><path d="M5 6v8M15 6v8"/>',
     endpoints: () => ["usb4", ...ids().map(history)],
-    ready: () => !!doc(),
+    ready: () => !!doc() && ids().every(id => !!H().state.docs[history(id)]),
     render() {
       const d = doc();
       const {esc} = H();
