@@ -287,7 +287,7 @@ def _queue(cid, items, now, message=None):
                      "VALUES (?, ?, ?, ?, 0, ?)", (message, cid, now, now, json.dumps(items, ensure_ascii=True)))
 
 
-RESYNC = "alerts/resync"
+RESYNC, ATTEMPTED = "alerts/resync", "alerts/attempted"
 
 
 def track_key(cid, finding_id, occurrence):
@@ -299,8 +299,8 @@ def track_key(cid, finding_id, occurrence):
 def _mark(finding, now, message="pending"):
     summary = {key: finding.get(key) for key in ("id", "rule", "title", "severity", "machine", "since", "occurrence")}
     return {"occurrence": finding.get("occurrence"), "severity": finding.get("severity"), "finding": summary,
-            "queued_at": now, "message": message, "delivered_at": None, "reminded_at": None, "reminder_queued": None,
-            "resolving": None}
+            "queued_at": now, "message": message, "delivered_at": None, "delivered_severity": None, "escalating": None,
+            "reminded_at": None, "reminder_queued": None, "resolving": None}
 
 
 def bound(now):
@@ -317,6 +317,11 @@ def bound(now):
              "'; it is brought up to date at the next evaluation', NULL WHERE " + over, (now, now)),
             ("INSERT INTO docs(namespace, key, ts, value) SELECT ?, " + victim + ", ?, '{}' WHERE " + over +
              " AND " + victim + " IS NOT NULL ON CONFLICT(namespace, key) DO NOTHING", (RESYNC, now, now, now)),
+            # messages already attempted (a receiver may have accepted them) are remembered for the reconciliation
+            ("INSERT INTO docs(namespace, key, ts, value) SELECT ?, message_id, ?, '{\"channel\": \"' || channel || '\"}' "
+             "FROM alerts_outbox WHERE " + over + " AND channel = " + victim + " AND attempts > 0 AND "
+             "(claimed_until IS NULL OR claimed_until < ?) ON CONFLICT(namespace, key) DO NOTHING",
+             (ATTEMPTED, now, now, now)),
             ("DELETE FROM alerts_outbox WHERE " + over + " AND channel = " + victim +
              " AND (claimed_until IS NULL OR claimed_until < ?)", (now, now))]
     # One pass drops one channel's backlog; claimed rows (at most one per channel) are never dropped, so passes
@@ -345,6 +350,9 @@ def plan(store, transitions, states, now):
         for key, _ in store.execute("SELECT key, value FROM docs WHERE namespace=?", (RESYNC,)):
             if key not in known:
                 statements.append(health.delete_doc(RESYNC, key))
+        for key, text in store.execute("SELECT key, value FROM docs WHERE namespace=?", (ATTEMPTED,)):
+            if json.loads(text).get("channel") not in known:
+                statements.append(health.delete_doc(ATTEMPTED, key))
         resync = {key: text for key, text in store.execute("SELECT key, value FROM docs WHERE namespace=?", (RESYNC,))}
         for channel in configured:
             cid, floor = channel["id"], health.RANK.get(channel.get("min_severity"), 1)
@@ -353,26 +361,41 @@ def plan(store, transitions, states, now):
             current = lambda key: touched.get(key, track.get(key))
             if cid in resync:
                 # Its backlog was dropped (outbox full): reconcile from the bookkeeping, before this round's changes.
+                # An occurrence the channel may have seen (delivered, attempted, or its firing still queued) gets its
+                # resolve once it is no longer active; one it never saw is forgotten; dropped firings and escalations
+                # of active occurrences are sent again (at least once).
                 statements.append(health.unchanged(RESYNC, cid, resync[cid]))
                 statements.append(health.delete_doc(RESYNC, cid))
+                tried = {key for key, text in store.execute("SELECT key, value FROM docs WHERE namespace=?", (ATTEMPTED,))
+                         if json.loads(text).get("channel") == cid}
+                for message_id in sorted(tried):
+                    statements.append(health.delete_doc(ATTEMPTED, message_id))
                 for key, mark in sorted(track.items()):
                     if not key.startswith(cid + "|") or not isinstance(mark, dict):
                         continue
                     fid = key.split("|")[1]
                     finding = active.get(fid)
-                    if mark.get("resolving"):
-                        if mark["resolving"] not in queued:                    # its resolve was dropped: again
+                    seen = bool(mark.get("delivered_at")) or mark.get("message") in tried or mark.get("message") in queued
+                    ended = mark.get("resolving") or finding is None or finding.get("occurrence") != mark.get("occurrence")
+                    if ended:
+                        if mark.get("resolving") and mark["resolving"] in queued:
+                            continue                                        # its resolve is still on the way
+                        if seen:
                             items.append({**(mark.get("finding") or {"id": fid}), "state": "resolved"})
                             touched[key] = {**mark, "resolving": "pending"}
-                    elif finding is None or finding.get("occurrence") != mark.get("occurrence"):
-                        items.append({**(mark.get("finding") or {"id": fid}), "state": "resolved"})
-                        touched[key] = {**mark, "resolving": "pending"}
-                    elif not mark.get("delivered_at") and mark.get("message") not in queued:
-                        items.append(_item(finding, "firing"))                 # its firing was dropped: again
-                        touched[key] = {**mark, "message": "pending"}
+                        else:
+                            touched[key] = None                             # never seen: nothing to resolve
+                        continue
+                    if not mark.get("delivered_at") and mark.get("message") not in queued:
+                        items.append(_item(finding, "firing"))              # its firing was dropped: again
+                        touched[key] = {**mark, "message": "pending", "escalating": None,
+                                        "severity": finding.get("severity")}
+                    elif mark.get("escalating") and mark["escalating"] not in queued:
+                        items.append(_item(finding, "escalated"))           # its escalation was dropped: again
+                        touched[key] = {**mark, "escalating": "pending", "severity": finding.get("severity")}
                 for fid, finding in sorted(active.items()):
                     key = track_key(cid, fid, finding.get("occurrence"))
-                    if current(key) is None and health.RANK.get(finding.get("severity"), 1) >= floor:
+                    if current(key) is None and key not in touched and health.RANK.get(finding.get("severity"), 1) >= floor:
                         items.append(_item(finding, "firing"))
                         touched[key] = _mark(finding, now)
             for change, finding in transitions:
@@ -387,7 +410,7 @@ def plan(store, transitions, states, now):
                 elif change == "escalated" and live:
                     if rank > health.RANK.get(mark.get("severity"), 0):
                         items.append(_item(finding, "escalated"))
-                        touched[key] = {**mark, "severity": finding.get("severity")}
+                        touched[key] = {**mark, "severity": finding.get("severity"), "escalating": "pending"}
                 elif change in ("appeared", "escalated") and mark is None and rank >= floor:
                     items.append(_item(finding, "firing"))
                     touched[key] = _mark(finding, now)
@@ -404,10 +427,14 @@ def plan(store, transitions, states, now):
                         touched[key] = {**mark, "reminder_queued": "pending"}
             message = uuid.uuid4().hex if items else None
             for key, mark in touched.items():
-                for field in ("message", "resolving", "reminder_queued"):
+                statements.append(health.unchanged(TRACK, key, texts.get(key)))     # bookkeeping read = committed
+                if mark is None:
+                    statements.append(health.delete_doc(TRACK, key))
+                    track.pop(key, None)
+                    continue
+                for field in ("message", "resolving", "reminder_queued", "escalating"):
                     if mark.get(field) == "pending":
                         mark[field] = message
-                statements.append(health.unchanged(TRACK, key, texts.get(key)))     # bookkeeping read = committed
                 statements.append(health.upsert_doc(TRACK, key, mark, now))
                 track[key] = mark
             if items:
@@ -648,6 +675,10 @@ def _ack(store, owner, generation, row, channel, outcome, now):
                     mark = None if mark.get("resolving") == message else mark      # delivered: the record is done
                 else:
                     mark = {**mark, "delivered_at": mark.get("delivered_at") or now}
+                    if item["state"] in ("firing", "escalated"):
+                        mark["delivered_severity"] = item.get("severity")
+                        if mark.get("escalating") == message:
+                            mark["escalating"] = None
                     if item["state"] == "reminder":
                         mark.update(reminded_at=now, reminder_queued=None)
                 marks[key] = (text, mark)

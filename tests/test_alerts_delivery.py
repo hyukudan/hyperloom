@@ -280,8 +280,8 @@ class PlanTests(Base):
         self.assertEqual(remaining, [])                              # no orphan resolve without its firing
         self.assertIn("dropped the undelivered backlog of channel " + victim, self.store.events(category="alerts")[0]["message"])
         self.plan([], {b["id"]: b})                                  # the resync reconciles from the bookkeeping
-        self.assertEqual([sorted(items) for channel, items in self.outbox() if channel == victim],
-                         [sorted([("firing", b["id"]), ("resolved", a["id"])])])
+        # a was never sent to it (firing and resolve both dropped): forgotten; b is active: sent again
+        self.assertEqual([items for channel, items in self.outbox() if channel == victim], [[("firing", b["id"])]])
         self.assertEqual(self.store.items(alerts.RESYNC), [])
 
     def test_a_resolve_dropped_while_its_firing_is_in_flight_is_sent_after_it(self):
@@ -330,6 +330,48 @@ class PlanTests(Base):
         with mock.patch.object(alerts, "catch_up", racing), self.assertRaises(PermissionError):
             alerts.save_channel(first, {"name": "early", "kind": "push", "url": self.receiver.url("/z")}, self.clock.now)
         self.assertEqual(len(alerts.channels(first)), alerts.MAX_CHANNELS)
+
+    def fill_and_overflow(self, count=alerts.MAX_OUTBOX):
+        filler = [("INSERT INTO alerts_outbox(message_id, channel, created, next_at, attempts, items) VALUES "
+                   "(?, ?, ?, ?, 0, '[]')", (f"f{i}", "ch-ffffffff", T0 + 1, T0 + 1)) for i in range(count)]
+        health.commit(self.store, filler + alerts.bound(self.clock.now))
+        self.store.execute("DELETE FROM alerts_outbox WHERE channel='ch-ffffffff'")
+
+    def test_a_dropped_escalation_is_sent_again(self):
+        channel = self.channel(reminders="none")
+        a = self.finding(severity="warning")
+        self.plan([("appeared", a)], {a["id"]: a})
+        self.deliver()                                                # warning delivered
+        b = {**a, "severity": "critical"}
+        self.plan([("escalated", b)], {a["id"]: b})
+        self.fill_and_overflow()                                      # the escalation is dropped
+        self.assertEqual([items for c, items in self.outbox() if c == channel["id"]], [])
+        self.plan([], {a["id"]: b})
+        self.assertEqual([items for c, items in self.outbox() if c == channel["id"]], [[("escalated", a["id"])]])
+        self.deliver()
+        self.plan([], {a["id"]: b})                                   # recovered once: nothing more
+        self.assertEqual([items for c, items in self.outbox() if c == channel["id"]], [])
+
+    def test_an_occurrence_the_channel_never_saw_is_forgotten_not_resolved(self):
+        channel = self.channel()
+        a = self.finding()
+        self.plan([("appeared", a)], {a["id"]: a})
+        self.plan([("cleared", a)], {})
+        self.fill_and_overflow()                                      # firing and resolve both dropped, never sent
+        self.plan([], {})
+        self.assertEqual([items for c, items in self.outbox() if c == channel["id"]], [])
+        self.assertEqual(self.store.items(alerts.TRACK), [])
+
+    def test_an_attempted_firing_gets_its_resolve_after_a_drop(self):
+        channel = self.channel(path="/fail/x")
+        a = self.finding()
+        self.plan([("appeared", a)], {a["id"]: a})
+        self.deliver()                                                # attempted (HTTP 500): the receiver may have it
+        self.plan([("cleared", a)], {})
+        self.fill_and_overflow()
+        self.plan([], {})
+        self.assertEqual([items for c, items in self.outbox() if c == channel["id"]], [[("resolved", a["id"])]])
+        self.assertEqual(self.store.items(alerts.ATTEMPTED), [])
 
     def test_the_bound_holds_for_writers_on_separate_connections(self):
         path = Path(self.dir.name) / "telemetry.sqlite3"
