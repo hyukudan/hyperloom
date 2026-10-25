@@ -587,6 +587,23 @@ class CollectorTests(Base):
         endpoints.collect(self.api, self.clock())
         self.assertEqual(self.generated(), [20.0, 40.0])
 
+    def test_cleanup_spares_a_claim_of_a_target_added_meanwhile(self):
+        store = self.api.telemetry
+        server = self.serve({"/v1/models": MODELS})
+        real_load = endpoints.load
+        calls = {"n": 0}
+
+        def racing(store_):
+            calls["n"] += 1
+            if calls["n"] == 2:          # after this round's own snapshot: another process adds and accounts a target
+                self.add(server.port)
+                endpoints._claim(store_, "box", "s" * 16, self.clock())
+                return []                # the stale snapshot this round keeps using
+            return real_load(store_)
+        with mock.patch.object(endpoints, "load", side_effect=racing):
+            endpoints.run_round(self.api, self.clock(), account=True)
+        self.assertIsNotNone(store.get(endpoints.NAMESPACE, "account/box/" + "s" * 16))
+
     def test_a_rejected_publication_returns_no_points(self):
         server = self.serve({"/v1/models": MODELS})
         self.add(server.port)

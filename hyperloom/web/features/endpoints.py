@@ -759,8 +759,13 @@ def run_round(api, now, *, identify=False, session_factory=None, key_lookup=None
             if key.startswith("account/"):
                 # A claim is dropped only with its target, or once far older than any interval: a configuration
                 # that fails to load for a moment must never reopen an accounting slot early.
-                if key.split("/")[1] not in current or ts < now - CLAIM_KEEP_S:
-                    store.execute("DELETE FROM docs WHERE namespace=? AND key=? AND ts=?", (NAMESPACE, key, ts))
+                tid = key.split("/")[1]
+                if tid not in current or ts < now - CLAIM_KEEP_S:
+                    # Decided again in the statement against the live allow-list: a target added meanwhile by
+                    # another process keeps its fresh claim.
+                    store.execute("DELETE FROM docs WHERE namespace=? AND key=? AND ts=? AND (ts < ? OR NOT EXISTS "
+                                  "(SELECT 1 FROM docs WHERE namespace=? AND key=? AND instr(value, ?) > 0))",
+                                  (NAMESPACE, key, ts, now - CLAIM_KEEP_S, PREFS, TARGETS_KEY, '"id": "' + tid + '"'))
                 continue
             if not key.startswith("probe/") or not isinstance(value, dict):
                 continue
