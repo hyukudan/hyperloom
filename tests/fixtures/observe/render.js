@@ -5,7 +5,8 @@ const fs = require("fs");
 const path = require("path");
 const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 const input = JSON.parse(fs.readFileSync(0, "utf8"));
-global.document = {addEventListener() {}, getElementById() { return null; }};
+global.document = {addEventListener() {}, getElementById() { return null; }, querySelector() { return null; }};
+global.localStorage = {getItem: () => input.storage ? JSON.stringify(input.storage) : null, setItem() {}};
 global.window = {
   Hyperloom: {
     state: {docs: input.docs}, esc,

@@ -190,9 +190,7 @@ class CadenceAndAgeTests(Base):
         self.assertEqual(observe.engines_document(env.api, {})["inventory"]["omitted"]["profiles"], 3)
 
 
-class RetainedReadingTests(unittest.TestCase):
-    """Node samples read through the fleet hand-off: their own times, retained histograms, failed-round cadence."""
-
+class FleetBase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.env = Env(self.tmp.name).__enter__()
@@ -211,6 +209,11 @@ class RetainedReadingTests(unittest.TestCase):
             "outcomes": {"/health": "ok", "/api/status?detail=1": "ok", "/metrics": "ok"}, "health": True,
             "status": status if status is not None else fixture("engine-status-c1.json"),
             "metrics_text": metrics if metrics is not None else fixture("engine-metrics-c1.txt")})
+
+
+
+class RetainedReadingTests(FleetBase):
+    """Node samples read through the fleet hand-off: their own times, retained histograms, failed-round cadence."""
 
     def test_advancing_completions_at_the_samples_own_time(self):
         env = self.env
@@ -330,6 +333,34 @@ class MixedReachabilityTests(Base):
     def test_every_path_failed(self):
         snapshot, up = self.answer(OSError("HTTP 500"), OSError("refused"), OSError("refused"))
         self.assertEqual((snapshot["state"], up), ("unreachable", [0]))
+
+
+class FleetReachabilityTests(FleetBase):
+    """A node sample says down only when every path definitely failed; deadline cuts leave it unknown."""
+
+    def outcome(self, outcomes):
+        self.env.store.put("fleet/engine", "halo-1:lb:18502", {
+            "ts": self.env.clock() - 1, "machine": "halo-1", "profile": "lb", "port": 18502, "replica": "halo-1",
+            "outcomes": outcomes, "health": None, "status": None, "metrics_text": None})
+        self.env.collect()
+        up = self.env.store.query("engine_up", 0, 2e9, tier="raw")["lines"]
+        return self.env.store.get("observe/engine", "lb/halo-1"), [p[6] for line in up for p in line["points"]]
+
+    def test_mixed_failures_and_deadlines(self):
+        snapshot, up = self.outcome({"/health": "HTTP 500", "/api/status?detail=1": "timed out",
+                                     "/metrics": "node deadline reached"})
+        self.assertEqual((snapshot["state"], up), ("not read", []))
+        self.assertIn("not read", snapshot["why"]["reachability"])
+
+    def test_unattempted_paths(self):
+        snapshot, up = self.outcome({"/health": "HTTP 500"})
+        self.assertEqual((snapshot["state"], up), ("not read", []))
+
+    def test_every_path_failed(self):
+        snapshot, up = self.outcome({"/health": "connection refused", "/api/status?detail=1": "connection refused",
+                                     "/metrics": "connection refused"})
+        self.assertEqual(up, [0])
+        self.assertEqual(snapshot["state"], "unreachable")
 
 
 if __name__ == "__main__":

@@ -14,16 +14,16 @@ from tests.fixtures.observe.fakes import HERE, NODE1, Env, fixture
 NODE = shutil.which("node")
 
 
-def render(page, docs):
-    answer = subprocess.run([NODE, str(HERE / "render.js")], input=json.dumps({"page": page, "docs": docs}),
+def render(page, docs, storage=None):
+    answer = subprocess.run([NODE, str(HERE / "render.js")], input=json.dumps({"page": page, "docs": docs,
+                                                                              "storage": storage}),
                             capture_output=True, text=True, encoding="utf-8", timeout=60)
     if answer.returncode:
         raise AssertionError(answer.stderr)
     return answer.stdout
 
 
-@unittest.skipUnless(NODE, "needs node to render the pages")
-class PartialCountsTests(unittest.TestCase):
+class Collected(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.env = Env(self.tmp.name).__enter__()
@@ -34,6 +34,9 @@ class PartialCountsTests(unittest.TestCase):
         self.env.__exit__(None, None, None)
         self.tmp.cleanup()
 
+
+@unittest.skipUnless(NODE, "needs node to render the pages")
+class PartialCountsTests(Collected):
     def collected(self, **speculative):
         status = fixture("engine-status-c1.json")
         for key, value in speculative.items():
@@ -71,6 +74,31 @@ class PartialCountsTests(unittest.TestCase):
         page = render("speculative", {"observe/speculative": spec})
         self.assertIn("84 / 115", page)
         self.assertIn("84 / 115", render("engine-panel", {"observe/engines": engines}))
+
+
+@unittest.skipUnless(NODE, "needs node to render the pages")
+class DisagreementTests(Collected):
+    """A count the engine reports itself is shown as reported, with the C8 disagreement beside it."""
+
+    def test_reported_computed_count_disagrees(self):
+        status = fixture("engine-status-c1.json")
+        status["requests"][1]["computed_tokens"] = 809
+        status["observed"]["computed_tokens"] = 809
+        status["totals"]["computed_tokens"] = 5711
+        self.env.engine(NODE1, 18501, status)
+        self.env.collect()
+        engines = observe.engines_document(self.env.api, {})
+        panel = render("engine-panel", {"observe/engines": engines})
+        self.assertIn("prompt - cached - imported = 808", panel)
+        accounting = engines["engines"][0]["prompt_accounting"]
+        if accounting["lifetime"].get("why", {}).get("computed_tokens"):
+            self.assertIn(accounting["lifetime"]["why"]["computed_tokens"], panel.replace("&#39;", "'"))
+        request = observe.request_document(self.env.api, "aabbccddeeff0011", {})
+        self.assertIn("808", request["request"]["engine"]["why"]["computed_tokens"])
+        listing = observe.requests_document(self.env.api, {"limit": "50"})
+        page = render("timeline", {"observe/requests?limit=50": listing,
+                                   "observe/requests/aabbccddeeff0011": request}, {"selected": "aabbccddeeff0011"})
+        self.assertIn("engine reports 809 computed tokens; prompt - cached - imported = 808", page)
 
 
 if __name__ == "__main__":

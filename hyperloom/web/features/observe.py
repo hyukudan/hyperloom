@@ -685,6 +685,20 @@ def _read_direct(replica, now, deadline, clock=time.time):
     return reading
 
 
+NOT_READ = re.compile(r"deadline|timed? ?out|not answered|not read|not attempted|skipped", re.I)
+
+
+def _fleet_unknown(outcomes, reading):
+    """True when the node sample establishes nothing about reachability: no path answered and at least one path
+    was not read (cut by the node's deadline or never attempted); only reads that all definitely failed say down."""
+    if reading["status"] is not None or reading["metrics_text"] is not None or reading["health"]:
+        return False
+    paths = ("/health", "/api/status?detail=1", "/metrics")
+    if not outcomes:
+        return True
+    return any(outcomes.get(path) is None or NOT_READ.search(str(outcomes.get(path))) for path in paths)
+
+
 def _read_via_fleet(store, profile, replica, now, stale=STALE_S):
     """One reading of a loopback-bound engine from the fleet sampler's hand-off document
     (``fleet/engine/<machine>:<profile>:<port>``), checked against our launch record; observed at the node sample's
@@ -724,6 +738,10 @@ def _read_via_fleet(store, profile, replica, now, stale=STALE_S):
     health = found.get("health")
     reading["health"] = health is True or (isinstance(health, dict) and health.get("status") in ("ok", 200)) or (
         outcomes.get("/health") == "ok") if health is not None or "/health" in outcomes else None
+    if _fleet_unknown(outcomes, reading):
+        reading["unknown"] = True
+        reading["why"]["reachability"] = "not read: the node sample has no answer and some paths were not read (" + \
+            ", ".join(f"{p} {outcomes.get(p) or 'not answered'}" for p in ("/health", "/api/status?detail=1", "/metrics")) + ")"
     age = now - reading["observed_at"]
     if age > stale:
         reading["why"]["stale"] = f"node sample is {age:.0f} s old"
