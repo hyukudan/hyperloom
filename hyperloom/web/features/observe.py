@@ -653,7 +653,7 @@ def _read_direct(replica, now, deadline, clock=time.time):
     the counter-bearing answers arrived."""
     base = f"http://{_host(replica['address'])}:{replica['port']}"
     reading = {"status": None, "metrics_text": None, "health": None, "why": {}, "observed_at": now, "via": "direct",
-               "answered": []}
+               "answered": [], "unsupported": []}
     try:
         _http(base + "/health", deadline=deadline)
         reading["health"] = True
@@ -666,6 +666,7 @@ def _read_direct(replica, now, deadline, clock=time.time):
         reading["why"]["health"] = "health check failed: " + str(exc)
         if HTTP_ANSWER.match(str(exc)):
             reading["answered"].append("health")
+            reading["health_answered_at"] = clock()
     for part, path, text in (("status", "/api/status?detail=1", False), ("metrics", "/metrics", True)):
         try:
             reading["status" if part == "status" else "metrics_text"] = _http(base + path, text=text, deadline=deadline)
@@ -674,6 +675,7 @@ def _read_direct(replica, now, deadline, clock=time.time):
             reading["why"][part] = f"engine serves no {part} ({exc})"
             reading[part + "_at"] = clock()
             reading["answered"].append(part)
+            reading["unsupported"].append(part)
         except TimeoutError as exc:
             reading["why"][part] = f"not read: {exc}"
         except (OSError, ValueError) as exc:
@@ -681,6 +683,7 @@ def _read_direct(replica, now, deadline, clock=time.time):
             reading[part + "_failed"] = True
             if HTTP_ANSWER.match(str(exc)):
                 reading["answered"].append(part)
+                reading[part + "_answered_at"] = clock()
     reading["observed_at"] = reading.get("status_at") or reading.get("metrics_at") or now
     # Down is known only when no path answered and every one of them definitely failed; a path the deadline cut
     # (not read) leaves reachability unknown, however the others failed.
@@ -719,7 +722,7 @@ def _read_via_fleet(store, profile, replica, now, stale=STALE_S):
     key = f"{replica['node']}:{profile}:{replica['port']}"
     found = store.get("fleet/engine", key)
     reading = {"status": None, "metrics_text": None, "health": None, "why": {}, "observed_at": None,
-               "via": "node (fleet sampler)", "source_key": key, "answered": []}
+               "via": "node (fleet sampler)", "source_key": key, "answered": [], "unsupported": []}
     if not isinstance(found, dict):
         reading["why"]["status"] = NEEDS_NODE + " · no node sample for this engine yet"
         return reading
@@ -748,8 +751,9 @@ def _read_via_fleet(store, profile, replica, now, stale=STALE_S):
     if reading["metrics_text"] is None:
         reading["why"]["metrics"] = "engine metrics not in the node sample" + (
             f" ({outcomes.get('/metrics')})" if outcomes.get("/metrics") else "")
-    reading["answered"] = [path for path in ("/health", "/api/status?detail=1", "/metrics")
-                           if HTTP_ANSWER.match(str(outcomes.get(path) or ""))]
+    parts = (("health", "/health"), ("status", "/api/status?detail=1"), ("metrics", "/metrics"))
+    reading["answered"] = [part for part, path in parts if HTTP_ANSWER.match(str(outcomes.get(path) or ""))]
+    reading["unsupported"] = [part for part, path in parts if re.match(r"^(?:.*: )?HTTP 404\b", str(outcomes.get(path) or ""))]
     health = found.get("health")
     reading["health"] = health is True or (isinstance(health, dict) and health.get("status") in ("ok", 200)) or (
         outcomes.get("/health") == "ok") if health is not None or "/health" in outcomes else None
@@ -902,6 +906,7 @@ def _engine_sample(store, launch, replica, reading, now, interval=INTERVAL):
     snapshot = {"profile": profile, "replica": rid, "machine": machine, "family": family, "via": reading["via"],
                 "ts": now, "observed_at": observed_at, "status": None, "metrics": None, "observed": None, "extra": None,
                 "why": dict(reading["why"]), "last_ok": dict(previous.get("last_ok") or {}),
+                "last_answer": dict(previous.get("last_answer") or {}),
                 "failing_since": dict(previous.get("failing_since") or {}),
                 "counter_resets": list(previous.get("counter_resets") or [])[-20:]}
     labels = {"profile": profile, "replica": rid, "machine": machine}
@@ -926,9 +931,13 @@ def _engine_sample(store, launch, replica, reading, now, interval=INTERVAL):
         return []
     for part, ok in (("health", reading["health"]), ("status", reading["status"] is not None),
                      ("metrics", reading["metrics_text"] is not None)):
+        if ok or part in reading.get("answered", ()):
+            snapshot["last_answer"][part] = reading.get(part + "_at") or reading.get(part + "_answered_at") or observed_at
         if ok:
             snapshot["last_ok"][part] = reading.get(part + "_at", observed_at)
             snapshot["failing_since"].pop(part, None)
+        elif part in reading.get("unsupported", ()):
+            snapshot["failing_since"].pop(part, None)      # answered: the engine build does not serve it
         elif part in reading["why"] and "not read" not in reading["why"][part]:
             snapshot["failing_since"].setdefault(part, now)
     parsed_status = observed = metrics = extra = None
@@ -1792,6 +1801,7 @@ def engines_document(api, query, store=None):
                "last_served": last, "last_served_basis": snap.get("last_served_basis"),
                "idle_s": now - last if last is not None and not busy else None,
                "counter_resets": snap.get("counter_resets") or [], "last_ok": snap.get("last_ok") or {},
+               "last_answer": snap.get("last_answer") or {},
                "series": {name: f"history/{name}?" + urlencode({"range": 3600, "l.profile": snap.get("profile"),
                                                                  "l.replica": snap.get("replica")})
                           for name in ("engine_generated_tokens", "engine_queue_waiting", "engine_slots_busy",

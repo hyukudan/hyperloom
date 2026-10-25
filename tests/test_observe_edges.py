@@ -339,6 +339,12 @@ class MixedReachabilityTests(Base):
         self.assertEqual((snapshot["state"], up), ("up · no status or metrics", [1]))
         self.assertIn("answers HTTP", snapshot["why"]["reachability"])
         self.assertEqual(self.env.collect(), [])                   # the collector does not report a failed round
+        snapshot = self.env.store.get("observe/engine", "qwen/halo-1")
+        self.assertEqual(set(snapshot["last_answer"]), {"health", "status", "metrics"})
+        self.assertEqual(snapshot["last_ok"], {})
+        self.assertEqual(set(snapshot["failing_since"]), {"health"})   # 404: not served by this build, not failing
+        row = observe.engines_document(self.env.api, {})["engines"][0]
+        self.assertEqual(set(row["last_answer"]), {"health", "status", "metrics"})
 
 
 class FleetReachabilityTests(FleetBase):
@@ -372,6 +378,10 @@ class FleetReachabilityTests(FleetBase):
         snapshot, up = self.outcome({"/health": "HTTP 500", "/api/status?detail=1": "HTTP 404", "/metrics": "HTTP 404"})
         self.assertEqual((snapshot["state"], up), ("up · no status or metrics", [1]))
         self.assertIn("answers HTTP", snapshot["why"]["reachability"])
+        self.assertEqual(set(snapshot["last_answer"]), {"health", "status", "metrics"})
+        self.assertEqual(snapshot["last_ok"], {})
+        self.assertNotIn("status", snapshot["failing_since"])
+        self.assertNotIn("metrics", snapshot["failing_since"])
 
 
 class ExactIdentityTests(FleetBase):

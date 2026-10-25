@@ -64,6 +64,20 @@ class PartialCountsTests(Collected):
         self.assertIn("without an accepted count", panel)
         self.assertIn("no accepted count", panel)
 
+    def test_partial_pool_report(self):
+        status = fixture("engine-status-c1.json")
+        slots = status.get("slots") if isinstance(status.get("slots"), dict) else {}
+        for key in [k for k in slots if "pool" in k or "free" in k or k.endswith("_bytes")]:
+            slots.pop(key)
+        self.env.engine(NODE1, 18501, status)
+        self.env.collect()
+        engines = observe.engines_document(self.env.api, {})
+        row = engines["engines"][0]
+        row["slots"] = {**(row.get("slots") or {}), "pool_positions": 1024, "pool_bytes": None, "pool_largest_free": None}
+        panel = render("engine-panel", {"observe/engines": engines})
+        self.assertRegex(panel, r"1[,.]?024 positions · size not reported · largest free not reported")
+        self.assertNotIn("null", panel)
+
     def test_missing_proposed_count(self):
         spec, engines = self.collected(proposed=None)
         self.assertIn("without a proposed count", spec["engines"][0]["why"]["acceptance"])
