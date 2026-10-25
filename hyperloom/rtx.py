@@ -33,6 +33,9 @@ MEMORY_S = 0.5
 PRO_IDLE_MIB = 2048  # display and driver use only; more means another job holds the PRO
 MAX_WINDOW_S = 1200  # lab PC-BIG window unless main approves a longer one
 SMI_TIMEOUT_S = 5
+GATE_TIMEOUT_S = 60
+PHYSICAL_FLOOR_GIB = 2.0  # below this much available RAM the PC is thrashing; the service stops before the desktop does
+PHYSICAL_STRIKES = 4  # consecutive memory samples (0.5 s apart) under the floor
 _SECRET = "<redacted>"
 
 
@@ -57,7 +60,7 @@ def service_preset(name):
 
 def parse_reservation(value, where="pc.cuda.reservation"):
     r = record(value, where, ("owner", "approval", "vram_cap_gib", "host_gib", "free_commit_floor_gib"),
-               ("extended_approval", "expires_at", "window_s"))
+               ("extended_approval", "expires_at", "window_s", "gate"))
     text(r["owner"], f"{where}.owner")
     if "extended_approval" in r:
         text(r["extended_approval"], f"{where}.extended_approval")
@@ -74,7 +77,37 @@ def parse_reservation(value, where="pc.cuda.reservation"):
     number(r["vram_cap_gib"], f"{where}.vram_cap_gib", 1, 1024)
     number(r["host_gib"], f"{where}.host_gib", 0, 4096)
     number(r["free_commit_floor_gib"], f"{where}.free_commit_floor_gib", 1, 4096)
+    if "gate" in r:
+        gate(r["gate"], f"{where}.gate")
     return r
+
+
+def gate(value, where):
+    """The operator's gate: a command (absolute executable + arguments) run right before the service touches the
+    device. Exit 0 lets the start go on; anything else refuses it. Lets a shared PC keep its own device schedule
+    (another job may hold the device while it is still loading, which no memory reading shows yet)."""
+    if not isinstance(value, list) or not 1 <= len(value) <= 32 or not all(isinstance(a, str) for a in value):
+        raise ConfigError(f"{where}: expected a list of 1..32 strings")
+    for argument in value:
+        if not argument or len(argument) > 4096 or "\0" in argument:
+            raise ConfigError(f"{where}: empty, over-long or NUL argument")
+    if not (PureWindowsPath(value[0]).is_absolute() or value[0].startswith("/")):
+        raise ConfigError(f"{where}: the executable must be an absolute path")
+    return value
+
+
+def run_gate(argv, run=subprocess.run):
+    """None when the gate lets the start go on, else why it refused (its first output line)."""
+    try:
+        result = run(argv, capture_output=True, timeout=GATE_TIMEOUT_S, stdin=subprocess.DEVNULL,
+                     creationflags=no_window())
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"gate did not run: {type(exc).__name__}"
+    if result.returncode == 0:
+        return None
+    output = (result.stdout or b"") + (result.stderr or b"")
+    first = output[:4096].decode("utf-8", "replace").strip().splitlines()
+    return f"gate refused (rc {result.returncode}): {first[0][:200] if first else 'no output'}"
 
 
 def expires(value, where):
@@ -127,6 +160,7 @@ class ServiceSpec:
     consistency: dict
     binary_sha256: str | None = None
     placement: dict | None = None
+    gate: list | None = None
 
 
 def redact(argv, flags):
@@ -290,7 +324,8 @@ def render_service(cluster, profile_name, *, api_key, handoff_api_key, free_phys
         sha = read_json(manifest).get("binaries", {}).get(binary.name)
     return ServiceSpec(data["name"], s["machine"], device["uuid"], int(values["port"]), argv, env,
                        redact(argv, data["secret_flags"]), deadline, cap, floor, data["ready"]["timeout_s"], consistency,
-                       sha, None if plan is None else dict(plan.to_dict(), explain=vramplan.explain(plan)))
+                       sha, None if plan is None else dict(plan.to_dict(), explain=vramplan.explain(plan)),
+                       (reservation or {}).get("gate"))
 
 
 # Device selection and behaviour switches of the CUDA runtime are never inherited (the preset sets its own);
@@ -404,7 +439,7 @@ def memory_status():
 
 class Watchdog:
     """The lab PC-BIG policy for one PID. Memory every 0.5 s, the GPU every 2 s: kill the process below the free-commit
-    floor, above the VRAM cap, on any GPU other than the PRO, or at the deadline. It fails closed: an error inside the
+    floor or the available-RAM floor, above the VRAM cap, on any GPU other than the PRO, or at the deadline. It fails closed: an error inside the
     watchdog kills the process too. The rest of the PC keeps working."""
 
     def __init__(self, spec, pid, kill, log, *, memory=memory_status, apps=compute_apps, used=device_used_mib,
@@ -415,6 +450,7 @@ class Watchdog:
         self.reason = None
         self.baseline_mib = None
         self.smi_failures = 0
+        self.physical_strikes = 0
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
@@ -439,6 +475,10 @@ class Watchdog:
         memory = self.memory()
         if memory["free_commit_gib"] < self.spec.free_commit_floor_gib:
             return f"free commit {memory['free_commit_gib']:.1f} GiB below {self.spec.free_commit_floor_gib:g}", memory
+        self.physical_strikes = self.physical_strikes + 1 if memory["free_physical_gib"] < PHYSICAL_FLOOR_GIB else 0
+        if self.physical_strikes >= PHYSICAL_STRIKES:
+            return (f"available RAM {memory['free_physical_gib']:.1f} GiB below {PHYSICAL_FLOOR_GIB:g} "
+                    f"for {self.physical_strikes} samples"), memory
         if self.clock() >= self.spec.deadline:
             return "deadline", memory
         return None, memory
@@ -584,7 +624,7 @@ OWNER_INTERVAL_S = 2
 
 
 def service_run(spec_path, *, child_factory=procs.LocalChild, watchdog_factory=Watchdog, verify=verify_pro,
-                health=_health, lock_factory=device_lock, owner_check=_owner_alive):
+                health=_health, lock_factory=device_lock, owner_check=_owner_alive, gate_runner=run_gate):
     """Persistent helper: owns the CUDA child (Job Object), its watchdog and the plaintext keys in its spec.
     Its lifetime lock (helper.lock) tells stop_service whether it is alive; every start step re-checks the stop file."""
     path = Path(spec_path)
@@ -612,6 +652,11 @@ def service_run(spec_path, *, child_factory=procs.LocalChild, watchdog_factory=W
             reason = "stop requested before start"
             return
         device = lock_factory(spec.pro_uuid).acquire()
+        if spec.gate:
+            refused = gate_runner(spec.gate)
+            log({"t": round(time.time(), 1), "gate": refused or "open"})
+            if refused:
+                raise ServiceError(refused)
         info = verify(spec.pro_uuid)
         if not spec.binary_sha256:
             raise ServiceError("service binary has no release manifest (hyperloom prefill build)")
@@ -780,7 +825,7 @@ BUILD_MAX_S = 4 * 3600
 
 
 def build(cluster, profile_name, source, *, child_factory=procs.LocalChild, watchdog_factory=Watchdog,
-          lock_factory=device_lock, poll_s=1.0):
+          lock_factory=device_lock, poll_s=1.0, gate_runner=run_gate):
     """CUDA build: heavy PC work (SPEC 5.7). In lab mode only inside a current reservation, under its free-commit
     watchdog and deadline, in a Job Object (cmake, ninja, cl and nvcc die with it). Builds into a staging directory
     and publishes it only when the release directory does not exist yet: a release is never rebuilt in place."""
@@ -810,6 +855,9 @@ def build(cluster, profile_name, source, *, child_factory=procs.LocalChild, watc
     lock = lock_factory(device["uuid"]).acquire()
     child = dog = None
     try:
+        refused = gate_runner(reservation["gate"]) if reservation and reservation.get("gate") else None
+        if refused:
+            raise ServiceError(refused)
         # Windows PowerShell 5.1 must not inherit another PowerShell's module path (its own cmdlets then fail to load).
         env = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}
         child = child_factory(argv, env, staging, "build")

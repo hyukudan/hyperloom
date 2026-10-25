@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import subprocess
 import threading
 import time
 import unittest
@@ -97,6 +98,32 @@ class ConfigTests(unittest.TestCase):
         del obj["pc"]["cuda"]["reservation"]["owner"]
         with self.assertRaisesRegex(ConfigError, "missing keys"):
             parse(obj)
+
+    def test_reservation_gate_is_an_absolute_command(self):
+        obj = rtx_example()
+        obj["pc"]["cuda"]["reservation"]["gate"] = ["C:/tools/gate.exe", "--device", "pro"]
+        self.assertEqual(rtx.render_service(parse(obj), "ds41-rtx", api_key=KEY_A, handoff_api_key=KEY_B,
+                                            free_physical_gib=100.0).gate, ["C:/tools/gate.exe", "--device", "pro"])
+        for bad in ([], "C:/tools/gate.exe", ["gate.exe"], ["C:/g.exe", ""], ["C:/g.exe", 1], ["C:/g.exe", "a\0b"]):
+            obj = rtx_example()
+            obj["pc"]["cuda"]["reservation"]["gate"] = bad
+            with self.subTest(gate=bad), self.assertRaises(ConfigError):
+                parse(obj)
+
+    def test_gate_result(self):
+        def run(code, out=b"", err=b""):
+            return lambda *a, **k: subprocess.CompletedProcess(a, code, out, err)
+        self.assertIsNone(rtx.run_gate(["C:/g.exe"], run(0, b"open")))
+        self.assertEqual(rtx.run_gate(["C:/g.exe"], run(3, b"PC-BIG open: someone\nmore")),
+                         "gate refused (rc 3): PC-BIG open: someone")
+        self.assertIn("no output", rtx.run_gate(["C:/g.exe"], run(1)))
+
+        def raises(exc):
+            def run(*a, **k):
+                raise exc
+            return run
+        for exc in (OSError("missing"), subprocess.TimeoutExpired("g", 60)):
+            self.assertIn("did not run", rtx.run_gate(["C:/g.exe"], raises(exc)))
 
     def test_reservation_window_opens_at_start(self):
         obj = rtx_example()
@@ -355,6 +382,18 @@ class WatchdogTests(unittest.TestCase):
         dog, _ = self.watchdog(memory=_memory(3.0))
         self.assertIn("free commit", dog.check())
 
+    def test_available_ram_floor_needs_consecutive_samples(self):
+        low = lambda: {"free_physical_gib": 0.9, "free_commit_gib": 60.0}
+        dog, _ = self.watchdog(memory=low)
+        for _ in range(rtx.PHYSICAL_STRIKES - 1):
+            self.assertIsNone(dog.check_memory()[0])
+        self.assertIn("available RAM", dog.check_memory()[0])
+        dog, _ = self.watchdog(memory=low)
+        dog.check_memory()
+        dog.memory = _memory()
+        self.assertIsNone(dog.check_memory()[0])
+        self.assertEqual(dog.physical_strikes, 0)
+
     def test_visible_on_another_gpu(self):
         dog, _ = self.watchdog(apps=[(PRO, 42, 100), (OTHER, 42, 100)])
         self.assertIn(OTHER, dog.check())
@@ -541,6 +580,28 @@ class HelperTests(unittest.TestCase):
         self.assertIn("does not match", self.state()["reason"])
         self.run_helper(self.write(_spec())).join(5)
         self.assertIn("no release manifest", self.state()["reason"])
+
+    def test_operator_gate_runs_before_the_device_is_touched(self):
+        calls = []
+
+        def verify(uuid):
+            calls.append("verify")
+            return {"uuid": uuid}
+
+        def gate(argv):
+            calls.append(("gate", argv))
+            return "gate refused (rc 1): PC-BIG open: someone"
+        self.run_helper(self.write(_binary_spec(gate=["C:/g.exe"])), verify=verify, gate_runner=gate).join(5)
+        self.assertEqual(calls, [("gate", ["C:/g.exe"])])
+        self.assertEqual(FakeChild.instances, [])
+        self.assertIn("PC-BIG open: someone", self.state()["reason"])
+        calls.clear()
+        thread = self.run_helper(self.write(_binary_spec(gate=["C:/g.exe"])), verify=verify,
+                                 gate_runner=lambda argv: calls.append("gate"))
+        self.wait_state("ready")
+        rtx.stop_service({"directory": str(self.directory)}, timeout_s=5)
+        thread.join(5)
+        self.assertEqual(calls, ["gate", "verify"])
 
     def test_stop_requested_before_the_child_starts_nothing(self):
         (self.directory / "stop").touch()
@@ -830,6 +891,21 @@ class BuildTests(unittest.TestCase):
         with self.assertRaisesRegex(rtx.ServiceError, "stopped: free commit"):
             self.build(self.fake(), dog=Killing)
         self.assertFalse(self.release.exists())
+
+    def test_operator_gate_refuses_the_build_before_it_starts(self):
+        obj = rtx_example()
+        obj["machines"][0]["install_root"] = self.tmp.name
+        obj["pc"]["cuda"]["reservation"]["gate"] = ["C:/g.exe"]
+        started = []
+
+        class Child(FakeChild):
+            def start(inner):
+                started.append(1)
+        with self.assertRaisesRegex(rtx.ServiceError, "someone"):
+            rtx.build(parse(obj), "ds41-rtx", Path(self.tmp.name) / "engine", child_factory=Child,
+                      watchdog_factory=FakeDog, poll_s=0.01, gate_runner=lambda argv: "gate refused (rc 1): someone",
+                      lock_factory=lambda u: rtx.procs.InstanceLock(Path(self.tmp.name) / "d.lock"))
+        self.assertEqual(started, [])
 
     def test_lab_mode_build_needs_a_reservation(self):
         with self.assertRaisesRegex(rtx.ServiceError, "reservation"):

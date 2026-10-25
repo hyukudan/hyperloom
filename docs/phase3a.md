@@ -42,11 +42,13 @@ Status: implemented on `hl/phase3a`, 2026-10-23 (lead review fixes included). Th
   - `--host-gib` = min(80, `host_gib`, free physical memory − 20), the same rule the lab window used;
   - `--host-commit-floor-gib` = floor + 10;
   - the watchdog's limits.
-- **Watchdog.** Memory every 0.5 s and the GPU every 2 s (`nvidia-smi` with a 5 s timeout), for the service's PID. It kills that process, and only that process, in four cases:
+- **Watchdog.** Memory every 0.5 s and the GPU every 2 s (`nvidia-smi` with a 5 s timeout), for the service's PID. It kills that process, and only that process, in five cases:
   - free commit falls below the floor;
+  - available RAM stays below 2 GiB for 4 samples in a row (2 s): the PC is thrashing, so the service stops before the desktop and every other job do;
   - its VRAM goes above the cap (under WDDM it measures device use above the starting baseline);
   - it becomes visible on any GPU other than the PRO;
   - the reservation ends.
+- **Operator gate (optional).** `reservation.gate` is a command, an absolute executable plus arguments, e.g. `["C:/tools/pro-gate.exe", "--device", "pro"]`. hyperloom runs it right before the service touches the device (after the device lock, before the busy check) and before a CUDA build. Exit 0 lets the start go on. Any other exit, no exit within 60 s, or a command that cannot run refuses the start; the first output line is the reason. The busy check sees only memory already allocated, so another job that has just started on the device passes it. A shared PC uses the gate to keep its own device schedule, e.g. "no other window is open", and to record that this one opens.
 - **Router.** The service is loopback-only, so the router must run locally (`--router local`).
 - **Window.** A reservation lasts at most 20 minutes unless it carries an `extended_approval` (main's ACK line).
 - **One heavy job per device.** The service helper and the CUDA build hold a per-UUID lock, so two profiles (or a build and a service) never share the PRO.
