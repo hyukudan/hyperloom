@@ -1,0 +1,101 @@
+# HELP mm_queued Generations waiting in the queue (same value as strix_queue_waiting).
+# TYPE mm_queued gauge
+mm_queued 0
+# HELP mm_running Generations running (same value as strix_queue_running).
+# TYPE mm_running gauge
+mm_running 0
+# HELP mm_completed Generations completed (same value as strix_requests_completed_total).
+# TYPE mm_completed counter
+mm_completed 17
+# HELP mm_failed Generations that failed (same value as strix_requests_failed_total).
+# TYPE mm_failed counter
+mm_failed 0
+# HELP mm_prompt_tokens Prompt tokens of finished generations (same value as strix_prompt_tokens_total).
+# TYPE mm_prompt_tokens counter
+mm_prompt_tokens 16023
+# HELP mm_generated_tokens Generated tokens (same value as strix_generated_tokens_total).
+# TYPE mm_generated_tokens counter
+mm_generated_tokens 728
+# HELP mm_busy_seconds Seconds the engine spent on generations (same value as strix_engine_busy_seconds_total).
+# TYPE mm_busy_seconds counter
+mm_busy_seconds 1.826
+# HELP strix_requests_completed_total Generations completed.
+# TYPE strix_requests_completed_total counter
+strix_requests_completed_total 17
+# HELP strix_requests_failed_total Generations that failed.
+# TYPE strix_requests_failed_total counter
+strix_requests_failed_total 0
+# HELP strix_requests_cancelled_total Generations cancelled (client gone).
+# TYPE strix_requests_cancelled_total counter
+strix_requests_cancelled_total 0
+# HELP strix_prompt_tokens_total Prompt tokens of finished generations.
+# TYPE strix_prompt_tokens_total counter
+strix_prompt_tokens_total 16023
+# HELP strix_prompt_tokens_cached_total Prompt tokens restored from a prefix cache (this engine has none).
+# TYPE strix_prompt_tokens_cached_total counter
+strix_prompt_tokens_cached_total 0
+# HELP strix_generated_tokens_total Generated tokens.
+# TYPE strix_generated_tokens_total counter
+strix_generated_tokens_total 728
+# HELP strix_engine_busy_seconds_total Seconds the engine spent on generations.
+# TYPE strix_engine_busy_seconds_total counter
+strix_engine_busy_seconds_total 1.825590521
+# HELP strix_queue_waiting Generations waiting in the queue.
+# TYPE strix_queue_waiting gauge
+strix_queue_waiting 0
+# HELP strix_queue_running Generations running.
+# TYPE strix_queue_running gauge
+strix_queue_running 0
+# HELP strix_slots_busy Sequence slots in use.
+# TYPE strix_slots_busy gauge
+strix_slots_busy 0
+# HELP strix_slots_total Sequence slots.
+# TYPE strix_slots_total gauge
+strix_slots_total 8
+# HELP strix_engine_info Serving process identity (value 1).
+# TYPE strix_engine_info gauge
+strix_engine_info{engine="minimax",model="fake",instance="4a894e64d3ff9d26"} 1
+# HELP strix_engine_start_time_seconds Process start, unix seconds.
+# TYPE strix_engine_start_time_seconds gauge
+strix_engine_start_time_seconds 1792888376
+# HELP strix_instrumentation_armed 1 once the armed instrumentation is on.
+# TYPE strix_instrumentation_armed gauge
+strix_instrumentation_armed 1
+# HELP strix_prompt_tokens_imported_total Prompt tokens whose state was imported (this engine imports none).
+# TYPE strix_prompt_tokens_imported_total counter
+strix_prompt_tokens_imported_total 0
+# HELP strix_prompt_tokens_computed_total Prompt tokens prefilled by this engine (prompt - cached - imported).
+# TYPE strix_prompt_tokens_computed_total counter
+strix_prompt_tokens_computed_total 16023
+# HELP strix_ttft_seconds Submit to first published token (engine scheduler), requests submitted while armed.
+# TYPE strix_ttft_seconds histogram
+strix_ttft_seconds_bucket{le="0.05"} 8
+strix_ttft_seconds_bucket{le="0.1"} 8
+strix_ttft_seconds_bucket{le="0.25"} 8
+strix_ttft_seconds_bucket{le="0.5"} 8
+strix_ttft_seconds_bucket{le="1"} 8
+strix_ttft_seconds_bucket{le="2.5"} 8
+strix_ttft_seconds_bucket{le="5"} 8
+strix_ttft_seconds_bucket{le="10"} 8
+strix_ttft_seconds_bucket{le="30"} 8
+strix_ttft_seconds_bucket{le="60"} 8
+strix_ttft_seconds_bucket{le="+Inf"} 8
+strix_ttft_seconds_sum 0.160842777
+strix_ttft_seconds_count 8
+# HELP strix_decode_tokens_per_second Per-request decode rate (tokens after the first per decode second), completed requests submitted while armed.
+# TYPE strix_decode_tokens_per_second histogram
+strix_decode_tokens_per_second_bucket{le="1"} 0
+strix_decode_tokens_per_second_bucket{le="2"} 0
+strix_decode_tokens_per_second_bucket{le="5"} 0
+strix_decode_tokens_per_second_bucket{le="10"} 0
+strix_decode_tokens_per_second_bucket{le="15"} 0
+strix_decode_tokens_per_second_bucket{le="20"} 0
+strix_decode_tokens_per_second_bucket{le="25"} 0
+strix_decode_tokens_per_second_bucket{le="30"} 0
+strix_decode_tokens_per_second_bucket{le="40"} 0
+strix_decode_tokens_per_second_bucket{le="50"} 0
+strix_decode_tokens_per_second_bucket{le="75"} 0
+strix_decode_tokens_per_second_bucket{le="100"} 0
+strix_decode_tokens_per_second_bucket{le="+Inf"} 8
+strix_decode_tokens_per_second_sum 3843.399566
+strix_decode_tokens_per_second_count 8

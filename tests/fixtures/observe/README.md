@@ -20,3 +20,11 @@ is included.
   capabilities, one completed request with a router id).
 - `minimax-metrics-cand7.txt`: the plain `mm_*` lines of the current MiniMax build (no HELP/TYPE).
 - `minimax-metrics-sched.txt`: the `mm_*` lines of the scheduled serve loop, with step and draft counters.
+
+Recorded with the producers' own code:
+
+- `router-requests.recorded.json`, `router-sessions.recorded.json`, `router-metrics.recorded.txt`: built by the
+  router's request-log, session-table and histogram code (request timeline branch) driven through an offloaded
+  stream, a request refused for lack of a replica and an in-flight stream, with a fixed clock.
+- `minimax-status.recorded.json`, `minimax-metrics.recorded.txt`: the instrumented MiniMax server's armed
+  `/api/status?detail=1` and `/metrics`, answered over a test engine (model id `fake`).
