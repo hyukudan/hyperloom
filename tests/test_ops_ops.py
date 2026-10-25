@@ -602,6 +602,41 @@ class CLITests(Base, unittest.TestCase):
         self.assertIn("halo-2", [m["id"] for m in json.loads(self.config.read_text())["machines"]])
 
 
+class CLIRenewalTests(unittest.TestCase):
+    """The CLI's admission holds keep renewing through a transient database error."""
+
+    def check(self, take):
+        db = admission.Admission(":memory:")
+        self.addCleanup(db.close)
+        rounds = []
+        waits = iter([False, False, False, True])           # three renewals, then the release
+
+        class Stop:
+            def wait(self, seconds):
+                return next(waits)
+
+            def set(self):
+                pass
+        renew = mock.Mock(side_effect=[OSError("locked"), Exception("busy"), None])
+        with mock.patch.object(admission, "for_config", return_value=db), \
+                mock.patch.object(threading, "Event", Stop), \
+                mock.patch.object(db, "renew", renew), \
+                mock.patch.object(threading.Thread, "start", lambda thread: rounds.append(thread.run())):
+            release = take()
+        self.assertEqual(renew.call_count, 3)
+        release()
+        self.assertEqual(db.holds(), [])
+
+    def test_ops_hold(self):
+        from hyperloom.cliext import ops as cli_ops
+        self.check(lambda: cli_ops._hold(mock.Mock(config_path="cfg.json"), {"halo-1"}, "cli test"))
+
+    def test_cli_hold(self):
+        from types import SimpleNamespace
+        from hyperloom import cli
+        self.check(lambda: cli._admission_hold(SimpleNamespace(command="install", profile=None, config="cfg.json")))
+
+
 if __name__ == "__main__":
     unittest.main()
 

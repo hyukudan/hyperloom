@@ -347,6 +347,60 @@ class APIDispatchTests(unittest.TestCase):
         self.wait(self.api.mutate("cancel", {"job": bench["id"]})["id"])
         self.wait(bench["id"])
 
+    def test_a_feature_job_evicted_before_its_cancel_runs_is_never_a_stop(self):
+        bench = self.api.mutate("demo/bench", {"on": ["halo-2"]})
+        job = self.api.mutate("demo/job", {"n": 1})
+        self.wait(job["id"])
+        checked = self.api._arguments
+
+        def evicting(action, arguments):
+            if action == "cancel":
+                with self.api._job_lock:
+                    self.api._jobs.pop(job["id"], None)        # pruned by the 100-job limit meanwhile
+                return arguments
+            return checked(action, arguments)
+        with mock.patch.object(self.api, "_arguments", side_effect=evicting):
+            cancel = self.api.mutate("cancel", {"job": job["id"]})
+        self.assertEqual(self.wait(cancel["id"])["state"], "failed")
+        self.assertEqual(self.api.read("jobs/" + bench["id"])["state"], "running")   # no stop was taken
+        self.api.orchestrate.down.assert_not_called()
+        self.wait(self.api.mutate("cancel", {"job": bench["id"]})["id"])
+        self.wait(bench["id"])
+
+    def test_concurrent_holds_wait_for_the_renewal_thread(self):
+        from hyperloom.web import api as api_module
+        started, release = threading.Event(), threading.Event()
+        real_start = api_module.threading.Thread.start
+
+        def slow_failing_start(thread):
+            if thread.name == "hyperloom-admission":
+                started.set()
+                release.wait(5)
+                raise RuntimeError("no thread")
+            return real_start(thread)
+        results = []
+        with mock.patch.object(api_module.threading.Thread, "start", slow_failing_start):
+            first = threading.Thread(target=lambda: results.append(self._try(("demo/bench", {"on": ["halo-1"]}))))
+            first.start()
+            started.wait(5)
+            second = threading.Thread(target=lambda: results.append(self._try(("demo/bench", {"on": ["halo-2"]}))))
+            second.start()
+            time.sleep(0.2)
+            self.assertEqual(self.api._holds, {})       # the second hold is not published without a renewal thread
+            release.set()
+            first.join(5)
+            second.join(5)
+        self.assertEqual(sorted(results), [503, 503])
+        self.assertEqual((self.api._holds, self.api._heartbeat), ({}, None))
+        self.assertEqual(self.api.admission_db.holds(), [])
+
+    def _try(self, call):
+        try:
+            self.api.mutate(*call)
+            return 202
+        except APIError as exc:
+            return exc.status
+
     def test_an_unreadable_cancellation_state_never_breaks_a_stop_or_the_renewals(self):
         import sqlite3
         from hyperloom.web.api import JobContext

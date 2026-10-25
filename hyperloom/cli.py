@@ -745,7 +745,10 @@ def _admission_hold(args):
 
     def renew():
         while not stop.wait(30):
-            database.renew(hold)
+            try:
+                database.renew(hold)
+            except Exception:  # noqa: BLE001 - a transient database error: retried at the next renewal
+                pass
     threading.Thread(target=renew, name="hyperloom-cli-admission", daemon=True).start()
 
     def release():

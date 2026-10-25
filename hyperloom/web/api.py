@@ -426,6 +426,7 @@ class API:
         self.admission_db = None        # tests inject one; else the configuration's shared database (C11)
         self._holds = {}                # job id -> admission hold id (core, stop and admitted feature jobs)
         self._heartbeat = None
+        self._heartbeat_lock = threading.Lock()     # a hold is published only once the renewal thread runs
         self.recipes = recipe_web.Runner()
 
     def _recipe_loader(self, path):
@@ -1153,21 +1154,20 @@ class API:
             hold = self._admission().acquire(kind, resources, label=label)
         except admission.Refused as exc:
             raise APIError(str(exc), 409) from exc
-        with self._job_lock:
-            self._holds[jid] = hold
-            heartbeat = None
-            if self._heartbeat is None:
-                heartbeat = self._heartbeat = threading.Thread(target=self._renew_holds, name="hyperloom-admission",
-                                                               daemon=True)
-        if heartbeat is not None:
-            try:
-                heartbeat.start()
-            except Exception:
+        try:
+            with self._heartbeat_lock:
+                if self._heartbeat is None:
+                    heartbeat = threading.Thread(target=self._renew_holds, name="hyperloom-admission", daemon=True)
+                    heartbeat.start()           # raises: nothing published, the next hold tries again
+                    self._heartbeat = heartbeat
                 with self._job_lock:
-                    if self._heartbeat is heartbeat:
-                        self._heartbeat = None      # the next hold tries again
-                self._unhold(jid)
-                raise
+                    self._holds[jid] = hold
+        except Exception:
+            try:
+                self._admission().release(hold)
+            except Exception:  # noqa: BLE001 - its lease then lapses: nobody renews it
+                pass
+            raise
         return hold
 
     def _unhold(self, jid):
@@ -1703,6 +1703,12 @@ class API:
     def mutate(self, action, arguments):
         if action not in MUTATIONS and action in feature_registry.registry().jobs:
             return self._feature_job(action, arguments)
+        target = None       # a cancel's job, read once: whether the cancel is a stop never changes afterwards
+        if action == "cancel" and isinstance(arguments, dict) and isinstance(arguments.get("job"), str):
+            with self._job_lock:
+                listed = self._jobs.get(arguments["job"])
+                target = None if listed is None else (dict(listed), arguments["job"] in self._features_running or
+                                                      listed["action"] in feature_registry.registry().jobs)
         try:
             arguments = self._arguments(action, arguments)
         except APIError as exc:
@@ -1714,13 +1720,12 @@ class API:
         # cancel stop a profile, or may).
         stopping, profile = action == "down", arguments.get("profile")
         if action == "cancel":
-            with self._job_lock:
-                job = self._jobs.get(arguments.get("job")) if arguments.get("job") else None
-                # A feature job's cancel (running or just finished) only cancels its context: never a stop.
-                feature = arguments.get("job") in self._features_running or (
-                    job is not None and job["action"] in feature_registry.registry().jobs)
-                if job is not None and not profile:
-                    profile = job["arguments"].get("profile")
+            # A feature job's cancel (running, finished or since evicted) only cancels its context: never a stop.
+            job, feature = target if target is not None else (None, False)
+            if arguments.get("job") and target is None:
+                feature = True          # not listed when read: nothing to stop (the cancel itself answers why)
+            if job is not None and not profile:
+                profile = job["arguments"].get("profile")
             stopping = not feature
         resources = set()
         if occupying or stopping:
