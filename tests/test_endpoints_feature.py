@@ -465,7 +465,7 @@ class CollectorTests(Base):
         self.assertEqual(self.generated(), [])                    # never continued across destinations
         after = self.api.telemetry.get(endpoints.NAMESPACE, "probe/" + saved["id"])
         self.assertNotEqual(before["source"], after["source"])
-        self.assertEqual(len(after["requests"]), 4)               # identified again (stray, status, metrics, models)
+        self.assertEqual(len(after["requests"]), 5)               # identified again (stray, status, metrics, models, status)
         self.assertTrue(second.seen)
         self.clock.now += 15
         second_state.update(uptime=130.0, count=1100)
@@ -520,10 +520,50 @@ class CollectorTests(Base):
         results = endpoints.run_round(self.api, self.clock(), identify=True)
         self.assertEqual(self.generated(), [])
         self.assertIn("sampler", next(iter(results.values()))["why"]["counters"])
+        self.assertIn("sampler", self.api.read("endpoints", {})["targets"][0]["probe"]["why"]["counters"])
         self.clock.now += 14
         state.update(uptime=115.0, count=150)
         endpoints.collect(self.api, self.clock())
         self.assertEqual(self.generated(), [50.0])         # the sampler's interval carries the whole increase
+
+    def test_counters_read_across_a_replacement_are_not_accounted(self):
+        replies = {"n": 0}
+
+        def status(handler):
+            replies["n"] += 1
+            body = json.loads(fixture("strix-status.json"))
+            # Rounds 1-2 see engine A on both sides of /metrics; in round 2 the second reply comes from engine B.
+            body.update(uptime_seconds=100.0, instance_id="a" if replies["n"] < 4 else "b")
+            raw = json.dumps(body).encode()
+            handler.send_response(200)
+            handler.send_header("Content-Length", str(len(raw)))
+            handler.end_headers()
+            handler.wfile.write(raw)
+        self.add(self.serve({"/api/status": status, "/metrics": (200, "text/plain", fixture("strix-metrics.txt")),
+                             "/v1/models": MODELS}).port)
+        endpoints.collect(self.api, self.clock())
+        self.clock.now += 15
+        endpoints.collect(self.api, self.clock())
+        self.assertEqual(self.generated(), [])
+        probe = self.api.read("endpoints", {})["targets"][0]["probe"]
+        self.assertIn("around the metrics read", probe["why"]["counters"])
+
+    def test_one_accounting_per_interval_across_sampler_instances(self):
+        state = {"uptime": 100.0, "count": 100}
+        self.add(self.engine(state).port)
+        endpoints.collect(self.api, self.clock())
+        self.clock.now += 15
+        state.update(uptime=115.0, count=130)
+        endpoints.collect(self.api, self.clock())
+        self.clock.now += 1                    # another portal's sampler, one second later
+        state.update(uptime=116.0, count=150)
+        endpoints.collect(self.api, self.clock())
+        self.assertEqual(self.generated(), [30.0])
+        self.assertIn("at most once per", self.api.read("endpoints", {})["targets"][0]["probe"]["why"]["counters"])
+        self.clock.now += 14
+        state.update(uptime=130.0, count=170)
+        endpoints.collect(self.api, self.clock())
+        self.assertEqual(self.generated(), [30.0, 40.0])         # the skipped sample's tokens are not lost
 
     def test_a_rejected_publication_returns_no_points(self):
         server = self.serve({"/v1/models": MODELS})

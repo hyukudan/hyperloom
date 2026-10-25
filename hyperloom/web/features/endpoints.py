@@ -576,6 +576,11 @@ def probe(target, cluster, previous=None, *, now, identify=False, session_factor
             text = session.get("/metrics").text()
             if _ours_metrics(text):
                 metrics_text = text
+    confirm = confirm_seen = None
+    if status_obj is not None and metrics_text is not None:
+        candidate = session.get("/api/status").json()
+        if isinstance(candidate, dict) and candidate.get("schema") == engine_adapter.SCHEMA:
+            confirm, confirm_seen = candidate, now + _since(started)
     result["kind"] = kind or "unknown"
     result["kind_text"] = KIND_TEXT[result["kind"]]
     result["signatures"] = signatures
@@ -601,7 +606,11 @@ def probe(target, cluster, previous=None, *, now, identify=False, session_factor
         result["panel"] = panel = _panel(status_obj, metrics_text)
         uptime = panel.get("uptime_seconds")
         reported = _reported_instance(status_obj)
-        if reported is not None:
+        if status_obj is not None and metrics_text is not None and not _same_lifetime(status_obj, status_seen, confirm, confirm_seen):
+            # The counters were read between two status replies that do not describe one engine lifetime (or the
+            # second one is missing): the sample cannot be attributed, so it is not accounted.
+            result["why"]["counters"] = "engine status changed or did not answer around the metrics read; not accounted"
+        elif reported is not None:
             # C3: the engine's own instance id or start time identifies its lifetime.
             result["instance"] = reported
         elif isinstance(uptime, (int, float)) and status_seen is not None:
@@ -621,6 +630,20 @@ def probe(target, cluster, previous=None, *, now, identify=False, session_factor
 def _since(started):
     """Seconds since a monotonic start (the time a status reply arrived within its round)."""
     return time.monotonic() - started
+
+
+def _same_lifetime(first, first_seen, second, second_seen):
+    """True when two status replies describe one engine lifetime: the same reported identity, or (without one) an
+    uptime that advanced like the clock between them."""
+    if not isinstance(first, dict) or not isinstance(second, dict):
+        return False
+    a, b = _reported_instance(first), _reported_instance(second)
+    if a is not None or b is not None:
+        return a == b
+    u1, u2 = first.get("uptime_seconds"), second.get("uptime_seconds")
+    if type(u1) not in (int, float) or type(u2) not in (int, float) or first_seen is None or second_seen is None:
+        return False
+    return u2 >= u1 and abs((u2 - u1) - (second_seen - first_seen)) <= CONTINUITY_SLACK_S
 
 
 def _reported_instance(status_obj):
@@ -646,6 +669,15 @@ def _publish(store, tid, result, now):
         "(SELECT 1 FROM docs WHERE namespace=? AND key=? AND instr(value, ?) > 0) "
         "ON CONFLICT(namespace, key) DO UPDATE SET ts=excluded.ts, value=excluded.value WHERE excluded.ts > docs.ts "
         "RETURNING 1", (NAMESPACE, "probe/" + tid, now, _encode(result), PREFS, TARGETS_KEY, needle)))
+
+
+def _claim(store, tid, src, now):
+    """Claim this endpoint's accounting slot: at most one accounting per sampling interval for a source, decided in
+    one statement across every portal process, so each delta stands for (at least) one interval."""
+    return bool(store.execute(
+        "INSERT INTO docs(namespace, key, ts, value) VALUES (?, ?, ?, '{}') ON CONFLICT(namespace, key) "
+        "DO UPDATE SET ts=excluded.ts WHERE excluded.ts - docs.ts >= ? RETURNING 1",
+        (NAMESPACE, f"account/{tid}/{src}", now, INTERVAL_S - 1.0)))
 
 
 def _drop(store, tid, rev):
@@ -696,10 +728,15 @@ def run_round(api, now, *, identify=False, session_factory=None, key_lookup=None
         for tid, result in results.items():
             if current.get(tid) != result["rev"] or sources.get(tid) != result.get("source"):
                 continue                                    # removed, re-saved or re-pointed meanwhile
+            if not account and result.get("instance"):
+                result["why"]["counters"] = "token deltas are accounted only by the sampler's rounds"
             if not _publish(store, tid, result, now):
                 continue                                    # superseded at the moment of writing
             panel = result.get("panel") or {}
-            if account and result.get("instance"):
+            if account and result.get("instance") and not _claim(store, tid, result["source"], now):
+                result["why"]["counters"] = (f"accounted at most once per {INTERVAL_S} s (another sampler round "
+                                             "accounted this endpoint less than an interval ago)")
+            elif account and result.get("instance"):
                 counters = {}
                 for field, series in COUNTERS:
                     value = panel.get(field + "_total")
@@ -713,11 +750,14 @@ def run_round(api, now, *, identify=False, session_factory=None, key_lookup=None
                                            "uncertain": info.get("uncertain"), "stale": info.get("stale")}
                 if counters:
                     result["counters"] = counters
-                    _publish(store, tid, result, now + 1e-6)     # the same observation with its accounting
-            elif not account and result.get("instance"):
-                result["why"]["counters"] = "token deltas are accounted only by the sampler's rounds"
+            if result.get("counters") or result["why"].get("counters"):
+                _publish(store, tid, result, now + 1e-6)         # the same observation with its accounting
             published[tid] = result
+        live = {f"account/{tid}/{src}" for tid, src in sources.items() if src}
         for key, _, value in store.items(NAMESPACE):
+            if key.startswith("account/") and key not in live:
+                store.execute("DELETE FROM docs WHERE namespace=? AND key=?", (NAMESPACE, key))
+                continue
             if not key.startswith("probe/") or not isinstance(value, dict):
                 continue
             rev, src = value.get("rev"), value.get("source")

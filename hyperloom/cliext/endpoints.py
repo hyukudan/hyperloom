@@ -109,11 +109,11 @@ def _exposure(args):
     except PermissionError as exc:
         print("hyperloom: " + str(exc), file=sys.stderr)
         return 2
-    red = 1 if (document.get("summary") or {}).get("red") else 0
+    rows = document.get("rows")
+    red = 1 if rows is None or (document.get("summary") or {}).get("red") else 0
     if args.json:
         _print(document, True)
         return red
-    rows = document.get("rows")
     if rows is None:
         print("exposure unavailable: " + str((document.get("why") or {}).get("rows")))
         return 1

@@ -72,6 +72,12 @@ class CLITests(unittest.TestCase):
                          [("endpoints/save", "succeeded"), ("endpoints/save", "refused"),
                           ("endpoints/remove", "succeeded"), ("endpoints/remove", "refused")])
 
+    def test_unavailable_exposure_fails_in_both_formats(self):
+        from hyperloom.web.features import endpoints
+        with mock.patch.object(endpoints, "_cluster", return_value=None):
+            self.assertEqual(self.run_cli("exposure")[0], 1)
+            self.assertEqual(self.run_cli("exposure", "--json")[0], 1)
+
     def test_exposure_exit_code_is_one_when_red(self):
         server = FakeServer({"/v1/models": MODELS})
         self.addCleanup(server.close)
