@@ -28,7 +28,6 @@ class CliTests(unittest.TestCase):
         self.store = telemetry.Store(self.config.parent / "telemetry.sqlite3")
         telemetry._stores[str(self.config.parent / "telemetry.sqlite3")] = self.store
         now = time.time()
-        energy._mark_verified(self.store, now - 86400, now + 86400)       # stands for earlier portal runs
         t = now - 2 * 3600
         while t < now:
             self.store.record([("node_gpu_power_watts", {"machine": "halo-1", "device": "0"}, 100.0),

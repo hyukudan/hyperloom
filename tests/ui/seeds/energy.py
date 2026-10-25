@@ -64,11 +64,12 @@ def seed(store, now):
         batches.append((t, 60, points))
         t += 60
     _bulk(store, sorted(batches, key=lambda b: b[0]))
-    store.prune(now)
 
     store.put("prefs", "energy/price", {"price_per_kwh": 0.24, "currency": "EUR"})
-    energy._mark_verified(store, now - 3 * 86400, now)       # stands for the runs of a portal that recorded this
-    energy.compute(store, now)
+    # The collector's hourly view of this history (the raw tier would only keep the last 8 h).
+    for back in range(48, -1, -1):
+        energy.compute(store, now - back * 3600)
+    store.prune(now)
     # Two earlier archived months (synthetic) so the permanent archive table has history.
     month = energy.zone_of(store).local(now).replace(day=1)
     for back, scale in ((1, 1.0), (2, 0.8)):

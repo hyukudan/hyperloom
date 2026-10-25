@@ -7,24 +7,20 @@ separate devices and are added; a CPU package reading on a machine that also rep
 overlapping (an APU's GPU package and CPU package share the socket) and is shown but not added, unless its series
 declares ``disjoint="1"``. Board, memory, fans, disks and network are never covered and are listed as such.
 
-Integration. A unit is one store bucket: one minute (tier m1) for the last 47 hours, 15 minutes (tier m15) before
-that. A unit contributes ``avg W x observed s``, where ``observed`` is the time its samples stand for (the sampling
-interval of each sample, capped at the unit length). That equals the interval-weighted sum exactly when every
-sample of the unit was taken at one cadence. The cadence is verified, not assumed: each run of the collector
-records the sampling intervals of every collector of this portal; time between two runs that saw the same
-intervals is "verified" (persisted), and only units lying entirely inside verified time are integrated. A cadence
-change therefore costs at most the time between two runs, and history no run vouched for (before the feature first
-ran, or samples recorded while no portal sampler ran) is not integrated: it counts as unobserved. Gaps lower the
-coverage; a sample is never stretched over a gap and nothing is extrapolated.
+Integration. Every raw sample carries the sampling interval it was taken at, and it stands for exactly that long:
+energy = sum of value x interval, observed time = sum of intervals, both exact whatever the cadence and its changes.
+Samples are grouped per minute (units) and per 15-minute quarter (rows). Gaps lower the coverage; a sample is never
+stretched over a gap and nothing is extrapolated. Samples without a recorded interval are not integrated.
 
-Accounting rows are kept per 15-minute quarter (UTC); every hour, day and month boundary of any time zone falls on a
-quarter (offsets and their changes are multiples of 15 minutes). The collector ``energy`` (every 60 s) recomputes
-the quarters not yet archived; a quarter is final 15 minutes after it ends (and after verification reached it) and
-is then added once to the permanent monthly archive. Every statement of one run is guarded by a revision value and
-the run moves the revision to a fresh random value, so a run that lost a race with another process changes nothing
-and knows it. A reset archives everything first, then clears the quarter rows and sets a cutoff: only units that
-start after the minute that held the reset are integrated afterwards. The inventory of known domains survives
-resets.
+Accounting rows are kept per quarter (UTC); every hour, day and month boundary of any time zone falls on a quarter
+(offsets and their changes are multiples of 15 minutes). The collector ``energy`` (every 60 s) recomputes the
+quarters not yet archived from the raw tier (8 h); a quarter is final 15 minutes after it ends and is then added
+once to the permanent monthly archive (quarters older than the raw tier keep the rows computed while their samples
+were there). Every statement of one run is guarded by a revision value that the run moves to a fresh random value,
+and the run inserts a receipt only the winning transaction can write, so a run that lost a race with another
+process changes nothing and knows it. A reset archives everything first, then clears the quarter rows and sets a
+cutoff: only samples taken after the reset instant are integrated afterwards. The inventory of known domains
+survives resets.
 
 GET energy?range=24h|7d|30d     GET energy/archive?before=YYYY-MM     GET thermals?range=day|week
 POST energy/price, energy/thresholds, energy/reset (audited)
@@ -50,9 +46,9 @@ except ImportError:          # pragma: no cover - Python < 3.9
 
 MINUTE, QUARTER, HOUR, DAY = 60, 900, 3600, 86400
 GRACE_S = 900                       # a quarter is final this long after it ends (late samples)
-FINE_S = 47 * HOUR                  # minute buckets are used while the store keeps them (48 h)
+RAW_KEEP_S = telemetry.TIERS[0][2]  # the raw tier keeps every sample with its interval this long (8 h)
 BACKFILL_S = 30 * DAY - QUARTER     # the 15-minute tier's retention
-KEEP_ROWS_S = 35 * DAY              # quarter rows and verified spans kept (the archive is permanent)
+KEEP_ROWS_S = 35 * DAY              # quarter rows kept (the archive is permanent)
 EXPECTED_S = 30 * DAY               # a known domain is expected in coverage while it reported within this time
 INVENTORY_S = DAY                   # a power domain is an expected observer while it reported within this lookback
 TOKEN_LOOKBACK_S = HOUR             # an engine is an expected observer while it reported tokens within this lookback
@@ -63,7 +59,6 @@ MAX_LABELS = 512                    # characters of one line's label set
 COMPUTE_BUDGET_S = 20.0             # wall time of one computation before it gives up (nothing written)
 MAX_ROWS = 20000                    # quarter rows written by one run (a backlog is worked off over several runs)
 MAX_DOCUMENT_BYTES = 2 * 1024 * 1024  # serialized size of one energy or thermals document
-WATCH_INTERVAL_S = 1.0              # the cadence watch: how often the samplers' intervals are looked at
 ARCHIVE_MONTHS = 24
 READ_ATTEMPTS = 3
 BANNER = "Estimated from sensors, not metered"
@@ -86,7 +81,7 @@ CPU_PART = "CPU (not reported separately; the GPU package reading may include pa
 OVERLAP = "overlaps the GPU package reading on this machine (not declared disjoint)"
 DUPLICATE = "a second reading of the same domain"
 NO_SAMPLES = "no samples in this range"
-PAIR_RULE = ("only minutes (15-minute buckets beyond 47 h) completely observed by every expected power domain and "
+PAIR_RULE = ("only minutes completely observed by every expected power domain and "
              "every running engine; a domain silent for 24 h or an engine silent for 1 h is no longer expected")
 CURRENCY = re.compile(r"[A-Z]{3}")
 MONTH = re.compile(r"\d{4}-(0[1-9]|1[0-2])")
@@ -104,12 +99,11 @@ CREATE TABLE IF NOT EXISTS energy_monthly_tokens (month TEXT PRIMARY KEY, wh_bot
     tokens_both REAL NOT NULL, both_s REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS energy_domains (machine TEXT NOT NULL, domain TEXT NOT NULL, counted INTEGER NOT NULL,
     first_seen REAL NOT NULL, last_seen REAL NOT NULL, PRIMARY KEY(machine, domain));
-CREATE TABLE IF NOT EXISTS energy_verified (start REAL PRIMARY KEY, end REAL NOT NULL, intervals TEXT);
 CREATE TABLE IF NOT EXISTS energy_receipts (token TEXT PRIMARY KEY, ts REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS energy_state (key TEXT PRIMARY KEY, value REAL);
 """
 TABLES = ("energy_quarters", "energy_pairs", "energy_monthly", "energy_monthly_tokens", "energy_domains",
-          "energy_verified", "energy_receipts", "energy_state")
+          "energy_receipts", "energy_state")
 GUARD = "EXISTS (SELECT 1 FROM energy_state WHERE key='revision' AND value=?)"
 
 _ensure_lock = threading.Lock()
@@ -203,97 +197,6 @@ def zone_of(store):
     return Zone()
 
 
-# -- cadence verification --------------------------------------------------------------------------------------------
-def cadence_of(api):
-    """{collector: interval_s} of this portal's running samplers, or None when no sampler runs in this process."""
-    status = telemetry.status(api)
-    if status is None:
-        return None
-    return {name: float(state.get("interval_s") or 0) for name, state in status.items()}
-
-
-_watch = {}
-_watch_lock = threading.Lock()
-
-
-def watch(api, now):
-    """Collector ``energy-cadence`` (every second, no I/O, records nothing): notes the time of every change of the
-    samplers' intervals, so a change and its undo between two energy runs still breaks verification."""
-    cadence = cadence_of(api)
-    if cadence is None:
-        return []
-    fingerprint = _fingerprint(cadence)
-    with _watch_lock:
-        state = _watch.setdefault(id(api), {"fingerprint": fingerprint, "changes": []})
-        if state["fingerprint"] != fingerprint:
-            state["fingerprint"] = fingerprint
-            state["changes"] = [t for t in state["changes"] if t > now - DAY] + [now]
-    return []
-
-
-def _changed_between(api, since, now):
-    with _watch_lock:
-        state = _watch.get(id(api))
-        return bool(state) and any(since <= t <= now for t in state["changes"])
-
-
-def _fingerprint(cadence):
-    return float(zlib.crc32(json.dumps(sorted(cadence.items())).encode("utf-8")))
-
-
-class Verified:
-    """Sorted, disjoint spans of verified sampling time, each with the sampling intervals seen at both ends."""
-
-    def __init__(self, spans):
-        self.spans = sorted(spans)
-        self.starts = [s for s, _e, _i in self.spans]
-
-    def intervals(self, start, end):
-        """The intervals of the span holding [start, end] entirely, () when none does (None: any, fixtures only)."""
-        i = bisect.bisect_right(self.starts, start) - 1
-        if i < 0 or self.spans[i][1] < end:
-            return ()
-        return self.spans[i][2]
-
-    def overlap(self, start, end):
-        return sum(max(0.0, min(e, end) - max(s, start)) for s, e, _i in self.spans)
-
-    @property
-    def until(self):
-        return self.spans[-1][1] if self.spans else None
-
-
-def _intervals_text(cadence):
-    return json.dumps(sorted({round(float(v), 6) for v in cadence.values() if v}))
-
-
-def _load_spans(store):
-    spans = []
-    for start, end, text in store.execute("SELECT start, end, intervals FROM energy_verified ORDER BY start"):
-        spans.append((start, end, None if text is None else tuple(json.loads(text))))
-    return spans
-
-
-def _mark_verified(store, start, end, intervals=None):
-    """Record [start, end] as verified sampling time with the intervals sampled at (fixtures and tests use it to
-    stand for runs of a portal that happened before they were recorded; None accepts any cadence)."""
-    _ensure(store)
-    store.execute("INSERT OR REPLACE INTO energy_verified(start, end, intervals) VALUES (?, ?, ?)",
-                  (float(start), float(end), None if intervals is None else json.dumps(sorted(intervals))))
-
-
-def _one_cadence(observed, count, step, intervals):
-    """True when a unit's samples can all have been taken at one of the verified intervals: their mean interval
-    equals one of them (a mixture of different intervals inside the unit has a mean between them), or a single
-    sample whose interval reaches past the unit (its time is capped at the unit)."""
-    if intervals is None:
-        return True
-    mean = observed / count
-    if any(abs(mean - i) <= 0.005 * i for i in intervals):
-        return True
-    return count == 1 and observed >= step - 1e-6 and any(i >= step for i in intervals)
-
-
 # -- reading the store ---------------------------------------------------------------------------------------------
 def _domain(series, labels):
     if series == GPU_POWER:
@@ -310,75 +213,94 @@ def _longest_labels(store, series):
     return store.execute("SELECT COALESCE(MAX(LENGTH(labels)), 0) FROM series WHERE name=?", (series,))[0][0]
 
 
-def _read(store, series, start, end, now, cutoff, verified, integrate=True):
-    """Lines of one series as [{labels, units: {unit: (avg, observed, max, count, step)}}]: minute units for quarters
-    starting within FINE_S of now, quarter units before (the boundary is quarter-aligned, so a quarter never mixes
-    both). Kept: units at or after the reset cutoff that lie entirely inside verified time and whose mean sample
-    interval is one of the verified intervals (``integrate`` False: no cadence filter, for series whose values are
-    exact counts or states). ``seen`` holds every quarter with samples, unfiltered (observer expectations must not
-    depend on resets or verification). More than MAX_LINES lines or a truncated query refuses the whole
-    computation."""
+def _admit(store, series):
+    """Refuse the computation before anything of a series is read when it is too wide."""
     if _line_count(store, series) > MAX_LINES:
         raise ValueError(f"{series} has more than {MAX_LINES} lines; energy was not computed")
     if _longest_labels(store, series) > MAX_LABELS:
         raise ValueError(f"{series}: a label set longer than {MAX_LABELS} characters; energy was not computed")
-    fine_from = _floor(now - FINE_S, QUARTER) + QUARTER
-    lines = {}
-    spans = []
-    if start < fine_from:
-        spans.append(("m15", QUARTER, start, min(end, fine_from - 1)))
-    if end >= fine_from:
-        spans.append(("m1", MINUTE, max(start, fine_from), end))
-    for tier, step, a, b in spans:
-        result = store.query(series, a, b, tier=tier)
+
+
+def _samples(store, series, start, end, deadline):
+    """{labels key: (labels, {ts: (value, interval)})} of the raw samples in [start, end], read in windows small
+    enough that the store never cuts a query (a cut window is split and read again)."""
+    out = {}
+    windows = [(start, end)]
+    while windows:
+        if time.monotonic() > deadline:
+            raise ValueError(f"energy computation exceeded {COMPUTE_BUDGET_S:g} s; nothing was written")
+        a, b = windows.pop()
+        result = store.query(series, a, b, tier="raw")
         if result["truncated"]:
-            raise ValueError(f"{series}: the store cut the query; energy was not computed")
+            if b - a <= MINUTE:
+                raise ValueError(f"{series}: more samples per minute than the store returns; energy was not computed")
+            middle = (a + b) / 2
+            windows += [(a, middle), (middle, b)]
+            continue
         for line in result["lines"]:
             key = telemetry.canonical_labels(line["labels"])
-            if len(key) > MAX_LABELS:
-                raise ValueError(f"{series}: a label set longer than {MAX_LABELS} characters; energy was not computed")
-            entry = lines.setdefault(key, {"labels": line["labels"], "units": {}, "seen": set()})
-            for t, avg, mx, _mn, n, _sum, _last, coverage in line["points"]:
-                t = int(t)
-                if not n or t < _floor(a, step) or t > b:
-                    continue
-                entry["seen"].add(_floor(t, QUARTER))
-                if coverage is None or (cutoff is not None and t < cutoff):
-                    continue                    # no sampling interval recorded, or before a reset
-                observed = min(1.0, coverage) * step
-                if integrate:
-                    intervals = verified.intervals(t, t + step)
-                    if intervals == () or not _one_cadence(observed, n, step, intervals):
-                        continue
-                entry["units"][t] = (avg, observed, mx, n, step)
-    # The plainest label set first: of two lines for one domain, the one with extra labels is the duplicate.
-    return sorted(lines.values(), key=lambda e: (len(e["labels"]), telemetry.canonical_labels(e["labels"])))
+            entry = out.setdefault(key, (line["labels"], {}))
+            for t, value, *_rest, interval in line["points"]:
+                entry[1][t] = (value, interval)
+    return out
 
 
-def _power(store, start, end, now, cutoff, verified):
-    """{(machine, domain): {"labels", "counted", "units": {u: (wh, observed, max, step)}}}."""
-    domains, gpu_machines = {}, set()
+def _units(samples, cutoff):
+    """{minute: (value x interval sum, observed s, max value, count)} of samples that carry their interval and come
+    after the reset cutoff. A sample stands for exactly the interval it was taken at (as recorded with it), so the
+    energy of a unit is the exact interval-weighted sum; samples without a recorded interval are not integrable."""
+    units = {}
+    for t, (value, interval) in samples.items():
+        if interval is None or interval <= 0 or (cutoff is not None and t <= cutoff):
+            continue
+        u = _floor(t, MINUTE)
+        weighted, observed, top, count = units.get(u, (0.0, 0.0, None, 0))
+        units[u] = (weighted + value * interval, observed + interval, value if top is None else max(top, value), count + 1)
+    return units
+
+
+def _seen(store, series, start, end):
+    """{labels key: (labels, set of quarters with samples)} from the 15-minute tier, unfiltered: observer
+    expectations never depend on resets or on which samples are integrable."""
+    out = {}
+    for line in store.query(series, start, end, tier="m15")["lines"]:
+        quarters = {int(p[0]) for p in line["points"] if p[4]}
+        out[telemetry.canonical_labels(line["labels"])] = (line["labels"], quarters, line["points"])
+    return out
+
+
+def _power(store, start, end, now, cutoff, deadline):
+    """{(machine, domain): {"labels", "counted", "units": {minute: (wh, observed, max)}, "seen": quarters}}."""
+    lines = {}
     for series in (GPU_POWER, CPU_POWER):
-        for line in _read(store, series, start, end, now, cutoff, verified):
-            labels = line["labels"]
-            machine = labels.get("machine")
-            if not machine:
-                continue
-            if series == GPU_POWER:
-                gpu_machines.add(machine)
-            domain = _domain(series, labels)
-            duplicate = (machine, domain) in domains
-            if duplicate:
-                n = 2
-                while (machine, f"{domain}#{n}") in domains:
-                    n += 1
-                domain = f"{domain}#{n}"
-            units = {u: (avg * observed / HOUR, observed, mx, step)
-                     for u, (avg, observed, mx, _n, step) in line["units"].items()}
-            domains[(machine, domain)] = {"labels": labels, "units": units, "seen": line["seen"],
-                                          "duplicate": duplicate}
+        _admit(store, series)
+        seen = _seen(store, series, start - INVENTORY_S, end)
+        samples = _samples(store, series, start, end, deadline)
+        for key in set(seen) | set(samples):
+            labels = (samples.get(key) or seen.get(key))[0]
+            lines[(series, key)] = {"series": series, "labels": labels,
+                                    "seen": seen.get(key, (None, set()))[1],
+                                    "units": _units(samples.get(key, (None, {}))[1], cutoff)}
+    domains, gpu_machines = {}, set()
+    # The plainest label set first: of two lines for one domain, the one with extra labels is the duplicate.
+    for (series, key), line in sorted(lines.items(), key=lambda item: (item[0][0], len(item[1]["labels"]), item[0][1])):
+        machine = line["labels"].get("machine")
+        if not machine:
+            continue
+        if series == GPU_POWER:
+            gpu_machines.add(machine)
+        domain = _domain(series, line["labels"])
+        duplicate = (machine, domain) in domains
+        if duplicate:
+            n = 2
+            while (machine, f"{domain}#{n}") in domains:
+                n += 1
+            domain = f"{domain}#{n}"
+        units = {u: (weighted / HOUR, observed, top) for u, (weighted, observed, top, _n) in line["units"].items()}
+        domains[(machine, domain)] = {"labels": line["labels"], "units": units, "seen": line["seen"],
+                                      "duplicate": duplicate}
     # GPU presence also comes from the series index (all time), so the overlap rule never depends on the window.
-    for line in store.query(GPU_POWER, now, now, tier="m15")["lines"]:         # bounded: _read checked GPU_POWER
+    for line in store.query(GPU_POWER, now, now, tier="m15")["lines"]:
         if line["labels"].get("machine"):
             gpu_machines.add(line["labels"]["machine"])
     for (machine, domain), info in domains.items():
@@ -387,26 +309,35 @@ def _power(store, start, end, now, cutoff, verified):
     return domains
 
 
-def _tokens(store, start, end, now, cutoff, verified):
+def _tokens(store, start, end, cutoff, deadline):
     """Token observers grouped by (profile, replica) across engine instances (a restart is the same observer):
-    {group: {unit: (tokens, observed)}} where the tokens of every instance add up (counts are exact) and the
-    observed time is that of the best-covered single instance (instances may overlap, so their times never add);
-    the quarters each group reported in (unfiltered); and the quarters in which its engine reported up."""
+    {group: {minute: (tokens, observed)}} where the tokens of every instance add up (exact counts) and the observed
+    time is that of the best-covered single instance (instances may overlap, so their times never add); the quarters
+    each group reported in; and the quarters in which its engine reported up."""
+    for series in (TOKENS, ENGINE_UP):
+        _admit(store, series)
     groups, seen = {}, {}
-    for line in _read(store, TOKENS, start, end, now, cutoff, verified, integrate=False):
-        key = (line["labels"].get("profile", ""), line["labels"].get("replica", ""))
-        units = groups.setdefault(key, {})
-        seen.setdefault(key, set()).update(line["seen"])
-        for u, (avg, observed, _mx, n, step) in line["units"].items():
-            tokens, best = units.get(u, (0.0, 0.0))
-            units[u] = (tokens + avg * n, max(best, observed))
+    for key, (labels, quarters, _points) in _seen(store, TOKENS, start - TOKEN_LOOKBACK_S, end).items():
+        seen.setdefault((labels.get("profile", ""), labels.get("replica", "")), set()).update(quarters)
+    for key, (labels, samples) in _samples(store, TOKENS, start, end, deadline).items():
+        group = (labels.get("profile", ""), labels.get("replica", ""))
+        units = groups.setdefault(group, {})
+        seen.setdefault(group, set())
+        # Token deltas are counts: sum the values (not value x interval) per minute.
+        per_minute = {}
+        for t, (value, interval) in samples.items():
+            if interval is None or interval <= 0 or (cutoff is not None and t <= cutoff):
+                continue
+            u = _floor(t, MINUTE)
+            tokens, observed = per_minute.get(u, (0.0, 0.0))
+            per_minute[u] = (tokens + value, observed + interval)
+        for u, (tokens, observed) in per_minute.items():
+            total, best = units.get(u, (0.0, 0.0))
+            units[u] = (total + tokens, max(best, observed))
     up = {}
-    for line in _read(store, ENGINE_UP, start, end, now, None, verified, integrate=False):
-        key = (line["labels"].get("profile", ""), line["labels"].get("replica", ""))
-        marks = up.setdefault(key, set())
-        for u, (_avg, _observed, mx, _n, _step) in line["units"].items():
-            if mx >= 1:
-                marks.add(_floor(u, QUARTER))
+    for key, (labels, _quarters, points) in _seen(store, ENGINE_UP, start, end).items():
+        marks = up.setdefault((labels.get("profile", ""), labels.get("replica", "")), set())
+        marks.update(int(p[0]) for p in points if p[4] and p[2] >= 1)
     return groups, seen, up
 
 
@@ -424,53 +355,33 @@ def _reported_within(quarters, low, high):
 
 
 # -- the computation -----------------------------------------------------------------------------------------------
-def plan(store, now, cadence=None, finalize_all=False, stable=True, deadline=None):
-    """The guarded statements of one computation (not executed) and a summary. ``cadence`` is this process's
-    sampler intervals (None: no sampler here, so this run cannot extend verified time); ``stable`` False when the
-    cadence watch saw a change since the previous run."""
+def plan(store, now, finalize_all=False, deadline=None):
+    """The guarded statements of one computation (not executed) and a summary."""
     deadline = deadline or time.monotonic() + COMPUTE_BUDGET_S
     _ensure(store)
     state = _state(store)
     revision = state.get("revision", 0)
     g = (revision,)
     statements = []
-
-    spans = _load_spans(store)
-    if cadence is not None:
-        fingerprint = _fingerprint(cadence)
-        previous, since = state.get("cadence"), state.get("cadence_ts")
-        text = _intervals_text(cadence)
-        intervals = tuple(json.loads(text))
-        if stable and previous == fingerprint and since is not None and now > since:
-            if spans and spans[-1][1] == since and spans[-1][2] == intervals:
-                statements.append((f"UPDATE energy_verified SET end=? WHERE start=? AND {GUARD}", (now, spans[-1][0], *g)))
-                spans[-1] = (spans[-1][0], now, intervals)
-            else:
-                statements.append(("INSERT OR REPLACE INTO energy_verified(start, end, intervals) "
-                                   f"SELECT ?, ?, ? WHERE {GUARD}", (since, now, text, *g)))
-                spans.append((since, now, intervals))
-        statements += [_set("cadence", fingerprint, revision), _set("cadence_ts", now, revision)]
-    statements.append((f"DELETE FROM energy_verified WHERE end < ? AND {GUARD}", (now - KEEP_ROWS_S, *g)))
-    verified = Verified(spans)
-
-    cutoff = int(state["cutoff"]) if state.get("cutoff") is not None else None
+    cutoff = state.get("cutoff")
     oldest = _floor(now - BACKFILL_S, QUARTER) + QUARTER
     stored = int(state["final_through"]) if state.get("final_through") is not None else None
     first = max(oldest, stored) if stored is not None else oldest
-    lost = verified.overlap(stored, oldest) if stored is not None and stored < oldest else 0.0
     current = _floor(now, QUARTER)
-    domains = _power(store, first - INVENTORY_S, now, now, cutoff, verified)
-    groups, token_seen, up = _tokens(store, first - TOKEN_LOOKBACK_S, now, now, cutoff, verified)
+    # Samples carry their interval only in the raw tier (8 h). Quarters older than that keep the rows computed
+    # while their samples were there; only newer quarters are recomputed.
+    recompute = max(first, _floor(now - RAW_KEEP_S, QUARTER) + QUARTER)
+    domains = _power(store, recompute, now, now, cutoff, deadline)
+    groups, token_seen, up = _tokens(store, recompute, now, cutoff, deadline)
     zone = zone_of(store)
     price = price_of(store)
 
     by_quarter = {key: _by_quarter(info["units"]) for key, info in domains.items()}
-    # Expected observers come from every quarter with samples, before reset and verification filters.
     reported = {key: sorted(info["seen"]) for key, info in domains.items()}
     token_reported = {key: sorted(quarters) for key, quarters in token_seen.items()}
 
     rows, pairs = [], []
-    for q in range(first, current + 1, QUARTER):
+    for q in range(recompute, current + 1, QUARTER):
         if time.monotonic() > deadline:
             raise ValueError(f"energy computation exceeded {COMPUTE_BUDGET_S:g} s; nothing was written")
         if len(rows) >= MAX_ROWS:
@@ -494,43 +405,49 @@ def plan(store, now, cadence=None, finalize_all=False, stable=True, deadline=Non
         for u in sorted({u for key in inventory for u in by_quarter[key].get(q, ())}):
             power = [domains[key]["units"].get(u) for key in inventory]
             # Complete observation by every expected observer: the paired seconds are common seconds.
-            if any(v is None or v[1] < v[3] - 1e-6 for v in power) or len({v[3] for v in power}) != 1:
+            if any(v is None or v[1] < MINUTE - 1e-6 for v in power):
                 continue
-            step = power[0][3]
             tokens = [groups.get(key, {}).get(u) for key in engines]
-            if any(t is None or t[1] < step - 1e-6 for t in tokens):
+            if any(t is None or t[1] < MINUTE - 1e-6 for t in tokens):
                 continue
             wh_both += sum(v[0] for v in power)
             tokens_both += sum(t[0] for t in tokens)
-            both_s += step
+            both_s += MINUTE
         if both_s:
             pairs.append((q, wh_both, tokens_both, both_s))
-
     if time.monotonic() > deadline:
         raise ValueError(f"energy computation exceeded {COMPUTE_BUDGET_S:g} s; nothing was written")
-    limit = None if verified.until is None else min(now, verified.until, current + QUARTER)
-    if finalize_all:
-        final_through = current + QUARTER
-    elif limit is None:
-        final_through = first
-    else:
-        final_through = max(first, _floor(limit - GRACE_S, QUARTER))
+
+    final_through = current + QUARTER if finalize_all else max(first, min(_floor(now - GRACE_S, QUARTER), current + QUARTER))
+    # Rows of quarters before `recompute` that are now final come from the table (computed while samples existed).
+    kept = store.execute("SELECT q, machine, domain, wh, observed_s, peak_w, counted FROM energy_quarters "
+                         "WHERE q >= ? AND q < ?", (first, recompute)) if recompute > first else []
+    kept_pairs = store.execute("SELECT q, wh_both, tokens_both, both_s FROM energy_pairs WHERE q >= ? AND q < ?",
+                               (first, recompute)) if recompute > first else []
     monthly, monthly_tokens = {}, {}
-    for q, machine, _domain_id, wh, observed, _peak, counted in rows:
+    for q, machine, _domain_id, wh, observed, _peak, counted in [*kept, *rows]:
         if counted and q < final_through:
             entry = monthly.setdefault((zone.month(q), machine), [0.0, 0.0])
             entry[0] += wh
             entry[1] += observed
-    for q, wh_both, tokens_both, both_s in pairs:
+    for q, wh_both, tokens_both, both_s in [*kept_pairs, *pairs]:
         if q < final_through:
             entry = monthly_tokens.setdefault(zone.month(q), [0.0, 0.0, 0.0])
             entry[0] += wh_both
             entry[1] += tokens_both
             entry[2] += both_s
+    missed = 0
+    if recompute > first:
+        # Quarters whose samples aged out of the raw tier before any run integrated them: reported once.
+        computed = {row[0] for row in kept}
+        sampled = set()
+        for info in domains.values():
+            sampled.update(q for q in info["seen"] if first <= q < recompute)
+        missed = len(sampled - computed)
 
     statements += [
-        (f"DELETE FROM energy_quarters WHERE q >= ? AND q <= ? AND {GUARD}", (first, current, *g)),
-        (f"DELETE FROM energy_pairs WHERE q >= ? AND q <= ? AND {GUARD}", (first, current, *g)),
+        (f"DELETE FROM energy_quarters WHERE q >= ? AND q <= ? AND {GUARD}", (recompute, current, *g)),
+        (f"DELETE FROM energy_pairs WHERE q >= ? AND q <= ? AND {GUARD}", (recompute, current, *g)),
         (f"DELETE FROM energy_quarters WHERE q < ? AND {GUARD}", (now - KEEP_ROWS_S, *g)),
         (f"DELETE FROM energy_pairs WHERE q < ? AND {GUARD}", (now - KEEP_ROWS_S, *g)),
     ]
@@ -540,13 +457,12 @@ def plan(store, now, cadence=None, finalize_all=False, stable=True, deadline=Non
                     (*row, *g)) for row in pairs]
     for (machine, domain), info in sorted(domains.items()):
         if info["units"]:
-            step = next(iter(info["units"].values()))[3]
             statements.append((
                 "INSERT INTO energy_domains(machine, domain, counted, first_seen, last_seen) "
                 f"SELECT ?, ?, ?, ?, ? WHERE {GUARD} ON CONFLICT(machine, domain) DO UPDATE SET "
                 "counted=excluded.counted, first_seen=MIN(first_seen, excluded.first_seen), "
                 "last_seen=MAX(last_seen, excluded.last_seen)",
-                (machine, domain, int(info["counted"]), min(info["units"]), max(info["units"]) + step, *g)))
+                (machine, domain, int(info["counted"]), min(info["units"]), max(info["units"]) + MINUTE, *g)))
     for (month, machine), (wh, observed) in sorted(monthly.items()):
         cost = wh / 1000 * price["price_per_kwh"] if price else None
         statements.append((
@@ -568,9 +484,9 @@ def plan(store, now, cadence=None, finalize_all=False, stable=True, deadline=Non
             "tokens_both=tokens_both+excluded.tokens_both, both_s=both_s+excluded.both_s",
             (month, wh_both, tokens_both, both_s, *g)))
     statements.append(_set("final_through", final_through, revision))
-    summary = {"from": first, "quarters": (current - first) // QUARTER + 1, "rows": len(rows), "pairs": len(pairs),
-               "archived_quarters": max(0, (final_through - first) // QUARTER), "final_through": final_through,
-               "verified_until": verified.until, "revision": revision, "lost_s": lost}
+    summary = {"from": first, "recomputed_from": recompute, "quarters": (current - first) // QUARTER + 1,
+               "rows": len(rows), "pairs": len(pairs), "archived_quarters": max(0, (final_through - first) // QUARTER),
+               "final_through": final_through, "revision": revision, "missed_quarters": missed}
     return statements, summary
 
 
@@ -580,8 +496,8 @@ def _set(key, value, revision):
 
 
 def _bump(revision, new):
-    """The last statement of a run: the revision moves to a fresh random value, so a run can tell afterwards whether
-    its own guarded statements were the ones applied."""
+    """The last statement of a run: the revision moves to a fresh random value, so readers can tell a run committed
+    while they read."""
     return ("UPDATE energy_state SET value=? WHERE key='revision' AND value=?", (new, revision))
 
 
@@ -600,38 +516,35 @@ def _applied(store, token):
     return found
 
 
-def compute(store, now, cadence=None, stable=True):
+def compute(store, now):
     """One computation: recompute the quarters not yet archived and archive the final ones. A run that lost a race
     with another process changes nothing (``applied`` false); the next run redoes it."""
     deadline = time.monotonic() + COMPUTE_BUDGET_S
-    statements, summary = plan(store, now, cadence, stable=stable, deadline=deadline)
+    statements, summary = plan(store, now, deadline=deadline)
     if time.monotonic() > deadline:
         raise ValueError(f"energy computation exceeded {COMPUTE_BUDGET_S:g} s; nothing was written")
     new, token = _new_revision(), secrets.token_hex(16)
     store.transaction(statements + [_receipt(token, summary["revision"], now), _bump(summary["revision"], new)])
     summary["applied"] = _applied(store, token)
-    if summary["applied"] and summary["lost_s"]:
-        store.event("energy", "warning", f"energy for {summary['lost_s'] / 3600:.1f} h of verified sampling time could "
-                    "not be computed: the samples were no longer retained")
+    if summary["applied"] and summary["missed_quarters"]:
+        store.event("energy", "warning", f"{summary['missed_quarters']} quarter hours of power samples were never "
+                    "integrated: no energy run read them before they left the raw tier")
     return summary
 
 
 def collect(api, now):
-    store = telemetry.open_store(api)
-    since = _state(store).get("cadence_ts") if _has_tables(store) else None
-    stable = since is None or not _changed_between(api, since, now)
-    compute(store, now, cadence_of(api), stable=stable)
+    compute(telemetry.open_store(api), now)
     return []
 
 
-def reset_store(store, now, cadence=None):
-    """Archive every quarter not yet archived (the current partial one too), then clear the quarter rows; only units
-    starting after the minute that held the reset are integrated afterwards, so nothing is counted twice."""
-    statements, summary = plan(store, now, cadence, finalize_all=True, stable=False)
+def reset_store(store, now):
+    """Archive every quarter not yet archived (the current partial one too), then clear the quarter rows; only
+    samples taken after the reset instant are integrated afterwards, so nothing is counted twice."""
+    statements, summary = plan(store, now, finalize_all=True)
     revision, new, token = summary["revision"], _new_revision(), secrets.token_hex(16)
     g = (revision,)
     statements += [(f"DELETE FROM energy_quarters WHERE {GUARD}", g), (f"DELETE FROM energy_pairs WHERE {GUARD}", g),
-                   _set("reset_at", now, revision), _set("cutoff", _floor(now, MINUTE) + MINUTE, revision),
+                   _set("reset_at", now, revision), _set("cutoff", now, revision),
                    _set("final_through", _floor(now, QUARTER), revision), _receipt(token, revision, now),
                    _bump(revision, new)]
     store.transaction(statements)
@@ -735,7 +648,7 @@ def reset(api, arguments):
     if arguments.get("confirm") != "reset":
         raise ValueError('reset needs exactly {"confirm": "reset"}')
     store = telemetry.open_store(api)
-    return api.document("energy-reset", **reset_store(store, api.clock(), cadence_of(api)))
+    return api.document("energy-reset", **reset_store(store, api.clock()))
 
 
 # -- the energy document -------------------------------------------------------------------------------------------
@@ -988,7 +901,7 @@ def _energy_fields(api, store, zone, name):
                 bucket="hour" if name == "24h" else "day", machines=machines_out,
                 machine_order=order, buckets=by_bucket, totals=totals, cost=cost, efficiency=efficiency,
                 archive=archive, archive_more=more, price=price, reset_at=reset_at,
-                verified_until=state.get("cadence_ts"), why=why)
+                why=why)
 
 
 # -- the archive -----------------------------------------------------------------------------------------------------
@@ -1119,7 +1032,7 @@ def _regroup(points, step, native, start, end):
     """[[t, avg, max]] in buckets of `step` seconds from start's bucket on (averages weighted by sample count, the
     maximum kept); at most ceil((end - start) / step) + 1 points."""
     groups = {}
-    for t, avg, mx, _mn, n, _sum, _last, _cov in points:
+    for t, avg, mx, _mn, n, *_rest in points:
         if not n or t < _floor(start, native):
             continue
         key = _floor(t, step)
@@ -1185,7 +1098,7 @@ def thermals_document(api, query):
                 # Runs of directly adjacent sampled buckets whose last state is non-zero; a missing or zero bucket
                 # ends a run (never bridged), and runs are clipped to the range.
                 periods, current = [], None
-                for t, _avg, _mx, _mn, n, _sum, last, _cov in line["points"]:
+                for t, _avg, _mx, _mn, n, _sum, last, *_rest in line["points"]:
                     if not n or t < _floor(start, native):
                         continue
                     if last:
@@ -1255,4 +1168,3 @@ def register(reg):
     reg.post("energy/thresholds", set_thresholds, audited=True)
     reg.post("energy/reset", reset, audited=True)
     reg.collector("energy", collect, interval=60)
-    reg.collector("energy-cadence", watch, interval=WATCH_INTERVAL_S)

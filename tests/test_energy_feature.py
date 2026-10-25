@@ -52,11 +52,17 @@ class FakeAPI:
 NOW = datetime(2027, 1, 15, 10, 0, tzinfo=timezone.utc).timestamp()
 
 
-def feed(store, points, start, end, step=60, interval=None):
-    """Record points(t) -> [(series, labels, value[, kind])] every `step` seconds in [start, end)."""
+def feed(store, points, start, end, step=60, interval=None, compute_every=None):
+    """Record points(t) -> [(series, labels, value[, kind])] every `step` seconds in [start, end); with
+    ``compute_every`` the energy computation runs on that schedule meanwhile, as the collector would (the raw tier
+    keeps samples for 8 h only)."""
     t = start
+    last = start
     while t < end:
         store.record(points(t), ts=t, interval=interval or step)
+        if compute_every and t - last >= compute_every:
+            energy.compute(store, t)
+            last = t
         t += step
 
 
@@ -75,8 +81,6 @@ class Base(unittest.TestCase):
         self.addCleanup(self.store.close)
         self.api = FakeAPI(self.store, self.clock)
         energy._thermal_cache.clear()
-        # Stand for earlier collector runs that saw one sampling cadence throughout (cadence tests clear this).
-        energy._mark_verified(self.store, NOW - 60 * 86400, NOW + 60 * 86400)
 
     def doc(self, **query):
         return energy.energy_document(self.api, query)
@@ -128,73 +132,54 @@ class IntegrationTests(Base):
         self.assertAlmostEqual(machine["observed_s"], 600.0)
         self.assertAlmostEqual(machine["wh"], 200.0 * 600 / HOUR)
 
-    def test_history_beyond_the_minute_tier_uses_quarters(self):
-        self.clock.now = NOW
+    def test_quarters_older_than_the_raw_tier_keep_their_rows(self):
         gpu = {"machine": "halo-1", "device": "0"}
-        feed(self.store, lambda t: [(GPU, gpu, 90.0)], NOW - 72 * HOUR, NOW - 70 * HOUR)
+        feed(self.store, lambda t: [(GPU, gpu, 90.0)], NOW - 12 * HOUR, NOW - 10 * HOUR, compute_every=HOUR)
+        energy.compute(self.store, NOW - 10 * HOUR)
+        feed(self.store, lambda t: [(GPU, gpu, 90.0)], NOW - HOUR, NOW)            # raw of 10-12 h ago is gone now
         energy.compute(self.store, NOW)
-        d = self.doc(range="7d")
-        self.assertAlmostEqual(d["totals"]["wh"], 180.0)
-        self.assertTrue(all(row[4] == QUARTER for row in energy_rows(self.store)))
+        self.assertAlmostEqual(self.doc()["totals"]["wh"], 270.0)
+        self.assertAlmostEqual(archived(self.store), 90.0 * 2.75)
+        self.assertEqual(self.store.events(category="energy"), [])
+
+    def test_samples_that_left_the_raw_tier_unread_are_reported(self):
+        feed(self.store, lambda t: [(GPU, {"machine": "halo-1", "device": "0"}, 90.0)], NOW - 12 * HOUR, NOW - 10 * HOUR)
+        energy.compute(self.store, NOW - 13 * HOUR)                            # a run before: the cursor is old
+        summary = energy.compute(self.store, NOW)
+        self.assertEqual(summary["missed_quarters"], 8)
+        self.assertEqual(self.store.events(category="energy")[0]["severity"], "warning")
 
 
-class CadenceTests(Base):
-    def setUp(self):
-        super().setUp()
-        self.store.execute("DELETE FROM energy_verified")
-
-    def test_only_time_between_runs_with_one_cadence_is_integrated(self):
+class ExactnessTests(Base):
+    def test_any_mix_of_cadences_integrates_exactly(self):
         gpu = {"machine": "halo-1", "device": "0"}
-        feed(self.store, lambda t: [(GPU, gpu, 100.0)], NOW - 4 * HOUR, NOW - 2.5 * HOUR, step=10)
-        feed(self.store, lambda t: [(GPU, gpu, 100.0)], NOW - 2.5 * HOUR, NOW, step=2)
-        for t, cadence in ((NOW - 4 * HOUR, {"fleet": 10.0}), (NOW - 3 * HOUR, {"fleet": 10.0}),
-                           (NOW - 2 * HOUR, {"fleet": 2.0}), (NOW - HOUR, {"fleet": 2.0}), (NOW, {"fleet": 2.0})):
-            energy.compute(self.store, t, cadence)
-        # Verified: [-4 h, -3 h] and [-2 h, now]; the hour in which the cadence changed is not integrated.
+        t = NOW - 600
+        self.store.record([(GPU, gpu, 100.0)], ts=t, interval=2)                  # 100 W for 2 s
+        self.store.record([(GPU, gpu, 200.0)], ts=t + 2, interval=10)             # 200 W for 10 s
+        energy.compute(self.store, NOW)
         machine = self.doc()["machines"][0]
-        self.assertAlmostEqual(machine["observed_s"], 3 * HOUR)
-        self.assertAlmostEqual(machine["wh"], 300.0)
-        self.assertEqual(self.store.execute("SELECT start, end FROM energy_verified ORDER BY start"),
-                         [(NOW - 4 * HOUR, NOW - 3 * HOUR), (NOW - 2 * HOUR, NOW)])
+        self.assertAlmostEqual(machine["wh"], (100 * 2 + 200 * 10) / HOUR)        # 0.6111 Wh
+        self.assertAlmostEqual(machine["observed_s"], 12.0)
 
-    def test_a_cadence_changed_and_restored_between_two_runs_is_not_integrated(self):
+    def test_a_cadence_changed_and_restored_is_exact(self):
         gpu = {"machine": "halo-1", "device": "0"}
-        t = NOW - HOUR
+        t, expected, observed = NOW - HOUR, 0.0, 0.0
         while t < NOW:
-            changed = NOW - 40 * 60 <= t < NOW - 30 * 60 + 30        # 10 s cadence for a while, then back to 2 s
-            self.store.record([(GPU, gpu, 200.0 if changed else 100.0)], ts=t, interval=10 if changed else 2)
-            t += 10 if changed else 2
-        energy.compute(self.store, NOW - HOUR, {"fleet": 2.0})
-        energy.compute(self.store, NOW, {"fleet": 2.0})                     # both runs saw 2 s
+            changed = NOW - 40 * 60 <= t < NOW - 30 * 60 + 30
+            value, interval = (200.0, 10) if changed else (100.0, 2)
+            self.store.record([(GPU, gpu, value)], ts=t, interval=interval)
+            expected += value * interval / HOUR
+            observed += interval
+            t += interval
+        energy.compute(self.store, NOW)
         machine = self.doc()["machines"][0]
-        # Only minutes sampled entirely at 2 s count: the 10 s minutes and the mixed one are unobserved.
-        self.assertAlmostEqual(machine["observed_s"], HOUR - 11 * 60)
-        self.assertAlmostEqual(machine["wh"], 100.0 * (HOUR - 11 * 60) / HOUR)
+        self.assertAlmostEqual(machine["wh"], expected)
+        self.assertAlmostEqual(machine["observed_s"], observed)
 
-    def test_the_cadence_watch_breaks_verification_on_a_change_and_its_undo(self):
-        gpu = {"machine": "halo-1", "device": "0"}
-        feed(self.store, lambda t: [(GPU, gpu, 100.0)], NOW - HOUR, NOW)
-        intervals = {"fleet": 60.0}
-        self.api.sampler = types.SimpleNamespace(snapshot=lambda: {k: {"interval_s": v} for k, v in intervals.items()})
-        energy.collect(self.api, NOW - HOUR)
-        energy.watch(self.api, NOW - HOUR + 1)
-        intervals["fleet"] = 10.0
-        energy.watch(self.api, NOW - 30 * 60)                               # changed ...
-        intervals["fleet"] = 60.0
-        energy.watch(self.api, NOW - 30 * 60 + 1)                           # ... and restored before the next run
-        energy.collect(self.api, NOW)
-        self.assertEqual(self.store.execute("SELECT COUNT(*) FROM energy_verified")[0][0], 0)
-        self.assertEqual(energy_rows(self.store), [])                               # nothing integrated
-
-    def test_history_before_the_first_run_and_runs_without_a_sampler_are_not_integrated(self):
-        gpu = {"machine": "halo-1", "device": "0"}
-        feed(self.store, lambda t: [(GPU, gpu, 100.0)], NOW - 2 * HOUR, NOW)
-        summary = energy.compute(self.store, NOW - HOUR, None)                      # a CLI run: vouches for nothing
-        self.assertIsNone(summary["verified_until"])
-        energy.compute(self.store, NOW - HOUR, {"fleet": 60.0})
-        energy.compute(self.store, NOW, {"fleet": 60.0})
-        self.assertAlmostEqual(self.doc()["machines"][0]["wh"], 100.0)               # only the last hour
-        self.assertEqual(self.store.execute("SELECT COUNT(*) FROM energy_monthly")[0][0], 1)
+    def test_samples_without_a_recorded_interval_are_not_integrated(self):
+        self.store.record([(GPU, {"machine": "halo-1", "device": "0"}, 100.0)], ts=NOW - 120)   # no interval known
+        energy.compute(self.store, NOW)
+        self.assertEqual(energy_rows(self.store), [])
 
 
 class DomainTests(Base):
@@ -240,6 +225,7 @@ class DomainTests(Base):
     def test_missing_domain_keeps_average_unavailable_and_lowers_coverage(self):
         feed(self.store, lambda t: [(GPU, {"machine": "halo-1", "device": "0"}, 100.0),
                                     (GPU, {"machine": "halo-1", "device": "1"}, 50.0)], NOW - 30 * HOUR, NOW - 29 * HOUR)
+        energy.compute(self.store, NOW - 29 * HOUR)
         feed(self.store, lambda t: [(GPU, {"machine": "halo-1", "device": "0"}, 100.0)], NOW - HOUR, NOW)
         energy.compute(self.store, NOW)
         machine = self.doc()["machines"][0]
@@ -273,7 +259,6 @@ class ArchiveTests(Base):
             first, second = Store(path, clock=self.clock), Store(path, clock=self.clock)
             try:
                 feed(first, lambda t: [(GPU, {"machine": "halo-1", "device": "0"}, 100.0)], NOW - 2 * HOUR, NOW)
-                energy._mark_verified(first, NOW - 86400, NOW + 86400)
                 stale, summary = energy.plan(first, NOW)
                 self.assertTrue(energy.compute(second, NOW)["applied"])
                 before = (archived(first), energy_rows(first), energy._state(first))
@@ -323,7 +308,7 @@ class InventoryTests(Base):
         self.assertEqual(by["halo-2"]["why"]["wh"], energy.NO_SAMPLES)
         self.assertIsNone(by["halo-2"]["domains"][0]["wh"])
         self.assertEqual(by["halo-2"]["coverage"], 0.0)                              # still expected after reset
-        self.assertAlmostEqual(d["totals"]["coverage"], 0.5)
+        self.assertAlmostEqual(d["totals"]["coverage"], (HOUR - 60) / (2 * HOUR))
         self.assertEqual(d["totals"]["partial"], ["halo-2"])
         self.assertIsNone(d["totals"]["avg_w"])
         self.assertIn("partial", d["why"]["totals"])
@@ -418,7 +403,7 @@ class ResetTests(Base):
         self.assertLessEqual(total, 120 * 6.0 + 1e-6)
         d = self.doc()
         self.assertEqual(d["reset_at"], NOW - 20 * 60)
-        self.assertEqual(d["totals"]["since"], NOW - 20 * 60 + 60)
+        self.assertEqual(d["totals"]["since"], NOW - 20 * 60)
 
     def test_repeated_resets_within_one_quarter(self):
         gpu = {"machine": "halo-1", "device": "0"}
@@ -490,7 +475,8 @@ class ZoneTests(Base):
     def test_days_follow_a_fractional_offset_zone_exactly(self):
         self.store.put("prefs/ui", "timezone", "Asia/Kolkata")                       # UTC+05:30
         start = datetime(2027, 1, 12, 0, 0, tzinfo=timezone.utc).timestamp() - 5.5 * HOUR   # local midnight
-        feed(self.store, lambda t: [(GPU, {"machine": "halo-1", "device": "0"}, 100.0)], start, NOW, step=QUARTER, interval=60)
+        feed(self.store, lambda t: [(GPU, {"machine": "halo-1", "device": "0"}, 100.0)], start, NOW, step=QUARTER,
+             interval=60, compute_every=HOUR)
         # One 60 s sample per quarter: 100 W x 60 s = 1.6667 Wh per quarter, 96 quarters per local day.
         energy.compute(self.store, NOW)
         d = self.doc(range="7d")
@@ -505,9 +491,9 @@ class ZoneTests(Base):
         self.store.put("prefs/ui", "timezone", "Europe/Madrid")
         now = datetime(2026, 10, 27, 12, 0, tzinfo=zone).timestamp()
         self.clock.now = now
-        energy._mark_verified(self.store, now - 10 * 86400, now)
         start = datetime(2026, 10, 24, 0, 0, tzinfo=zone).timestamp()
-        feed(self.store, lambda t: [(GPU, {"machine": "halo-1", "device": "0"}, 100.0)], start, now, step=QUARTER, interval=60)
+        feed(self.store, lambda t: [(GPU, {"machine": "halo-1", "device": "0"}, 100.0)], start, now, step=QUARTER,
+             interval=60, compute_every=HOUR)
         energy.compute(self.store, now)
         days = {b["label"]: b for b in self.doc(range="7d")["buckets"]}
         self.assertAlmostEqual(days["2026-10-25"]["machines"]["halo-1"], 100 * 100 * 60 / HOUR)   # 25 h
@@ -540,13 +526,8 @@ class BoundsTests(Base):
             energy.collect(self.api, NOW)
         self.assertEqual(energy_rows(self.store), [])                                # refused whole, nothing written
 
-    def test_downtime_beyond_retention_is_reported(self):
-        self.store.execute("INSERT INTO energy_state(key, value) VALUES ('final_through', ?)", (NOW - 40 * 86400,))
-        summary = energy.compute(self.store, NOW)
-        self.assertGreater(summary["lost_s"], 9 * 86400)
-        self.assertEqual(self.store.events(category="energy")[0]["severity"], "warning")
-
     def test_archive_is_paged_and_thermal_output_is_capped(self):
+        energy._ensure(self.store)
         for i in range(26):
             self.store.execute("INSERT INTO energy_monthly VALUES (?, 'halo-1', 1000, 1, 0, NULL, NULL, 'UTC')",
                                (f"20{24 + i // 12:02d}-{i % 12 + 1:02d}",))
