@@ -1320,7 +1320,8 @@ def save(cluster, recipe_id, *, text=None, base=None, base_sha256=None, sets=(),
         raise RecipeError(f"recipe larger than {MAX_SAVE_BYTES // 1024} KiB")
     suffix = ".json" if text.lstrip().startswith("{") else ".toml"
     new_name = resolved.recipe["name"]
-    reader.NAME.fullmatch(new_name)
+    if not isinstance(new_name, str) or not reader.NAME.fullmatch(new_name):
+        raise RecipeError(f"recipe name {new_name!r}: expected {reader.NAME.pattern}")
     with _transaction(cluster) as root:
         current = _existing(root, recipe_id)
         for row in catalog(cluster):

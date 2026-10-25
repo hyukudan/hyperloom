@@ -182,6 +182,15 @@ class CatalogTests(unittest.TestCase):
 
 
 class WriteTests(unittest.TestCase):
+    def test_saved_name_is_checked(self):
+        # The reader in use (the core when installed) resolved the text; the saved name is still checked here.
+        with isolated():
+            resolved = mock.Mock(recipe={"name": "../evil"})
+            with mock.patch.object(service, "_resolve_text", return_value=resolved), \
+                    self.assertRaisesRegex(RecipeError, "recipe name '../evil'"):
+                service.save(None, "mine", text=copy_of(QWEN, "mine"))
+            self.assertFalse((service.user_dir() / "mine.toml").exists())
+
     def test_save_replace_delete_with_sha(self):
         with isolated() as env:
             first = service.save(None, "qwen3.8-flash-next.mine", text=copy_of(QWEN, "mine"))
