@@ -70,8 +70,8 @@ def seed(store, now):
                           ("endpoint_up", {"endpoint": "lab-engine"}, 0 if now - 2400 < t < now - 2100 else 1, "state"),
                           ("endpoint_up", {"endpoint": "spare"}, 0, "state"),
                           ("endpoint_generated_tokens", {"endpoint": "lab-engine"}, 180 + (t % 900) / 5, "delta"),
-                          ("endpoint_prompt_tokens", {"endpoint": "lab-engine"}, 900 + (t % 600), "delta")], ts=t, interval=endpoints.INTERVAL_S)
-        t += endpoints.INTERVAL_S
+                          ("endpoint_prompt_tokens", {"endpoint": "lab-engine"}, 900 + (t % 600), "delta")], ts=t, interval=60)
+        t += 60
 
 
 def patches(directory, now):
