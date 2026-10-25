@@ -1113,13 +1113,18 @@ class API:
 
     def _execute(self, action, args):
         if action in ("down", "cancel") and not args.get("job"):
-            # Any stop (detached or in process) while a switch runs cancels the switch too: it would otherwise
-            # go on and launch.
+            # Any stop (detached or in process) while a switch runs cancels the switch too: it would otherwise go
+            # on and launch. Only its marker: this stop names its own profile, and the switch's target is stopped
+            # only when that is the profile named here.
             with self._job_lock:
                 switches = [dict(j) for j in self._jobs.values()
                             if j["action"] == "recipes/deploy" and j["state"] == "running"]
-            for switch in switches:
-                self._cancel_deploy(switch)
+            cancels = [self._cancel_deploy(switch, stop_target=False) for switch in switches]
+            result = self._execute_action(action, args)
+            return dict(result, cancelled_switches=cancels) if cancels and isinstance(result, dict) else result
+        return self._execute_action(action, args)
+
+    def _execute_action(self, action, args):
         recipe_up = action == "up" and bool(args.get("recipe") or args.get("recipe_inputs"))
         if action == "recipes/probe":
             from hyperloom.recipes import service
@@ -1156,11 +1161,14 @@ class API:
             if args.get("job"):
                 with self._job_lock:
                     job = self._jobs.get(args["job"])
-                    if not job or job["action"] not in ("up", "recipes/deploy"):
-                        raise APIError("only an up or a recipes/deploy job can be cancelled; use down with a profile")
-                    if job["action"] == "recipes/deploy":
-                        return self._cancel_deploy(job)
-                    profile = job["arguments"]["profile"]
+                    job = dict(job) if job else None
+                if not job or job["action"] not in ("up", "recipes/deploy"):
+                    raise APIError("only an up or a recipes/deploy job can be cancelled; use down with a profile")
+                if job["state"] != "running":
+                    raise APIError(f"job {job['job']} has already {job['state']}: use down with a profile", 409)
+                if job["action"] == "recipes/deploy":
+                    return self._cancel_deploy(job)
+                profile = job["arguments"]["profile"]
             return self.orchestrate.down(profile)
         if action == "down":
             return self.orchestrate.down(args["profile"], force=args.get("force", False))
@@ -1207,19 +1215,25 @@ class API:
         self.remote.KnownHosts(self.orchestrate._known_hosts()).pin(mid, machine.http_address, machine.ssh_port, match)
         return {"machine": mid, "pinned": match.sha256_fingerprint, "algorithm": match.algorithm}
 
-    def _cancel_deploy(self, job):
-        """Cancel a switch at any step: its marker stops it before the next stop or the launch hand-over; the target
-        profile's own stop marker stops a launch already under way."""
+    def _cancel_deploy(self, job, *, stop_target=True):
+        """Cancel a switch, undoing only what it did. The marker is written first; then the deploy's progress says
+        how far it got. Before the hand-over (checks, stopping) the marker is all: the deploy stops at its next step
+        and up, at the hand-over, starts nothing; the profiles it already stopped stay stopped (the answer names
+        them). Once up owns the target ("launching", "done"), the target is stopped (``stop_target``), as it is the
+        profile this deploy started."""
         from hyperloom.recipes import service
         with service.configured(self.config_path):
             marker = service.cancel_marker(job["job"])
             marker.parent.mkdir(parents=True, exist_ok=True)
             marker.touch()
-            try:
-                profile = service.load_inputs(job["arguments"]["inputs"])[1]["intent"]["profile"]
-            except service.RecipeError:
-                return {"cancelled": job["job"], "stopped": None}
-        return {"cancelled": job["job"], "stopped": self.orchestrate.down(profile)}
+            progress = service.read_progress(job["job"]) or {"phase": "not started", "profile": None, "stopped": [],
+                                                             "stopping": None}
+        down = None
+        if stop_target and progress.get("phase") in ("launching", "done") and progress.get("profile"):
+            down = self.orchestrate.down(progress["profile"])
+        return {"cancelled": job["job"], "phase": progress.get("phase"), "profile": progress.get("profile"),
+                "stopped_by_deploy": progress.get("stopped") or [], "stopping": progress.get("stopping"),
+                "down": down, "summary": service.cancel_summary(progress, down=down)}
 
     def mutate(self, action, arguments):
         try:

@@ -16,6 +16,7 @@ from unittest import mock
 
 from hyperloom import cli, config, orchestrate, render
 from hyperloom.recipes import commands, launch, service, session
+from hyperloom.recipes.reader import RecipeError
 from hyperloom.web import recipes as recipe_web
 from hyperloom.web.api import API, APIError
 from hyperloom.web.server import create_server
@@ -419,7 +420,8 @@ class JobTests(unittest.TestCase):
                 job = self.wait(self.api.mutate("recipes/deploy", {"inputs": digest}))
         self.assertEqual(job["state"], "succeeded", job["error"])
         self.assertEqual(self.orch.up.call_args.kwargs["recipe"].digest, digest)
-        # Cancel during the switch: nothing more is stopped or started, and the target gets its stop marker.
+        # Cancel during the switch's checks: only its marker. Nothing is stopped (the running target is not touched)
+        # and nothing is started; the answer says so.
         gate = threading.Event()
         original = launch.prepare
 
@@ -431,7 +433,10 @@ class JobTests(unittest.TestCase):
             running = self.api.mutate("recipes/deploy", {"inputs": digest})
             cancelled = self.wait(self.api.mutate("cancel", {"job": running["job"]}))
             self.assertEqual(cancelled["state"], "succeeded", cancelled["error"])
-            self.assertEqual(self.orch.down.call_args.args, ("ds41-rtx",))
+            self.assertIn(cancelled["result"]["phase"], ("not started", "checks"))
+            self.assertIsNone(cancelled["result"]["down"])
+            self.assertIn("nothing was started; this deploy had stopped nothing", cancelled["result"]["summary"])
+            self.orch.down.assert_not_called()
             gate.set()
             finished = self.wait(running)
         self.assertIn("deploy cancelled", finished["error"])
@@ -458,6 +463,171 @@ class JobTests(unittest.TestCase):
             self.api.mutate("recipes/deploy", {"inputs": digest, "stop": "qwen-replicas"})
         with self.assertRaises(APIError):
             self.api.mutate("recipes/probe", {"profile": "qwen-replicas", "out": "../x"})
+
+
+class DeployCancelTests(unittest.TestCase):
+    """Cancel at every step of a deploy (the switch): before the hand-over only the marker (nothing the deploy did not
+    stop is stopped, nothing is started); after it, the target, the profile the deploy started. Each answer and the
+    deploy's error say what was stopped."""
+
+    def setUp(self):
+        self.env_context = isolated()
+        self.env = self.env_context.__enter__()
+        self.addCleanup(self.env_context.__exit__, None, None, None)
+        self.orch = mock.Mock(wraps=orchestrate)
+        self.orch.up.return_value = {"state": "running"}
+        self.orch.down.return_value = {"state": "stopped"}
+        self.api = API(self.env.config, orchestrator=self.orch, audit_path=self.env.root / "audit.jsonl")
+        user_ds()
+        self.source = session.saved_source(self.env.save_facts("ds", "deepseek-v4.1-flash", "ds41-rtx"))
+        with mock.patch.object(render, "router_policies", return_value=("routes",)):
+            self.digest = service.plan(orchestrate.load_cluster(self.env.config), "ds-user", "ds41-rtx",
+                                       source=self.source)["inputs"]
+        self.answers = []
+
+    def deploy(self, stop, *, prepare=None):
+        """Run the deploy job with these profiles running (and stopped by it); returns the finished job."""
+        running = {name: {"profile": name} for name in stop}
+        original = launch.prepare
+        with mock.patch.object(render, "router_policies", return_value=("routes",)), \
+                mock.patch.object(commands, "live_source", return_value=self.source), \
+                mock.patch.object(service, "_states", return_value=running), \
+                mock.patch.object(launch, "prepare", side_effect=lambda *a, **kw: (prepare and prepare(),
+                                                                                   original(*a, **kw))[1]):
+            job = self.api.mutate("recipes/deploy", {"inputs": self.digest, "stop": list(stop)})
+            end = time.monotonic() + 60
+            while self.api.read("jobs/" + job["job"])["state"] == "running":
+                self.assertLess(time.monotonic(), end)
+                time.sleep(0.02)
+            return self.api.read("jobs/" + job["job"])
+
+    def cancel(self, action="cancel", **arguments):
+        """What the portal's cancel (or a stop) does right now, from inside the deploy (the job is running)."""
+        if action == "cancel":
+            jid = next(j["job"] for j in self.api._jobs.values()
+                       if j["action"] == "recipes/deploy" and j["state"] == "running")
+            arguments = {"job": jid}
+        self.answers.append(self.api._execute(action, arguments))
+        return self.answers[-1]
+
+    def downs(self):
+        return [c.args[0] for c in self.orch.down.call_args_list]
+
+    def test_before_the_deploy_records_anything(self):
+        job = {"job": "ab12cd34", "action": "recipes/deploy", "state": "running", "arguments": {"inputs": self.digest}}
+        answer = self.api._cancel_deploy(job)
+        self.assertEqual((answer["phase"], answer["down"]), ("not started", None))
+        with service.configured(self.env.config), mock.patch.object(service, "_states", return_value={}):
+            with self.assertRaisesRegex(RecipeError, "deploy cancelled: cancelled before the launch: nothing was "
+                                                     "started; this deploy had stopped nothing"):
+                service.deploy(self.digest, [], orchestrate=self.orch, source=self.source, job="ab12cd34")
+            self.assertEqual(service.read_progress("ab12cd34")["phase"], "failed")
+            self.assertFalse(service.cancel_marker("ab12cd34").exists())
+        self.orch.down.assert_not_called()
+        self.orch.up.assert_not_called()
+
+    def test_during_the_checks_the_running_target_is_not_stopped(self):
+        # The review's case: ds41-rtx runs, a recipe is deployed on it, Cancel during the pre-stop checks.
+        finished = self.deploy(["ds41-rtx"], prepare=self.cancel)
+        self.assertEqual(finished["state"], "failed")
+        self.assertIn("deploy cancelled: cancelled before the launch: nothing was started; this deploy had stopped "
+                      "nothing", finished["error"])
+        self.assertEqual((self.answers[0]["phase"], self.answers[0]["profile"], self.answers[0]["down"]),
+                         ("checks", "ds41-rtx", None))
+        self.assertEqual(self.downs(), [])
+        self.orch.up.assert_not_called()
+
+    def test_while_stopping_only_what_it_stopped_is_reported(self):
+        def down(name, *a, **kw):
+            if name == "mm":
+                self.cancel()
+            return {"state": "stopped"}
+        self.orch.down.side_effect = down
+        finished = self.deploy(["mm", "qwen-replicas"])
+        self.assertEqual(self.downs(), ["mm"])                           # the second stop never happens
+        self.orch.up.assert_not_called()
+        answer = self.answers[0]
+        self.assertEqual((answer["phase"], answer["stopping"], answer["stopped_by_deploy"], answer["down"]),
+                         ("stopping", "mm", [], None))
+        self.assertIn("it was stopping mm", answer["summary"])
+        self.assertIn("nothing was started; this deploy had stopped mm (they stay stopped", finished["error"])
+
+    def test_at_the_hand_over_up_starts_nothing(self):
+        def up(*a, **kw):
+            self.cancel()                                                # before up's own check
+            if kw["cancelled"]():
+                raise orchestrate.OrchestrationError("profile stop requested")
+            return {"state": "running"}
+        self.orch.up.side_effect = up
+        finished = self.deploy(["qwen-replicas"])
+        self.assertEqual(self.downs(), ["qwen-replicas"])                # the deploy's own stop; never the target
+        self.assertEqual((self.answers[0]["phase"], self.answers[0]["down"]), ("stopping", None))
+        self.assertIn("deploy cancelled at the launch hand-over: nothing was started; this deploy had stopped "
+                      "qwen-replicas", finished["error"])
+
+    def test_at_the_hand_over_a_cancel_that_sees_launching_stops_the_target(self):
+        # The cancel lands between up recording "launching" and checking the marker: up starts nothing and the
+        # cancel sends the target its stop (harmless: nothing runs).
+        real = service._write_progress
+
+        def write(path, state):
+            real(path, state)
+            if state["phase"] == "launching":
+                self.cancel()
+        self.orch.up.side_effect = lambda *a, **kw: (_ for _ in ()).throw(
+            orchestrate.OrchestrationError("profile stop requested")) if kw["cancelled"]() else {"state": "running"}
+        with mock.patch.object(service, "_write_progress", side_effect=write):
+            finished = self.deploy(["qwen-replicas"])
+        self.assertEqual(self.downs(), ["qwen-replicas", "ds41-rtx"])
+        self.assertEqual(self.answers[0]["phase"], "launching")
+        self.assertIn("nothing was started", finished["error"])
+
+    def test_after_the_launch_began_the_target_is_stopped(self):
+        def up(*a, **kw):
+            self.assertFalse(kw["cancelled"]())                         # up owns the profile, the launch goes on
+            self.cancel()
+            raise orchestrate.OrchestrationError("profile stop requested")   # its stop marker ends the launch
+        self.orch.up.side_effect = up
+        finished = self.deploy(["qwen-replicas"])
+        self.assertEqual(self.downs(), ["qwen-replicas", "ds41-rtx"])
+        answer = self.answers[0]
+        self.assertEqual((answer["phase"], answer["profile"], answer["down"]), ("launching", "ds41-rtx",
+                                                                                 {"state": "stopped"}))
+        self.assertIn("ds41-rtx was stopped; this deploy had stopped qwen-replicas", answer["summary"])
+        self.assertIn("deploy cancelled after the launch began: ds41-rtx was stopped; this deploy had stopped "
+                      "qwen-replicas", finished["error"])
+
+    def test_after_the_deploy_finished(self):
+        finished = self.deploy([])
+        self.assertEqual(finished["state"], "succeeded", finished["error"])
+        # A cancel still racing the job's end stops what the deploy started; a finished job cannot be cancelled.
+        answer = self.api._cancel_deploy(dict(finished, state="running"))
+        self.assertEqual((answer["phase"], answer["down"]), ("done", {"state": "stopped"}))
+        self.assertEqual(self.downs(), ["ds41-rtx"])
+        with self.assertRaises(APIError) as refused:
+            self.api._execute("cancel", {"job": finished["job"]})
+        self.assertEqual(refused.exception.status, 409)
+
+    def test_a_stop_of_another_profile_only_cancels(self):
+        # Before the hand-over: the switch stops at its next step; only the named profile is stopped.
+        finished = self.deploy(["qwen-replicas"], prepare=lambda: self.cancel("down", profile="mm"))
+        self.assertEqual(self.downs(), ["mm"])
+        self.assertEqual(self.answers[0]["cancelled_switches"][0]["phase"], "checks")
+        self.assertIn("deploy cancelled", finished["error"])
+        # After it: the launch the switch handed over goes on; the stop does not take its target down.
+        self.orch.down.reset_mock()
+        self.answers.clear()
+
+        def up(*a, **kw):
+            self.assertFalse(kw["cancelled"]())
+            self.cancel("down", profile="mm")
+            return {"state": "running"}
+        self.orch.up.side_effect = up
+        finished = self.deploy(["qwen-replicas"])
+        self.assertEqual(finished["state"], "succeeded", finished["error"])
+        self.assertEqual(self.downs(), ["qwen-replicas", "mm"])
+        switch = self.answers[0]["cancelled_switches"][0]
+        self.assertEqual((switch["phase"], switch["down"]), ("launching", None))
 
 
 if __name__ == "__main__":

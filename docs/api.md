@@ -281,6 +281,15 @@ priority). In order, and refusing before anything is stopped: the snapshot (dige
 and `up --recipe-inputs <inputs>` launches exactly the snapshot: its configuration copy, its profile, its layers. Poll
 `GET jobs/<id>`.
 
+`POST cancel {"job": "<deploy job>"}` undoes only what the deploy did. Before the hand-over to `up` it only writes the
+deploy's cancel marker: the deploy stops before its next step and `up`, right after it takes the profile, starts
+nothing; profiles the deploy already stopped stay stopped (start them again with `up`). Once `up` owns the target
+profile, the cancel stops that profile (`down`), the one the deploy started. The answer says what happened: `phase`
+(`not started`, `checks`, `stopping`, `launching`, `done`), `profile`, `stopped_by_deploy`, `stopping`, `down` (the
+target's stop, or null) and `summary`; the cancelled deploy's `error` says the same. A `down` (or a cancel by
+profile) while a deploy runs cancels the deploy the same way but stops only the profile it names. A finished job is not
+cancelled (409).
+
 #### POST up with a recipe (job)
 
 ```sh
@@ -436,7 +445,7 @@ hyperloom recipe routes ds41-rtx
 | `POST doctor {machine}` | `hyperloom doctor` |
 | `POST hosts/pin {machine, fingerprint}` | `hyperloom hosts pin` |
 | `POST keys/rotate {name}` | `hyperloom keys rotate NAME` |
-| `POST cancel {job | profile}` | stops a running `up` |
+| `POST cancel {job | profile}` | stops a running `up`; cancels a `recipes/deploy` (above) |
 | `GET jobs`, `GET jobs/<id>` | job progress and results |
 
 Mutations answer `202` with a job (`job`, `state`, `action`, `arguments`, `result`, `error`). One mutating job runs at a

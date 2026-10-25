@@ -524,6 +524,69 @@ def cancel_marker(job):
     return runtime_dir() / "deploy-cancel" / str(job)
 
 
+def deploy_progress(job):
+    """The deploy's progress file, next to its cancel marker: its phase (checks, stopping, launching once `up` owns
+    the target profile, done, failed), the target profile and the profiles it has stopped. A cancel reads it after
+    writing the marker, to undo only what the deploy did."""
+    return cancel_marker(job).with_name(f"{job}.json")
+
+
+KEEP_PROGRESS_S = 24 * 3600
+
+
+def read_progress(job):
+    """The progress a deploy recorded, or None when it has recorded none yet."""
+    from ..winproc import retry_sharing
+    try:
+        value = retry_sharing(lambda: json.loads(deploy_progress(job).read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _write_progress(path, state):
+    from ..winproc import retry_sharing
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.part")
+    temporary.write_text(json.dumps(state), encoding="utf-8")
+    try:
+        retry_sharing(lambda: os.replace(temporary, path))
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def _prune_progress(directory):
+    """Progress files and markers of deploys older than a day (a marker written after its deploy ended stays)."""
+    now = time.time()
+    for path in (directory.iterdir() if directory.is_dir() else ()):
+        try:
+            if now - path.stat().st_mtime > KEEP_PROGRESS_S:
+                path.unlink()
+        except OSError:
+            pass
+
+
+def _had(progress):
+    stopped = progress.get("stopped") or []
+    had = (f"this deploy had stopped {', '.join(stopped)} (they stay stopped: run up to start them again)"
+           if stopped else "this deploy had stopped nothing")
+    if progress.get("stopping"):
+        had += f"; it was stopping {progress['stopping']}"
+    return had
+
+
+def cancel_summary(progress, *, down=None):
+    """One sentence: what a cancelled deploy had changed and what the cancel undid."""
+    progress = progress or {}
+    had = _had(progress)
+    if down is not None:
+        return f"the launch of {progress.get('profile')} had begun: {progress.get('profile')} was stopped; {had}"
+    if progress.get("phase") in ("launching", "done"):
+        return f"the launch of {progress.get('profile')} had begun and was not stopped by this request; {had}"
+    return f"cancelled before the launch: nothing was started; {had}"
+
+
 def load_inputs(digest):
     """(root, manifest) of a published snapshot, every file checked against the manifest."""
     if not DIGEST.fullmatch(str(digest)):
@@ -826,39 +889,80 @@ def _table(table):
     return {k: v for k, v in table.items() if k != "state"}
 
 
+class _Progress:
+    """A deploy's progress (``deploy_progress``) and its cancel marker. Order matters: the deploy records "launching"
+    BEFORE it looks at the marker at the hand-over, and a cancel writes the marker BEFORE it reads the progress, so
+    either the launch sees the marker and starts nothing, or the cancel sees "launching" and stops the profile."""
+
+    def __init__(self, job):
+        self.marker = cancel_marker(job) if job else None
+        self.path = deploy_progress(job) if job else None
+        self.state = {"phase": "checks", "profile": None, "stopped": [], "stopping": None}
+        self.handoff_refused = False
+        if self.path is not None:
+            _prune_progress(self.path.parent)
+
+    def record(self, **changes):
+        self.state.update(changes)
+        if self.path is not None:
+            _write_progress(self.path, self.state)
+
+    def cancelled(self):
+        return self.marker is not None and self.marker.exists()
+
+    def check(self):
+        if self.cancelled():
+            raise RecipeError("deploy cancelled: " + cancel_summary(self.state))
+
+    def handoff(self):
+        """up calls this once, right after it owns the target profile and before it starts anything."""
+        self.record(phase="launching")
+        self.handoff_refused = self.cancelled()
+        return self.handoff_refused
+
+
 def deploy(digest, stop=(), *, source=None, orchestrate=None, approval=None, job=None):
     """The switch as one operation: launch exactly the planned snapshot ``digest`` after stopping the reviewed running
     profiles ``stop``. Everything that can refuse deterministically is checked BEFORE anything is stopped: the snapshot
     (manifest digest and every file), the running set (must equal ``stop``), the profile/node/router checks and the
     recipe decision + RTX plan on fresh facts. Then each listed profile is stopped and `up` runs on the snapshot (its
-    configuration copy, its launch intent)."""
+    configuration copy, its launch intent).
+
+    ``job``: the portal's job id. Its cancel marker stops the deploy before the next step; up checks it once more right
+    after it owns the profile (the hand-over) and then starts nothing. The progress file says how far the deploy got,
+    so a cancel undoes only what the deploy did (a cancelled deploy's error says what it had stopped)."""
     from .. import orchestrate as default_orchestrate
     orchestrate = orchestrate or default_orchestrate
-    marker = cancel_marker(job) if job else None
-
-    def cancelled():
-        return marker is not None and marker.exists()
-
-    def check():
-        if cancelled():
-            raise RecipeError("deploy cancelled")
+    progress = _Progress(job)
     try:
-        return _deploy(digest, stop, source, orchestrate, approval, cancelled, check)
+        progress.record()
+        progress.check()
+        result = _deploy(digest, stop, source, orchestrate, approval, progress)
+        progress.record(phase="done", stopping=None)
+        return result
+    except BaseException:
+        if progress.path is not None and progress.state["phase"] != "launching":
+            progress.record(phase="failed", stopping=None)
+        elif progress.path is not None:
+            progress.record(phase="failed", stopping=None, launched=not progress.handoff_refused)
+        raise
     finally:
-        if marker is not None:
-            marker.unlink(missing_ok=True)
+        if progress.marker is not None:
+            progress.marker.unlink(missing_ok=True)
 
 
-def _deploy(digest, stop, source, orchestrate, approval, cancelled, check):
+def _deploy(digest, stop, source, orchestrate, approval, progress):
     with pinned(digest):                                      # held from before the first read to the end of up
-        return _deploy_pinned(digest, stop, source, orchestrate, approval, cancelled, check)
+        return _deploy_pinned(digest, stop, source, orchestrate, approval, progress)
 
 
-def _deploy_pinned(digest, stop, source, orchestrate, approval, cancelled, check):
+def _deploy_pinned(digest, stop, source, orchestrate, approval, progress):
     from .. import orchestrate as default_orchestrate
     from . import commands, launch
+    check = progress.check
     cluster, intent, options = options_from_inputs(digest)
     profile = intent["profile"]
+    progress.record(profile=profile)
     # The launch arguments' own checks (deadline, approval, queue timeout) before anything is stopped.
     default_orchestrate._approval(intent["deadline_s"], approval)
     if type(intent["queue_timeout_s"]) is not int or not 60 <= intent["queue_timeout_s"] <= default_orchestrate.MAX_QUEUE_S:
@@ -875,13 +979,24 @@ def _deploy_pinned(digest, stop, source, orchestrate, approval, cancelled, check
     stopped = []
     for name in sorted(set(stop)):
         check()
+        progress.record(phase="stopping", stopping=name)
         stopped.append({"profile": name, "down": orchestrate.down(name)})
+        progress.record(stopping=None, stopped=progress.state["stopped"] + [name])
     check()
-    # `cancelled` is checked again by up right after it takes ownership of the profile (no gap: a later cancel
-    # stops the launching profile through its own stop marker).
-    result = orchestrate.up(cluster, profile, router=intent["router"], deadline_s=intent["deadline_s"],
-                            queue_timeout_s=intent["queue_timeout_s"], approval=approval, recipe=options,
-                            cancelled=cancelled)
+    # The hand-over is checked again by up right after it takes ownership of the profile (no gap: a later cancel
+    # sees "launching" and stops the launching profile through its own stop marker).
+    try:
+        result = orchestrate.up(cluster, profile, router=intent["router"], deadline_s=intent["deadline_s"],
+                                queue_timeout_s=intent["queue_timeout_s"], approval=approval, recipe=options,
+                                cancelled=progress.handoff)
+    except (default_orchestrate.OrchestrationError, OSError, ValueError) as exc:
+        if not progress.cancelled():
+            raise
+        if progress.handoff_refused or progress.state["phase"] != "launching":
+            raise RecipeError("deploy cancelled at the launch hand-over: nothing was started; "
+                              + _had(progress.state)) from exc
+        raise RecipeError(f"deploy cancelled after the launch began: {profile} was stopped; "
+                          + _had(progress.state)) from exc
     return {"inputs": digest, "profile": profile, "stopped": stopped, "up": result}
 
 
