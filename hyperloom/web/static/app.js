@@ -418,6 +418,7 @@
         const name = names[i], result = results[i];
         if (result.status === "fulfilled") {
           if (name === "jobs") {
+            state.lastJobs = result.value.jobs;
             const jobs = rows(result.value.jobs), active = jobs.find(j => (j.id || j.job) === result.value.active);
             state.job = active || jobs.find(j => (j.id || j.job) === (state.job?.id || state.job?.job)) || state.job;
             if (state.job?.error && !state.warnings.has(state.job.id)) { state.warnings.add(state.job.id); announce(state.job.error); }
@@ -699,7 +700,19 @@
     if (Object.values(state.fetched).some(time => Date.now() - time > 6000) && state.fresh) { state.fresh = false; render(); }
   }, 1000);
   // Shared with recipes.js (the Recipes & profiles page): the same rendering helpers, request path and job flow.
-  window.Hyperloom = {esc, display, unavailable, statusPill, tag, button, card, table, cells, kv, empty, rows,
+  // Benchmark-class jobs started from this page stay alive only while it renews them (abandoned otherwise).
+  const owned = new Set();
+  function own(jobId) { if (jobId) { owned.add(jobId); (state.ownedAt ||= {})[jobId] = Date.now(); renewOwned(); } }
+  async function renewOwned() {
+    const running = new Set(rows(state.lastJobs).filter(j => j.state === "running").map(j => j.id || j.job));
+    for (const id of [...owned]) if (state.lastJobs && !running.has(id) && Date.now() - (state.ownedAt?.[id] || 0) > 10000) owned.delete(id);
+    if (!owned.size) return;
+    try {
+      await request("jobs/renew", {method: "POST", headers: {"Content-Type": "application/json", "X-Hyperloom-CSRF": document.querySelector('meta[name="hyperloom-csrf"]')?.content || ""}, body: JSON.stringify({jobs: [...owned].slice(0, 32)})});
+    } catch (_) { /* the next renewal retries; the server cancels a job only after two minutes without one */ }
+  }
+  setInterval(renewOwned, 15000);
+  window.Hyperloom = {esc, display, unavailable, statusPill, tag, button, card, table, cells, kv, empty, rows, own,
     request, mutate, refresh, render, announce, mutationReason, capability, profiles, profileId, state, activeJob,
     doc, machines, meter, kpi, chart, lineChart, spark, field, route, routes, pages, download,
     csrf: () => document.querySelector('meta[name="hyperloom-csrf"]')?.content};

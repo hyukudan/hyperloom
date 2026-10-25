@@ -30,9 +30,17 @@ CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset
 
 
 def manifest(static_dir, directory):
-    """The exact file names a static feature directory may serve, in manifest order."""
+    """The exact file names a static feature directory may serve, in manifest order. The directory and its
+    manifest must be plain entries inside the static root (no link, junction or reparse point) or nothing is
+    listed; both the shell's script tags and asset requests go through here."""
+    root = Path(static_dir).resolve()
+    folder = root / directory
+    listing = folder / "manifest.json"
     try:
-        listed = json.loads((Path(static_dir) / directory / "manifest.json").read_text(encoding="utf-8"))["files"]
+        if (folder.is_symlink() or folder.resolve() != folder or folder.parent != root
+                or listing.is_symlink() or listing.resolve() != listing):
+            return ()
+        listed = json.loads(listing.read_text(encoding="utf-8"))["files"]
     except (OSError, ValueError, KeyError, TypeError):
         return ()
     if not isinstance(listed, list):
@@ -170,11 +178,11 @@ class Handler(BaseHTTPRequestHandler):
             if name is None and len(parts) == 3 and parts[0] == "" and parts[1] in ASSET_DIRS:
                 # The feature directory itself must be a plain directory inside the static root (no link,
                 # junction or reparse point leading elsewhere) before its manifest is even read.
-                directory = root / parts[1]
-                if (not directory.is_symlink() and directory.resolve() == directory and directory.parent == root
-                        and parts[2] in manifest(root, parts[1])):
-                    root = directory
-                    name = parts[2]
+                if parts[2] in manifest(root, parts[1]):
+                    candidate = root / parts[1] / parts[2]
+                    if not candidate.is_symlink():
+                        root = root / parts[1]
+                        name = parts[2]
             if name is None:
                 self._error(404, "not found")
                 return
@@ -238,7 +246,7 @@ class Handler(BaseHTTPRequestHandler):
             action = parsed.path[len("/hyperloom/api/"):]
             registry = feature_registry.registry()
             if (action not in MUTATIONS and action not in recipe_web.POSTS and action not in registry.posts
-                    and action not in registry.jobs):
+                    and action not in registry.jobs and action != "jobs/renew"):
                 raise APIError("unknown mutation", 404)
             raw = self.rfile.read(size)
             if len(raw) != size:
@@ -250,6 +258,10 @@ class Handler(BaseHTTPRequestHandler):
                 raise APIError("JSON object required")
             if action in recipe_web.POSTS:
                 status, document = self.server.api.recipe_post(action, arguments, cancelled=self._client_gone)
+                self._send(status, document)
+                return
+            if action == "jobs/renew":
+                status, document = self.server.api.renew_jobs(arguments)
                 self._send(status, document)
                 return
             if action in registry.posts and action not in MUTATIONS:

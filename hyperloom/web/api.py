@@ -30,7 +30,7 @@ import time
 import uuid
 from urllib.request import ProxyHandler, Request, build_opener
 
-from hyperloom import __version__, cli, config, engines, orchestrate, remote, render, secrets
+from hyperloom import __version__, admission, cli, config, engines, orchestrate, remote, render, secrets
 from hyperloom.adapters import engine, router
 from hyperloom.paths import repo_root
 from hyperloom.stats import Window
@@ -64,18 +64,25 @@ class APIError(ValueError):
 
 
 LOOPBACK_UNAVAILABLE = "unavailable: engine bound to loopback on its node"
-ADMISSION_CAP = 2
+OWNER_LEASE_S = 120.0       # a portal-started benchmark is abandoned when its page stops renewing it this long
+HOLD_RENEW_S = 30.0
 
 
 class JobContext:
-    """Passed to feature jobs: ctx(text) reports progress; ctx.cancelled() after a cancel, a priority stop of an
-    overlapping profile or the deadline (ctx.reason says which); ctx.deadline is a monotonic time."""
+    """Passed to feature jobs: ctx(text) reports progress; ctx.cancelled() is true after a cancel request, a stop
+    of an overlapping profile (from any portal or CLI process, through the shared admission database), the
+    deadline, or, for a job started from a portal page, when that page stopped renewing it (abandoned).
+    ctx.reason says which; ctx.deadline is a monotonic time."""
 
-    def __init__(self, deadline_s):
+    def __init__(self, deadline_s, admission_db=None, hold=None, owned=False):
         self.deadline = time.monotonic() + deadline_s
         self.reason = None
         self.report = lambda text: None
+        self.hold = hold
+        self._admission = admission_db
         self._event = threading.Event()
+        self._owner_expires = time.monotonic() + OWNER_LEASE_S if owned else None
+        self._checked = 0.0
 
     def __call__(self, text):
         self.report(text)
@@ -85,14 +92,36 @@ class JobContext:
             self.reason = reason
             self._event.set()
 
+    def renew_owner(self):
+        if self._owner_expires is not None:
+            self._owner_expires = time.monotonic() + OWNER_LEASE_S
+
+    def owner_fresh(self):
+        return self._owner_expires is None or time.monotonic() < self._owner_expires
+
     def cancelled(self):
-        if not self._event.is_set() and time.monotonic() >= self.deadline:
-            self.cancel("deadline reached")
+        if not self._event.is_set():
+            now = time.monotonic()
+            if now >= self.deadline:
+                self.cancel("deadline reached")
+            elif not self.owner_fresh():
+                self.cancel("abandoned: the portal page that started it stopped renewing it")
+            elif self._admission is not None and self.hold and now - self._checked >= 1.0:
+                self._checked = now
+                reason = self._admission.cancelled(self.hold)
+                if reason:
+                    self.cancel(reason)
         return self._event.is_set()
 
     def wait(self, seconds):
         """Sleep up to `seconds`, waking early on cancellation; True when cancelled."""
-        return self._event.wait(max(0.0, min(seconds, self.deadline - time.monotonic()))) or self.cancelled()
+        end = time.monotonic() + max(0.0, seconds)
+        while not self.cancelled():
+            left = min(end, self.deadline) - time.monotonic()
+            if left <= 0:
+                return self.cancelled()
+            self._event.wait(min(left, 1.0))
+        return True
 
 
 def _binds_loopback(profile, status, cluster):
@@ -115,11 +144,23 @@ def _binds_loopback(profile, status, cluster):
         return False
 
 
-def _numeric(item):
-    """Numbers, arrays of integers, or flat maps of numbers: token counts and token-id arrays, never credentials."""
+# Keys that hold token counts, token-id arrays or tokenizer identities (data, not credentials). Anything else whose
+# name looks like a credential ("token", "access_token", "csrf_token", api keys, passwords...) is redacted whatever
+# its type.
+DATA_TOKEN_KEY = re.compile(r"(?:[a-z0-9_]*_)?tokens(?:_[a-z0-9_]+)?|(?:[a-z0-9_]*_)?token_(?:ids|count|counts|budget)"
+                            r"|tokenizer(?:_[a-z0-9_]+)?", re.I)
+COMPRESSED_IDS = re.compile(r"gz:b64:[A-Za-z0-9+/]+={0,2}")
+
+
+def _token_data(key, item):
+    if not DATA_TOKEN_KEY.fullmatch(key) or re.search(r"password|secret|authorization|api[_-]?key|private|bearer|csrf", key, re.I):
+        return False
     number = lambda v: type(v) in (int, float)
+    if key.lower().startswith("tokenizer"):
+        return isinstance(item, str) and len(item) <= 200 and not re.search(r"(?i)bearer\s|\s", item)
     return (number(item) or (isinstance(item, list) and all(type(v) is int for v in item))
-            or (isinstance(item, dict) and bool(item) and all(number(v) for v in item.values())))
+            or (isinstance(item, dict) and bool(item) and all(number(v) for v in item.values()))
+            or (isinstance(item, str) and key.lower().endswith("token_ids") and bool(COMPRESSED_IDS.fullmatch(item))))
 
 
 def redact(value):
@@ -131,10 +172,7 @@ def redact(value):
                 {"storage": "DPAPI", "values": "never shown"},
                 {"storage": "0600 files", "values": "never shown"})
             sensitive = re.search(r"password|secret|token|authorization|api[_-]?key|private[_-]?key", key, re.I)
-            # A key that is only about tokens (token counts, token ids) keeps numeric data; a string under it is
-            # still redacted (it could be a credential).
-            counts = (sensitive and _numeric(item) and not re.search(
-                r"password|secret|authorization|api[_-]?key|private[_-]?key|bearer|csrf", key, re.I))
+            counts = sensitive and _token_data(key, item)
             result[key] = "[redacted]" if sensitive and not counts and not metadata and not key.endswith(
                 ("_file", "_path", "_tokens")) else redact(item)
         return result
@@ -358,8 +396,10 @@ class API:
         self._history = deque(maxlen=1800)
         self._counters = {}
         self._recent = {}
-        self._admitted = {}     # job id -> {"resources": set, "context": JobContext} (contract C11)
         self._features_running = {}     # job id -> JobContext of every running feature job
+        self.admission_db = None        # tests inject one; else the configuration's shared database (C11)
+        self._holds = {}                # job id -> admission hold id (core, stop and admitted feature jobs)
+        self._heartbeat = None
         self.recipes = recipe_web.Runner()
 
     def _recipe_loader(self, path):
@@ -1035,6 +1075,11 @@ class API:
             self._audit(action, arguments, {"state": "succeeded", "result": document})
         return 200, redact(document)
 
+    def _admission(self):
+        if self.admission_db is None:
+            self.admission_db = admission.for_config(self.config_path)
+        return self.admission_db
+
     def _resources_of_profile(self, profile):
         """Resource ids a profile occupies (its machines and its router); everything ("*") when unknown."""
         try:
@@ -1044,9 +1089,58 @@ class API:
         except Exception:
             return {"*"}
 
-    @staticmethod
-    def _overlap(a, b):
-        return bool(a & b) or "*" in a or "*" in b
+    def _renew_holds(self):
+        """Heartbeat: renew the admission holds of this process's running jobs (an abandoned portal job is
+        cancelled by its context and its hold lapses)."""
+        while True:
+            time.sleep(HOLD_RENEW_S)
+            with self._job_lock:
+                holds = dict(self._holds)
+                contexts = dict(self._features_running)
+            for jid, hold in holds.items():
+                context = contexts.get(jid)
+                if context is not None and (context.cancelled() or not context.owner_fresh()):
+                    continue
+                try:
+                    self._admission().renew(hold)
+                except Exception:
+                    pass
+
+    def _hold(self, jid, kind, resources, label):
+        """Register an admission hold for a job (raises APIError 409 when refused)."""
+        try:
+            hold = self._admission().acquire(kind, resources, label=label)
+        except admission.Refused as exc:
+            raise APIError(str(exc), 409) from exc
+        with self._job_lock:
+            self._holds[jid] = hold
+            if self._heartbeat is None:
+                self._heartbeat = threading.Thread(target=self._renew_holds, name="hyperloom-admission", daemon=True)
+                self._heartbeat.start()
+        return hold
+
+    def _unhold(self, jid):
+        with self._job_lock:
+            hold = self._holds.pop(jid, None)
+        if hold:
+            try:
+                self._admission().release(hold)
+            except Exception:
+                pass
+
+    def renew_jobs(self, arguments):
+        """POST jobs/renew {jobs: [id, ...]}: the portal page that started these jobs is still open."""
+        ids = arguments.get("jobs") if isinstance(arguments, dict) and set(arguments) == {"jobs"} else None
+        if not isinstance(ids, list) or len(ids) > 32 or any(not isinstance(i, str) for i in ids):
+            raise APIError("jobs must be a list of at most 32 job ids")
+        renewed = []
+        with self._job_lock:
+            for jid in ids:
+                context = self._features_running.get(jid)
+                if context is not None:
+                    context.renew_owner()
+                    renewed.append(jid)
+        return 200, {"renewed": renewed}
 
     def _feature_job(self, action, arguments):
         spec = feature_registry.registry().jobs[action]
@@ -1054,41 +1148,46 @@ class API:
             if spec.validate is not None:
                 arguments = self._feature_call(spec.validate, arguments)
             resources = set()
-            if spec.admission:
+            if spec.admission or (spec.exclusive and spec.resources is not None):
                 resources = {str(r) for r in self._feature_call(spec.resources, arguments)}
                 if not resources:
                     raise APIError("an admitted job must name the resources it uses")
+            elif spec.exclusive:
+                resources = {"*"}
         except APIError as exc:
             self._audit(action, arguments, {"state": "refused", "error": str(exc)})
             raise
-        context = JobContext(spec.deadline_s)
+        jid = uuid.uuid4().hex
         with self._job_lock:
             refusal = None
             if spec.exclusive and self._active:
                 refusal = "another mutating job is running"
-            elif spec.admission:
-                if self._active:
-                    refusal = "a deploy, stop or install job is running (" + str(self._jobs[self._active]["action"]) + ")"
-                elif len(self._admitted) >= ADMISSION_CAP:
-                    refusal = f"at most {ADMISSION_CAP} benchmark or demo runs at a time"
-                else:
-                    busy = [jid for jid, held in self._admitted.items() if self._overlap(held["resources"], resources)]
-                    if busy:
-                        refusal = "the target's resources are held by job " + busy[0]
+            elif spec.admission and self._active:
+                refusal = "a deploy, stop or install job is running (" + str(self._jobs[self._active]["action"]) + ")"
             if refusal:
                 self._audit(action, arguments, {"state": "refused", "error": refusal})
                 raise APIError(refusal, 409)
-            jid = uuid.uuid4().hex
+            if spec.exclusive:
+                self._active = jid      # reserve the slot while the shared admission decides
+        hold = None
+        try:
+            if spec.admission or spec.exclusive:
+                hold = self._hold(jid, "bench" if spec.admission else "core", resources, action + " " + jid[:8])
+        except APIError as exc:
+            with self._job_lock:
+                if self._active == jid:
+                    self._active = None
+            self._audit(action, arguments, {"state": "refused", "error": str(exc)})
+            raise
+        context = JobContext(spec.deadline_s, self._admission() if hold else None, hold, owned=bool(spec.admission))
+        with self._job_lock:
             job = {"job": jid, "id": jid, "action": action, "arguments": redact(arguments),
                    "state": "running", "started_at": self.clock(), "finished_at": None,
                    "result": None, "error": None, "progress": "starting",
-                   "resources": sorted(resources) if spec.admission else None}
+                   "resources": sorted(resources) if hold else None,
+                   "renew": "POST jobs/renew while the page is open" if spec.admission else None}
             self._audit(action, arguments, {"job": jid, "state": "accepted"})
             self._jobs[jid] = job
-            if spec.exclusive:
-                self._active = jid
-            if spec.admission:
-                self._admitted[jid] = {"resources": resources, "context": context}
             self._features_running[jid] = context
             for old in list(self._jobs):
                 if len(self._jobs) <= 100:
@@ -1106,10 +1205,12 @@ class API:
             try:
                 result = spec.run(self, arguments, context)
                 update = {"state": "cancelled" if context.cancelled() and result is None else "succeeded",
-                          "result": redact(result), "error": context.reason if context.cancelled() else None}
+                          "result": redact(result), "error": redact(context.reason) if context.cancelled() else None}
             except Exception as exc:
                 update = {"state": "cancelled" if context.cancelled() else "failed", "result": None,
                           "error": redact(str(exc))}
+            # The hold is released only after the job's own cleanup returned.
+            self._unhold(jid)
             try:
                 self._audit(action, arguments, {"job": jid, **update})
             except OSError as exc:
@@ -1119,19 +1220,9 @@ class API:
                 job.update(update, finished_at=self.clock(), progress="finished")
                 if self._active == jid:
                     self._active = None
-                self._admitted.pop(jid, None)
                 self._features_running.pop(jid, None)
         threading.Thread(target=run, name="hyperloom-feature-" + jid[:8], daemon=True).start()
         return response
-
-    def _cancel_feature_jobs(self, resources, reason):
-        """Priority stop: cancel admitted jobs whose resources overlap (they clean up and finish)."""
-        with self._job_lock:
-            hits = [(jid, held["context"]) for jid, held in self._admitted.items()
-                    if self._overlap(held["resources"], resources)]
-        for jid, context in hits:
-            context.cancel(reason)
-        return [jid for jid, _ in hits]
 
     def _action_log(self):
         try:
@@ -1434,26 +1525,36 @@ class API:
         if occupying or action == "down":
             profile = arguments.get("profile")
             resources = self._resources_of_profile(profile) if isinstance(profile, str) and profile else {"*"}
-        if action == "down":
-            self._cancel_feature_jobs(resources, "stopped: profile " + str(arguments.get("profile")) + " is going down")
+        jid = uuid.uuid4().hex
         with self._job_lock:
             if self._active and not priority:
                 self._audit(action, arguments, {"state": "refused", "error": "another mutating job is running"})
                 raise APIError("another mutating job is running", 409)
-            if occupying:
-                busy = [jid for jid, held in self._admitted.items() if self._overlap(held["resources"], resources)]
-                if busy:
-                    message = "a benchmark or demo holds these resources (job " + busy[0] + "); cancel it first"
-                    self._audit(action, arguments, {"state": "refused", "error": message})
-                    raise APIError(message, 409)
-            jid = uuid.uuid4().hex
+            if not priority:
+                self._active = jid      # reserved while the shared admission decides
+        if occupying or action == "down":
+            # A stop is never refused: registering it cancels overlapping benchmarks (in every process) and its
+            # hold keeps new ones out until it finishes. A deploy is refused while a benchmark holds its resources.
+            try:
+                self._hold(jid, "stop" if action == "down" else "core", resources,
+                           action + " " + str(arguments.get("profile") or ""))
+            except APIError as exc:
+                with self._job_lock:
+                    if self._active == jid:
+                        self._active = None
+                self._audit(action, arguments, {"state": "refused", "error": str(exc)})
+                raise
+            if action == "down":
+                with self._job_lock:
+                    contexts = [self._features_running[j] for j in self._holds if j in self._features_running]
+                for context in contexts:
+                    context.cancelled()     # observe the stop's cancellation now, not at the next poll
+        with self._job_lock:
             job = {"job": jid, "id": jid, "action": action, "arguments": redact(arguments),
                    "state": "running", "started_at": self.clock(), "finished_at": None,
                    "result": None, "error": None, "progress": "calling CLI service"}
             self._audit(action, arguments, {"job": jid, "state": "accepted"})
             self._jobs[jid] = job
-            if not priority:
-                self._active = jid
             # Keep completed jobs bounded; never evict an operation still running.
             for old in list(self._jobs):
                 if len(self._jobs) <= 100:
@@ -1469,10 +1570,11 @@ class API:
                 update = {"state": "succeeded", "result": redact(result), "error": None}
             except Exception as exc:
                 update = {"state": "failed", "result": None, "error": redact(str(exc))}
+            self._unhold(jid)
             try:
                 self._audit(action, arguments, {"job": jid, **update})
             except OSError as exc:
-                update = {"state": "failed", "result": update["result"], "error": "audit write failed: " + str(exc)}
+                update = {"state": "failed", "result": update["result"], "error": redact("audit write failed: " + str(exc))}
             with self._job_lock:
                 job.update(update, finished_at=self.clock(), progress="finished")
                 if self._active == jid:
