@@ -65,14 +65,16 @@ class APIError(ValueError):
 
 class JobFailed(Exception):
     """Raised by a feature job whose failure is definite (or whose outcome is unresolved): the job ends "failed"
-    even when a cancel was requested meanwhile, and `outcome` (e.g. "unresolved") is kept on the job and its audit
-    line, so the job, the audit log and the feature's own records agree."""
+    even when a cancel was requested meanwhile, and `outcome` (a short word such as "unresolved", matching
+    JOB_OUTCOME; anything else is recorded as "invalid") is kept on the job and its audit line, so the job, the
+    audit log and the feature's own records agree."""
 
     def __init__(self, message, outcome=None):
         super().__init__(message)
         self.outcome = outcome
 
 
+JOB_OUTCOME = re.compile(r"[a-z][a-z0-9_-]{0,39}")
 LOOPBACK_UNAVAILABLE = "unavailable: engine bound to loopback on its node"
 OWNER_LEASE_S = 120.0       # a portal-started benchmark is abandoned when its page stops renewing it this long
 HOLD_RENEW_S = 30.0
@@ -1232,7 +1234,8 @@ class API:
             except JobFailed as exc:
                 update = {"state": "failed", "result": None, "error": redact(str(exc))}
                 if exc.outcome is not None:
-                    update["outcome"] = redact(str(exc.outcome))[:40]
+                    outcome = exc.outcome if isinstance(exc.outcome, str) else ""
+                    update["outcome"] = outcome if JOB_OUTCOME.fullmatch(outcome) else "invalid"
             except Exception as exc:
                 update = {"state": "cancelled" if context.cancelled() else "failed", "result": None,
                           "error": redact(str(exc))}
@@ -1242,7 +1245,8 @@ class API:
                 self._audit(action, arguments, {"job": jid, **update})
             except OSError as exc:
                 update = {"state": "failed", "result": update["result"],
-                          "error": redact("audit write failed: " + str(exc))}
+                          "error": redact("audit write failed: " + str(exc)),
+                          **({"outcome": update["outcome"]} if "outcome" in update else {})}
             with self._job_lock:
                 job.update(update, finished_at=self.clock(), progress="finished")
                 if self._active == jid:

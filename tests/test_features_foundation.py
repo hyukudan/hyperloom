@@ -193,18 +193,27 @@ class APIDispatchTests(unittest.TestCase):
         self.assertEqual(self.wait(second["id"])["state"], "cancelled")
 
     def test_a_definite_failure_survives_a_cancel_request(self):
-        for outcome in (None, "unresolved"):
+        audit = Path(self.dir.name) / "audit.jsonl"
+        for outcome, kept in ((None, None), ("unresolved", "unresolved"), ("x" * 25 + " password=abc", "invalid")):
             with self.subTest(outcome=outcome):
                 job = self.api.mutate("demo/definite", {"outcome": outcome})
                 self.wait(self.api.mutate("cancel", {"job": job["id"]})["id"])
                 done = self.wait(job["id"])
                 self.assertEqual((done["state"], done["error"], done.get("outcome")),
-                                 ("failed", "node refused the change", outcome))
-                audited = [json.loads(line) for line in (Path(self.dir.name) / "audit.jsonl").read_text().splitlines()]
-                line = [entry for entry in audited if entry.get("action") == "demo/definite"][-1]
-                self.assertIn('"failed"', json.dumps(line))
-                if outcome:
-                    self.assertIn('"unresolved"', json.dumps(line))
+                                 ("failed", "node refused the change", kept))
+                line = [json.loads(text) for text in audit.read_text().splitlines()
+                        if json.loads(text)["result"].get("job") == job["id"]][-1]
+                self.assertEqual((line["result"]["state"], line["result"]["error"], line["result"].get("outcome")),
+                                 ("failed", "node refused the change", kept))
+
+    def test_a_failed_audit_write_keeps_the_job_outcome(self):
+        job = self.api.mutate("demo/definite", {"outcome": "unresolved"})
+        with mock.patch.object(self.api, "_audit", side_effect=OSError("disk full")):
+            with self.api._job_lock:
+                self.api._features_running[job["id"]].cancel("cancelled by request")
+            done = self.wait(job["id"])
+        self.assertEqual((done["state"], done.get("outcome")), ("failed", "unresolved"))
+        self.assertIn("audit write failed", done["error"])
 
     def test_admission_is_shared_across_portal_processes(self):
         other = API(Path(self.dir.name) / "cluster.json", orchestrator=mock.Mock(), remote_module=mock.Mock(),
