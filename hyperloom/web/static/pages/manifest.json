@@ -1,1 +1,1 @@
-{"files": ["timeseries.css", "timeseries.js", "history.js", "planner.css", "planner.js"]}
+{"files": ["timeseries.css", "timeseries.js", "history.js", "planner.css", "planner.js", "bench.css", "bench-common.js", "bench-decode.js", "bench-prefill.js", "bench-ab.js", "bench-quality.js", "bench-tools.js", "demo.js", "bench-history.js"]}
