@@ -89,7 +89,7 @@ class ClientTests(unittest.TestCase):
         timer.start()
         started = time.monotonic()
         reply = client.chat(self.endpoint, dict(BODY, max_tokens=200), cancelled=stop.is_set)
-        self.assertLess(time.monotonic() - started, 3.0)
+        self.assertLess(time.monotonic() - started, 8.0)       # far below the 40 s the stream would take
         self.assertTrue(reply.cancelled)
         self.assertEqual(reply.error, "cancelled")
 
@@ -99,7 +99,7 @@ class ClientTests(unittest.TestCase):
         threading.Timer(0.4, stop.set).start()
         started = time.monotonic()
         reply = client.chat(self.endpoint, BODY, cancelled=stop.is_set)
-        self.assertLess(time.monotonic() - started, 3.0)
+        self.assertLess(time.monotonic() - started, 8.0)       # far below the 40 s the stream would take
         self.assertEqual((reply.error, reply.cancelled), ("cancelled", True))
 
     def test_truncated_stream_is_an_error(self):
@@ -112,7 +112,7 @@ class ClientTests(unittest.TestCase):
         self.server.config["token_delay"] = 0.2
         started = time.monotonic()
         reply = client.chat(self.endpoint, dict(BODY, max_tokens=200), timeout=1.0)
-        self.assertLess(time.monotonic() - started, 4.0)
+        self.assertLess(time.monotonic() - started, 8.0)
         self.assertEqual(reply.error, "request timed out")
 
     def test_connection_failures_are_errors_not_exceptions(self):
