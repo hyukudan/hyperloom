@@ -676,9 +676,12 @@ def _read_direct(replica, now, deadline, clock=time.time):
             reading["why"][part] = f"engine {part} unreadable: {exc}"
             reading[part + "_failed"] = True
     reading["observed_at"] = reading.get("status_at") or reading.get("metrics_at") or now
-    # Nothing answered and nothing definitely failed (the deadline cut every read): reachability is unknown.
-    reading["unknown"] = (reading["health"] is None and reading["status"] is None and reading["metrics_text"] is None
-                          and not reading.get("status_failed") and not reading.get("metrics_failed"))
+    # Down is known only when no path answered and every one of them definitely failed; a path the deadline cut
+    # (not read) leaves reachability unknown, however the others failed.
+    answered = bool(reading["health"]) or reading["status"] is not None or reading["metrics_text"] is not None \
+        or "status_at" in reading or "metrics_at" in reading
+    cut = any(str(reading["why"].get(part, "")).startswith("not read") for part in ("health", "status", "metrics"))
+    reading["unknown"] = not answered and cut
     return reading
 
 
@@ -701,9 +704,13 @@ def _read_via_fleet(store, profile, replica, now, stale=STALE_S):
         reading["why"]["status"] = "node sample does not match the launch record (" + ", ".join(mismatch or ["ts"]) + ")"
         return reading
     reading["observed_at"] = float(found["ts"])
-    instance = found.get("instance")
-    reading["fleet_instance"] = instance[:80] if isinstance(instance, str) and instance else None
-    reading["fleet_start"] = found.get("start") if type(found.get("start")) in (int, float) else None
+    reading["fleet_instance"], reading["fleet_start"] = _fleet_identity(found.get("instance"))
+    if reading["fleet_instance"] is None and type(found.get("start")) in (int, float):
+        reading["fleet_start"] = float(found["start"])
+    why = found.get("why") if isinstance(found.get("why"), dict) else {}
+    if why.get("instance_bracket"):
+        # The node sampler saw the engine identity change around its metrics read: the sample spans a restart.
+        reading["fleet_bracket"] = str(why["instance_bracket"])[:200]
     status = found.get("status")
     reading["status"] = status if isinstance(status, dict) else None
     reading["metrics_text"] = found.get("metrics_text") if isinstance(found.get("metrics_text"), str) else None
@@ -724,6 +731,27 @@ def _read_via_fleet(store, profile, replica, now, stale=STALE_S):
     return reading
 
 
+FLEET_IDENTITY = re.compile(r"(?:^|/)(id|start_time|started_at):(.+)$", re.S)
+
+
+def _fleet_identity(value):
+    """(engine instance id, engine start time) of the node sampler's accounting identity, which is qualified by its
+    launch (``<launch>/id:<id>``, ``<launch>/start_time:<n>``, ``<launch>/started_at:<n>``); either may be None."""
+    if not isinstance(value, str) or not value:
+        return None, None
+    found = FLEET_IDENTITY.search(value)
+    if not found:
+        return None, None
+    kind, raw = found.groups()
+    if kind == "id":
+        return (raw if len(raw) <= 128 and raw.isprintable() else None), None
+    try:
+        start = float(raw)
+    except ValueError:
+        return None, None
+    return None, start if math.isfinite(start) else None
+
+
 def _identity(store, key, observed, extra, reading, uptime):
     """(instance id, start time, basis, why, counter source) of one engine reading. Counters are accounted only
     under an identity carried by the answer that also carries the counters (or the fleet sampler's validated
@@ -731,7 +759,8 @@ def _identity(store, key, observed, extra, reading, uptime):
     the old instance:
     - the metrics answer with ``strix_engine_info{instance}`` or ``strix_engine_start_time_seconds`` -> metrics counters;
     - else the status answer with ``instance`` (id or start time) -> the status totals;
-    - else the fleet sampler's ``instance`` for this node sample;
+    - else the fleet sampler's identity for this node sample (its launch-qualified form reduced to the engine's id
+      or start time, so it compares with the answers' own);
     - else (older builds) the status totals with a start derived from that same answer's uptime, kept for the stored
       id only while elapsed time and uptime advance together (within 0.5 s) and the engine is at least 30 s old;
     - else none: nothing is accounted.
@@ -739,9 +768,12 @@ def _identity(store, key, observed, extra, reading, uptime):
     extra = extra or {}
     status_id, status_start = observed.get("instance"), observed.get("started_at")
     metrics_id, metrics_start = extra.get("instance"), extra.get("start_time")
-    fleet_id = reading.get("fleet_instance")
+    fleet_id, fleet_start = reading.get("fleet_instance"), reading.get("fleet_start")
+    if reading.get("fleet_bracket"):
+        return None, None, "conflict", "node sample spans an engine restart: " + reading["fleet_bracket"], None
     ids = {value for value in (status_id, metrics_id, fleet_id) if value}
-    if len(ids) > 1 or (status_start is not None and metrics_start is not None and abs(status_start - metrics_start) > 1):
+    starts = [value for value in (status_start, metrics_start, fleet_start) if value is not None]
+    if len(ids) > 1 or (starts and max(starts) - min(starts) > 1):
         return None, None, "conflict", "the answers name different engine instances (a restart between them)", None
     has_metrics, has_status = reading.get("metrics_text") is not None, reading.get("status") is not None
     if has_metrics and (metrics_id or metrics_start is not None):
@@ -750,8 +782,8 @@ def _identity(store, key, observed, extra, reading, uptime):
     if has_status and (status_id or status_start is not None):
         return (status_id or f"start-{status_start:.3f}"), status_start, (
             "engine instance id" if status_id else "engine start time"), None, "status"
-    if fleet_id:
-        return (fleet_id, reading.get("fleet_start"), "node sampler's engine identity", None,
+    if fleet_id or fleet_start is not None:
+        return (fleet_id or f"start-{fleet_start:.3f}", fleet_start, "node sampler's engine identity", None,
                 "status" if has_status else "metrics")
     observed_at = reading["observed_at"]
     if uptime is None or not has_status:
@@ -1770,6 +1802,11 @@ def speculative_document(api, query, store=None):
                 row["acceptance"] = spec["accepted"] / spec["proposed"]
             if spec.get("cycles") and spec.get("accepted") is not None:
                 row["accepted_per_cycle"] = spec["accepted"] / spec["cycles"]
+            if spec.get("accepted") is None or spec.get("proposed") is None:
+                why["acceptance"] = "engine reports " + (
+                    "proposed drafts without an accepted count" if spec.get("proposed") is not None else
+                    "accepted drafts without a proposed count" if spec.get("accepted") is not None else
+                    "no draft counts")
             depth = spec.get("depth") or []
             if depth:
                 cycles = spec.get("cycles")

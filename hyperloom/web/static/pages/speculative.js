@@ -25,7 +25,7 @@
     const {esc, card: box, unavailable, table, cells} = H();
     const why = row.why || {};
     const summary = `<dl class="kv"><dt>Method</dt><dd>${row.method ? esc(row.method) + (row.scope ? ` · ${esc(row.scope)}` : "") : unavailable(why.acceptance)}</dd>`
-      + `<dt>Accepted / proposed</dt><dd>${row.proposed ? esc(`${row.accepted.toLocaleString()} / ${row.proposed.toLocaleString()} · ${pct(row.acceptance)}`) : unavailable(why.acceptance || "no drafts yet")}</dd>`
+      + `<dt>Accepted / proposed</dt><dd>${row.proposed && row.accepted != null ? esc(`${row.accepted.toLocaleString()} / ${row.proposed.toLocaleString()} · ${pct(row.acceptance)}`) : unavailable(why.acceptance || "no drafts yet")}</dd>`
       + `<dt>Accepted per cycle</dt><dd>${row.accepted_per_cycle != null ? esc(row.accepted_per_cycle.toFixed(2)) : unavailable(why.acceptance || "engine reports no cycles")}</dd>`
       + `<dt>Draft time</dt><dd>${row.draft_seconds != null ? esc(`${row.draft_seconds.toFixed(1)} s`) : unavailable(why.draft_seconds)}</dd>`
       + `<dt>Target time saved</dt><dd>${row.saved_seconds != null ? esc(`${row.saved_seconds.toFixed(1)} s (estimated)`) : unavailable(why.saved_seconds)}</dd></dl>`

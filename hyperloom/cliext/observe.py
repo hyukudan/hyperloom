@@ -168,6 +168,9 @@ def run_latency(args):
                 rows.append(cells)
         _table([args.by, "observer", "ttft ms p50/p95/p99", "queue ms", "total ms", "decode tok/s"], rows)
         for item in doc.get("histograms") or []:
+            if item.get("family") == "_cut" or "count" not in item:
+                print(f"{item['observer']} {item.get('profile') or ''}: {item.get('basis') or 'histograms cut'}")
+                continue
             print(f"{item['observer']} {item['family']} {item.get('labels') or {}}: n {_fmt(item['count'])}, p50 "
                   f"{_fmt(item['p50'], 3)} p95 {_fmt(item['p95'], 3)} ({item['basis']})")
     return _emit(args, document, render)

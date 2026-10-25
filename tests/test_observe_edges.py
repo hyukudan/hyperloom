@@ -153,9 +153,6 @@ class FreshnessAndBoundsTests(Base):
         self.assertIn("not kept", notes[0]["basis"])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class CadenceAndAgeTests(Base):
     def test_counted_series_follow_the_configured_interval(self):
@@ -208,9 +205,9 @@ class RetainedReadingTests(unittest.TestCase):
         self.env.__exit__(None, None, None)
         self.tmp.cleanup()
 
-    def fleet(self, ts, status=None, metrics=None):
+    def fleet(self, ts, status=None, metrics=None, **extra):
         self.env.store.put("fleet/engine", "halo-1:lb:18502", {
-            "ts": ts, "machine": "halo-1", "profile": "lb", "port": 18502, "replica": "halo-1",
+            **extra, "ts": ts, "machine": "halo-1", "profile": "lb", "port": 18502, "replica": "halo-1",
             "outcomes": {"/health": "ok", "/api/status?detail=1": "ok", "/metrics": "ok"}, "health": True,
             "status": status if status is not None else fixture("engine-status-c1.json"),
             "metrics_text": metrics if metrics is not None else fixture("engine-metrics-c1.txt")})
@@ -280,3 +277,60 @@ class RetainedReadingTests(unittest.TestCase):
             point = env.store.query("engine_up", 0, 2e9, tier="raw")["lines"][0]["points"][-1]
             self.assertEqual((point[6], point[8]), (0, interval))
             env.clock.now += interval
+
+    def test_producer_identity_is_compared_in_the_engines_scope(self):
+        env = self.env
+        launch = "up-lb-1800000000"
+        self.fleet(env.clock() - 2, instance=f"{launch}/id:5a5a5a5a5a5a5a5a")
+        env.collect()
+        metrics = fixture("engine-metrics-c1.txt").replace("strix_generated_tokens_total 9910",
+                                                         "strix_generated_tokens_total 10010")
+        self.fleet(env.clock() - 2, metrics=metrics, instance=f"{launch}/id:5a5a5a5a5a5a5a5a")
+        env.collect()
+        snapshot = env.store.get("observe/engine", "lb/halo-1")
+        self.assertEqual((snapshot["instance"], snapshot["instance_basis"]), ("5a5a5a5a5a5a5a5a", "engine instance id"))
+        lines = env.store.query("engine_generated_tokens", 0, 2e9)["lines"]
+        self.assertEqual(sum(p[5] for line in lines for p in line["points"]), 100)
+        self.assertTrue(env.store.execute("SELECT COUNT(*) FROM observe_engine_requests WHERE profile='lb'")[0][0])
+        self.assertEqual(observe._fleet_identity(f"{launch}/start_time:1799990000"), (None, 1799990000.0))
+        self.assertEqual(observe._fleet_identity("id:a/b"), ("a/b", None))
+        self.assertEqual(observe._fleet_identity("no identity"), (None, None))
+
+    def test_producer_identity_of_another_process_is_a_conflict(self):
+        env = self.env
+        self.fleet(env.clock() - 2, instance="up-lb/id:6b6b6b6b6b6b6b6b")
+        env.collect()
+        self.assertEqual(env.store.get("observe/engine", "lb/halo-1")["instance_basis"], "conflict")
+        self.fleet(env.clock() - 2, instance=None, why={"instance_bracket": "the status read after the metrics differed"})
+        env.collect()
+        snapshot = env.store.get("observe/engine", "lb/halo-1")
+        self.assertEqual(snapshot["instance_basis"], "conflict")
+        self.assertIn("restart", snapshot["why"]["instance"])
+
+
+class MixedReachabilityTests(Base):
+    """Down is known only when every path answered with a failure; a path the deadline cut leaves it unknown."""
+
+    def answer(self, health, status, metrics):
+        base = f"http://{NODE1}:18501"
+        self.env.router()
+        self.env.http.routes.update({base + "/health": health, base + "/api/status": status, base + "/metrics": metrics})
+        self.env.collect()
+        up = self.env.store.query("engine_up", 0, 2e9, tier="raw")["lines"]
+        return self.env.store.get("observe/engine", "qwen/halo-1"), [p[6] for line in up for p in line["points"]]
+
+    def test_failed_health_then_the_deadline(self):
+        snapshot, up = self.answer(OSError("HTTP 500"), TimeoutError("deadline"), TimeoutError("deadline"))
+        self.assertEqual((snapshot["state"], up), ("not read", []))
+
+    def test_refused_status_and_unread_metrics(self):
+        snapshot, up = self.answer(OSError("HTTP 500"), OSError("refused"), TimeoutError("deadline"))
+        self.assertEqual((snapshot["state"], up), ("not read", []))
+
+    def test_every_path_failed(self):
+        snapshot, up = self.answer(OSError("HTTP 500"), OSError("refused"), OSError("refused"))
+        self.assertEqual((snapshot["state"], up), ("unreachable", [0]))
+
+
+if __name__ == "__main__":
+    unittest.main()

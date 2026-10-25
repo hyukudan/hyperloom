@@ -345,6 +345,20 @@ class CliTests(Base):
         self.assertEqual(observe_cli._fleet_documents(self.env.api, Store(":memory:")), 0)
         self.assertFalse(path.exists())
 
+    def test_latency_text_shows_histogram_cuts(self):
+        real = observe.latency_document
+
+        def with_cut(api, query, store=None):
+            document = real(api, query, store)
+            document["histograms"] = list(document.get("histograms") or []) + [
+                {"observer": "router", "profile": "qwen", "replica": None, "family": "_cut",
+                 "cut": {"families": 3, "label_sets": 0}, "as_of": None, "basis": "3 families not kept (bounds)"}]
+            return document
+        with mock.patch.object(observe, "latency_document", with_cut):
+            code, text = self.run_cli("latency")
+        self.assertEqual(code, 0)
+        self.assertIn("3 families not kept (bounds)", text)
+
     def test_extension_is_registered(self):
         self.assertIn("observe", cliext.MODULES)
 
