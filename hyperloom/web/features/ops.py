@@ -986,7 +986,10 @@ def config_document(api, query):
                 "reachable": None if not entry else entry.get("error") is None}
         if cluster is not None and mid in cluster.machines:
             item["frozen"] = snapshot_occupancy(api, mid)
-            if item["frozen"] is None and cluster.machines[mid].access == "ssh":
+            access = cluster.machines[mid].access
+            if item["frozen"] is None and access not in ("ssh", "local"):
+                item["frozen"] = f"{access} access: the machine's lease state cannot be read"
+            if item["frozen"] is None and access == "ssh":
                 if not entry:
                     item["frozen"] = "lease state not checked yet (identity edits wait for the node's first answer)"
                 elif entry.get("error"):

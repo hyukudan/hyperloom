@@ -152,12 +152,13 @@ def options(payload):
 
 
 def install_log(value):
-    """The log directory of a marked hyperloom install root (read-only check: nothing is created)."""
+    """The log directory of a marked hyperloom install root, as the configured path (read-only check: nothing is
+    created; the configured path stays the authority, it is never replaced by a resolved one)."""
     root = checked_root(value)
     marker = root / ".hyperloom-root"
     if os.path.islink(marker) or not marker.is_file():
         raise ValueError("install root is not a marked hyperloom root")
-    return str(root / "log")
+    return str(Path(value) / "log")
 
 
 def _reparse(path):
@@ -208,10 +209,12 @@ def checked_root(value):
         if _reparse(ancestor) and ancestor.parent != ancestor:
             raise ValueError("a root must not be or lie under a symbolic link or reparse point")
     real = Path(os.path.realpath(path))
+    if os.path.normcase(str(real)) != os.path.normcase(os.path.abspath(value)):
+        raise ValueError("a root must not resolve elsewhere (a link or junction in its path)")
     reason = protected(real)
     if reason:
         raise ValueError(reason)
-    return real
+    return Path(os.path.abspath(value))
 
 
 class Budget:
@@ -450,10 +453,10 @@ class Replay:
         return out + self.stream.readline(limit - len(out)) if limit > len(out) else out
 
 
-def more(source, stream):
-    """Whether unread bytes remain in the file (without reading them)."""
+def unread_on_disk(stream):
+    """Whether bytes remain in the file beyond what was read (without reading them)."""
     try:
-        return source.pending() > 0 or os.fstat(stream.fileno()).st_size > stream.tell()
+        return os.fstat(stream.fileno()).st_size > stream.tell()
     except OSError:
         return True
 
@@ -503,7 +506,7 @@ def search(opts, emit, deadline):
             report["bytes"] += len(head)          # every byte read from disk is charged once
             if b"\0" in head:
                 report["skipped_binary"] += 1
-                if room() <= 0:
+                if room() <= 0 and unread_on_disk(stream):
                     report["truncated"].append("bytes")
                     break
                 continue
@@ -527,12 +530,14 @@ def search(opts, emit, deadline):
                                 "before": [show(b) for b in before], "after": []}
                         (pending.append if context else emit)(item)
                 before.append(text)
-                stop = stop or ("deadline" if budget.expired() else "bytes" if room() <= 0 and more(source, stream) else None)
+                # bytes already read (the replayed probe) are always processed; the budget stops only new reads
+                stop = stop or ("deadline" if budget.expired() else "bytes" if room() <= 0 and not source.pending()
+                                and unread_on_disk(stream) else None)
                 if stop:
                     break
             for item in pending:
                 emit(item)
-            if stop is None and room() <= 0 and more(source, stream):
+            if stop is None and room() <= 0 and unread_on_disk(stream):
                 stop = "bytes"
         if stop:
             report["truncated"].append(stop)

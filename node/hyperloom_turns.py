@@ -538,7 +538,7 @@ def long_ok(reader):
     result = {}
     for line in found[0].decode("utf-8", "replace").splitlines()[:512]:
         parts = line.split()
-        if len(parts) < 2 or not parts[1].isdigit() or not 1 <= int(parts[1]) <= LONG_OK_MAX_S:
+        if len(parts) < 2 or not re.fullmatch(r"[0-9]{1,5}", parts[1]) or not 1 <= int(parts[1]) <= LONG_OK_MAX_S:
             continue
         label = parts[0]
         if not (not label or len(label) > 128 or any(ord(c) < 33 or ord(c) == 127 for c in label)):

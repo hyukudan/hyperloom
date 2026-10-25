@@ -154,6 +154,31 @@ class NodeSearchTests(unittest.TestCase):
             self.assertEqual((len(result["results"]), result["report"]["truncated"]), (1, truncated), limit)
             self.assertLessEqual(result["report"]["bytes"], limit)
 
+    def test_replayed_bytes_are_always_processed(self):
+        small = self.tree.base / "multi"
+        small.mkdir()
+        (small / "a.log").write_bytes(b"first\nneedle\n")
+        for limit, truncated in ((12, ["bytes"]), (13, []), (14, [])):
+            result = node.run("logs-search", {"text": "needle", "roots": [str(small)], "max_bytes": limit, "context": 1})
+            self.assertEqual([(r["text"], r["before"]) for r in result["results"]], [("needle", ["first"])], limit)
+            self.assertEqual(result["report"]["truncated"], truncated, limit)
+        (small / "b.log").write_bytes(b"\0binary")
+        result = node.run("logs-search", {"text": "zz", "roots": [str(small)], "max_bytes": 100})
+        self.assertEqual((result["report"]["skipped_binary"], result["report"]["truncated"]), (1, []))
+
+    def test_roots_are_the_configured_paths(self):
+        install = self.tree.base / "install"
+        (install / "log").mkdir(parents=True)
+        (install / ".hyperloom-root").write_text("x\n")
+        self.assertEqual(node.install_log(str(install)), str(install / "log"))
+        if hasattr(os, "symlink"):
+            try:
+                os.symlink(install, self.tree.base / "install-link", target_is_directory=True)
+            except OSError:
+                return
+            with self.assertRaises(ValueError):
+                node.install_log(str(self.tree.base / "install-link"))
+
     def test_the_whole_reply_fits_the_output_limit(self):
         deep = self.tree.base / ("d" * 200) / ("e" * 200) / ("f" * 200)
         deep.mkdir(parents=True)

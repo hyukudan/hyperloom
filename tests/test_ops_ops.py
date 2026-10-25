@@ -193,6 +193,8 @@ class PowerTests(Base, unittest.TestCase):
         self.assertIn("agent access", next(m for m in doc["machines"] if m["machine"] == "halo-9")["shutdown"]["blocked"])
         reason, unknown = ops.occupancy(self.api, self.api.cluster(), "halo-9")
         self.assertTrue(unknown and reason)
+        frozen = next(m for m in self.api.read("ops/config", {})["machines"] if m["id"] == "halo-9")["frozen"]
+        self.assertIn("agent access", frozen)
 
     def test_bounded_helper_run(self):
         code, out, err, stopped = ops._bounded_run([sys.executable, "-c", "import sys; sys.stdout.write('x' * 200000)"], 20)

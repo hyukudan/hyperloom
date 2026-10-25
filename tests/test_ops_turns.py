@@ -241,6 +241,10 @@ class TurnsNodeTests(TreeMixin, unittest.TestCase):
         self.assertLessEqual(len(result["long_ok"]), node.MAX_LONG_OK)
         self.assertLessEqual(len(json.dumps(result)), node.OUTPUT_BUDGET)
 
+    def test_malformed_long_ok_numbers_are_skipped(self):
+        (self.state / "long-ok").write_text("job-a \u00b2\njob-b " + "9" * 5000 + "\njob-c 600\n", encoding="utf-8")
+        self.assertEqual(self.collect()["long_ok"], {"job-c": 600})
+
     def test_output_is_bounded(self):
         lines = "".join(f"00:{i // 60 % 60:02d}:{i % 60:02d} wait  job-{i} pid {i + 10} {'x' * 300}\n" for i in range(4000))
         (self.state / "log").write_text(lines)
