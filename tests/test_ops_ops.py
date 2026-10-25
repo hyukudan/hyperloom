@@ -91,6 +91,31 @@ class NodeToolTests(Base, unittest.TestCase):
         self.assertEqual(ops.shared_snapshot(api), {"profiles": {"profiles": []}})
         self.assertEqual(built, [1])
 
+    def test_collectors_skip_a_machine_whose_node_gate_is_held(self):
+        from hyperloom import nodegate
+        from hyperloom.web.features import turns
+        calls = []
+
+        def record(api, machine, verb, payload=None):
+            calls.append((machine.id, verb))
+            return {"schema": "hyperloom/node-v1", "checks": {"tool": {"value": "x"}}} if verb != "host" else {}
+        release = nodegate.try_hold(self.api.config_path, "halo-1")
+        self.assertIsNotNone(release)
+        try:
+            with mock.patch.object(ops, "_node_call", record):
+                worker = threading.Thread(target=lambda: (ops.sample_nodes(self.api, 1.0), turns.sample(self.api, 1.0)))
+                worker.start()
+                worker.join(20)
+                self.assertFalse(worker.is_alive())
+        finally:
+            release()
+        self.assertNotIn("halo-1", {mid for mid, _ in calls})
+        self.assertIn(("halo-2", "version"), calls)
+        self.assertFalse(ops._checks_busy)
+        with mock.patch.object(ops, "_node_call", record):
+            ops.sample_nodes(self.api, 2.0)
+        self.assertIn(("halo-1", "version"), calls)
+
     def test_node_checks_never_overlap_and_late_results_are_kept(self):
         gate, started = threading.Event(), threading.Event()
         calls = []

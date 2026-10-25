@@ -49,8 +49,10 @@ def eligible(cluster):
     return chosen, skipped
 
 
-def fetch(api, machines=None, clock=time.time):
-    """Read every eligible node once (in parallel, one call in flight per machine); returns {machine: entry}."""
+def fetch(api, machines=None, clock=time.time, skip_busy=False):
+    """Read every eligible node once (in parallel, one call in flight per machine); returns {machine: entry}. With
+    skip_busy (the collector), a machine whose node gate another call holds is left out this round and keeps its
+    previous reply."""
     cluster = api.cluster()
     chosen, _ = eligible(cluster)
     if machines is not None:
@@ -58,10 +60,11 @@ def fetch(api, machines=None, clock=time.time):
     key = id(api)
     results = {}
 
-    def one(machine):
+    def one(machine, enter, release):
         sent = clock()
         entry = {"fetched_at": None, "reply": None, "error": None, "offset_s": None, "offset_uncertainty_s": None}
         try:
+            enter()
             reply = ops._node_call(api, machine, "turns", {"lab_dir": machine.lab_dir})
             received = clock()
             if not isinstance(reply, dict) or reply.get("schema") != "hyperloom/node-v1":
@@ -74,6 +77,8 @@ def fetch(api, machines=None, clock=time.time):
                 entry["offset_uncertainty_s"] = (received - sent) / 2
         except Exception as exc:
             entry.update(error=str(exc)[:300], fetched_at=clock())
+        finally:
+            release()
         results[machine.id] = entry
         with _state_lock:
             _replies.setdefault(key, {})[machine.id] = entry
@@ -85,7 +90,16 @@ def fetch(api, machines=None, clock=time.time):
             if _running.get((key, machine.id)):
                 continue            # the previous call to this machine is still running: coalesced
             _running[(key, machine.id)] = True
-        thread = threading.Thread(target=one, args=(machine,), name="hyperloom-turns-" + machine.id, daemon=True)
+        if skip_busy:
+            ok, enter, release = ops.sampler_gate(api, machine)
+        else:
+            ok, enter, release = True, (lambda: None), (lambda: None)
+        if not ok:                          # another node call holds this machine: its previous reply stays
+            with _state_lock:
+                _running.pop((key, machine.id), None)
+            continue
+        thread = threading.Thread(target=one, args=(machine, enter, release), name="hyperloom-turns-" + machine.id,
+                                  daemon=True)
         threads.append(thread)
         thread.start()
     for thread in threads:
@@ -94,7 +108,7 @@ def fetch(api, machines=None, clock=time.time):
 
 
 def sample(api, now):
-    fetch(api)
+    fetch(api, skip_busy=True)
     return []
 
 

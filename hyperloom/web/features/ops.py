@@ -120,6 +120,19 @@ def machine_of(api, mid, cluster=None):
     return cluster.machines[mid]
 
 
+def sampler_gate(api, machine):
+    """For a collector: the shared node gate taken now or not at all (a machine another call holds is skipped this
+    round). Returns (ok, enter, release): the worker thread calls enter() before its node calls and release() after."""
+    from hyperloom import nodegate
+    config_path = getattr(api, "config_path", None)
+    if machine.access != "ssh" or config_path is None:
+        return True, (lambda: None), (lambda: None)
+    release = nodegate.try_hold(config_path, machine.id)
+    if release is None:
+        return False, None, None
+    return True, (lambda: nodegate.adopt(config_path, machine.id)), release
+
+
 def _node_call(api, machine, verb, payload=None):
     """The one place this package calls a node verb (the browser smoke seed replaces it)."""
     return api.node(machine, verb, payload or {})
@@ -406,8 +419,9 @@ def sample_nodes(api, now):
     store = store_for_write(api)
     cluster = api.cluster()
 
-    def one(machine, key):
+    def one(machine, key, enter, release):
         try:
+            enter()
             row = {"checked_at": now, "deployed": None, "error": None, "seen_at": None}
             try:
                 reply = _node_call(api, machine, "version", {})
@@ -424,6 +438,7 @@ def sample_nodes(api, now):
                     pass
             _publish_check(api, store, machine.id, row, found, now)
         finally:
+            release()
             with _checks_lock:
                 _checks_busy.discard(key)
 
@@ -436,7 +451,13 @@ def sample_nodes(api, now):
             if key in _checks_busy:
                 continue
             _checks_busy.add(key)
-        thread = threading.Thread(target=one, args=(machine, key), name="hyperloom-node-check-" + machine.id, daemon=True)
+        ok, enter, release = sampler_gate(api, machine)
+        if not ok:                          # another node call holds this machine: checked next round
+            with _checks_lock:
+                _checks_busy.discard(key)
+            continue
+        thread = threading.Thread(target=one, args=(machine, key, enter, release),
+                                  name="hyperloom-node-check-" + machine.id, daemon=True)
         threads.append(thread)
         thread.start()
     for thread in threads:
