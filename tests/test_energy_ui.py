@@ -30,7 +30,13 @@ smoke = _smoke()
 class EnergyPagesInBrowser(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.server = smoke.FixtureServer()
+        for attempt in range(3):            # a loaded machine can miss the fixture's start-up window once
+            try:
+                cls.server = smoke.FixtureServer()
+                break
+            except (AssertionError, OSError):
+                if attempt == 2:
+                    raise
         cls.host = urlsplit(cls.server.origin).hostname        # the fixture's own loopback address
         cls.profile = tempfile.TemporaryDirectory(prefix="hyperloom-browser-", ignore_cleanup_errors=True)
         port = smoke.free_port()
@@ -177,7 +183,18 @@ class EnergyPagesInBrowser(unittest.TestCase):
           location.hash = '#/thermals';
         })()""")
         self.js("new Promise(r => setTimeout(r, 4000))")
-        self.js("window.fetch = window.__energyRealFetch; location.hash = '#/energy';")
+        # Back on the page while its next read is held: nothing stale may be shown or editable meanwhile.
+        held = self.js("""(() => {
+          const real = window.__energyRealFetch;
+          window.fetch = (url, options) => String(url).includes('/api/energy?')
+            ? new Promise(r => setTimeout(r, 2000)).then(() => real(url, options)) : real(url, options);
+          location.hash = '#/energy';
+          return new Promise(r => setTimeout(() => r({price: document.getElementById('energy-price')?.value ?? null,
+            doc: window.Hyperloom.state.docs['energy?range=24h']?.price ?? null}), 300));
+        })()""")
+        self.assertIn(held["price"], (None, "0.47"))
+        self.assertIn(held["doc"], (None, {"price_per_kwh": 0.47, "currency": "EUR"}))
+        self.js("window.fetch = window.__energyRealFetch;")
         smoke.eventually(lambda: self.js("!!window.Hyperloom.state.docs['energy?range=24h'] && "
                                          "document.getElementById('energy-price')?.value === '0.47'"), timeout=20)
         self.assertEqual(self.js("window.Hyperloom.state.docs['energy?range=24h'].price"),

@@ -148,6 +148,27 @@ class IntegrationTests(Base):
         summary = energy.compute(self.store, NOW)
         self.assertEqual(summary["missed_quarters"], 4)
 
+    def test_another_domains_row_does_not_hide_a_loss(self):
+        energy.compute(self.store, NOW - 13 * HOUR)
+        feed(self.store, lambda t: [(GPU, {"machine": "halo-1", "device": "0"}, 90.0)], NOW - 12 * HOUR, NOW - 11 * HOUR,
+             compute_every=HOUR)
+        energy.compute(self.store, NOW - 11 * HOUR + 60)        # device 0 integrated while its samples were there
+        feed(self.store, lambda t: [(GPU, {"machine": "halo-1", "device": "1"}, 50.0)], NOW - 12 * HOUR + 1,
+             NOW - 11 * HOUR + 1)                                # device 1's samples of the same hour arrive late ...
+        self.store.execute("DELETE FROM raw WHERE ts < ?", (NOW - 10 * HOUR,))   # ... and leave the raw tier unread
+        summary = energy.compute(self.store, NOW)
+        # The first three quarters were already final when device 1's samples came (late samples to an archived
+        # quarter are ignored by design); the fourth was not, and its loss is reported although device 0 has a row.
+        self.assertEqual(summary["missed_quarters"], 1)
+
+    def test_a_partly_integrated_quarter_is_reported(self):
+        energy.compute(self.store, NOW - 13 * HOUR)
+        feed(self.store, lambda t: [(GPU, {"machine": "halo-1", "device": "0"}, 100.0)], NOW - 12 * HOUR,
+             NOW - 12 * HOUR + QUARTER)
+        energy.compute(self.store, NOW - 12 * HOUR + 60)        # only the first minute was integrated
+        summary = energy.compute(self.store, NOW)               # then the collector stopped until the raw tier aged out
+        self.assertEqual(summary["missed_quarters"], 1)
+
     def test_samples_that_left_the_raw_tier_unread_are_reported(self):
         feed(self.store, lambda t: [(GPU, {"machine": "halo-1", "device": "0"}, 90.0)], NOW - 12 * HOUR, NOW - 10 * HOUR)
         energy.compute(self.store, NOW - 13 * HOUR)                            # a run before: the cursor is old
@@ -678,6 +699,17 @@ class DocumentTests(Base):
         first_point = doc["machines"][0]["lines"][0]["points"][0][0]
         self.assertLessEqual(doc["offsets"][0][0], first_point)
         self.assertEqual(doc["offsets"][0][1], 3600)                               # winter time in that zone
+
+    def test_a_build_with_older_thresholds_is_never_served_after_a_save(self):
+        self.store.record([("node_gpu_temp_celsius", {"machine": "halo-1", "device": "0", "sensor": "edge"}, 80.0)],
+                          ts=NOW - 600, interval=60)
+        old = energy.thresholds_of(self.store)
+        with mock.patch.object(energy, "thresholds_of", lambda store: old):
+            energy.thermals_document(self.api, {"range": "day"})                 # a GET that read the old settings
+        energy.set_thresholds(self.api, {"gpu": {"warn": 70, "crit": 80}})
+        doc = energy.thermals_document(self.api, {"range": "day"})
+        self.assertEqual(doc["thresholds"]["gpu"], {"warn": 70.0, "crit": 80.0})
+        self.assertEqual(doc["machines"][0]["lines"][0]["warn_buckets"], 1)
 
     def test_throttle_periods_never_bridge_missing_buckets(self):
         gpu = {"machine": "halo-1", "device": "0"}

@@ -8,6 +8,8 @@
   try { const saved = JSON.parse(localStorage.getItem("hyperloom-energy") || "{}"); if (ranges.some(r => r[1] === saved.range)) view.range = saved.range; } catch (_) { /* storage may be disabled */ }
   const save = () => { try { localStorage.setItem("hyperloom-energy", JSON.stringify({range: view.range})); } catch (_) {} };
   const H = () => window.Hyperloom;
+  const ownDocument = key => key === "energy" || key === "thermals" || key.startsWith("energy?") || key.startsWith("energy/archive")
+    || key.startsWith("thermals?");
   const endpoint = () => `energy?range=${view.range}`;
   const doc = () => H().state.docs[endpoint()];
 
@@ -167,7 +169,9 @@ ${card("Monthly archive", archive(d) + older(d))}
       // Every cached energy and thermals document is dropped, so whichever page shows them next (after a navigation
       // too) waits for a fetch made after the write; the first refresh may be a poll that began before it.
       try {
-        for (const key of Object.keys(H().state.docs)) if (/^(energy|thermals)/.test(key)) { delete H().state.docs[key]; delete H().state.fetched?.[key]; }
+        // A poll that began before the write is discarded (the shell drops results of an older generation).
+        H().state.generation++;
+        for (const key of Object.keys(H().state.docs)) if (ownDocument(key)) { delete H().state.docs[key]; delete H().state.fetched?.[key]; }
         H().state.fresh = false; await H().refresh(); await H().refresh();
       }
       finally { view.busy = false; H().state.busy = false; H().render(); }

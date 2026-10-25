@@ -56,7 +56,7 @@ MAX_LINES = 64                      # per input series (power, tokens, temperatu
 MAX_THROTTLE = 200                  # throttle periods per machine
 MAX_THERMAL_LINES = 96              # temperature and throttle lines read for one thermals document
 MAX_LABELS = 512                    # characters of one line's label set
-COMPUTE_BUDGET_S = 20.0             # wall time of one computation before it gives up (nothing written)
+COMPUTE_BUDGET_S = 20.0             # cooperative: checked between reads and before the commit (nothing written)
 MAX_ROWS = 20000                    # quarter rows written by one run (a backlog is worked off over several runs)
 MAX_SAMPLES = 400000                # raw rows one run may read for one series (8 h at 2 s is 14,400 per line)
 MAX_DOCUMENT_BYTES = 2 * 1024 * 1024  # serialized size of one energy or thermals document
@@ -91,6 +91,8 @@ DDL = """
 CREATE TABLE IF NOT EXISTS energy_quarters (q INTEGER NOT NULL, machine TEXT NOT NULL, domain TEXT NOT NULL,
     wh REAL NOT NULL, observed_s REAL NOT NULL, peak_w REAL, counted INTEGER NOT NULL,
     PRIMARY KEY(q, machine, domain));
+CREATE TABLE IF NOT EXISTS energy_counts (q INTEGER NOT NULL, machine TEXT NOT NULL, domain TEXT NOT NULL,
+    samples INTEGER NOT NULL, PRIMARY KEY(q, machine, domain));
 CREATE TABLE IF NOT EXISTS energy_pairs (q INTEGER PRIMARY KEY, wh_both REAL NOT NULL, tokens_both REAL NOT NULL,
     both_s REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS energy_monthly (month TEXT NOT NULL, machine TEXT NOT NULL, wh REAL NOT NULL,
@@ -103,7 +105,7 @@ CREATE TABLE IF NOT EXISTS energy_domains (machine TEXT NOT NULL, domain TEXT NO
 CREATE TABLE IF NOT EXISTS energy_receipts (token TEXT PRIMARY KEY, ts REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS energy_state (key TEXT PRIMARY KEY, value REAL);
 """
-TABLES = ("energy_quarters", "energy_pairs", "energy_monthly", "energy_monthly_tokens", "energy_domains",
+TABLES = ("energy_quarters", "energy_counts", "energy_pairs", "energy_monthly", "energy_monthly_tokens", "energy_domains",
           "energy_receipts", "energy_state")
 GUARD = "EXISTS (SELECT 1 FROM energy_state WHERE key='revision' AND value=?)"
 
@@ -264,7 +266,7 @@ def _samples(store, series, start, end, deadline):
 
 
 def _units(samples, cutoff):
-    """{minute: (value x interval sum, observed s, max value, longest interval)} of samples that carry their interval
+    """{minute: (value x interval sum, observed s, max value, longest interval, samples)} of samples that carry their interval
     and come after the reset cutoff. A sample stands for exactly the interval it was taken at (as recorded with it),
     so the energy of a unit is the exact interval-weighted sum; samples without a recorded interval are not
     integrable."""
@@ -273,9 +275,9 @@ def _units(samples, cutoff):
         if interval is None or interval <= 0 or (cutoff is not None and t <= cutoff):
             continue
         u = _floor(t, MINUTE)
-        weighted, observed, top, longest = units.get(u, (0.0, 0.0, None, 0.0))
+        weighted, observed, top, longest, count = units.get(u, (0.0, 0.0, None, 0.0, 0))
         units[u] = (weighted + value * interval, observed + interval, value if top is None else max(top, value),
-                    max(longest, interval))
+                    max(longest, interval), count + 1)
     return units
 
 
@@ -316,8 +318,8 @@ def _power(store, start, end, now, cutoff, deadline):
             while (machine, f"{domain}#{n}") in domains:
                 n += 1
             domain = f"{domain}#{n}"
-        units = {u: (weighted / HOUR, observed, top, longest)
-                 for u, (weighted, observed, top, longest) in line["units"].items()}
+        units = {u: (weighted / HOUR, observed, top, longest, count)
+                 for u, (weighted, observed, top, longest, count) in line["units"].items()}
         domains[(machine, domain)] = {"labels": line["labels"], "units": units, "seen": line["seen"],
                                       "duplicate": duplicate}
     # GPU presence also comes from the series index (all time), so the overlap rule never depends on the window.
@@ -401,7 +403,7 @@ def plan(store, now, finalize_all=False, deadline=None):
     reported = {key: sorted(info["seen"]) for key, info in domains.items()}
     token_reported = {key: sorted(quarters) for key, quarters in token_seen.items()}
 
-    rows, pairs = [], []
+    rows, pairs, counts = [], [], []
     for q in range(recompute, current + 1, QUARTER):
         if time.monotonic() > deadline:
             raise ValueError(f"energy computation exceeded {COMPUTE_BUDGET_S:g} s; nothing was written")
@@ -416,6 +418,7 @@ def plan(store, now, finalize_all=False, deadline=None):
             if present:
                 rows.append((q, key[0], key[1], sum(v[0] for v in present), sum(v[1] for v in present),
                              max(v[2] for v in present), int(info["counted"])))
+                counts.append((q, key[0], key[1], sum(v[4] for v in present)))
         inventory = [key for key, info in domains.items() if info["counted"]
                      and _reported_within(reported[key], q - INVENTORY_S, q)]
         engines = [key for key in token_reported if _reported_within(token_reported[key], q - TOKEN_LOOKBACK_S, q)]
@@ -461,17 +464,31 @@ def plan(store, now, finalize_all=False, deadline=None):
             entry[2] += both_s
     missed = 0
     if recompute > first:
-        # Quarters whose samples aged out of the raw tier before any run integrated them, per line, over the whole
-        # skipped range (the 15-minute tier still shows that samples existed): reported once.
-        computed = {(row[0], row[1]) for row in kept}
+        # Quarters about to be archived from the table whose samples were not all integrated before they left the
+        # raw tier: the 15-minute tier still counts the samples each domain recorded, the table counts the samples
+        # integrated. Compared per machine and domain (duplicates of a domain summed on both sides); the quarter
+        # holding a reset is left out (samples before the reset were archived by it). Reported once.
+        integrated = {}
+        for q, machine, domain, samples in store.execute(
+                "SELECT q, machine, domain, samples FROM energy_counts WHERE q >= ? AND q < ?", (first, recompute)):
+            key = (q, machine, domain.split("#")[0])
+            integrated[key] = integrated.get(key, 0) + samples
+        recorded = {}
         for series in (GPU_POWER, CPU_POWER):
-            for _key, (labels, quarters, _points) in _seen(store, series, first, recompute - 1).items():
-                machine = labels.get("machine")
-                missed += sum(1 for q in quarters if first <= q < recompute and (q, machine) not in computed)
+            for _key, (labels, _quarters, points) in _seen(store, series, first, recompute - 1).items():
+                for t, *_mid, n, _sum, _last, _cov, _cad in points:
+                    q = int(t)
+                    if n and first <= q < min(recompute, final_through) and labels.get("machine") and \
+                            not (cutoff is not None and q <= cutoff < q + QUARTER):
+                        key = (q, labels["machine"], _domain(series, labels))
+                        recorded[key] = recorded.get(key, 0) + n
+        missed = sum(1 for key, n in recorded.items() if n > integrated.get(key, 0))
 
     statements += [
         (f"DELETE FROM energy_quarters WHERE q >= ? AND q <= ? AND {GUARD}", (recompute, current, *g)),
         (f"DELETE FROM energy_pairs WHERE q >= ? AND q <= ? AND {GUARD}", (recompute, current, *g)),
+        (f"DELETE FROM energy_counts WHERE q >= ? AND q <= ? AND {GUARD}", (recompute, current, *g)),
+        (f"DELETE FROM energy_counts WHERE q < ? AND {GUARD}", (now - KEEP_ROWS_S, *g)),
         (f"DELETE FROM energy_quarters WHERE q < ? AND {GUARD}", (now - KEEP_ROWS_S, *g)),
         (f"DELETE FROM energy_pairs WHERE q < ? AND {GUARD}", (now - KEEP_ROWS_S, *g)),
     ]
@@ -479,6 +496,8 @@ def plan(store, now, finalize_all=False, deadline=None):
                     f"SELECT ?, ?, ?, ?, ?, ?, ? WHERE {GUARD}", (*row, *g)) for row in rows]
     statements += [(f"INSERT INTO energy_pairs(q, wh_both, tokens_both, both_s) SELECT ?, ?, ?, ? WHERE {GUARD}",
                     (*row, *g)) for row in pairs]
+    statements += [(f"INSERT INTO energy_counts(q, machine, domain, samples) SELECT ?, ?, ?, ? WHERE {GUARD}",
+                    (*row, *g)) for row in counts]
     for (machine, domain), info in sorted(domains.items()):
         if info["units"]:
             statements.append((
@@ -568,6 +587,7 @@ def reset_store(store, now):
     revision, new, token = summary["revision"], _new_revision(), secrets.token_hex(16)
     g = (revision,)
     statements += [(f"DELETE FROM energy_quarters WHERE {GUARD}", g), (f"DELETE FROM energy_pairs WHERE {GUARD}", g),
+                   (f"DELETE FROM energy_counts WHERE {GUARD}", g),
                    _set("reset_at", now, revision), _set("cutoff", now, revision),
                    _set("final_through", _floor(now, QUARTER), revision), _receipt(token, revision, now),
                    _bump(revision, new)]
@@ -1085,7 +1105,8 @@ def thermals_document(api, query):
         return api.document("thermals", range=name, machines=None, thresholds=dict(DEFAULT_THRESHOLDS),
                             why={"machines": NO_STORE})
     now = api.clock()
-    key = (id(store), name)
+    # Keyed by the thresholds and zone too: a build that read older settings can never be served for newer ones.
+    key = (id(store), name, json.dumps(thresholds_of(store), sort_keys=True), zone_of(store).name)
     cached = _thermal_cache.get(key)
     if cached and 0 <= now - cached[0] < THERMAL_CACHE_S:
         return cached[1]
@@ -1180,6 +1201,8 @@ def thermals_document(api, query):
         document = api.document("thermals", range=name, machines=None, thresholds=thresholds,
                                 why={"machines": f"the history would be {size // 1024} KiB, over the page limit of "
                                                  f"{MAX_DOCUMENT_BYTES // 1024} KiB; use the CLI or the week view"})
+    for old in [k for k, (t, _d) in _thermal_cache.items() if not 0 <= now - t < THERMAL_CACHE_S]:
+        _thermal_cache.pop(old, None)
     _thermal_cache[key] = (now, document)
     return document
 
