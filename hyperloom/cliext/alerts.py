@@ -11,6 +11,7 @@ history; it is kept in the secret directory and shown masked. Every change is wr
 with the URL masked.
 """
 
+import argparse
 import json
 from pathlib import Path
 import sys
@@ -99,7 +100,7 @@ def add(commands):
 
     def command(name, run, text):
         child = sub.add_parser(name, help=text)
-        child.add_argument("--config", type=Path, default=cli.config_path())
+        child.add_argument("--config", type=Path, default=argparse.SUPPRESS)      # keeps the parent's value
         child.set_defaults(ext_run=closing_store(run))
         return child
 

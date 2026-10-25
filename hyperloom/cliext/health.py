@@ -203,7 +203,7 @@ def add(commands):
 
     def command(name, run, text):
         child = sub.add_parser(name, help=text)
-        child.add_argument("--config", type=Path, default=cli.config_path())
+        child.add_argument("--config", type=Path, default=argparse.SUPPRESS)      # keeps the parent's value
         child.set_defaults(ext_run=closing_store(run))
         return child
 

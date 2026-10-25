@@ -65,6 +65,22 @@ class CLITests(unittest.TestCase):
         self.assertEqual([(a["action"], a["result"]["state"]) for a in self.audit()],
                          [("health/rules/set", "succeeded"), ("health/rules/set", "refused")])
 
+    def test_the_configuration_is_kept_in_either_position(self):
+        other = Path(self.dir.name) / "other" / "cluster.json"
+        other.parent.mkdir()
+        store = Store(other.parent / "telemetry.sqlite3")
+        self.addCleanup(store.close)
+        store.event("health", "info", "x", ts=1.0)
+        mine = self.store()
+        mine.event("health", "info", "mine", ts=1.0)
+        for argv in (["health", "--config", str(other), "clear-events", "--older-than", "all", "--yes"],
+                     ["health", "clear-events", "--config", str(other), "--older-than", "all", "--yes"]):
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(cli.main(argv), 0)
+        self.assertEqual([e["message"] for e in mine.events()], ["mine"])          # the default one is untouched
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(cli.main(["alerts", "--config", str(other), "list"]), 0)
+
     def test_events_and_clear(self):
         store = self.store()
         store.event("health", "warning", "GPU hot", machine="halo-1", ts=100.0)

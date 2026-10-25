@@ -62,6 +62,7 @@
     const control = event.target.closest("[data-page-action]");
     if (!control || control.disabled || !inPage(control) || !control.dataset.pageAction.startsWith("alerts-")) return;
     const action = control.dataset.pageAction;
+    if (action === "alerts-field") return;           // form fields are handled by the input/change listeners
     const channel = (doc()?.channels || []).find(c => c.id === control.dataset.id);
     if (action === "alerts-add") { view.form = blank(); view.note = ""; rerender(); document.getElementById("alert-name")?.focus(); return; }
     if (action === "alerts-edit" && channel) { view.form = {...blank(), ...channel, url: ""}; view.note = ""; rerender(); document.getElementById("alert-name")?.focus(); return; }
