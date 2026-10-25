@@ -322,3 +322,49 @@ class TextRuleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DocumentSourceTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.api = FakeAPI(self.dir.name)
+        patcher = mock.patch.object(machines, "launch_records", lambda api: {})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_rate_needs_the_current_device_identity(self):
+        self.api.answers = {"halo-1": host("halo-1"), "halo-2": host("halo-2")}
+        machines.sample_nodes(self.api, 1_800_000_000.0)
+        self.api.answers["halo-1"] = bump(host("halo-1"), rx=900)
+        self.api.clock.now = 1_800_000_005.0
+        machines.sample_nodes(self.api, 1_800_000_005.0)
+        eno = lambda doc: next(n for n in doc["net"] if n["iface"] == "eno1")
+        self.assertAlmostEqual(eno(machines.machine_document(self.api, "halo-1", {}))["rx_bytes_per_s"], 180.0)
+        unknown = bump(host("halo-1"), rx=1800)
+        for row in unknown["checks"]["net"]["value"]:
+            row.pop("ifindex")
+        self.api.answers["halo-1"] = unknown
+        self.api.clock.now = 1_800_000_006.0
+        machines.sample_nodes(self.api, 1_800_000_006.0)
+        self.assertIsNone(eno(machines.machine_document(self.api, "halo-1", {}))["rx_bytes_per_s"])
+
+    def test_failed_nvidia_process_queries_reach_the_document(self):
+        gpus, _ = nvidia_csv()
+        failed = machines.parse_nvidia(gpus, None, "nvidia-smi exited with 6")
+        answer = control_answer()
+        answer["checks"]["nvidia"] = {"status": "ok", "value": failed}
+        answer["checks"]["gpu_processes"] = {"status": "unavailable", "value": None, "why": "see the processes of each NVIDIA card"}
+        self.api.telemetry.put(machines.HOSTS, "workstation", {"ts": self.api.clock(), "ok": True, "last_ok": self.api.clock(),
+                                                               "access": "local", "host": answer, "instance": "boot-1"})
+        doc = machines.machine_document(self.api, "workstation", {})
+        self.assertIsNone(doc["processes"])
+        self.assertIn("exited with 6", doc["why"]["processes"])
+        # A node: its own list is kept and an NVIDIA failure is still named.
+        node = host("halo-1")
+        node["checks"]["nvidia"] = {"status": "ok", "value": failed}
+        self.api.telemetry.put(machines.HOSTS, "halo-1", {"ts": self.api.clock(), "ok": True, "last_ok": self.api.clock(),
+                                                          "access": "ssh", "host": node, "instance": "b"})
+        doc = machines.machine_document(self.api, "halo-1", {})
+        self.assertEqual(len(doc["processes"]), len(node["checks"]["gpu_processes"]["value"]))
+        self.assertIn("GPU-a0b1c2d3", doc["why"]["processes"])

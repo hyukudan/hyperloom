@@ -117,7 +117,7 @@
   function processes(d) {
     const {card, table, cells, esc, unavailable} = H();
     if (d.processes == null) return card("Processes holding the GPU", `<p>${unavailable(d.why?.processes)}</p>`);
-    return card("Processes holding the GPU", table(["PID", "Process", ["Card", "hide-n"], "GPU memory"], d.processes.map(p => cells([esc(p.pid), p.comm ? esc(p.comm) : unavailable(p.why?.comm || "not reported"), `<span class="hide-n">${esc(p.device || "")}</span>`, num(p.vram_bytes) ? esc(fmt(p.vram_bytes, "bytes")) : unavailable("not reported by the driver")])).join(""), "GPU processes"));
+    return card("Processes holding the GPU", table(["PID", "Process", ["Card", "hide-n"], "GPU memory"], d.processes.map(p => cells([esc(p.pid), p.comm ? esc(p.comm) : unavailable(p.why?.comm || "not reported"), `<span class="hide-n">${esc(p.device || "")}</span>`, num(p.vram_bytes) ? esc(fmt(p.vram_bytes, "bytes")) : unavailable("not reported by the driver")])).join(""), "GPU processes") + (d.why?.processes ? `<p class="hint">${unavailable(d.why.processes)}</p>` : ""));
   }
   function cpu(d) {
     const {card, table, cells, esc, unavailable} = H(), c = d.cpu || {};

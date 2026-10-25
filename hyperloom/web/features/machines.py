@@ -244,6 +244,16 @@ def sensor_labels(entries):
             for index, (entry, label) in enumerate(zip(entries, labels))]
 
 
+def counter_source(kind, row):
+    """The device behind a counter's label: a disk's major:minor, an interface's LUID (Windows) or index (Linux);
+    None when unknown (the counter is then neither accounted nor shown as a rate)."""
+    if kind == "disk":
+        return "dev:" + str(row["dev"]) if row.get("dev") else None
+    if row.get("luid") is not None:
+        return "luid:" + str(row["luid"])
+    return "ifindex:" + str(row["ifindex"]) if row.get("ifindex") is not None else None
+
+
 def host_points(machine, host):
     """(gauges, counters) from one ``host`` answer. gauges: [(name, labels, value[, kind])]; counters:
     [(name, labels, value, source)] (raw cumulative byte counters, converted to deltas by the caller; source names
@@ -300,13 +310,12 @@ def host_points(machine, host):
         add("node_disk_used_bytes", disk.get("used_bytes"), mount=disk.get("mount"))
         add("node_disk_total_bytes", disk.get("total_bytes"), mount=disk.get("mount"))
     for row in _value(checks.get("diskstats")) or []:
-        source = "dev:" + str(row.get("dev")) if row.get("dev") else None
+        source = counter_source("disk", row)
         for field, name in (("read_bytes", "node_disk_read_bytes"), ("write_bytes", "node_disk_write_bytes")):
             if _finite(row.get(field)) and source:
                 counters.append((name, {**base, "device": row["device"]}, row[field], source))
     for row in _value(checks.get("net")) or []:
-        source = ("luid:" + str(row["luid"]) if row.get("luid") is not None else
-                  "ifindex:" + str(row["ifindex"]) if row.get("ifindex") is not None else None)
+        source = counter_source("net", row)
         for field, name in (("rx_bytes", "node_net_rx_bytes"), ("tx_bytes", "node_net_tx_bytes")):
             if _finite(row.get(field)) and source:
                 counters.append((name, {**base, "iface": row["iface"]}, row[field], source))
@@ -1414,18 +1423,25 @@ def machine_document(api, rest, query):
         why["nvidia"] = _why(nvidia)
     if not view["gpus"]:
         why["gpus"] = _why(checks.get("gpus"), "") or _why(nvidia, "") or "no GPU reported by this machine"
-    processes = _value(checks.get("gpu_processes"))
-    if processes is None and _value(nvidia):
-        cards = _value(nvidia)
-        if all(card.get("processes") is None for card in cards):
-            why["processes"] = (cards[0].get("why") or {}).get("processes") or "process query failed"
+    # Processes of every source: the AMD driver's list (nodes) and each NVIDIA card's query; a failed source is
+    # named, never shown as an empty list.
+    processes, failures = [], []
+    amd = checks.get("gpu_processes")
+    if _value(amd) is not None:
+        processes.extend(_value(amd))
+    elif _value(checks.get("gpus")):
+        failures.append("AMD GPU process list: " + _why(amd, "not reported"))
+    for card in _value(nvidia) or []:
+        if card.get("processes") is None:
+            failures.append(f"{card['device']}: " + ((card.get("why") or {}).get("processes") or "process query failed"))
         else:
-            processes = [{"device": card["device"], **p} for card in cards for p in card.get("processes") or []]
-            failed = [card["device"] for card in cards if card.get("processes") is None]
-            if failed:
-                why["processes"] = "process query failed for " + ", ".join(failed)
-    if processes is None:
-        why["processes"] = _why(checks.get("gpu_processes"), "no GPU process list on this machine")
+            processes.extend({"device": card["device"], **p} for p in card["processes"])
+    sources = (_value(amd) is not None) + sum(card.get("processes") is not None for card in _value(nvidia) or [])
+    if failures:
+        why["processes"] = "; ".join(failures)
+    if not sources:
+        processes = None
+        why.setdefault("processes", _why(amd, "no GPU process list on this machine"))
     cpu = _value(checks.get("cpu")) or {}
     chips = [c for c in _value(checks.get("sensors")) or [] if c.get("name") != "amdgpu"]
     prefixes = sensor_names(chips)
@@ -1443,15 +1459,17 @@ def machine_document(api, rest, query):
         cpu_doc["why"]["temperatures"] = _why(checks.get("sensors"), "no temperature sensors reported")
     committed = rates(store, machine.id, now, 3 * NODE_INTERVAL + view["interval"])
 
-    def rate(name, label):
+    def rate(name, label, source):
+        # A rate is shown only for the boot and device it was committed for (instance "<boot>/<source>").
         found = committed.get(machine.id + "|" + name + "|" + label)
-        # Rates are bound to "<boot>/<source>": usable only while the machine is still in that boot.
-        return found[0] if found and found[2].rsplit("/", 1)[0] == str((entry or {}).get("instance")) else None
+        current = f"{(entry or {}).get('instance')}/{source}"
+        return found[0] if found and source and (entry or {}).get("instance") and found[2] == current else None
 
     net = []
     for row in _value(checks.get("net")) or []:
         label = "iface=" + str(row.get("iface"))
-        rx, tx = rate("node_net_rx_bytes", label), rate("node_net_tx_bytes", label)
+        source = counter_source("net", row)
+        rx, tx = rate("node_net_rx_bytes", label, source), rate("node_net_tx_bytes", label, source)
         net.append({"iface": row.get("iface"), "physical": row.get("physical"), "operstate": row.get("operstate"),
                     "rx_bytes_per_s": rx, "tx_bytes_per_s": tx,
                     "why": {k: "requires two committed counter samples of the same boot" for k, v in (("rx_bytes_per_s", rx), ("tx_bytes_per_s", tx)) if v is None}})
@@ -1464,7 +1482,8 @@ def machine_document(api, rest, query):
     disk_io = []
     for row in _value(checks.get("diskstats")) or []:
         label = "device=" + str(row.get("device"))
-        read, write = rate("node_disk_read_bytes", label), rate("node_disk_write_bytes", label)
+        source = counter_source("disk", row)
+        read, write = rate("node_disk_read_bytes", label, source), rate("node_disk_write_bytes", label, source)
         disk_io.append({"device": row.get("device"), "read_bytes_per_s": read, "write_bytes_per_s": write,
                         "why": {k: "requires two committed counter samples of the same boot" for k, v in (("read_bytes_per_s", read), ("write_bytes_per_s", write)) if v is None}})
     if not disk_io:
