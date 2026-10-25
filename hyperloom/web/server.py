@@ -67,6 +67,7 @@ def _pairs(pairs):
 class PortalServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+    request_queue_size = 64     # feature pages poll several documents at once; the default backlog of 5 refuses bursts
 
     def __init__(self, port=18700, *, api=None, static_dir=None):
         self.api = api if api is not None else API()
