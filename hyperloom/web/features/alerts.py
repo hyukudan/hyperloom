@@ -498,7 +498,7 @@ class _Attempt:
         self.lock = threading.Lock()
         self.sock = None
         self.timer = threading.Timer(timeout, self.abort)
-        self.timer.daemon = True
+        self.timer.name, self.timer.daemon = "hyperloom-alert-deadline", True
         self.timer.start()
 
     def left(self):

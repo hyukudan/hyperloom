@@ -58,8 +58,8 @@ class Receiver:
                     pass
 
         self.server = ThreadingHTTPServer((LOOPBACK, 0), Handler)
-        self.server.daemon_threads = True
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.server.daemon_threads, self.server.block_on_close = False, True     # close() joins its request threads
+        self.thread = threading.Thread(target=self.server.serve_forever, name="test-alert-receiver", daemon=True)
         self.thread.start()
 
     def url(self, path):
