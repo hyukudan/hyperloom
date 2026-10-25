@@ -140,6 +140,50 @@ class CatalogTests(unittest.TestCase):
                 service.locate("no-such.recipe")
             self.assertNotIn(service._key(service.PENDING_DIR), [service._key(d) for d in service.candidate_dirs()])
 
+    def test_an_id_never_names_a_file(self):
+        # A recipe id is a catalog lookup: a file of the working directory with that name is not consulted or read.
+        with isolated() as env:
+            here = env.root / "cwd"
+            here.mkdir()
+            (here / "evil").write_text(copy_of(QWEN, "evil"), encoding="utf-8")
+            (here / "evil.toml").write_text(copy_of(QWEN, "evil"), encoding="utf-8")
+            asked = []
+            real = Path.is_file
+            cwd = os.getcwd()
+            os.chdir(here)
+            try:
+                with mock.patch.object(Path, "is_file", lambda p: asked.append(str(p)) or real(p)):
+                    with self.assertRaises(service.NotFound):
+                        service.locate("evil")
+                    self.assertNotIn("evil", asked)
+                    self.assertEqual(service.locate("evil.toml"), Path("evil.toml"))   # the CLI's FILE argument
+                code, _, err = run_cli("recipe", "show", "evil", "--config", str(env.config))
+            finally:
+                os.chdir(cwd)
+            self.assertEqual(code, 3, err)
+            # Not an id and not a FILE reference (no .toml/.json name, no directory part, or a name Windows would
+            # shorten): refused without asking the file system.
+            asked.clear()
+            os.chdir(here)
+            try:
+                with mock.patch.object(Path, "is_file", lambda p: asked.append(str(p)) or real(p)):
+                    for ref in ("evil ", "evil.", "evil.toml.", "evil.toml ", "e" * 70, "evil\0"):
+                        with self.subTest(ref=ref), self.assertRaises(service.NotFound):
+                            service.locate(ref)
+                    self.assertEqual([p for p in asked if not Path(p).is_absolute() or Path(p).parent == here], [])
+                    self.assertEqual(service.locate("./evil"), Path("evil"))          # a path is a FILE
+                    (here / "UPPER.TOML").write_text(copy_of(QWEN, "upper"), encoding="utf-8")
+                    self.assertEqual(service.locate("UPPER.TOML"), Path("UPPER.TOML"))   # any case of the suffix
+            finally:
+                os.chdir(cwd)
+            for ref in ("x.toml", "x.JSON", "a/b", "a\\b", "C:x", "x:y", "..", "-x", "auto", "con"):
+                with self.subTest(ref=ref), self.assertRaises(RecipeError):
+                    service.check_id(ref)
+            for ref in ("C:\\x.toml", "//host/share/x.toml", "x.toml", "x:y"):
+                with self.subTest(ref=ref), self.assertRaises(ValueError):
+                    service.argv("diff", {"a": QWEN, "b": ref}, config=env.config)
+            self.assertIn("auto", service.argv("plan", {"recipe": "auto", "profile": "ds41-rtx"}, config=env.config))
+
     def test_storage_follows_the_config_in_use(self):
         with isolated() as env:
             other = env.root / "elsewhere" / "cluster.json"
@@ -153,6 +197,15 @@ class CatalogTests(unittest.TestCase):
 
 
 class WriteTests(unittest.TestCase):
+    def test_saved_name_is_checked(self):
+        # The reader in use (the core when installed) resolved the text; the saved name is still checked here.
+        with isolated():
+            resolved = mock.Mock(recipe={"name": "../evil"})
+            with mock.patch.object(service, "_resolve_text", return_value=resolved), \
+                    self.assertRaisesRegex(RecipeError, "recipe name '../evil'"):
+                service.save(None, "mine", text=copy_of(QWEN, "mine"))
+            self.assertFalse((service.user_dir() / "mine.toml").exists())
+
     def test_save_replace_delete_with_sha(self):
         with isolated() as env:
             first = service.save(None, "qwen3.8-flash-next.mine", text=copy_of(QWEN, "mine"))
@@ -307,6 +360,58 @@ class WriteTests(unittest.TestCase):
             receipt = {"disk_read_gbytes_ps": 6.1, "method": "direct", "host": "halo-1", "path": "/m.gguf"}
             with self.assertRaisesRegex(RecipeError, "overlaps the configured directory"):
                 service.save_receipt(orchestrate.load_cluster(env.config), "x", json.dumps(receipt))
+
+
+class SharingTests(unittest.TestCase):
+    """Windows: a reader holding a file makes os.replace/unlink fail for a moment (PermissionError); the recipe writes
+    retry like the other state writers, and a failed snapshot publish says why instead of "no snapshot"."""
+
+    def flaky(self, fail_first, code=13):
+        real, calls = os.replace, []
+
+        def replace(source, target):
+            calls.append(str(target))
+            if len(calls) <= fail_first:
+                raise OSError(code, "the process cannot access the file" if code == 13 else "no space left")
+            return real(source, target)
+        return mock.patch.object(os, "replace", side_effect=replace), calls
+
+    def test_publish_and_unlink_retry_a_sharing_violation(self):
+        with isolated():
+            patch, calls = self.flaky(3)
+            with patch:
+                saved = service.save(None, "mine", text=copy_of(QWEN, "mine"))
+            self.assertEqual(len(calls), 4)
+            self.assertEqual(Path(saved["path"]).read_text(encoding="utf-8"), copy_of(QWEN, "mine"))
+            self.assertEqual([p.name for p in service.user_dir().iterdir() if p.name.endswith(".part")], [])
+            real, attempts = Path.unlink, []
+
+            def unlink(path, *a, **kw):
+                attempts.append(path.name)
+                if path.name == "mine.toml" and len(attempts) <= 2:
+                    raise PermissionError(13, "in use")
+                return real(path, *a, **kw)
+            with mock.patch.object(Path, "unlink", unlink):
+                service.delete(None, "mine", saved["sha256"])
+            self.assertFalse(Path(saved["path"]).exists())
+
+    def test_snapshot_publish_retries_and_reports_its_error(self):
+        with isolated():
+            patch, calls = self.flaky(2)
+            with patch:
+                digest = service.launch_inputs(None, service.locate(QWEN), session.Layers(),
+                                               intent={"profile": "qwen-replicas"})
+            self.assertEqual(len(calls), 3)
+            service.load_inputs(digest)
+            patch, calls = self.flaky(100, 28)                                  # not a sharing violation
+            with patch, self.assertRaises(OSError) as raised:
+                service.launch_inputs(None, service.locate(QWEN), session.Layers(),
+                                      intent={"profile": "qwen-w5"})
+            self.assertEqual((len(calls), raised.exception.errno), (1, 28))     # told at once, not retried
+            self.assertNotIsInstance(raised.exception, service.NotFound)       # not "no snapshot"
+            self.assertNotIn("no snapshot", str(raised.exception))
+            leftovers = [p.name for p in (service.runtime_dir() / "recipe-inputs").iterdir() if p.name.startswith(".")]
+            self.assertEqual(leftovers, [])
 
 
 class SnapshotTests(unittest.TestCase):

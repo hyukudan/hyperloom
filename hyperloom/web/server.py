@@ -223,6 +223,8 @@ class Handler(BaseHTTPRequestHandler):
             self._error(400, str(exc))
         except (OSError, RuntimeError) as exc:
             self._error(503, str(exc))
+        except Exception as exc:          # an answer, never a dropped connection
+            self._error(500, f"internal error ({type(exc).__name__})")
 
     def _drain(self):
         """Before an early POST refusal, read and discard a declared body (bounded, short timeout), so the client
@@ -312,6 +314,8 @@ class Handler(BaseHTTPRequestHandler):
         except (OSError, RuntimeError) as exc:
             self._drain()
             self._error(503, str(exc))
+        except Exception as exc:          # an answer, never a dropped connection
+            self._error(500, f"internal error ({type(exc).__name__})")
 
     def _client_gone(self):
         """True once the client closed its connection (a synchronous recipe request is then cancelled)."""

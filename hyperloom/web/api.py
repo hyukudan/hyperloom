@@ -39,6 +39,11 @@ from hyperloom.web import recipes as recipe_web
 from hyperloom.web import features as feature_registry
 
 
+# Token counts (a recipe's prompt_tokens_min, max_copies_per_token) are measurements; a key that also names a secret
+# (password, secret, authorization, api key, private key) is redacted whatever its value.
+MEASUREMENT = re.compile(r"(?i)[a-z0-9_]*(?:tokens|per_token)[a-z0-9_]*")
+SECRET_NAME = re.compile(r"(?i)password|secret|authorization|api[_-]?key|private[_-]?key")
+IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")      # profile and machine ids (orchestrate._identifier)
 SCREENS = frozenset(("devices", "topology", "models", "profiles", "stats", "logs", "settings"))
 MUTATIONS = frozenset(("up", "down", "install", "hosts/pin", "doctor", "keys/rotate", "cancel")) | recipe_web.JOBS
 POLL_INTERVAL = 2
@@ -175,8 +180,9 @@ def _token_data(key, item):
             or (isinstance(item, str) and key.lower().endswith("token_ids") and bool(COMPRESSED_IDS.fullmatch(item))))
 
 
-def redact(value):
-    """Redact structured secrets and command/log representations of them."""
+def redact(value, text=True):
+    """Redact structured secrets and command/log representations of them. ``text=False``: keys and argv only, free
+    text kept as it is (recipe documents: their prose would otherwise be rewritten, "per token: an upper bound")."""
     if isinstance(value, dict):
         result = {}
         for key, item in value.items():
@@ -186,16 +192,20 @@ def redact(value):
             sensitive = re.search(r"password|secret|token|authorization|api[_-]?key|private[_-]?key", key, re.I)
             counts = sensitive and _token_data(key, item)
             credential = re.search(r"password|secret|authorization|api[_-]?key|private[_-]?key|bearer|csrf", key, re.I)
+            # Token counts are measurements (a recipe's prompt_tokens_min, max_copies_per_token), not secrets.
+            measurement = (item is None or isinstance(item, (int, float)) and not isinstance(item, bool)) and \
+                MEASUREMENT.fullmatch(key) and not SECRET_NAME.search(key) and not credential
             exempt = key.endswith(("_file", "_path")) or (key.endswith("_tokens") and not credential)
-            result[key] = "[redacted]" if sensitive and not counts and not metadata and not exempt else redact(item)
+            result[key] = "[redacted]" if sensitive and not counts and not measurement and not metadata and \
+                not exempt else redact(item, text)
         return result
     if isinstance(value, (list, tuple)):
         result, hide = [], False
         for item in value:
-            result.append("[redacted]" if hide else redact(item))
+            result.append("[redacted]" if hide else redact(item, text))
             hide = isinstance(item, str) and item in ("--api-key", "--handoff-api-key", "--password", "--token")
         return result
-    if isinstance(value, str):
+    if isinstance(value, str) and text:
         value = re.sub(r"(?i)(Bearer\s+)\S+", r"\1[redacted]", value)
         return re.sub(r'''(?ix)((?:["']?(?:api[_-]?key|handoff[_-]?api[_-]?key|password|secret|token)["']?)\s*[:=]\s*|--(?:api-key|handoff-api-key|password|token)\s+)(?:"[^"]*"|'[^']*'|[^\s,;}]+)''',
                       r"\1[redacted]", value)
@@ -424,19 +434,21 @@ class API:
         if endpoint in recipe_web.POSTS or endpoint in recipe_web.JOBS:
             raise APIError(endpoint + " requires POST", 405)
         from hyperloom.recipes import service
-        service.use_config(self.config_path)
-        try:
-            operation, argv = recipe_web.read_request(endpoint, query, config=self.config_path)
-        except ValueError as exc:
-            raise APIError(str(exc)) from exc
-        return recipe_web.document(operation, argv, recipe_web.in_process(argv, self._recipe_loader), now=self.clock())
+        with service.configured(self.config_path):
+            try:
+                operation, argv = recipe_web.read_request(endpoint, query, config=self.config_path)
+            except ValueError as exc:
+                raise APIError(str(exc)) from exc
+            status, document = recipe_web.document(operation, argv, recipe_web.in_process(argv, self._recipe_loader),
+                                                   now=self.clock())
+        return status, recipe_web.redacted(document, redact)
 
     def recipe_post(self, action, arguments, cancelled=lambda: False):
         """POST recipes/<query or write>: (status, document) of the CLI child; writes are audited."""
         from hyperloom.recipes import service
-        service.use_config(self.config_path)
         try:
-            request = recipe_web.Request(action, arguments, config=self.config_path)
+            with service.configured(self.config_path):
+                request = recipe_web.Request(action, arguments, config=self.config_path)
         except ValueError as exc:
             if action in recipe_web.WRITES:
                 self._audit(action, recipe_web.audit_arguments(arguments), {"state": "refused", "error": str(exc)})
@@ -455,7 +467,7 @@ class API:
             self._audit(action, recipe_web.audit_arguments(arguments),
                         {"state": "succeeded" if document["ok"] else "refused", "exit_code": document["exit_code"],
                          "error": document["error"], "result": document["result"]})
-        return status, document
+        return status, recipe_web.redacted(document, redact)
 
     def _cluster(self):
         return self.orchestrate.load_cluster(self.config_path, config)
@@ -1304,29 +1316,64 @@ class API:
             elif key in ("deadline", "approval_lease"):
                 if type(value) is not int or value <= 0:
                     raise APIError(key + " must be a positive integer")
-            elif not isinstance(value, str) or not value:
-                raise APIError(key + " must be a nonempty string")
+            elif not isinstance(value, str) or not value or value.startswith("-"):
+                # Every string becomes a CLI argument: one starting with '-' would be read as an option.
+                raise APIError(key + " must be a nonempty string not starting with '-'")
+            elif key in ("profile", "machine", "build_on", "router") and not IDENTIFIER.fullmatch(value):
+                raise APIError(f"{key} must be an id ([A-Za-z0-9][A-Za-z0-9_.-]{{0,63}})")
         if action == "hosts/pin" and not arguments.get("fingerprint"):
             raise APIError("fingerprint is required; compare on the machine")
         if action == "cancel" and not (arguments.get("job") or arguments.get("profile")):
             raise APIError("cancel requires job or profile")
+        if action == "cancel" and arguments.get("job"):
+            with self._job_lock:
+                job = self._jobs.get(arguments["job"])
+                job = dict(job) if job else None
+                feature = arguments["job"] in self._features_running     # a running feature job: its context
+            if not job or (job["action"] not in ("up", "recipes/deploy") and not feature):
+                raise APIError("only an up or a recipes/deploy job can be cancelled; use down with a profile")
+            if job["state"] != "running":
+                raise APIError(f"job {job['job']} has already {job['state']}: use down with a profile", 409)
         if action == "up" and (arguments.get("recipe") or arguments.get("recipe_inputs")):
+            # A recipe launch runs on the portal's own configuration: its recipe directories, snapshots and layers
+            # derive from it, and a configuration file is never named by the client here.
+            if "config" in arguments and Path(arguments["config"]).absolute() != Path(self.config_path).absolute():
+                raise APIError("an up with a recipe runs on the portal's configuration: drop config")
+            arguments.pop("config", None)
             try:
                 self._recipe_up_argv(arguments)
-            except ValueError as exc:
+                if not arguments.get("profile"):
+                    # Bound now, so the job names the profile it launches (its cancel stops that profile).
+                    profile = self._recipe_up_profile(arguments)
+                    if profile:
+                        arguments["profile"] = profile
+            except (ValueError, OSError) as exc:
                 raise APIError(str(exc)) from exc
         return arguments
 
+    def _recipe_up_profile(self, args):
+        """The profile an up with a recipe and no profile launches: the snapshot's, or the only profile serving the
+        recipe's model (as `hyperloom up --recipe ID` decides it); None for auto (the CLI asks for a profile)."""
+        from hyperloom.recipes import service
+        path = Path(args.get("config", self.config_path))
+        with service.configured(path):
+            if args.get("recipe_inputs"):
+                return service.load_inputs(args["recipe_inputs"])[1]["intent"]["profile"]
+            if args.get("recipe") == "auto":
+                return None
+            cluster = self.orchestrate.load_cluster(path, config)
+            return service.deployment_profile(cluster, service.locate(args["recipe"], cluster, for_up=True))
+
     def _recipe_job_arguments(self, action, arguments):
         from hyperloom.recipes import service
-        service.use_config(self.config_path)
         try:
-            if action == "recipes/probe":
-                service.argv("probe", arguments, config=self.config_path)
-            elif "_job" in arguments:
-                raise ValueError("unknown arguments: _job")
-            else:
-                self._deploy_argv(arguments)
+            with service.configured(self.config_path):
+                if action == "recipes/probe":
+                    service.argv("probe", arguments, config=self.config_path)
+                elif "_job" in arguments:
+                    raise ValueError("unknown arguments: _job")
+                else:
+                    self._deploy_argv(arguments)
         except ValueError as exc:
             raise APIError(str(exc)) from exc
         return dict(arguments)
@@ -1351,7 +1398,10 @@ class API:
     def _recipe_up_argv(self, args):
         """The `hyperloom up` argv of an API up with a recipe (layer files are names in the user layers directory)."""
         from hyperloom.recipes import service
-        service.use_config(self.config_path)
+        with service.configured(Path(args.get("config", self.config_path))):    # the layers of the config up uses
+            return self._recipe_up_argv_in(args, service)
+
+    def _recipe_up_argv_in(self, args, service):
         argv = ["up"] + ([args["profile"]] if args.get("profile") else [])
         argv += ["--config", str(Path(args.get("config", self.config_path))), "--router", args.get("router", "local"),
                  "--deadline", str(args.get("deadline", 1140))]
@@ -1359,10 +1409,13 @@ class API:
         for key, flag in (("node", "--node"), ("device", "--device")):
             if args.get(key):
                 argv += [flag, *args[key]]
+        # Recipe references are ids (or auto) and snapshot digests: never a path from the client.
         if args.get("recipe_inputs"):
+            if not service.DIGEST.fullmatch(str(args["recipe_inputs"])):
+                raise ValueError("recipe_inputs must be a 64-hex snapshot digest")
             argv += ["--recipe-inputs", args["recipe_inputs"]]
         if args.get("recipe"):
-            argv += ["--recipe", args["recipe"]]
+            argv += ["--recipe", service.recipe_ref("recipe", args["recipe"], auto=True)]
         for item in args.get("recipe_set") or []:
             argv += ["--recipe-set", item]
         for item in args.get("recipe_overrides") or []:
@@ -1377,6 +1430,8 @@ class API:
                           ("approval_end", "--approval-end")):
             if key in args:
                 argv += [flag, str(args[key])]
+        if args.get("_job"):
+            argv += ["--job", args["_job"]]            # set by mutate: the job's cancel marker
         return argv
 
     def _cli_argv(self, action, args):
@@ -1421,7 +1476,10 @@ class API:
                                      stderr=subprocess.PIPE, **flags)
         out, err = child.communicate()
         if child.returncode != 0:
-            raise APIError((err or out).decode("utf-8", "replace").strip()[-16384:] or f"{action} failed", 500)
+            # A recipe launch's refusal is the CLI's whole explanation; other actions keep their short tail.
+            tail = 16384 if action == "recipes/deploy" or (action == "up" and (
+                args.get("recipe") or args.get("recipe_inputs"))) else 400
+            raise APIError((err or out).decode("utf-8", "replace").strip()[-tail:] or f"{action} failed", 500)
         try:
             return json.loads(out.decode("utf-8"))
         except ValueError:
@@ -1429,17 +1487,31 @@ class API:
 
     def _execute(self, action, args):
         if action in ("down", "cancel") and not args.get("job"):
-            # Any stop (detached or in process) while a switch runs cancels the switch too: it would otherwise
-            # go on and launch.
+            # Any stop (detached or in process) while a switch runs cancels the switch too: it would otherwise go
+            # on and launch. So does a stop of the profile a recipe up is launching (up would otherwise clear the
+            # profile's stop marker when it takes the profile). Only their markers: this stop names its own profile,
+            # and a launch's target is stopped only when that is the profile named here (by this stop itself).
             with self._job_lock:
-                switches = [dict(j) for j in self._jobs.values()
-                            if j["action"] == "recipes/deploy" and j["state"] == "running"]
+                switches = [dict(j) for j in self._jobs.values() if j["state"] == "running" and (
+                    j["action"] == "recipes/deploy" or j["action"] == "up" and (
+                        j["arguments"].get("recipe") or j["arguments"].get("recipe_inputs"))
+                    and j["arguments"].get("profile") == args.get("profile"))]
+            cancels = []
             for switch in switches:
-                self._cancel_deploy(switch)
+                try:
+                    cancels.append(self._cancel_deploy(switch, stop_target=False))
+                except (APIError, OSError, ValueError) as exc:         # the stop itself still runs
+                    cancels.append({"cancelled": switch["job"], "error": str(exc)})
+            result = self._execute_action(action, args)
+            return dict(result, cancelled_switches=cancels) if cancels and isinstance(result, dict) else result
+        return self._execute_action(action, args)
+
+    def _execute_action(self, action, args):
         recipe_up = action == "up" and bool(args.get("recipe") or args.get("recipe_inputs"))
         if action == "recipes/probe":
             from hyperloom.recipes import service
-            argv = service.argv("probe", args, config=self.config_path)
+            with service.configured(self.config_path):
+                argv = service.argv("probe", args, config=self.config_path)
             status, document = recipe_web.document("probe", argv, self.recipes.run(
                 argv, deadline_s=recipe_web.HARDWARE_DEADLINE_S), now=self.clock())
             if not document["ok"]:
@@ -1457,9 +1529,9 @@ class API:
             if action == "up":
                 return cli.up_command(parsed, orchestrate=self.orchestrate, load_cluster=self._recipe_loader)
             from hyperloom.recipes import commands, service
-            service.use_config(parsed.config)
-            return service.deploy(parsed.inputs, parsed.stop, orchestrate=self.orchestrate,
-                                  approval=commands._approval(parsed), job=parsed.job)
+            with service.configured(parsed.config):
+                return service.deploy(parsed.inputs, parsed.stop, orchestrate=self.orchestrate,
+                                      approval=commands._approval(parsed), job=parsed.job)
         if self.detached and action in ("up", "down", "install"):
             if action in ("up", "install"):
                 cluster = self.orchestrate.load_cluster(Path(args.get("config", self.config_path)), config)
@@ -1473,15 +1545,20 @@ class API:
                 with self._job_lock:
                     job = self._jobs.get(args["job"])
                     context = self._features_running.get(args["job"])
+                    job = dict(job) if job else None
                 if context is not None:
                     context.cancel("cancelled by request")
                     return {"cancelled": args["job"]}
-                with self._job_lock:
-                    if not job or job["action"] not in ("up", "recipes/deploy"):
-                        raise APIError("only an up or a recipes/deploy job can be cancelled; use down with a profile")
-                    if job["action"] == "recipes/deploy":
-                        return self._cancel_deploy(job)
-                    profile = job["arguments"]["profile"]
+                if not job or job["action"] not in ("up", "recipes/deploy"):
+                    raise APIError("only an up or a recipes/deploy job can be cancelled; use down with a profile")
+                if job["state"] != "running":
+                    raise APIError(f"job {job['job']} has already {job['state']}: use down with a profile", 409)
+                if job["action"] == "recipes/deploy" or job["arguments"].get("recipe") or \
+                        job["arguments"].get("recipe_inputs"):
+                    return self._cancel_deploy(job)
+                profile = job["arguments"].get("profile")
+                if not profile:
+                    raise APIError("this up job names no profile: use down with a profile")
             return self.orchestrate.down(profile)
         if action == "down":
             return self.orchestrate.down(args["profile"], force=args.get("force", False))
@@ -1528,19 +1605,35 @@ class API:
         self.remote.KnownHosts(self.orchestrate._known_hosts()).pin(mid, machine.http_address, machine.ssh_port, match)
         return {"machine": mid, "pinned": match.sha256_fingerprint, "algorithm": match.algorithm}
 
-    def _cancel_deploy(self, job):
-        """Cancel a switch at any step: its marker stops it before the next stop or the launch hand-over; the target
-        profile's own stop marker stops a launch already under way."""
+    def _cancel_deploy(self, job, *, stop_target=True):
+        """Cancel a switch, undoing only what it did. The marker is written first; then the deploy's progress says
+        how far it got. Before the hand-over (checks, stopping) the marker is all: the deploy stops at its next step
+        and up, at the hand-over, starts nothing; the profiles it already stopped stay stopped (the answer names
+        them). Once up owns the target ("launching", "done"), the target is stopped (``stop_target``), as it is the
+        profile this deploy started."""
         from hyperloom.recipes import service
-        service.use_config(self.config_path)
-        marker = service.cancel_marker(job["job"])
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.touch()
-        try:
-            profile = service.load_inputs(job["arguments"]["inputs"])[1]["intent"]["profile"]
-        except service.RecipeError:
-            return {"cancelled": job["job"], "stopped": None}
-        return {"cancelled": job["job"], "stopped": self.orchestrate.down(profile)}
+        with service.configured(self.config_path):
+            marker = service.cancel_marker(job["job"])
+            try:
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.touch()
+            except OSError as exc:
+                raise APIError(f"the cancel marker could not be written ({exc}): nothing was cancelled; stop the "
+                               "profile with down", 500) from exc
+            try:
+                progress = service.read_progress(job["job"]) or {"phase": "not started", "profile": None,
+                                                                 "stopped": [], "stopping": None}
+            except service.RecipeError as exc:
+                # Unknown progress: never reported as "nothing to undo". The marker holds the deploy before its next
+                # step and up at the hand-over; a launch already under way is the caller's to stop.
+                raise APIError(f"{exc}. The cancel marker is written: the deploy stops before its next step and "
+                               f"starts nothing after it; if its launch had begun, stop that profile with down", 500)
+        down = None
+        if stop_target and service.launch_began(progress) and progress.get("profile"):
+            down = self.orchestrate.down(progress["profile"])
+        return {"cancelled": job["job"], "phase": progress.get("phase"), "profile": progress.get("profile"),
+                "stopped_by_deploy": progress.get("stopped") or [], "stopping": progress.get("stopping"),
+                "down": down, "summary": service.cancel_summary(progress, down=down)}
 
     def mutate(self, action, arguments):
         if action not in MUTATIONS and action in feature_registry.registry().jobs:
@@ -1593,8 +1686,8 @@ class API:
                 if self._jobs[old]["state"] != "running":
                     del self._jobs[old]
             response = dict(job)
-        if action == "recipes/deploy":
-            arguments = dict(arguments, _job=jid)    # the deploy's cancel marker is named by its job
+        if action == "recipes/deploy" or (action == "up" and (arguments.get("recipe") or arguments.get("recipe_inputs"))):
+            arguments = dict(arguments, _job=jid)    # the launch's cancel marker is named by its job
         def run():
             try:
                 result = self._execute(action, arguments)

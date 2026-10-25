@@ -375,6 +375,16 @@ def _version():
 
 def up_command(args, *, orchestrate=None, load_cluster=None):
     """`hyperloom up PROFILE ...` from its parsed arguments; the portal's in-process path calls this too."""
+    if args.recipe is None and args.recipe_inputs is None:
+        if getattr(args, "job", None):
+            raise ValueError("--job goes with --recipe or --recipe-inputs")
+        return _up_command(args, orchestrate, load_cluster)
+    # The recipe directories derive from --config for this call only (the portal runs requests on other threads).
+    with _module("hyperloom.recipes.service").configured(args.config):
+        return _up_command(args, orchestrate, load_cluster)
+
+
+def _up_command(args, orchestrate, load_cluster):
     orchestrate = orchestrate or _module("hyperloom.orchestrate")
     supplied = [args.approval_ref is not None, args.approval_lease is not None, args.approval_end is not None]
     approval = None
@@ -394,7 +404,6 @@ def up_command(args, *, orchestrate=None, load_cluster=None):
             raise ValueError("--recipe-inputs launches a planned snapshot as it is: no --recipe*, --node, --device, "
                              "--diagnostic, --vram-cap-gib or --router")
         service = _module("hyperloom.recipes.service")
-        service.use_config(args.config)
         pin = service.acquire_pin(args.recipe_inputs)         # before the snapshot is read
         try:
             cluster, intent, recipe = service.options_from_inputs(args.recipe_inputs, args.profile)
@@ -410,7 +419,6 @@ def up_command(args, *, orchestrate=None, load_cluster=None):
             sets=[reader.parse_set(s) for s in args.recipe_set or []],
             workload=args.recipe_workload or "default")
         service = _module("hyperloom.recipes.service")
-        service.use_config(args.config)
         cluster, intent, recipe = service.up_options(
             cluster, args.recipe, args.profile, layers=layers, dirs=list(args.recipe_dir or []),
             intent={"router": args.router, "deadline_s": args.deadline, "queue_timeout_s": args.queue_timeout})
@@ -418,11 +426,16 @@ def up_command(args, *, orchestrate=None, load_cluster=None):
     elif any((args.recipe_profile, args.recipe_overrides, args.recipe_set, args.recipe_dir, args.recipe_workload)):
         raise ValueError("--recipe-profile/--recipe-overrides/--recipe-set/--recipe-dir/--recipe-workload need "
                          "--recipe")
-    launch = lambda: orchestrate.up(cluster, args.profile, router=args.router, nodes=args.node,  # noqa: E731
-                                    devices=args.device, deadline_s=args.deadline, approval=approval,
-                                    queue_timeout_s=args.queue_timeout, diagnostics=args.diagnostic,
-                                    vram_cap_gib=args.vram_cap_gib, recipe=recipe)
+    launch = lambda cancelled=None: orchestrate.up(  # noqa: E731
+        cluster, args.profile, router=args.router, nodes=args.node, devices=args.device, deadline_s=args.deadline,
+        approval=approval, queue_timeout_s=args.queue_timeout, diagnostics=args.diagnostic,
+        vram_cap_gib=args.vram_cap_gib, recipe=recipe, **({"cancelled": cancelled} if cancelled else {}))
     try:
+        if recipe is not None and getattr(args, "job", None):
+            # A portal job: its cancel marker is checked right after up owns the profile (the hand-over), and its
+            # progress tells the cancel whether the launch had begun (then the cancel stops the profile).
+            with _module("hyperloom.recipes.service").launch_progress(args.job, "up", args.profile) as progress:
+                return launch(progress.handoff)
         return launch()
     finally:
         if recipe is not None:
@@ -512,6 +525,8 @@ def build_parser(parser_class=argparse.ArgumentParser):
     up.add_argument("--recipe-workload", help="the workload class this run serves (default: default)")
     up.add_argument("--recipe-inputs", metavar="DIGEST",
                     help="launch exactly a recipe snapshot that `hyperloom recipe plan` made (its `inputs` digest)")
+    up.add_argument("--job", help="with --recipe/--recipe-inputs: a hex id; the file <config dir>/run/deploy-cancel/ID "
+                                  "cancels this launch at its hand-over (the portal's cancel writes it)")
     down = commands.add_parser("down")
     down.add_argument("profile", nargs="?")
     down.add_argument("--force", action="store_true")

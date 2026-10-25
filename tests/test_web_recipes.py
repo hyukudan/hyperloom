@@ -16,11 +16,12 @@ from unittest import mock
 
 from hyperloom import cli, config, orchestrate, render
 from hyperloom.recipes import commands, launch, service, session
+from hyperloom.recipes.reader import RecipeError
 from hyperloom.web import recipes as recipe_web
 from hyperloom.web.api import API, APIError
 from hyperloom.web.server import create_server
 from tests.recipe_fixtures import builtin_text, copy_of, isolated
-from tests.test_recipes_service import DS_FIXTURE, QWEN, run_cli, user_ds
+from tests.test_recipes_service import DS, DS_FIXTURE, QWEN, run_cli, user_ds
 
 MM_TEXT = (Path(__file__).parent / "fixtures" / "recipes" / "minimax-lab.toml").read_text(encoding="utf-8").replace(
     'name = "minimax-m3.1-flash-lab"', 'name = "mm-base"', 1)
@@ -55,6 +56,24 @@ class Portal:
     def close(self):
         self.server.shutdown()
         self.server.server_close()
+
+
+# This PC's free RAM, pinned for the portal's children and for the in-process CLI alike: plan answers (the RTX service
+# plan, the free-RAM checks) depend on it, and a live value can change between the two runs.
+PINNED_MEMORY = {"free_physical_gib": 61.25, "free_commit_gib": 127.75}
+PINNED_CHILD = [sys.executable, "-c", "import sys; from hyperloom import rtx; "
+                f"rtx.memory_status = lambda: dict({PINNED_MEMORY!r}); "
+                "from hyperloom.cli import main; raise SystemExit(main(sys.argv[1:]))"]
+
+
+def pinned_memory():
+    """Pin rtx.memory_status here and in the portal's recipe children (a context manager)."""
+    from contextlib import ExitStack
+    from hyperloom import rtx
+    stack = ExitStack()
+    stack.enter_context(mock.patch.object(rtx, "memory_status", lambda: dict(PINNED_MEMORY)))
+    stack.enter_context(mock.patch.object(recipe_web, "COMMAND", PINNED_CHILD))
+    return stack
 
 
 def cli_of(document):
@@ -113,11 +132,14 @@ class ContractTests(unittest.TestCase):
                  ("plan", {"recipe": "ds-user", "profile": "ds41-rtx", **facts}),
                  ("plan", {"recipe": "deepseek-v4.1-flash.lab", "profile": "ds41-pair", "facts": "ds"})]
         for operation, body in cases:
-            with self.subTest(operation=operation, body=body):
+            with self.subTest(operation=operation, body=body), pinned_memory():
                 status, document = self.portal.request("POST", "recipes/" + operation, body)
                 self.assertIn(status, (200,), document)
                 self.assertEqual(document["schema"], f"hyperloom/recipes-{operation}-v1")
                 self.assertSameAsCli(document)
+                if operation == "plan" and body["recipe"] == "ds-user":
+                    # The child planned with the pinned free RAM (61.25 GiB free -> 41 GiB host pinned allowed).
+                    self.assertIn("this start allows (41 GiB", json.dumps(document["result"]))
         status, refused = self.portal.request("POST", "recipes/validate", {"recipe": QWEN, "set": ["a.b=1"]})
         self.assertEqual((status, refused["exit_code"], refused["ok"]), (200, 1, False))
         self.assertRegex(refused["error"], "not a settable path|is not settable")
@@ -161,6 +183,105 @@ class ContractTests(unittest.TestCase):
         # Synchronous answers are not blocked by a running job.
         self.portal.api._active = "job"
         self.assertEqual(self.portal.request("POST", "recipes/validate", {"recipe": QWEN})[0], 200)
+
+    BAD_REFS = ("//pc/share/x.toml", "\\\\pc\\share\\x.toml", "\\\\?\\UNC\\pc\\s\\x",
+                "C:x.toml", "C:\\x.toml", "/etc/x.toml", "x.toml:stream", "x::$DATA", "..", "../x", "a/b", "a\\b",
+                "pyproject.toml", "x.JSON", "-h")
+
+    def test_recipe_references_are_ids_never_paths(self):
+        # A recipe file outside the catalog (a share, any local file): never read through a portal reference.
+        outside = self.env.root / "share" / "x.toml"
+        outside.parent.mkdir()
+        outside.write_text(copy_of(QWEN, "outside"), encoding="utf-8")
+        opened = []
+        real_is_file, real_read = Path.is_file, Path.read_bytes
+
+        def is_file(path):
+            opened.append(str(path))
+            return real_is_file(path)
+
+        def read_bytes(path):
+            opened.append(str(path))
+            return real_read(path)
+        for ref in self.BAD_REFS + (str(outside), outside.as_posix()):
+            with self.subTest(ref=ref):
+                opened.clear()
+                with mock.patch.object(Path, "is_file", is_file), mock.patch.object(Path, "read_bytes", read_bytes):
+                    status, document = self.portal.request("GET", "recipes/" + ref)
+                self.assertEqual(status, 400, document)
+                self.assertFalse([p for p in opened if "share" in p or p.endswith(ref)], opened)
+                for operation, body in (("validate", {"recipe": ref}), ("explain", {"recipe": ref}),
+                                        ("plan", {"recipe": ref, "profile": "ds41-rtx"}),
+                                        ("diff", {"a": QWEN, "b": ref}), ("diff", {"a": ref, "b": QWEN}),
+                                        ("save", {"id": "copy", "base": ref, "base_sha256": "0" * 64}),
+                                        ("save-layer", {"name": "layer", "recipe": ref, "set": ["limits.x=1"]})):
+                    with self.assertRaises(ValueError):
+                        recipe_web.Request("recipes/" + operation, body, config=self.env.config)
+                    self.assertEqual(self.portal.request("POST", "recipes/" + operation, body)[0], 400)
+        # "auto" picks a recipe only where the CLI takes it (plan, up); elsewhere it is an unknown (reserved) id.
+        self.assertEqual(self.portal.request("GET", "recipes/auto")[0], 404)
+        self.assertEqual(self.portal.request("POST", "recipes/validate", {"recipe": "auto"})[0], 404)
+        # An id-shaped reference is looked up in the catalog only, even when a file of that name exists where the
+        # command runs (the children's working directory has NOTICE, LICENSE, README.md...).
+        status, document = self.portal.request("POST", "recipes/validate", {"recipe": "NOTICE"})
+        self.assertEqual((status, document["exit_code"]), (404, 3), document)
+        status, document = self.portal.request("GET", "recipes/NOTICE")
+        self.assertEqual((status, document["exit_code"]), (404, 3), document)
+
+    def test_gets_have_no_side_effects(self):
+        before = sorted((str(p), p.stat().st_mtime_ns) for p in self.env.root.rglob("*") if p.is_file())
+        with mock.patch("tempfile.TemporaryDirectory", side_effect=AssertionError("a GET made a directory")), \
+                mock.patch("tempfile.mkdtemp", side_effect=AssertionError("a GET made a directory")), \
+                mock.patch("tempfile.mkstemp", side_effect=AssertionError("a GET made a file")):
+            for endpoint in ("recipes", "recipes/" + QWEN, "recipes/ds-user", "recipes/active", "recipes/routes",
+                             "recipes?model=deepseek-v4.1-flash", "recipes/active?profile=ds41-rtx"):
+                status, document = self.portal.request("GET", endpoint)
+                self.assertEqual((status, document["exit_code"]), (200, 0), document)
+        after = sorted((str(p), p.stat().st_mtime_ns) for p in self.env.root.rglob("*") if p.is_file())
+        self.assertEqual(before, after)
+        self.assertEqual(self.portal.request("GET", "recipes/active?profile=../x")[0], 400)
+
+    def test_answers_are_redacted_and_internal_errors_answer(self):
+        # A secret-named key of a launch record is redacted; the recipe's own numbers and prose are not.
+        state = orchestrate._state_path("qwen-replicas")
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text(json.dumps({"profile": "qwen-replicas", "phase": "running", "recipe": {
+            "recipe": QWEN, "inputs": [], "router_api_key": "sekrit-value", "argv": ["--api-key", "sekrit-value"]}}),
+            encoding="utf-8")
+        try:
+            status, document = self.portal.request("GET", "recipes/active")
+        finally:
+            state.unlink()
+        self.assertEqual(status, 200, document)
+        self.assertNotIn("sekrit-value", json.dumps(document))
+        self.assertEqual(document["result"]["deployments"][0]["record"]["router_api_key"], "[redacted]")
+        status, document = self.portal.request("GET", "recipes/" + QWEN)
+        when = next(r["when"] for r in document["result"]["structure"]["routes"] if r["id"] == "prefill_rtx")
+        self.assertEqual(when["prompt_tokens_min"], 1024)                   # a measurement is not a secret
+        from hyperloom.web.api import redact
+        self.assertEqual(redact({"password": 123456, "api_key": 7, "token": 5, "secret": None, "prompt_tokens_min": 1,
+                                 "prompt_tokens_max": None, "max_copies_per_token": 2, "api_key_per_token": 3,
+                                 "password_tokens_min": 4, "secret_tokens": None, "private_key_tokens": 5}),
+                         {"password": "[redacted]", "api_key": "[redacted]", "token": "[redacted]",
+                          "secret": "[redacted]", "prompt_tokens_min": 1, "prompt_tokens_max": None,
+                          "max_copies_per_token": 2, "api_key_per_token": "[redacted]",
+                          "password_tokens_min": "[redacted]", "secret_tokens": "[redacted]",
+                          "private_key_tokens": "[redacted]"})
+        self.assertSameAsCli(document)
+        with mock.patch.object(recipe_web, "COMMAND", [sys.executable, "-c", (
+                "import sys; sys.stderr.write('hyperloom: refused: Authorization: Bearer abc.def\\n'); sys.exit(1)")]):
+            status, document = self.portal.request("POST", "recipes/validate", {"recipe": QWEN})
+        self.assertEqual((status, document["exit_code"]), (200, 1))
+        self.assertNotIn("abc.def", document["error"])
+        # An unexpected error in an in-process GET is an answer (the CLI's exit 1), never a dropped connection.
+        with mock.patch.object(commands, "run", side_effect=TypeError("boom")):
+            status, document = self.portal.request("GET", "recipes")
+        self.assertEqual((status, document["exit_code"]), (200, 1))
+        self.assertIn("internal error (TypeError): boom", document["error"])
+        with mock.patch.object(self.portal.api, "recipe_get", side_effect=TypeError("boom")):
+            self.assertEqual(self.portal.request("GET", "recipes")[0], 500)
+        with mock.patch.object(self.portal.api, "recipe_post", side_effect=TypeError("boom")):
+            self.assertEqual(self.portal.request("POST", "recipes/validate", {"recipe": QWEN})[0], 500)
 
     def test_edits_are_one_overrides_layer(self):
         service.user_dir().mkdir(parents=True, exist_ok=True)
@@ -300,6 +421,187 @@ class JobTests(unittest.TestCase):
         self.assertIn("later phase", plain["error"])                         # the replica gate stays for plain up
         with self.assertRaises(APIError):
             self.api.mutate("up", {"recipe": "ds-user", "recipe_overrides": ["../x.json"]})
+        # Recipe references and snapshot digests from the client are ids, never paths (nothing is opened).
+        with mock.patch.object(service, "locate", side_effect=AssertionError("a client path reached locate")), \
+                mock.patch.object(service, "load_inputs", side_effect=AssertionError("a client path was opened")):
+            for ref in ContractTests.BAD_REFS:
+                with self.subTest(ref=ref), self.assertRaises(APIError):
+                    self.api.mutate("up", {"recipe": ref, "profile": "ds41-rtx"})
+            for digest in ("../" + "0" * 61, "//pc/share/" + "0" * 42, "0" * 63 + "G", "x"):
+                with self.subTest(digest=digest), self.assertRaises(APIError):
+                    self.api.mutate("up", {"recipe_inputs": digest})
+                with self.subTest(digest=digest), self.assertRaises(APIError):
+                    self.api.mutate("recipes/deploy", {"inputs": digest})
+            with self.assertRaises(APIError):
+                self.api.mutate("recipes/deploy", {"inputs": "0" * 64, "stop": ["../x"]})
+        self.assertIsNone(self.api._active)
+
+    def test_config_in_use_is_per_call(self):
+        # A call running on another configuration (a CLI up with --config, a portal on another file) does not move
+        # the recipe directories of concurrent requests.
+        other = self.env.root / "other" / "cluster.json"
+        other.parent.mkdir()
+        other.write_text(self.env.config.read_text(), encoding="utf-8")
+        inside, release = threading.Event(), threading.Event()
+        seen = {}
+
+        def blocking_up(*a, **kw):
+            seen["user_dir"] = service.user_dir()
+            inside.set()
+            release.wait(30)
+            return {"state": "running"}
+        self.orch.up.side_effect = blocking_up
+        args = cli.build_parser().parse_args(["up", "ds41-rtx", "--recipe", DS, "--config", str(other)])
+        worker = threading.Thread(target=cli.up_command, args=(args,), kwargs={"orchestrate": self.orch})
+        worker.start()
+        try:
+            self.assertTrue(inside.wait(30))
+            self.assertEqual(service.user_dir(), self.env.config.parent.absolute() / "recipes")
+            status, listing = self.api.recipe_get("recipes", {})
+            self.assertEqual(Path(listing["result"]["user_dir"]), self.env.config.parent.absolute() / "recipes")
+        finally:
+            release.set()
+            worker.join(30)
+        self.assertEqual(seen["user_dir"], other.parent.absolute() / "recipes")
+        # The portal's recipe launches run on its own configuration: a client-named one is refused.
+        with self.assertRaisesRegex(APIError, "portal's configuration"):
+            self.api.mutate("up", {"recipe": DS, "profile": "ds41-rtx", "config": str(other)})
+        with self.assertRaisesRegex(APIError, "portal's configuration"):
+            self.api.mutate("up", {"recipe": DS, "profile": "ds41-rtx", "config": "//pc/share/cluster.json"})
+
+    def test_no_option_injection_and_probe_names_in_the_portal_config(self):
+        for body in ({"recipe": QWEN, "profile": "--recipe-dir=//pc/share"},
+                     {"recipe": QWEN, "profile": "--recipe-profile=//pc/share/l.json"},
+                     {"recipe": QWEN, "profile": "qwen-replicas", "recipe_workload": "--recipe-dir=//pc/share"},
+                     {"profile": "--config=//pc/share/cluster.json"}, {"profile": "a/b"}):
+            with self.subTest(body=body), self.assertRaises(APIError):
+                self.api.mutate("up", body)
+        for action, body in (("down", {"profile": "--force"}), ("cancel", {"profile": "-x"}),
+                             ("install", {"profile": "qwen-replicas", "build_on": "--x"})):
+            with self.subTest(action=action), self.assertRaises(APIError):
+                self.api.mutate(action, body)
+        # A probe job's file names resolve in the portal's configuration, not the process default.
+        other = self.env.root / "other" / "cluster.json"
+        other.parent.mkdir()
+        other.write_text(self.env.config.read_text(), encoding="utf-8")
+        api = API(other, orchestrator=self.orch, audit_path=self.env.root / "audit-other.jsonl")
+        seen = []
+        with mock.patch.object(api.recipes, "run", side_effect=lambda argv, **kw: seen.append(argv) or
+                               recipe_web.Result(0, b"{}", b"")):
+            job = api.mutate("recipes/probe", {"profile": "ds41-rtx", "out": "f1"})
+            end = time.monotonic() + 30
+            while api.read("jobs/" + job["job"])["state"] == "running" and time.monotonic() < end:
+                time.sleep(0.02)
+        out = Path(seen[0][seen[0].index("--out") + 1])
+        self.assertEqual(out, other.parent.absolute() / "run" / "facts" / "f1.json")
+
+    def test_cancel_an_up_with_a_recipe_and_no_profile(self):
+        # The job names the profile it launches (bound when it is accepted), so its cancel stops that profile.
+        with mock.patch.object(render, "router_policies", return_value=("routes",)):
+            digest = service.plan(orchestrate.load_cluster(self.env.config), "ds-user", "ds41-rtx",
+                                  source=self.source)["inputs"]
+        for body, profile in (({"recipe": QWEN}, "qwen-replicas"), ({"recipe_inputs": digest}, "ds41-rtx")):
+            with self.subTest(body=body):
+                inside, release = threading.Event(), threading.Event()
+
+                def launching(*a, **kw):
+                    self.assertFalse(kw["cancelled"]())              # up owns the profile: the hand-over passed
+                    inside.set()
+                    release.wait(30)
+                    return {"state": "running"}
+                self.orch.up.side_effect = launching
+                self.orch.down.reset_mock()
+                with mock.patch.object(commands, "live_source", return_value=self.source):
+                    job = self.api.mutate("up", body)
+                    self.assertEqual(job["arguments"]["profile"], profile)
+                    try:
+                        self.assertTrue(inside.wait(30))
+                        cancelled = self.wait(self.api.mutate("cancel", {"job": job["job"]}))
+                    finally:
+                        release.set()
+                    self.wait(job)
+                self.assertEqual(cancelled["state"], "succeeded", cancelled["error"])
+                self.assertEqual(cancelled["result"]["phase"], "launching")
+                self.orch.down.assert_called_once_with(profile)
+
+    def test_cancel_an_up_with_a_recipe_before_its_hand_over(self):
+        # Cancelled while it prepares (before up owns the profile): only the marker; up then starts nothing.
+        cancelled, proceed = threading.Event(), threading.Event()
+        answers = []
+
+        def preparing(*a, **kw):
+            proceed.wait(30)                                     # the cancel lands before the hand-over check
+            if kw["cancelled"]():
+                raise orchestrate.OrchestrationError("profile stop requested")
+            return {"state": "running"}
+        self.orch.up.side_effect = preparing
+        with mock.patch.object(commands, "live_source", return_value=self.source):
+            job = self.api.mutate("up", {"recipe": QWEN})
+            answers.append(self.wait(self.api.mutate("cancel", {"job": job["job"]})))
+            proceed.set()
+            finished = self.wait(job)
+        self.assertEqual(answers[0]["state"], "succeeded", answers[0]["error"])
+        self.assertIn(answers[0]["result"]["phase"], ("not started", "checks"))
+        self.assertIsNone(answers[0]["result"]["down"])
+        self.assertIn("nothing was started", answers[0]["result"]["summary"])
+        self.assertEqual(finished["state"], "failed")
+        self.orch.down.assert_not_called()
+        with self.assertRaises(APIError):
+            self.api.mutate("up", {"recipe": DS})                       # two profiles serve it: name one
+
+    def test_a_stop_of_its_profile_cancels_a_preparing_recipe_up(self):
+        # `down P` (or a cancel by profile) while a recipe up prepares P: its marker is written too, so up, which
+        # clears P's own stop marker when it takes P, starts nothing. A stop of another profile leaves it alone.
+        for action, body, stops_it in (("down", {"profile": "qwen-replicas"}, True),
+                                       ("cancel", {"profile": "qwen-replicas"}, True),
+                                       ("down", {"profile": "mm"}, False)):
+            with self.subTest(action=action, body=body):
+                proceed = threading.Event()
+
+                def preparing(*a, **kw):
+                    proceed.wait(30)
+                    if kw["cancelled"]():
+                        raise orchestrate.OrchestrationError("profile stop requested")
+                    return {"state": "running"}
+                self.orch.up.side_effect = preparing
+                self.orch.down.reset_mock()
+                with mock.patch.object(commands, "live_source", return_value=self.source):
+                    job = self.api.mutate("up", {"recipe": QWEN})
+                    stopped = self.wait(self.api.mutate(action, body))
+                    proceed.set()
+                    finished = self.wait(job)
+                self.assertEqual(stopped["state"], "succeeded", stopped["error"])
+                self.assertEqual([c.args[0] for c in self.orch.down.call_args_list], [body["profile"]])
+                if stops_it:
+                    self.assertEqual(stopped["result"]["cancelled_switches"][0]["cancelled"], job["job"])
+                    self.assertEqual(finished["state"], "failed")
+                    self.assertRegex(finished["error"], "stop requested|up cancelled")   # nothing was started
+                else:
+                    self.assertNotIn("cancelled_switches", stopped["result"])
+                    self.assertEqual(finished["state"], "succeeded", finished["error"])
+
+    def test_detached_stop_marks_a_recipe_up_of_that_profile(self):
+        self.api.detached = True
+        self.api._jobs["u1"] = {"job": "cd34ab12", "action": "up", "state": "running",
+                                "arguments": {"recipe": QWEN, "profile": "qwen-replicas"}}
+        with mock.patch.object(self.api, "_run_detached", return_value={"state": "stopped"}) as detached:
+            result = self.api._execute("down", {"profile": "qwen-replicas"})
+        detached.assert_called_once()
+        self.assertEqual(result["cancelled_switches"][0]["cancelled"], "cd34ab12")
+        with service.configured(self.env.config):
+            self.assertTrue(service.cancel_marker("cd34ab12").exists())
+
+    def test_detached_error_tail(self):
+        # A recipe launch's refusal keeps the CLI's whole explanation; the other actions keep their short tail.
+        child = mock.Mock(returncode=1)
+        child.communicate.return_value = (b"", b"y" + b"x" * 20000)
+        with mock.patch("hyperloom.web.api.subprocess.Popen", return_value=child):
+            for action, args, size in (("down", {"profile": "qwen-replicas"}, 400),
+                                       ("recipes/deploy", {"inputs": "0" * 64, "_job": "ab12cd34"}, 16384),
+                                       ("up", {"recipe": QWEN, "profile": "qwen-replicas"}, 16384)):
+                with self.subTest(action=action), self.assertRaises(APIError) as raised:
+                    self.api._run_detached(action, args)
+                self.assertEqual(len(str(raised.exception)), size)
 
     def test_detached_stop_cancels_a_running_switch(self):
         # The portal runs detached: `down` goes to its own CLI process, and still cancels the switch first.
@@ -322,7 +624,8 @@ class JobTests(unittest.TestCase):
                 job = self.wait(self.api.mutate("recipes/deploy", {"inputs": digest}))
         self.assertEqual(job["state"], "succeeded", job["error"])
         self.assertEqual(self.orch.up.call_args.kwargs["recipe"].digest, digest)
-        # Cancel during the switch: nothing more is stopped or started, and the target gets its stop marker.
+        # Cancel during the switch's checks: only its marker. Nothing is stopped (the running target is not touched)
+        # and nothing is started; the answer says so.
         gate = threading.Event()
         original = launch.prepare
 
@@ -334,7 +637,11 @@ class JobTests(unittest.TestCase):
             running = self.api.mutate("recipes/deploy", {"inputs": digest})
             cancelled = self.wait(self.api.mutate("cancel", {"job": running["job"]}))
             self.assertEqual(cancelled["state"], "succeeded", cancelled["error"])
-            self.assertEqual(self.orch.down.call_args.args, ("ds41-rtx",))
+            # (the deploy may not have recorded anything yet, or may have already met the marker and failed)
+            self.assertIn(cancelled["result"]["phase"], ("not started", "checks", "failed"))
+            self.assertIsNone(cancelled["result"]["down"])
+            self.assertIn("; this deploy had stopped nothing", cancelled["result"]["summary"])
+            self.orch.down.assert_not_called()
             gate.set()
             finished = self.wait(running)
         self.assertIn("deploy cancelled", finished["error"])
@@ -361,6 +668,278 @@ class JobTests(unittest.TestCase):
             self.api.mutate("recipes/deploy", {"inputs": digest, "stop": "qwen-replicas"})
         with self.assertRaises(APIError):
             self.api.mutate("recipes/probe", {"profile": "qwen-replicas", "out": "../x"})
+
+
+class DeployCancelTests(unittest.TestCase):
+    """Cancel at every step of a deploy (the switch): before the hand-over only the marker (nothing the deploy did not
+    stop is stopped, nothing is started); after it, the target, the profile the deploy started. Each answer and the
+    deploy's error say what was stopped."""
+
+    def setUp(self):
+        self.env_context = isolated()
+        self.env = self.env_context.__enter__()
+        self.addCleanup(self.env_context.__exit__, None, None, None)
+        self.orch = mock.Mock(wraps=orchestrate)
+        self.orch.up.return_value = {"state": "running"}
+        self.orch.down.return_value = {"state": "stopped"}
+        self.api = API(self.env.config, orchestrator=self.orch, audit_path=self.env.root / "audit.jsonl")
+        user_ds()
+        self.source = session.saved_source(self.env.save_facts("ds", "deepseek-v4.1-flash", "ds41-rtx"))
+        with mock.patch.object(render, "router_policies", return_value=("routes",)):
+            self.digest = service.plan(orchestrate.load_cluster(self.env.config), "ds-user", "ds41-rtx",
+                                       source=self.source)["inputs"]
+        self.answers = []
+
+    def deploy(self, stop, *, prepare=None):
+        """Run the deploy job with these profiles running (and stopped by it); returns the finished job."""
+        running = {name: {"profile": name} for name in stop}
+        original = launch.prepare
+        with mock.patch.object(render, "router_policies", return_value=("routes",)), \
+                mock.patch.object(commands, "live_source", return_value=self.source), \
+                mock.patch.object(service, "_states", return_value=running), \
+                mock.patch.object(launch, "prepare", side_effect=lambda *a, **kw: (prepare and prepare(),
+                                                                                   original(*a, **kw))[1]):
+            job = self.api.mutate("recipes/deploy", {"inputs": self.digest, "stop": list(stop)})
+            end = time.monotonic() + 60
+            while self.api.read("jobs/" + job["job"])["state"] == "running":
+                self.assertLess(time.monotonic(), end)
+                time.sleep(0.02)
+            return self.api.read("jobs/" + job["job"])
+
+    def cancel(self, action="cancel", **arguments):
+        """What the portal's cancel (or a stop) does right now, from inside the deploy (the job is running)."""
+        if action == "cancel":
+            jid = next(j["job"] for j in self.api._jobs.values()
+                       if j["action"] == "recipes/deploy" and j["state"] == "running")
+            arguments = {"job": jid}
+        self.answers.append(self.api._execute(action, arguments))
+        return self.answers[-1]
+
+    def downs(self):
+        return [c.args[0] for c in self.orch.down.call_args_list]
+
+    def test_before_the_deploy_records_anything(self):
+        job = {"job": "ab12cd34", "action": "recipes/deploy", "state": "running", "arguments": {"inputs": self.digest}}
+        answer = self.api._cancel_deploy(job)
+        self.assertEqual((answer["phase"], answer["down"]), ("not started", None))
+        with service.configured(self.env.config), mock.patch.object(service, "_states", return_value={}):
+            with self.assertRaisesRegex(RecipeError, "deploy cancelled: cancelled before the launch: nothing was "
+                                                     "started; this deploy had stopped nothing"):
+                service.deploy(self.digest, [], orchestrate=self.orch, source=self.source, job="ab12cd34")
+            self.assertEqual(service.read_progress("ab12cd34")["phase"], "failed")
+            self.assertFalse(service.cancel_marker("ab12cd34").exists())
+        self.orch.down.assert_not_called()
+        self.orch.up.assert_not_called()
+
+    def test_during_the_checks_the_running_target_is_not_stopped(self):
+        # The review's case: ds41-rtx runs, a recipe is deployed on it, Cancel during the pre-stop checks.
+        finished = self.deploy(["ds41-rtx"], prepare=self.cancel)
+        self.assertEqual(finished["state"], "failed")
+        self.assertIn("deploy cancelled: cancelled before the launch: nothing was started; this deploy had stopped "
+                      "nothing", finished["error"])
+        self.assertEqual((self.answers[0]["phase"], self.answers[0]["profile"], self.answers[0]["down"]),
+                         ("checks", "ds41-rtx", None))
+        self.assertEqual(self.downs(), [])
+        self.orch.up.assert_not_called()
+
+    def test_while_stopping_only_what_it_stopped_is_reported(self):
+        def down(name, *a, **kw):
+            if name == "mm":
+                self.cancel()
+            return {"state": "stopped"}
+        self.orch.down.side_effect = down
+        finished = self.deploy(["mm", "qwen-replicas"])
+        self.assertEqual(self.downs(), ["mm"])                           # the second stop never happens
+        self.orch.up.assert_not_called()
+        answer = self.answers[0]
+        self.assertEqual((answer["phase"], answer["stopping"], answer["stopped_by_deploy"], answer["down"]),
+                         ("stopping", "mm", [], None))
+        self.assertIn("it was stopping mm", answer["summary"])
+        self.assertIn("nothing was started; this deploy had stopped mm (stopped): they stay stopped", finished["error"])
+
+    def test_at_the_hand_over_up_starts_nothing(self):
+        def up(*a, **kw):
+            self.cancel()                                                # before up's own check
+            if kw["cancelled"]():
+                raise orchestrate.OrchestrationError("profile stop requested")
+            return {"state": "running"}
+        self.orch.up.side_effect = up
+        finished = self.deploy(["qwen-replicas"])
+        self.assertEqual(self.downs(), ["qwen-replicas"])                # the deploy's own stop; never the target
+        self.assertEqual((self.answers[0]["phase"], self.answers[0]["down"]), ("stopping", None))
+        self.assertIn("deploy cancelled at the launch hand-over: nothing was started; this deploy had stopped "
+                      "qwen-replicas", finished["error"])
+
+    def test_at_the_hand_over_a_cancel_that_sees_launching_stops_the_target(self):
+        # The cancel lands between up recording "launching" and checking the marker: up starts nothing and the
+        # cancel sends the target its stop (harmless: nothing runs).
+        real = service._write_progress
+
+        def write(path, state):
+            real(path, state)
+            if state["phase"] == "launching":
+                self.cancel()
+        self.orch.up.side_effect = lambda *a, **kw: (_ for _ in ()).throw(
+            orchestrate.OrchestrationError("profile stop requested")) if kw["cancelled"]() else {"state": "running"}
+        with mock.patch.object(service, "_write_progress", side_effect=write):
+            finished = self.deploy(["qwen-replicas"])
+        self.assertEqual(self.downs(), ["qwen-replicas", "ds41-rtx"])
+        self.assertEqual(self.answers[0]["phase"], "launching")
+        self.assertIn("nothing was started", finished["error"])
+
+    def test_after_the_launch_began_the_target_is_stopped(self):
+        def up(*a, **kw):
+            self.assertFalse(kw["cancelled"]())                         # up owns the profile, the launch goes on
+            self.cancel()
+            raise orchestrate.OrchestrationError("profile stop requested")   # its stop marker ends the launch
+        self.orch.up.side_effect = up
+        finished = self.deploy(["qwen-replicas"])
+        self.assertEqual(self.downs(), ["qwen-replicas", "ds41-rtx"])
+        answer = self.answers[0]
+        self.assertEqual((answer["phase"], answer["profile"], answer["down"]), ("launching", "ds41-rtx",
+                                                                                 {"state": "stopped"}))
+        self.assertIn("ds41-rtx: stopped; this deploy had stopped qwen-replicas (stopped)", answer["summary"])
+        self.assertIn("deploy cancelled after the launch began: the cancel stops ds41-rtx (its answer says how); this "
+                      "deploy had stopped qwen-replicas (stopped)", finished["error"])
+
+    def test_after_the_deploy_finished(self):
+        finished = self.deploy([])
+        self.assertEqual(finished["state"], "succeeded", finished["error"])
+        # A cancel still racing the job's end stops what the deploy started; a finished job cannot be cancelled.
+        answer = self.api._cancel_deploy(dict(finished, state="running"))
+        self.assertEqual((answer["phase"], answer["down"]), ("done", {"state": "stopped"}))
+        self.assertEqual(self.downs(), ["ds41-rtx"])
+        with self.assertRaises(APIError) as refused:
+            self.api._execute("cancel", {"job": finished["job"]})
+        self.assertEqual(refused.exception.status, 409)
+
+    def test_unreadable_progress_is_never_nothing_to_undo(self):
+        # The launch has begun ("launching"); the cancel cannot read the progress: it fails, saying so, and does not
+        # claim the deploy had not started.
+        real = Path.read_bytes
+
+        def unreadable(path, *a, **kw):
+            if path.parent.name == "deploy-cancel":
+                raise PermissionError(13, "in use")
+            return real(path, *a, **kw)
+        failures = []
+
+        def up(*a, **kw):
+            self.assertFalse(kw["cancelled"]())
+            with mock.patch.object(Path, "read_bytes", unreadable), mock.patch("time.sleep"):
+                try:
+                    self.cancel()
+                except APIError as exc:
+                    failures.append(exc)
+            return {"state": "running"}
+        self.orch.up.side_effect = up
+        finished = self.deploy([])
+        self.assertEqual(finished["state"], "succeeded", finished["error"])
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(failures[0].status, 500)
+        self.assertIn("progress cannot be read", str(failures[0]))
+        self.assertIn("stop that profile with down", str(failures[0]))
+        self.assertEqual(self.downs(), [])
+        with service.configured(self.env.config):
+            service.deploy_progress("ab12cd34").parent.mkdir(parents=True, exist_ok=True)
+            for data in (b"{", b"\xff\xfe{}"):
+                service.deploy_progress("ab12cd34").write_bytes(data)
+                with self.assertRaisesRegex(RecipeError, "not valid JSON"):
+                    service.read_progress("ab12cd34")
+            self.assertIsNone(service.read_progress("cd34ab12"))
+
+    def test_outcomes_are_reported_as_they_are(self):
+        # A down that could only request the stop (the launch still runs) is reported as requested, not stopped.
+        def down(name, *a, **kw):
+            return {"state": "stop-requested"} if name in ("mm", "ds41-rtx") else {"state": "stopped"}
+        self.orch.down.side_effect = down
+
+        def up(*a, **kw):
+            self.assertFalse(kw["cancelled"]())
+            self.cancel()
+            raise orchestrate.OrchestrationError("profile stop requested")
+        self.orch.up.side_effect = up
+        finished = self.deploy(["mm", "qwen-replicas"])
+        answer = self.answers[0]
+        self.assertIn("ds41-rtx: stop requested; this deploy had stopped mm (stop requested), qwen-replicas "
+                      "(stopped)", answer["summary"])
+        self.assertIn("mm (stop requested)", finished["error"])
+        # A launch that began and then failed may keep its ownership (its cleanup can fail): the cancel stops it.
+        failed = {"phase": "failed", "profile": "ds41-rtx", "launched": True, "stopped": []}
+        self.assertTrue(service.launch_began(failed))
+        self.assertIn("had begun (the launch had then failed): ds41-rtx: stopped",
+                      service.cancel_summary(failed, down={"state": "stopped"}))
+        self.assertFalse(service.launch_began(dict(failed, launched=False)))
+
+    def test_a_finished_job_is_refused_over_http(self):
+        finished = self.deploy([])
+        server = create_server(0, api=self.api)
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+        thread.start()
+        try:
+            host = f"127.0.0.1:{server.server_port}"
+            body = json.dumps({"job": finished["job"]}).encode()
+            connection = HTTPConnection(host, timeout=30)
+            connection.request("POST", "/hyperloom/api/cancel", body=body, headers={
+                "Host": host, "Origin": "http://" + host, "Content-Type": "application/json",
+                "Content-Length": str(len(body)), "X-Hyperloom-CSRF": server.csrf_token})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 409, response.read())
+            connection.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertEqual(self.downs(), [])
+
+    def test_a_stop_runs_even_when_the_cancel_files_fail(self):
+        def stop_with(failure):
+            def hook():
+                with failure():
+                    self.cancel("down", profile="mm")
+            return hook
+        real_touch = Path.touch
+
+        def no_marker():
+            def touch(path, *a, **kw):
+                if path.parent.name == "deploy-cancel":
+                    raise PermissionError(13, "denied")
+                return real_touch(path, *a, **kw)
+            return mock.patch.object(Path, "touch", touch)
+
+        def garbled_progress():
+            jid = next(j["job"] for j in self.api._jobs.values()
+                       if j["action"] == "recipes/deploy" and j["state"] == "running")
+            with service.configured(self.env.config):
+                service.deploy_progress(jid).write_bytes(b"\xff\xfe")
+            return mock.patch("time.sleep")
+        for failure, expected in ((no_marker, "could not be written"), (garbled_progress, "not valid JSON")):
+            with self.subTest(failure=failure.__name__):
+                self.orch.down.reset_mock()
+                self.answers.clear()
+                self.deploy(["qwen-replicas"], prepare=stop_with(failure))
+                self.assertEqual(self.downs()[0], "mm")                  # the stop asked for ran
+                self.assertIn(expected, self.answers[0]["cancelled_switches"][0]["error"])
+
+    def test_a_stop_of_another_profile_only_cancels(self):
+        # Before the hand-over: the switch stops at its next step; only the named profile is stopped.
+        finished = self.deploy(["qwen-replicas"], prepare=lambda: self.cancel("down", profile="mm"))
+        self.assertEqual(self.downs(), ["mm"])
+        self.assertEqual(self.answers[0]["cancelled_switches"][0]["phase"], "checks")
+        self.assertIn("deploy cancelled", finished["error"])
+        # After it: the launch the switch handed over goes on; the stop does not take its target down.
+        self.orch.down.reset_mock()
+        self.answers.clear()
+
+        def up(*a, **kw):
+            self.assertFalse(kw["cancelled"]())
+            self.cancel("down", profile="mm")
+            return {"state": "running"}
+        self.orch.up.side_effect = up
+        finished = self.deploy(["qwen-replicas"])
+        self.assertEqual(finished["state"], "succeeded", finished["error"])
+        self.assertEqual(self.downs(), ["qwen-replicas", "mm"])
+        switch = self.answers[0]["cancelled_switches"][0]
+        self.assertEqual((switch["phase"], switch["down"]), ("launching", None))
 
 
 if __name__ == "__main__":

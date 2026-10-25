@@ -55,6 +55,12 @@ Recipe sources, all listed by `GET recipes`:
 Layers are in `<config dir>/recipes/layers/`, disk receipts in `<config dir>/run/receipts/`, saved hardware
 observations in `<config dir>/run/facts/`. The API names these files by **name only**; it never takes a path.
 
+Recipe references (`GET recipes/<id>`, `recipe`, `a`, `b`, `base`, and `up`'s `recipe`) are **ids only**:
+`[A-Za-z0-9][A-Za-z0-9._-]{0,63}` without a `.toml`/`.json` suffix, plus `auto` where the CLI takes it (`plan`, `up`).
+Anything with `/`, `\`, `:`, a drive or a file suffix is refused (400) before anything runs, and snapshot digests
+(`inputs`, `recipe_inputs`) must be 64 hex digits. The CLI looks an id up in the catalog only, never as a file of its
+working directory; recipe FILE arguments (a `.toml`/`.json` name or a path) are for the command line only.
+
 A recipe id or a recipe name used by two files makes every one of those files an error (`error` in the list); nothing
 silently wins, and `pick` and `up --recipe auto` refuse them the same way.
 
@@ -275,6 +281,17 @@ priority). In order, and refusing before anything is stopped: the snapshot (dige
 and `up --recipe-inputs <inputs>` launches exactly the snapshot: its configuration copy, its profile, its layers. Poll
 `GET jobs/<id>`.
 
+`POST cancel {"job": "<deploy job>"}` undoes only what the deploy did. Before the hand-over to `up` it only writes the
+deploy's cancel marker: the deploy stops before its next step and `up`, right after it takes the profile, starts
+nothing; profiles the deploy already stopped stay stopped (start them again with `up`). Once `up` owns the target
+profile, the cancel stops that profile (`down`), the one the deploy started. The answer says what happened: `phase`
+(`not started`, `checks`, `stopping`, `launching`, `done`, `failed`), `profile`, `stopped_by_deploy`, `stopping`,
+`down` (the target's stop as `down` answered it: `stopped`, or `stop-requested` while its launch is still winding down;
+null when nothing of the deploy runs) and `summary`; the cancelled deploy's `error` says the same, with how each
+profile it stopped answered. When the deploy's progress cannot be read, the cancel fails (500) and says so; its marker
+is written all the same. A `down` (or a cancel by profile) while a deploy runs cancels the deploy the same way but
+stops only the profile it names. A job that has finished is not cancelled (409, at once).
+
 #### POST up with a recipe (job)
 
 ```sh
@@ -290,8 +307,13 @@ POST up {"recipe_inputs": "055e5fe5...d8cbd"}
 ```
 
 Any model with a recipe can be started this way (the portal's plain `up` stays limited to Qwen replica profiles).
-Without `profile`, the recipe's model must be served by exactly one deployment profile. `recipe` is an id, a file
-under the CLI only, or `auto`. Refusals come back as the job's `error`, with the CLI's text. A pending recipe is
+Without `profile`, the recipe's model must be served by exactly one deployment profile (or the snapshot names it);
+the accepted job's `arguments.profile` is that profile. `cancel {job}` works as for a deploy (the job runs
+`up --job <id>`): before the hand-over only its marker, and `up` starts nothing; once `up` owns the profile, the
+cancel stops it; the answer has the same fields. A `down` (or a cancel by profile) of the profile it launches
+writes its marker too, so it starts nothing if it has not taken the profile yet. `recipe` is an id or
+`auto` (a file only on the command line). A recipe `up` runs on the portal's own configuration (a `config` naming
+another file is refused). Refusals come back as the job's `error`, with the CLI's text. A pending recipe is
 refused. Some profiles cannot run a recipe yet; the refusal says why (for example, a MiniMax pair binds loopback and
 needs its router on rank 0, while recipes need the local router).
 
@@ -430,7 +452,7 @@ hyperloom recipe routes ds41-rtx
 | `POST doctor {machine}` | `hyperloom doctor` |
 | `POST hosts/pin {machine, fingerprint}` | `hyperloom hosts pin` |
 | `POST keys/rotate {name}` | `hyperloom keys rotate NAME` |
-| `POST cancel {job | profile}` | stops a running `up` |
+| `POST cancel {job | profile}` | stops a running `up`; cancels a `recipes/deploy` (above) |
 | `GET jobs`, `GET jobs/<id>` | job progress and results |
 
 Mutations answer `202` with a job (`job`, `state`, `action`, `arguments`, `result`, `error`). One mutating job runs at a

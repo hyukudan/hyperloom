@@ -312,6 +312,14 @@ def document(operation, argv, result, *, now, cli_files=None):
     return STATUS[result.code], doc
 
 
+def redacted(doc, redact):
+    """A recipe answer through the portal's redaction: the error text and the command line in full; the result by
+    its keys (a secret-named key, an --api-key argument), its prose untouched so it stays the CLI's answer."""
+    out = redact({k: v for k, v in doc.items() if k != "result"})
+    out["result"] = redact(doc["result"], text=False)
+    return out
+
+
 def in_process(argv, loader):
     """Run a cheap read operation in process: the CLI's parser and the same commands.run, with cli.main's error
     handling (a refusal is exit 1 with the message; unknown id 3; conflict 4)."""
@@ -326,6 +334,8 @@ def in_process(argv, loader):
         return Result(4, b"", f"hyperloom: {exc}".encode())
     except (OSError, ValueError, RuntimeError, KeyError, subprocess.SubprocessError) as exc:
         return Result(1, b"", f"hyperloom: {exc}".encode())
+    except Exception as exc:          # the CLI exits 1 on an unexpected error too; the request still gets its answer
+        return Result(1, b"", f"hyperloom: internal error ({type(exc).__name__}): {exc}".encode())
     return Result(0 if ok else 1, json.dumps(value, indent=2).encode("utf-8"), b"")
 
 

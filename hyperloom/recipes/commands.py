@@ -186,7 +186,11 @@ def pick_command(cluster, args, dirs=None):
 def run(cluster_loader, args):
     """(result, ok) for one `hyperloom recipe` operation. The portal runs this same command line."""
     from . import service
-    service.use_config(args.config)
+    with service.configured(args.config):
+        return _run(cluster_loader, args, service)
+
+
+def _run(cluster_loader, args, service):
     # Operations that need no hardware run without a cluster configuration (then without configured directories).
     offline = args.operation in ("diff", "list", "show", "save", "delete", "save-layer", "delete-layer",
                                  "save-receipt", "deploy") or (
