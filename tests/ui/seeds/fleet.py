@@ -38,7 +38,7 @@ def _control(machines):
 
 
 def seed(store, now):
-    """Eight hours of node series (one sample a minute, every 5 s in the last 20 minutes) with a 20-minute offline gap
+    """Eight hours of node series (one sample every 5 min, every 15 s in the last hour) with a 20-minute offline gap
     on halo-2."""
     for name, unit in (("node_gpu_busy_percent", "%"), ("node_gpu_power_watts", "W"), ("node_gpu_power_limit_watts", "W"),
                        ("node_gpu_temp_celsius", "celsius"), ("node_cpu_busy_percent", "%")):
@@ -61,9 +61,9 @@ def seed(store, now):
                            ("node_gpu_temp_celsius", {**labels, "sensor": temp}, 42 + 0.35 * busy)]
                 if limit:
                     points.append(("node_gpu_power_limit_watts", labels, limit))
-            step = 60 if t < now - 1200 else 5      # the last 20 minutes at the collectors' own cadence
+            step = 300 if t < now - 3600 else 15     # coarse history, the last hour every 15 s
             batches.append((points, t, step))
-        t += 60 if t < now - 1200 else 5
+        t += 300 if t < now - 3600 else 15
 
     # One transaction for the whole seed (thousands of single-sample transactions are slow on some file systems).
     def insert(pending):
