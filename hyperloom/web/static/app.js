@@ -376,6 +376,7 @@
       $("main").querySelectorAll("button,input,select,a,summary,[tabindex]").forEach((el, index) => { if (!el.id) el.id = `route-${page}-control-${index}`; });
       $("main").querySelectorAll("[data-meter]").forEach(el => { el.style.width = `${el.dataset.meter}%`; });
       [...$("main").querySelectorAll("details")].forEach((el, i) => { el.open = openDetails[i] || false; });
+      applyTips();
       if (focusId && $(focusId)) {
         $(focusId).focus({preventScroll: true});
         if (selection != null && typeof $(focusId).setSelectionRange === "function" && ["text", "search", "textarea"].includes($(focusId).type)) $(focusId).setSelectionRange(selection, selection);
@@ -423,44 +424,56 @@
     const generation = state.generation;
     inFlight = (async () => {
       const own = [...endpoints, ...pageEndpoints(route()).filter(e => !endpoints.includes(e))];
-      // Shell documents of other features (prefs, health/summary, overview): optional, never make the page stale.
-      const extra = optionalDue().filter(e => !own.includes(e));
-      const names = [...own, ...extra, "jobs"];
+      const names = [...own, "jobs"];
       const prefsEpoch = prefsSync.epoch;
       pollAbort = new AbortController();
       const timeout = setTimeout(() => pollAbort?.abort(), 30000);
-      const fetchOne = name => {
-        const query = name === "logs" && state.logProcess !== "all" && state.logProcess !== "portal" && selected() ? `?${new URLSearchParams({profile: profileId(selected()), process: state.logProcess, tail: "200"})}` : "";
-        return request(name + query, {signal: pollAbort.signal});
-      };
-      // The optional shell documents follow the screen's own documents instead of joining their burst of
-      // connections (the portal accepts a short queue of new connections at a time).
-      const primary = await Promise.allSettled(names.filter(name => !extra.includes(name)).map(fetchOne));
-      const secondary = await Promise.allSettled(extra.map(fetchOne));
-      const results = names.map(name => extra.includes(name) ? secondary[extra.indexOf(name)] : primary[names.filter(n => !extra.includes(n)).indexOf(name)]);
+      // Each answer is stamped when it arrives (freshness is the age of what was received, not of the batch).
+      const arrived = {};
+      const results = await Promise.allSettled(names.map(name => fetchDocument(name, pollAbort.signal).finally(() => { arrived[name] = Date.now(); })));
       clearTimeout(timeout);
       if (generation !== state.generation || document.hidden) return;
-      state.current = [...own, "jobs"];
+      state.current = names;
       for (let i = 0; i < results.length; i++) {
         const name = names[i], result = results[i];
-        if (OPTIONAL.includes(name)) optionalResult(name, result, prefsEpoch);
-        if (extra.includes(name)) continue;
+        if (OPTIONAL.includes(name)) optionalResult(name, result, prefsEpoch, arrived[name]);
         if (result.status === "fulfilled") {
           if (name === "jobs") {
             state.lastJobs = result.value.jobs;
             const jobs = rows(result.value.jobs), active = jobs.find(j => (j.id || j.job) === result.value.active);
             state.job = active || jobs.find(j => (j.id || j.job) === (state.job?.id || state.job?.job)) || state.job;
             if (state.job?.error && !state.warnings.has(state.job.id)) { state.warnings.add(state.job.id); announce(state.job.error); }
-          } else { state.docs[name] = result.value; state.fetched[name] = Date.now(); }
+          } else { state.docs[name] = result.value; state.fetched[name] = arrived[name]; }
           delete state.errors[name];
         } else state.errors[name] = `${name}: ${result.reason.message}`;
       }
-      state.fresh = results.every((r, i) => r.status === "fulfilled" || extra.includes(names[i]));
+      state.fresh = results.every(r => r.status === "fulfilled");
       const warningMessages = machines().flatMap(m => rows(m.warnings).map(w => `${m.id}: ${typeof w === "string" ? w : w.message || w.value || JSON.stringify(w)}`));
       for (const warning of warningMessages) if (!state.warnings.has(warning)) { state.warnings.add(warning); announce(`New warning · ${warning}`); }
       render();
+      // The shell's optional documents follow on their own: never delaying the screen's documents, never making
+      // the view stale, one round in flight at a time.
+      refreshOptional(generation, prefsEpoch, own);
     })().finally(() => { inFlight = null; });
     return inFlight;
+  }
+  function fetchDocument(name, signal) {
+    const query = name === "logs" && state.logProcess !== "all" && state.logProcess !== "portal" && selected() ? `?${new URLSearchParams({profile: profileId(selected()), process: state.logProcess, tail: "200"})}` : "";
+    return request(name + query, {signal});
+  }
+  let optionalInFlight = null;
+  function refreshOptional(generation, prefsEpoch, own) {
+    if (optionalInFlight) return;
+    const extra = optionalDue().filter(name => !own.includes(name));
+    if (!extra.length) return;
+    const abort = new AbortController(), timer = setTimeout(() => abort.abort(), 15000);
+    optionalInFlight = (async () => {
+      const arrived = {};
+      const results = await Promise.allSettled(extra.map(name => fetchDocument(name, abort.signal).finally(() => { arrived[name] = Date.now(); })));
+      if (generation !== state.generation || document.hidden) return;
+      extra.forEach((name, i) => optionalResult(name, results[i], prefsEpoch, arrived[name]));
+      render();
+    })().finally(() => { clearTimeout(timer); optionalInFlight = null; });
   }
   function announce(message) { $("alerts").textContent = message; $("alerts").classList.toggle("warning", message.startsWith("New warning")); }
   function resetPolling() {
@@ -864,10 +877,10 @@
   // Optional shell documents: 404 = that feature is not installed (probed again every 60 s, not every poll).
   const OPTIONAL = ["prefs", "health/summary", "overview"];
   function optionalDue() { return OPTIONAL.filter(name => !state.absent[name] || Date.now() - state.absent[name] > 60000); }
-  function optionalResult(name, result, epoch) {
+  function optionalResult(name, result, epoch, at = Date.now()) {
     if (result.status === "fulfilled") {
       delete state.absent[name]; delete state.optional[name + ":error"];
-      state.optional[name] = result.value; state.optional[name + ":at"] = Date.now();
+      state.optional[name] = result.value; state.optional[name + ":at"] = at;
       if (Object.hasOwn(state.docs, name)) { state.docs[name] = result.value; state.fetched[name] = state.optional[name + ":at"]; }
       if (name === "prefs") serverPrefs(result.value, epoch);
       if (name === "health/summary") summaryArrived(result.value);
@@ -882,6 +895,16 @@
 
   // F53: info tooltips and problem states.
   let infoCount = 0;
+  // Kept by tooltip id across re-renders (a poll replaces the elements, and with them the browser's hover state):
+  // opened by a click, or by the pointer resting on it; dismissed by Escape.
+  const tips = {open: new Set(), dismissed: new Set(), hover: null};
+  function applyTips() {
+    document.querySelectorAll(".info").forEach(box => {
+      const id = box.querySelector("[role=tooltip]")?.id;
+      box.classList.toggle("open", tips.open.has(id) || tips.hover === id);
+      box.classList.toggle("dismissed", tips.dismissed.has(id));
+    });
+  }
   function hash(text) { let h = 2166136261; for (const ch of String(text)) h = Math.imul(h ^ ch.codePointAt(0), 16777619); return (h >>> 0).toString(36); }
   function info(text, {observer, basis} = {}) {
     const body = [text, observer ? t("info.observer", {observer}, `Observer: ${observer}`) : "", basis ? t("info.basis", {basis}, `Basis: ${basis}`) : ""].filter(Boolean).join(" · ");
@@ -1003,7 +1026,7 @@
     if (seconds < 86400) return t("dur.h", {h: Math.floor(seconds / 3600), m: Math.floor(seconds % 3600 / 60)}, `${Math.floor(seconds / 3600)} h ${Math.floor(seconds % 3600 / 60)} min`);
     return t("dur.d", {n: Math.floor(seconds / 86400)}, `${Math.floor(seconds / 86400)} d`);
   }
-  let stripOpen = true, bannerText = null;
+  let stripOpen = true;
   function renderStrip() {
     const s = summary(), error = state.optional["health/summary:error"], el = $("exceptions");
     let html = "";
@@ -1032,8 +1055,7 @@
     const banner = s && typeof s.banner === "string" && s.banner ? (summaryStale() ? `${t("strip.last_known", null, "Last known:")} ${s.banner}` : s.banner) : null;
     $("throttle-banner").hidden = !banner;
     if ($("throttle-banner").textContent !== (banner || "")) $("throttle-banner").textContent = banner || "";
-    if (banner && banner !== bannerText) announce(banner);
-    bannerText = banner;
+    // The banner is its own alert region (text changes only when the banner does): announced once, not repeated.
   }
   let favicon = "";
   function renderFavicon() {
@@ -1247,12 +1269,41 @@
     if (mod && event.key.toLowerCase() === "k") { event.preventDefault(); if ($("palette").open) closePalette(); else openPalette(); return; }
     const typing = event.target.closest?.("input,textarea,select,[contenteditable]");
     if (mod && event.key.toLowerCase() === "b" && !typing && !document.querySelector("dialog[open]")) { event.preventDefault(); toggleSidebar(); return; }
-    if (event.key === "Escape" && event.target.classList?.contains("info-btn")) event.target.closest(".info")?.classList.add("dismissed");
+    if (event.key === "Escape" && event.target.classList?.contains("info-btn")) {
+      const id = event.target.getAttribute("aria-describedby");
+      tips.open.delete(id); tips.dismissed.add(id); applyTips();
+    }
   });
-  document.addEventListener("focusout", event => { if (event.target.classList?.contains("info-btn")) event.target.closest(".info")?.classList.remove("dismissed", "open"); });
+  // Focus leaving the button (not a re-render, which puts focus back on the same id) or the pointer leaving the
+  // box ends the click-open and Escape-dismissed states.
+  document.addEventListener("focusout", event => {
+    if (!event.target.classList?.contains("info-btn")) return;
+    const id = event.target.getAttribute("aria-describedby");
+    setTimeout(() => {
+      if (document.activeElement?.getAttribute?.("aria-describedby") === id) return;     // a re-render kept focus here
+      tips.open.delete(id); tips.dismissed.delete(id); applyTips();
+    }, 0);
+  });
+  document.addEventListener("mouseover", event => {
+    const id = event.target.closest?.(".info")?.querySelector("[role=tooltip]")?.id;
+    if (id && tips.hover !== id) { tips.hover = id; applyTips(); }
+  });
+  document.addEventListener("mouseout", event => {
+    const box = event.target.closest?.(".info");
+    if (!box || box.contains(event.relatedTarget)) return;
+    const id = box.querySelector("[role=tooltip]")?.id;
+    if (tips.hover === id) tips.hover = null;
+    if (document.activeElement?.getAttribute?.("aria-describedby") !== id) tips.dismissed.delete(id);
+    applyTips();
+  });
   document.addEventListener("click", event => {
+    if (tips.open.size && !event.target.closest(".info")) { tips.open.clear(); applyTips(); }
     const tip = event.target.closest("[data-info]");
-    if (tip) { const box = tip.closest(".info"); box.classList.toggle("open"); box.classList.remove("dismissed"); return; }
+    if (tip) {
+      const id = tip.getAttribute("aria-describedby");
+      if (tips.open.has(id)) tips.open.delete(id); else tips.open.add(id);
+      tips.dismissed.delete(id); applyTips(); return;
+    }
     const shell = event.target.closest("[data-shell]");
     if (!shell || shell.disabled) return;
     const kind = shell.dataset.shell;
