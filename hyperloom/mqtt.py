@@ -284,6 +284,7 @@ class Client:
     def publish(self, topic, payload, qos=0, retain=False):
         payload = _bytes(payload)
         deadline = time.monotonic() + self.timeout
+        publish_packet(topic, payload, qos, retain, 1)       # an invalid message raises before anything is sent
         if qos == 0:
             packet = publish_packet(topic, payload, 0, retain)
             self._guarded(lambda: self._send(packet, deadline))
@@ -417,6 +418,7 @@ class Publisher:
         """Queue a message. A retained message replaces a queued one of the same topic; a full queue drops its
         oldest message. ``expires`` is a monotonic deadline checked when the message is sent."""
         message = Message(topic, payload, qos, retain, expires, done)
+        publish_packet(topic, message.payload, qos, retain, 1)     # raises ValueError for one that can never be sent
         finished = []
         with self._cv:
             if retain:
@@ -555,7 +557,12 @@ class Publisher:
                         self._finish(message, "sent")
                     elif time.monotonic() - client.last_sent >= max(1.0, client.keepalive / 2):
                         client.ping()
-                except (MQTTError, OSError, ValueError) as exc:
+                except ValueError:
+                    if message is not None:     # the message itself is invalid: dropped, the session stays
+                        with self._cv:
+                            self.stats["dropped"] += 1
+                        self._finish(message, "dropped")
+                except (MQTTError, OSError) as exc:
                     if message is not None:
                         self._requeue(message)
                     self._fail(exc)

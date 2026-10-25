@@ -501,7 +501,7 @@ def open_readonly(path, deadline=None):
     db = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=1, check_same_thread=False)
     db.execute("PRAGMA query_only=1")
     if deadline is not None:
-        db.set_progress_handler(lambda: 1 if time.monotonic() > deadline else 0, 1000)
+        db.set_progress_handler(lambda: 1 if time.monotonic() >= deadline else 0, 1000)
     return db
 
 
@@ -528,7 +528,7 @@ def _labels(raw):
 
 
 def _check(deadline):
-    if deadline is not None and time.monotonic() > deadline:
+    if deadline is not None and time.monotonic() >= deadline:
         raise TimeoutError("telemetry store read exceeded its deadline")
 
 
@@ -653,7 +653,7 @@ def _telemetry(out, path, now=None, deadline=None):
         _source(out, {**labels, "reason": STORE_MISSING}, False, None)
         return
     now = time.time() if now is None else now
-    deadline = min(deadline or math.inf, started + STORE_READ_S)
+    deadline = started + STORE_READ_S if deadline is None else min(deadline, started + STORE_READ_S)
     part = Exposition()        # merged only when the whole read succeeded
     reason = None
     try:
@@ -671,7 +671,7 @@ def _telemetry(out, path, now=None, deadline=None):
         finally:
             db.close()
     except (sqlite3.Error, OSError, ValueError) as exc:
-        reason = "telemetry store read exceeded its deadline" if time.monotonic() > deadline else \
+        reason = "telemetry store read exceeded its deadline" if time.monotonic() >= deadline else \
             f"telemetry store unreadable ({type(exc).__name__})"
     if reason is not None:
         _source(out, {**labels, "reason": reason}, False, time.monotonic() - started)

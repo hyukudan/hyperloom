@@ -40,6 +40,8 @@ RETAINED_NAMESPACE = "integrations/mqtt-retained"
 # A publisher stops writing this long before its lease could be taken over: longer than one protocol operation,
 # so a send started under the lease always ends before a successor can start.
 LEASE_MARGIN_S = mqtt.OPERATION_TIMEOUT_S + 1.0
+# Ordinary publishing stops one more operation earlier, so the final offline status always fits inside the lease.
+WORK_MARGIN_S = LEASE_MARGIN_S + mqtt.OPERATION_TIMEOUT_S
 
 STREAM_PATH = "/hyperloom/api/stream"
 STREAM_MAX_CLIENTS = 4
@@ -175,13 +177,17 @@ def test_publish(api, arguments, connect=None):
     if not config.get("host"):
         raise PermissionError("no broker configured")
     started = time.monotonic()
+    deadline = started + mqtt.OPERATION_TIMEOUT_S        # one budget for the whole action
     username = config.get("username")
+    password = _password(config)
     client = mqtt.Client(config["host"], _port(config), client_id=config["client_id"] + "-t", username=username,
-                         password=_password(config), tls=config.get("tls", False),
+                         password=password, tls=config.get("tls", False), timeout=max(0.001, deadline - time.monotonic()),
                          **({"connect": connect} if connect else {}))
     try:
+        if time.monotonic() >= deadline:
+            raise mqtt.MQTTError("timed out waiting for the broker")
         client.connect()
-        client.timeout = mqtt.OPERATION_TIMEOUT_S - (time.monotonic() - started)    # one budget for the action
+        client.timeout = deadline - time.monotonic()
         if client.timeout <= 0:
             raise mqtt.MQTTError("timed out waiting for the broker")
         client.publish(config["topic_prefix"] + "/portal/test",
@@ -208,14 +214,15 @@ def _token(api):
 
 
 def claim_lease(store, token, now):
-    """Take or renew the publisher lease (compare-and-set in one statement); True when this portal holds it."""
+    """Take or renew the publisher lease (compare-and-set in one statement); its stored expiry when this portal
+    holds it, else None."""
     value = json.dumps({"owner": token, "expires": now + LEASE_S}, sort_keys=True)
     store.transaction([
         ("INSERT OR IGNORE INTO docs(namespace, key, ts, value) VALUES (?, 'lease', ?, ?)", (OWNER_NAMESPACE, now, value)),
         ("UPDATE docs SET ts=?, value=? WHERE namespace=? AND key='lease' AND (json_extract(value, '$.owner')=? "
          "OR json_extract(value, '$.expires')<?)", (now, value, OWNER_NAMESPACE, token, now))])
     current = store.get(OWNER_NAMESPACE, "lease") or {}
-    return current.get("owner") == token
+    return current.get("expires") if current.get("owner") == token else None
 
 
 def release_lease(store, token):
@@ -270,28 +277,33 @@ def publisher_state(api):
     return {**state["publisher"].state(), "events_lost": state["events_lost"]}
 
 
-def _ensure(api, config, factory, store):
+def _lease_cutoff(api, expires):
+    """The local (monotonic) time at which the stored lease lapses: what is left of it now, not a fresh 30 s."""
+    return time.monotonic() + (expires - api.clock())
+
+
+def _ensure(api, config, factory, store, expires):
     """The running publisher for these settings (renewed), a new one, or None while a replaced one winds down."""
     digest = _digest(config)
     with _lock:
         state = _running.get(id(api))
         if state is not None and state["digest"] == digest and state["publisher"].state()["running"]:
             state["renewed"] = time.monotonic()
-            state["lease_until"] = time.monotonic() + LEASE_S - LEASE_MARGIN_S
+            state["lease_until"] = _lease_cutoff(api, expires)
             return state
     if state is not None and not stop_publisher(api):
         return None
     password = _password(config)
     state = {"digest": digest, "status": {}, "metrics": set(), "connects": 0, "metrics_at": None, "pending": {},
-             "events_lost": 0, "renewed": time.monotonic(), "lock": threading.Lock(), "cleared": set(), "gaps": {},
-             "lease_until": time.monotonic() + LEASE_S - LEASE_MARGIN_S}
+             "events_lost": 0, "renewed": time.monotonic(), "lock": threading.Lock(), "cleared": set(), "gaps": {}, "metric_keys": {},
+             "lease_until": _lease_cutoff(api, expires)}
 
     def alive():
         # Checked before every connection and every send: renewed by the collector recently, the lease not about
         # to lapse (so a successor can never overlap), and the portal samplers still running.
         now = time.monotonic()
-        return (now - state["renewed"] <= COLLECTOR_INTERVAL_S + RENEW_GRACE_S and now < state["lease_until"]
-                and _sampler_running(api))
+        return (now - state["renewed"] <= COLLECTOR_INTERVAL_S + RENEW_GRACE_S
+                and now < state["lease_until"] - WORK_MARGIN_S and _sampler_running(api))
 
     def finished(publisher):
         # Only a publisher that ended on its own (not renewed, samplers stopped) gives the lease back; one replaced
@@ -307,7 +319,7 @@ def _ensure(api, config, factory, store):
                 pass
 
     def owner():
-        return time.monotonic() < state["lease_until"]
+        return time.monotonic() < state["lease_until"] - LEASE_MARGIN_S
 
     state["publisher"] = factory({**config, "port": _port(config)}, password, alive, finished, owner)
     with _lock:
@@ -353,6 +365,21 @@ def machine_metrics(store, now):
             values.append({"series": name, "labels": labels, "value": row["value"], "ts": row["ts"]})
             result[machine] = (values, min(valid_until, row["ts"] + age))
     return result
+
+
+METRICS_PAYLOAD_MAX = 200 * 1024
+
+
+def metrics_payload(machine, now, values):
+    """The retained metrics JSON, within the message size limit: values beyond it are left out and counted."""
+    values = sorted(values, key=lambda v: (v["series"], json.dumps(v["labels"], sort_keys=True)))
+    kept = len(values)
+    while True:
+        payload = json.dumps({"machine": machine, "published_at": now, "values": values[:kept],
+                              "omitted": len(values) - kept}, allow_nan=False, sort_keys=True)
+        if len(payload.encode("utf-8")) <= METRICS_PAYLOAD_MAX or kept == 0:
+            return payload
+        kept //= 2
 
 
 def _events_after(store, after, limit):
@@ -436,18 +463,23 @@ def publish_round(api, store, config, state, now):
                            if statuses.get(machine) is not None}
     # Freshness is evaluated every round (a machine whose samples went stale is cleared now); values are sent
     # every interval_s, or when a machine gains fresh values.
-    metrics = machine_metrics(store, now)
+    # Only configured machines; when the sample set of a machine changes (a sample went stale, a new one arrived)
+    # its retained message is replaced at once.
+    metrics = {machine: value for machine, value in machine_metrics(store, now).items()
+               if statuses is not None and machine in statuses}
     due = state["metrics_at"] is None or now - state["metrics_at"] >= config["interval_s"]
+    keys = {}
     for machine, (values, valid_until) in sorted(metrics.items()):
         topic = f"{prefix}/metrics/{machine}"
-        if due or topic not in state["metrics"]:
-            payload = json.dumps({"machine": machine, "published_at": now, "values": values}, allow_nan=False,
-                                 sort_keys=True)
+        keys[topic] = sorted(json.dumps([v["series"], v["labels"]], sort_keys=True) for v in values)
+        if due or keys[topic] != state["metric_keys"].get(topic):
+            payload = metrics_payload(machine, now, values)
             publisher.put(topic, payload, 0, True, expires=time.monotonic() + max(0.0, valid_until - now))
             queued += 1
     if due:
         state["metrics_at"] = now
-    state["metrics"] = {f"{prefix}/metrics/{machine}" for machine in metrics}
+    state["metric_keys"] = keys
+    state["metrics"] = set(keys)
     wanted |= state["metrics"]
     if statuses is not None:            # without the configuration nothing is cleared this round
         for topic in sorted(remembered - wanted):
@@ -483,7 +515,10 @@ def publish_round(api, store, config, state, now):
                 with state["lock"]:
                     if state["pending"].get(event_id) == "queued":
                         state["pending"][event_id] = "acked" if outcome == "sent" else "lost"
-            publisher.put(prefix + "/events", json.dumps(event, allow_nan=False), 1, False, done=done)
+            try:
+                publisher.put(prefix + "/events", json.dumps(event, allow_nan=False), 1, False, done=done)
+            except ValueError:          # larger than a message may be: counted as lost, never retried
+                done("dropped")
             queued += 1
     return queued
 
@@ -499,10 +534,11 @@ def collect(api, now, factory=None):
     if not config.get("enabled") or not config.get("host"):
         stop_publisher(api, store)
         return []
-    if not claim_lease(store, _token(api), now):
+    expires = claim_lease(store, _token(api), now)
+    if expires is None:
         stop_publisher(api)         # never started, or our lease lapsed and another portal took it over
         return []
-    state = _ensure(api, config, factory or _factory, store)
+    state = _ensure(api, config, factory or _factory, store, expires)
     if state is None:
         return []
     publish_round(api, store, config, state, now)

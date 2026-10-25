@@ -303,7 +303,7 @@ class PublisherTests(unittest.TestCase):
         alive.clear()
         self.assertTrue(exited.wait(3))
         self.assertEqual(broker.publishes()[-1]["payload"], b"offline")
-        self.assertFalse(publisher.state()["running"])
+        self.wait(lambda: not publisher.state()["running"])
 
     def test_reconnects_after_failure_with_backoff(self):
         brokers = []
@@ -470,6 +470,12 @@ class LifecycleTests(unittest.TestCase):
         broker.thread.join(2)
         self.assertEqual([p["payload"] for p in broker.publishes()], [b"online"])
         self.assertEqual(broker.packets[-1][0], 14)                 # a clean DISCONNECT: the will is discarded
+
+    def test_oversized_messages_are_refused_when_queued(self):
+        publisher = mqtt.Publisher(self.settings)
+        with self.assertRaises(ValueError):
+            publisher.put("lab/events", b"x" * (mqtt.MAX_PACKET + 1), 1)
+        self.assertEqual(publisher.state()["queued"], 0)
 
     def test_errors_kept_for_documents_are_fixed_texts(self):
         def refuse(address, timeout):

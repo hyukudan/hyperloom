@@ -88,7 +88,7 @@
     const picker = `<div class="field"><label for="intg-target">Document</label><select class="inp" id="intg-target" data-page-action="integrations-export-field">${targets.map(t => `<option value="${esc(t.document)}" ${t.document === draft.target ? "selected" : ""}>${esc(t.label)}</option>`).join("")}</select></div>`;
     const range = takesRange ? input("intg-range", "Range", draft.range, {hint: target.document.startsWith("history/") ? "Seconds, e.g. 3600" : "As the document accepts it, e.g. 24h or 86400"}) : "";
     const why = !target ? "No exportable document in this portal" : draft.exportBusy ? "Export in progress" : "";
-    return card("Export", `<div class="intg-form">${picker}${range}</div>${check("intg-share", "Share mode (only fields cleared for sharing)", draft.share, 'data-share="1"')}
+    return card("Export", `<div class="intg-form">${picker}${range}</div>${check("intg-share", "CSV share mode (only fields cleared for sharing; JSON is always the full document)", draft.share, 'data-share="1"')}
       <div class="row">${button("Download CSV", "", {disabled: why, style: "pri", extra: 'data-page-action="integrations-csv"'})}${button("Download JSON", "", {disabled: why, extra: 'data-page-action="integrations-json"'})}</div>
       <p class="hint" role="status">${esc(draft.exportResult || "CSV cells that start with = + - @ are prefixed with ' so spreadsheets never run them.")}</p>`, "CSV built by the portal from its own documents; JSON as served");
   }

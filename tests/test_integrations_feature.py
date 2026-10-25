@@ -304,6 +304,37 @@ class PublishingTests(Base):
         self.api.sampler._stop.set()
         self.assertFalse(alive())
 
+    def test_lease_cutoffs_follow_the_stored_expiry(self):
+        self.enable()
+        self.collect()
+        state = integrations._running[id(self.api)]
+        expires = self.store.get(integrations.OWNER_NAMESPACE, "lease")["expires"]
+        remaining = state["lease_until"] - time.monotonic()
+        self.assertAlmostEqual(remaining, expires - self.clock(), delta=0.5)
+        publisher = self.publishers[0]
+        self.assertTrue(publisher.alive() and publisher.owner())
+        # Ordinary sends stop first; the final offline status still fits; then nothing may be written.
+        state["lease_until"] = time.monotonic() + integrations.WORK_MARGIN_S - 0.1
+        self.assertFalse(publisher.alive())
+        self.assertTrue(publisher.owner())
+        state["lease_until"] = time.monotonic() + integrations.LEASE_MARGIN_S - 0.1
+        self.assertFalse(publisher.owner())
+
+    def test_metrics_follow_configured_machines_and_sample_sets(self):
+        self.enable(interval_s=300)
+        self.store.describe("node_load1", "gauge", interval=5)
+        self.store.describe("node_disk_used_bytes", "gauge", interval=60)
+        self.store.record([("node_load1", {"machine": "halo-1"}, 1.0), ("node_disk_used_bytes", {"machine": "halo-1"}, 7),
+                           ("node_load1", {"machine": "halo-9"}, 2.0)], ts=NOW)
+        self.collect()
+        publisher = self.publishers[0]
+        self.assertEqual([m["topic"] for m in publisher.messages if "/metrics/" in m["topic"]], ["lab/metrics/halo-1"])
+        publisher.messages.clear()
+        self.clock.now += 20            # the load sample is stale, the disk sample is not: replaced at once
+        self.collect()
+        metrics = [json.loads(m["payload"]) for m in publisher.messages if m["topic"] == "lab/metrics/halo-1"]
+        self.assertEqual([v["series"] for v in metrics[0]["values"]], ["node_disk_used_bytes"])
+
     def test_one_publishing_portal_per_store(self):
         self.enable()
         other = FakeAPI(self.store, self.clock)
@@ -318,6 +349,14 @@ class PublishingTests(Base):
         self.assertEqual(len(self.publishers), 2)
         self.collect()
         self.assertTrue(self.publishers[0].stopped)
+
+
+class PayloadTests(unittest.TestCase):
+    def test_metrics_payload_stays_within_the_message_limit(self):
+        values = [{"series": "node_x", "labels": {"sensor": str(i) * 60}, "value": i, "ts": NOW} for i in range(6000)]
+        payload = json.loads(integrations.metrics_payload("halo-1", NOW, values))
+        self.assertLessEqual(len(json.dumps(payload)), integrations.METRICS_PAYLOAD_MAX)
+        self.assertEqual(len(payload["values"]) + payload["omitted"], 6000)
 
 
 class DocumentTests(Base):
