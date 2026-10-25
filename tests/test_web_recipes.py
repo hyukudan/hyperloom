@@ -267,6 +267,12 @@ class ContractTests(unittest.TestCase):
                           "max_copies_per_token": 2, "api_key_per_token": "[redacted]",
                           "password_tokens_min": "[redacted]", "secret_tokens": "[redacted]",
                           "private_key_tokens": "[redacted]"})
+        # The token-count exemption holds for numbers only: a string (or any structure) under such a key is redacted.
+        self.assertEqual(redact({"github_tokens": "ghp_abc", "prompt_tokens": 7, "max_tokens": None,
+                                 "access_tokens": ["ghp_abc"], "refresh_tokens": {"a": "ghp_abc"},
+                                 "flag_tokens": True}),
+                         {"github_tokens": "[redacted]", "prompt_tokens": 7, "max_tokens": None,
+                          "access_tokens": "[redacted]", "refresh_tokens": "[redacted]", "flag_tokens": "[redacted]"})
         self.assertSameAsCli(document)
         with mock.patch.object(recipe_web, "COMMAND", [sys.executable, "-c", (
                 "import sys; sys.stderr.write('hyperloom: refused: Authorization: Bearer abc.def\\n'); sys.exit(1)")]):

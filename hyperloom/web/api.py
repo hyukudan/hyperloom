@@ -101,9 +101,9 @@ def redact(value, text=True):
                 {"storage": "0600 files", "values": "never shown"})
             sensitive = re.search(r"password|secret|token|authorization|api[_-]?key|private[_-]?key", key, re.I)
             # Token counts are measurements (a recipe's prompt_tokens_min, max_copies_per_token), not secrets.
-            measurement = (item is None or isinstance(item, (int, float)) and not isinstance(item, bool)) and \
-                MEASUREMENT.fullmatch(key) and not SECRET_NAME.search(key)
-            counted = key.endswith("_tokens") and not SECRET_NAME.search(key)
+            number = item is None or isinstance(item, (int, float)) and not isinstance(item, bool)
+            measurement = number and MEASUREMENT.fullmatch(key) and not SECRET_NAME.search(key)
+            counted = number and key.endswith("_tokens") and not SECRET_NAME.search(key)    # never a string
             result[key] = "[redacted]" if sensitive and not metadata and not measurement and not counted and                 not key.endswith(("_file", "_path")) else redact(item, text)
         return result
     if isinstance(value, (list, tuple)):

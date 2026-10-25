@@ -1008,7 +1008,10 @@ def launch_progress(job, what, profile=None):
         progress.record_best_effort(phase="done", stopping=None)
     finally:
         if progress.marker is not None:
-            progress.marker.unlink(missing_ok=True)
+            try:
+                retry_sharing(lambda: progress.marker.unlink(missing_ok=True))
+            except OSError:
+                pass        # the job's own id: a marker left behind cancels nothing else (pruned after a day)
 
 
 def deploy(digest, stop=(), *, source=None, orchestrate=None, approval=None, job=None):
@@ -1595,8 +1598,8 @@ def _positional(operation, key, value):
 def _named(key, value, directory, suffix=".json"):
     value = _string(key, value)
     stem = value[: -len(suffix)] if value.endswith(suffix) else value
-    if not ID.fullmatch(stem) or Path(value).name != value:
-        raise ValueError(f"{key} {value!r}: a file name inside {directory}")
+    if not ID.fullmatch(stem) or Path(value).name != value or DEVICES.fullmatch(stem):
+        raise ValueError(f"{key} {value!r}: a file name inside {directory} (not a device name such as CON or NUL)")
     return Path(directory) / (stem + suffix)
 
 
