@@ -169,6 +169,30 @@ class IntegrationTests(Base):
         summary = energy.compute(self.store, NOW)               # then the collector stopped until the raw tier aged out
         self.assertEqual(summary["missed_quarters"], 1)
 
+    def test_unread_samples_after_a_reset_in_the_same_quarter_are_reported(self):
+        gpu = {"machine": "halo-1", "device": "0"}
+        q = energy._floor(NOW - 12 * HOUR, QUARTER)
+        feed(self.store, lambda t: [(GPU, gpu, 100.0)], q, q + 60)              # one sample before the reset
+        energy.reset_store(self.store, q + 60)                                    # reset one minute into the quarter
+        feed(self.store, lambda t: [(GPU, gpu, 100.0)], q + 120, q + 14 * 60 + 1)  # 13 samples after it, never read
+        summary = energy.compute(self.store, NOW)
+        self.assertEqual(summary["missed_quarters"], 1)
+
+    def test_a_reset_reports_the_losses_it_moves_past(self):
+        energy.compute(self.store, NOW - 13 * HOUR)
+        feed(self.store, lambda t: [(GPU, {"machine": "halo-1", "device": "0"}, 90.0)], NOW - 12 * HOUR,
+             NOW - 12 * HOUR + QUARTER)
+        result = energy.reset_store(self.store, NOW)
+        self.assertEqual(result["missed_quarters"], 1)
+        self.assertEqual(self.store.events(category="energy")[0]["severity"], "warning")
+
+    def test_a_cursor_older_than_the_store_reports_the_lost_span(self):
+        energy._ensure(self.store)
+        self.store.execute("INSERT INTO energy_state(key, value) VALUES ('final_through', ?)", (NOW - 45 * DAY,))
+        summary = energy.compute(self.store, NOW)
+        self.assertGreater(summary["skipped_s"], 14 * DAY)
+        self.assertIn("could not be computed", self.store.events(category="energy")[0]["message"])
+
     def test_samples_that_left_the_raw_tier_unread_are_reported(self):
         feed(self.store, lambda t: [(GPU, {"machine": "halo-1", "device": "0"}, 90.0)], NOW - 12 * HOUR, NOW - 10 * HOUR)
         energy.compute(self.store, NOW - 13 * HOUR)                            # a run before: the cursor is old
@@ -710,6 +734,18 @@ class DocumentTests(Base):
         doc = energy.thermals_document(self.api, {"range": "day"})
         self.assertEqual(doc["thresholds"]["gpu"], {"warn": 70.0, "crit": 80.0})
         self.assertEqual(doc["machines"][0]["lines"][0]["warn_buckets"], 1)
+
+    def test_the_cache_key_and_the_document_use_one_settings_snapshot(self):
+        self.store.record([("node_gpu_temp_celsius", {"machine": "halo-1", "device": "0", "sensor": "edge"}, 80.0)],
+                          ts=NOW - 600, interval=60)
+        a = {"gpu": {"warn": 85.0, "crit": 90.0}}
+        b = {"gpu": {"warn": 70.0, "crit": 80.0}}
+        reads = iter([a, b, a, b])                     # settings change between any two reads
+        with mock.patch.object(energy, "thresholds_of", lambda store: next(reads)):
+            doc = energy.thermals_document(self.api, {"range": "day"})
+        self.assertEqual(doc["thresholds"], a)          # built from the snapshot its key names
+        (key,) = [k for k in energy._thermal_cache if k[1] == "day"]
+        self.assertEqual(json.loads(key[2]), doc["thresholds"])
 
     def test_throttle_periods_never_bridge_missing_buckets(self):
         gpu = {"machine": "halo-1", "device": "0"}

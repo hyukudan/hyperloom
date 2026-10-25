@@ -27,7 +27,7 @@ POST energy/price, energy/thresholds, energy/reset (audited)
 """
 
 import bisect
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import json
 import math
 import re
@@ -93,6 +93,8 @@ CREATE TABLE IF NOT EXISTS energy_quarters (q INTEGER NOT NULL, machine TEXT NOT
     PRIMARY KEY(q, machine, domain));
 CREATE TABLE IF NOT EXISTS energy_counts (q INTEGER NOT NULL, machine TEXT NOT NULL, domain TEXT NOT NULL,
     samples INTEGER NOT NULL, PRIMARY KEY(q, machine, domain));
+CREATE TABLE IF NOT EXISTS energy_reset_counts (q INTEGER NOT NULL, machine TEXT NOT NULL, domain TEXT NOT NULL,
+    samples INTEGER NOT NULL, PRIMARY KEY(q, machine, domain));
 CREATE TABLE IF NOT EXISTS energy_pairs (q INTEGER PRIMARY KEY, wh_both REAL NOT NULL, tokens_both REAL NOT NULL,
     both_s REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS energy_monthly (month TEXT NOT NULL, machine TEXT NOT NULL, wh REAL NOT NULL,
@@ -105,7 +107,7 @@ CREATE TABLE IF NOT EXISTS energy_domains (machine TEXT NOT NULL, domain TEXT NO
 CREATE TABLE IF NOT EXISTS energy_receipts (token TEXT PRIMARY KEY, ts REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS energy_state (key TEXT PRIMARY KEY, value REAL);
 """
-TABLES = ("energy_quarters", "energy_counts", "energy_pairs", "energy_monthly", "energy_monthly_tokens", "energy_domains",
+TABLES = ("energy_quarters", "energy_counts", "energy_reset_counts", "energy_pairs", "energy_monthly", "energy_monthly_tokens", "energy_domains",
           "energy_receipts", "energy_state")
 GUARD = "EXISTS (SELECT 1 FROM energy_state WHERE key='revision' AND value=?)"
 
@@ -390,6 +392,8 @@ def plan(store, now, finalize_all=False, deadline=None):
     oldest = _floor(now - BACKFILL_S, QUARTER) + QUARTER
     stored = int(state["final_through"]) if state.get("final_through") is not None else None
     first = max(oldest, stored) if stored is not None else oldest
+    # A cursor older than everything the store still keeps: that span can no longer be computed; reported once.
+    skipped = max(0, oldest - stored) if stored is not None else 0
     current = _floor(now, QUARTER)
     # Samples carry their interval only in the raw tier (8 h). Quarters older than that keep the rows computed
     # while their samples were there; only newer quarters are recomputed.
@@ -473,16 +477,10 @@ def plan(store, now, finalize_all=False, deadline=None):
                 "SELECT q, machine, domain, samples FROM energy_counts WHERE q >= ? AND q < ?", (first, recompute)):
             key = (q, machine, domain.split("#")[0])
             integrated[key] = integrated.get(key, 0) + samples
-        recorded = {}
-        for series in (GPU_POWER, CPU_POWER):
-            for _key, (labels, _quarters, points) in _seen(store, series, first, recompute - 1).items():
-                for t, *_mid, n, _sum, _last, _cov, _cad in points:
-                    q = int(t)
-                    if n and first <= q < min(recompute, final_through) and labels.get("machine") and \
-                            not (cutoff is not None and q <= cutoff < q + QUARTER):
-                        key = (q, labels["machine"], _domain(series, labels))
-                        recorded[key] = recorded.get(key, 0) + n
-        missed = sum(1 for key, n in recorded.items() if n > integrated.get(key, 0))
+        before_reset = {(q, machine, domain): samples for q, machine, domain, samples in store.execute(
+            "SELECT q, machine, domain, samples FROM energy_reset_counts WHERE q >= ? AND q < ?", (first, recompute))}
+        recorded = _recorded(store, first, min(recompute, final_through))
+        missed = sum(1 for key, n in recorded.items() if n - before_reset.get(key, 0) > integrated.get(key, 0))
 
     statements += [
         (f"DELETE FROM energy_quarters WHERE q >= ? AND q <= ? AND {GUARD}", (recompute, current, *g)),
@@ -527,10 +525,36 @@ def plan(store, now, finalize_all=False, deadline=None):
             "tokens_both=tokens_both+excluded.tokens_both, both_s=both_s+excluded.both_s",
             (month, wh_both, tokens_both, both_s, *g)))
     statements.append(_set("final_through", final_through, revision))
-    summary = {"from": first, "recomputed_from": recompute, "quarters": (current - first) // QUARTER + 1,
+    summary = {"skipped_s": skipped, "from": first, "recomputed_from": recompute, "quarters": (current - first) // QUARTER + 1,
                "rows": len(rows), "pairs": len(pairs), "archived_quarters": max(0, (final_through - first) // QUARTER),
                "final_through": final_through, "revision": revision, "missed_quarters": missed}
     return statements, summary
+
+
+def _recorded(store, start, end):
+    """{(quarter, machine, domain): samples recorded} from the 15-minute tier, duplicates of a domain summed."""
+    recorded = {}
+    for series in (GPU_POWER, CPU_POWER):
+        for _key, (labels, _quarters, points) in _seen(store, series, start, end - 1).items():
+            for t, *_mid, n, _sum, _last, _cov, _cad in points:
+                q = int(t)
+                if n and start <= q < end and labels.get("machine"):
+                    key = (q, labels["machine"], _domain(series, labels))
+                    recorded[key] = recorded.get(key, 0) + n
+    return recorded
+
+
+def _report(store, summary):
+    """Warnings of a successful run (computation or reset): losses are reported exactly once, with the run that
+    moved the cursor past them."""
+    if summary.get("missed_quarters"):
+        store.event("energy", "warning", f"{summary['missed_quarters']} quarter hours of power samples were not fully "
+                    "integrated: no energy run read them before they left the raw tier")
+    if summary.get("skipped_s"):
+        store.event("energy", "warning", f"energy for {summary['skipped_s'] / 3600:.1f} h before "
+                    f"{datetime.fromtimestamp(summary['from'], tz=timezone.utc).isoformat()} could not be computed: "
+                    "the store no longer keeps those samples", data={"from": summary["from"] - summary["skipped_s"],
+                                                                     "to": summary["from"]})
 
 
 def _set(key, value, revision):
@@ -569,9 +593,8 @@ def compute(store, now):
     new, token = _new_revision(), secrets.token_hex(16)
     store.transaction(statements + [_receipt(token, summary["revision"], now), _bump(summary["revision"], new)])
     summary["applied"] = _applied(store, token)
-    if summary["applied"] and summary["missed_quarters"]:
-        store.event("energy", "warning", f"{summary['missed_quarters']} quarter hours of power samples were never "
-                    "integrated: no energy run read them before they left the raw tier")
+    if summary["applied"]:
+        _report(store, summary)
     return summary
 
 
@@ -586,15 +609,25 @@ def reset_store(store, now):
     statements, summary = plan(store, now, finalize_all=True)
     revision, new, token = summary["revision"], _new_revision(), secrets.token_hex(16)
     g = (revision,)
+    # The samples recorded so far in the reset's quarter are archived by this reset; they are kept as a baseline so
+    # samples of that quarter that come after it stay comparable with what is integrated later.
+    q = _floor(now, QUARTER)
+    baseline = _recorded(store, q, q + QUARTER)
     statements += [(f"DELETE FROM energy_quarters WHERE {GUARD}", g), (f"DELETE FROM energy_pairs WHERE {GUARD}", g),
                    (f"DELETE FROM energy_counts WHERE {GUARD}", g),
+                   (f"DELETE FROM energy_reset_counts WHERE q < ? AND {GUARD}", (now - KEEP_ROWS_S, *g)),
+                   *[("INSERT INTO energy_reset_counts(q, machine, domain, samples) "
+                      f"SELECT ?, ?, ?, ? WHERE {GUARD} ON CONFLICT(q, machine, domain) DO UPDATE SET samples=excluded.samples",
+                      (*key, n, *g)) for key, n in baseline.items()],
                    _set("reset_at", now, revision), _set("cutoff", now, revision),
                    _set("final_through", _floor(now, QUARTER), revision), _receipt(token, revision, now),
                    _bump(revision, new)]
     store.transaction(statements)
     if not _applied(store, token):
         raise PermissionError("another energy computation ran at the same time; nothing was changed, retry the reset")
-    return {"reset_at": now, "archived_quarters": summary["archived_quarters"]}
+    _report(store, summary)
+    return {"reset_at": now, "archived_quarters": summary["archived_quarters"],
+            "missed_quarters": summary["missed_quarters"], "skipped_s": summary["skipped_s"]}
 
 
 # -- preferences and writes ----------------------------------------------------------------------------------------
@@ -1106,15 +1139,14 @@ def thermals_document(api, query):
                             why={"machines": NO_STORE})
     now = api.clock()
     # Keyed by the thresholds and zone too: a build that read older settings can never be served for newer ones.
-    key = (id(store), name, json.dumps(thresholds_of(store), sort_keys=True), zone_of(store).name)
+    thresholds, zone = thresholds_of(store), zone_of(store)                  # one snapshot for key and document
+    key = (id(store), name, json.dumps(thresholds, sort_keys=True), zone.name)
     cached = _thermal_cache.get(key)
     if cached and 0 <= now - cached[0] < THERMAL_CACHE_S:
         return cached[1]
     span, tier, step, native = THERMAL_RANGES[name]
     start = now - span
     buckets = (_floor(now, step) - _floor(start, step)) // step + 1     # bucket slots the range touches
-    thresholds = thresholds_of(store)
-    zone = zone_of(store)
     machines, why = {}, {}
 
     def machine_entry(machine):
