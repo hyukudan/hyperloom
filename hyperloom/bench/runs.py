@@ -390,8 +390,19 @@ def parallel(work, items, limit):
                 with lock:
                     errors.append(exc)
     threads = [threading.Thread(target=worker, daemon=True) for _ in range(max(1, min(limit, len(items))))]
-    for thread in threads:
-        thread.start()
+    started = []
+    try:
+        for thread in threads:
+            thread.start()
+            started.append(thread)
+    except BaseException:
+        # No further item starts; the workers already running finish theirs before the run (and its admission
+        # hold) ends.
+        with lock:
+            queue.clear()
+        for thread in started:
+            thread.join()
+        raise
     for thread in threads:
         thread.join()
     if errors:

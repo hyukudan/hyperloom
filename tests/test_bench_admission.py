@@ -125,5 +125,39 @@ class ReadHoldsTests(unittest.TestCase):
         self.assertFalse([s for s in statements if not s.lstrip().upper().startswith("SELECT")], statements)
 
 
+class GuardAndWorkerTests(unittest.TestCase):
+    def test_the_preview_counts_a_cancelled_benchmark_until_it_is_released(self):
+        from hyperloom.bench import guard
+        holds = [{"id": "b1", "kind": "bench", "resources": ["m1"], "label": "bench m1", "cancelled": "stopped"}]
+        self.assertIn("held by bench m1", guard.refusal(holds, ["m1"]))
+        db = admission.Admission(":memory:")
+        db.acquire("bench", {"m1"}, label="bench m1")
+        db.release(db.acquire("stop", {"m1"}, label="down p"))       # the stop finished; the bench cleans up
+        with self.assertRaises(admission.Refused):
+            db.acquire("bench", {"m1"})                              # the preview agrees with the admission
+
+    def test_a_worker_that_cannot_start_ends_the_run_after_the_started_ones(self):
+        import threading
+        finished, gate = [], threading.Event()
+
+        def work(item):
+            gate.wait(5)
+            finished.append(item)
+        real_start, calls = threading.Thread.start, []
+
+        def start(thread):
+            calls.append(thread)
+            if len(calls) == 2:
+                raise RuntimeError("can't start new thread")
+            real_start(thread)
+        with mock.patch.object(threading.Thread, "start", start):
+            releaser = threading.Thread(target=lambda: (time.sleep(0.2), gate.set()))
+            real_start(releaser)
+            with self.assertRaises(RuntimeError):
+                runs.parallel(work, [1, 2, 3, 4], 3)
+        self.assertEqual(finished, [1])          # the started worker finished its item before parallel returned;
+        releaser.join(5)                         # no further item was started
+
+
 if __name__ == "__main__":
     unittest.main()

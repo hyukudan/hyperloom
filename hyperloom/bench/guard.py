@@ -65,7 +65,8 @@ def refusal(holds, resources):
     if blockers:
         what = "stop" if blockers[0]["kind"] == "stop" else "deploy, start or install"
         return f"a {what} is running ({blockers[0]['label'] or blockers[0]['id']})"
-    benches = [h for h in holds if h["kind"] == "bench" and not h["cancelled"]]
+    # A cancelled benchmark keeps its resources (and its place under the cap) until its cleanup releases them.
+    benches = [h for h in holds if h["kind"] == "bench"]
     busy = [h for h in benches if set(h["resources"]) & set(resources) or "*" in h["resources"] or "*" in resources]
     if busy:
         return "the target's resources are held by " + (busy[0]["label"] or busy[0]["id"])
