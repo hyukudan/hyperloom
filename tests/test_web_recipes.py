@@ -586,6 +586,36 @@ class JobTests(unittest.TestCase):
                     self.assertNotIn("cancelled_switches", stopped["result"])
                     self.assertEqual(finished["state"], "succeeded", finished["error"])
 
+    def test_cli_plain_up_takes_a_job(self):
+        # `up PROFILE --job ID` (the portal's detached plain up): the job's marker is checked at the hand-over and
+        # its progress is recorded in the configuration's directory, as for an up with a recipe.
+        seen = []
+
+        def up(*a, **kw):
+            seen.append(kw["cancelled"]())
+            if seen[-1]:
+                raise orchestrate.OrchestrationError("profile stop requested")
+            return {"state": "running"}
+        self.orch.up.side_effect = up
+        argv = ["up", "qwen-replicas", "--config", str(self.env.config), "--job"]
+        self.assertEqual(cli.up_command(cli.build_parser().parse_args(argv + ["ab12cd34"]), orchestrate=self.orch),
+                         {"state": "running"})
+        with service.configured(self.env.config):
+            self.assertEqual(service.read_progress("ab12cd34")["phase"], "done")
+            self.assertEqual(service.read_progress("ab12cd34")["what"], "up")
+
+        def cancel_at_hand_over(*a, **kw):
+            with service.configured(self.env.config):
+                service.cancel_marker("cd34ab12").touch()
+            return up(*a, **kw)
+        self.orch.up.side_effect = cancel_at_hand_over
+        with self.assertRaisesRegex(orchestrate.OrchestrationError, "stop requested"):
+            cli.up_command(cli.build_parser().parse_args(argv + ["cd34ab12"]), orchestrate=self.orch)
+        self.assertEqual(seen, [False, True])
+        with service.configured(self.env.config):
+            self.assertEqual(service.read_progress("cd34ab12")["phase"], "failed")
+            self.assertFalse(service.cancel_marker("cd34ab12").exists())
+
     def test_detached_stop_marks_a_recipe_up_of_that_profile(self):
         self.api.detached = True
         self.api._jobs["u1"] = {"job": "cd34ab12", "action": "up", "state": "running",

@@ -1131,6 +1131,8 @@ class API:
                               ("approval_end", "--approval-end")):
                 if key in args:
                     argv += [flag, str(args[key])]
+            if args.get("_job"):
+                argv += ["--job", args["_job"]]        # set by mutate: the job's cancel marker
         return argv
 
     def _run_detached(self, action, args):
@@ -1163,13 +1165,13 @@ class API:
     def _execute(self, action, args):
         if action in ("down", "cancel") and not args.get("job"):
             # Any stop (detached or in process) while a switch runs cancels the switch too: it would otherwise go
-            # on and launch. So does a stop of the profile a recipe up is launching (up would otherwise clear the
-            # profile's stop marker when it takes the profile). Only their markers: this stop names its own profile,
-            # and a launch's target is stopped only when that is the profile named here (by this stop itself).
+            # on and launch. So does a stop of the profile an up (with a recipe or without) is launching: up would
+            # otherwise clear the profile's stop marker when it takes the profile. Only their markers: this stop
+            # names its own profile, and a launch's target is stopped only when that is the profile named here (by
+            # this stop itself).
             with self._job_lock:
                 switches = [dict(j) for j in self._jobs.values() if j["state"] == "running" and (
-                    j["action"] == "recipes/deploy" or j["action"] == "up" and (
-                        j["arguments"].get("recipe") or j["arguments"].get("recipe_inputs"))
+                    j["action"] == "recipes/deploy" or j["action"] == "up"
                     and j["arguments"].get("profile") == args.get("profile"))]
             cancels = []
             for switch in switches:
@@ -1224,12 +1226,8 @@ class API:
                     raise APIError("only an up or a recipes/deploy job can be cancelled; use down with a profile")
                 if job["state"] != "running":
                     raise APIError(f"job {job['job']} has already {job['state']}: use down with a profile", 409)
-                if job["action"] == "recipes/deploy" or job["arguments"].get("recipe") or \
-                        job["arguments"].get("recipe_inputs"):
-                    return self._cancel_deploy(job)
-                profile = job["arguments"].get("profile")
-                if not profile:
-                    raise APIError("this up job names no profile: use down with a profile")
+                # Every up (with a recipe or without) and every deploy: only what the job did is undone.
+                return self._cancel_deploy(job)
             return self.orchestrate.down(profile)
         if action == "down":
             return self.orchestrate.down(args["profile"], force=args.get("force", False))
@@ -1258,9 +1256,18 @@ class API:
                 if end.tzinfo is None:
                     raise APIError("approval_end must include a timezone")
                 approval = {"ref": args["approval_ref"], "lease_s": args["approval_lease"], "end_epoch": end.timestamp()}
-            return self.orchestrate.up(cluster, args["profile"], router=args.get("router", "local"),
-                                       nodes=args.get("node"), devices=args.get("device"),
-                                       deadline_s=args.get("deadline", 1140), approval=approval)
+            launch = lambda cancelled=None: self.orchestrate.up(  # noqa: E731
+                cluster, args["profile"], router=args.get("router", "local"), nodes=args.get("node"),
+                devices=args.get("device"), deadline_s=args.get("deadline", 1140), approval=approval,
+                **({"cancelled": cancelled} if cancelled else {}))
+            if not args.get("_job"):
+                return launch()
+            # The job's cancel marker is checked right after up owns the profile (the hand-over), as `up --job`
+            # does: a cancel before it starts nothing and never stops a profile that was running already.
+            from hyperloom.recipes import service
+            with service.configured(self.config_path), \
+                    service.launch_progress(args["_job"], "up", args["profile"]) as progress:
+                return launch(progress.handoff)
         mid = args.get("machine")
         if action == "doctor":
             if mid not in cluster.machines:
@@ -1277,11 +1284,12 @@ class API:
         return {"machine": mid, "pinned": match.sha256_fingerprint, "algorithm": match.algorithm}
 
     def _cancel_deploy(self, job, *, stop_target=True):
-        """Cancel a switch, undoing only what it did. The marker is written first; then the deploy's progress says
-        how far it got. Before the hand-over (checks, stopping) the marker is all: the deploy stops at its next step
-        and up, at the hand-over, starts nothing; the profiles it already stopped stay stopped (the answer names
-        them). Once up owns the target ("launching", "done"), the target is stopped (``stop_target``), as it is the
-        profile this deploy started."""
+        """Cancel a launch job (a switch, or an up with a recipe or without), undoing only what it did. The marker is
+        written first; then the job's progress says how far it got. Before the hand-over (checks, stopping) the
+        marker is all: the deploy stops at its next step and up, at the hand-over, starts nothing; the profiles it
+        already stopped stay stopped (the answer names them), and a profile that was running before the job (an up
+        refuses it) is never stopped. Once up owns the target ("launching", "done"), the target is stopped
+        (``stop_target``), as it is the profile this job started."""
         from hyperloom.recipes import service
         with service.configured(self.config_path):
             marker = service.cancel_marker(job["job"])
@@ -1332,7 +1340,7 @@ class API:
                 if self._jobs[old]["state"] != "running":
                     del self._jobs[old]
             response = dict(job)
-        if action == "recipes/deploy" or (action == "up" and (arguments.get("recipe") or arguments.get("recipe_inputs"))):
+        if action in ("recipes/deploy", "up"):
             arguments = dict(arguments, _job=jid)    # the launch's cancel marker is named by its job
         def run():
             try:
