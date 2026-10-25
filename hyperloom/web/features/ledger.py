@@ -1092,11 +1092,12 @@ def summarize(store, records, zone, by, start, end, now, truncated=False):
     notes = [n for n in (_offset_note(zone, now),
                          f"{dropped} older day(s) not drawn (the newest {MAX_DAY_BUCKETS} are shown; KPIs cover all)" if dropped else None,
                          f"range too long: only the newest {MAX_ROWS} rows were aggregated" if truncated else None,
-                         ("coverage incomplete: only the newest " + str(SPAN_ROWS) + " " + ", ".join(spans_truncated)
-                          + " were used") if spans_truncated else None) if n]
+                         ("coverage incomplete: " + "; ".join(item if item.startswith("engines") else
+                                                             f"only the newest {SPAN_ROWS} {item} were used"
+                                                             for item in spans_truncated)) if spans_truncated else None) if n]
     return {"kpis": kpis, "buckets": ordered, "bucket": "hour" if hourly else "day", "models": table, "gaps": gaps,
             "gap_count": gap_count, "coverage": coverage, "sources": sources, "notes": notes,
-            "complete": not truncated and not spans_truncated,
+            "complete": not truncated and not spans_truncated, "records_complete": not truncated,
             "insights": insights(kpis, table, gap_count, all_gaps, sources), "why": why}
 
 
@@ -2071,13 +2072,13 @@ def value(api, query):
             for key in keys:
                 totals[key] += row[key] or 0.0
         row["qualifiers"] = _qualifiers(model) + (["range too long: only the newest records were aggregated"]
-                                                  if report.get("complete") is False else [])
+                                                  if report.get("records_complete") is False else [])
         row["exact"] = not row["qualifiers"]
         rows.append(row)
     if unpriced:
         why["totals"] = "totals exclude unpriced models: " + ", ".join(unpriced)
     total_qualifiers = sorted({q for row in rows if row["total"] is not None for q in row["qualifiers"]})
-    if report.get("complete") is False:
+    if report.get("records_complete") is False:
         total_qualifiers = sorted(set(total_qualifiers) | {"range too long: only the newest records were aggregated"})
     if prices:
         totals.update(qualifiers=total_qualifiers, exact=not total_qualifiers and not unpriced)
