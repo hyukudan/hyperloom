@@ -14,6 +14,7 @@ its message. Saving a variant as a layer is the existing audited POST recipes/sa
 """
 
 import json
+import math
 import re
 
 DEADLINE_S = 150
@@ -127,7 +128,9 @@ def _value_text(value, where):
             raise ValueError(f"{where}: null is not a value")
         if isinstance(value, str) and ("\n" in value or "\0" in value or len(value) > 1024):
             raise ValueError(f"{where}: a string of at most 1024 characters on one line")
-        return json.dumps(value)
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError(f"{where}: numbers must be finite")
+        return json.dumps(value, allow_nan=False)
     if isinstance(value, list) and len(value) <= 256:
         return json.dumps([json.loads(_value_text(v, where)) for v in value])
     raise ValueError(f"{where}: values are numbers, booleans, strings or arrays of them")
@@ -144,7 +147,8 @@ def whatif_argv(api, arguments):
     for key, flag in (("profile", "--profile"), ("facts", "--facts")):
         if _name(arguments, key) is not None:
             argv += [flag, arguments[key]]
-    vary = arguments.get("vary") or {}
+    vary = arguments.get("vary")
+    vary = {} if vary is None else vary
     if not isinstance(vary, dict) or len(vary) > 8:
         raise ValueError("vary must be an object of at most 8 paths, each with a list of values")
     combos = 1

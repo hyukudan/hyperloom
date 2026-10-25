@@ -64,6 +64,11 @@ class ArgvTests(unittest.TestCase):
                                    ({"recipe": "a", "variants": [{"set": {"a b": 1}}]}, "not a settable path"),
                                    ({"recipe": "a", "variants": [{"name": "", "set": {FLOOR: 1}}]}, "name"),
                                    ({"recipe": "a", "variants": ["x"]}, "expected"),
+                                   ({"recipe": "a", "vary": {FLOOR: [float("inf")]}}, "finite"),
+                                   ({"recipe": "a", "variants": [{"set": {FLOOR: float("nan")}}]}, "finite"),
+                                   ({"recipe": "a", "vary": False}, "vary must be an object"),
+                                   ({"recipe": "a", "vary": []}, "vary must be an object"),
+                                   ({"recipe": "a", "variants": {}}, "a list"),
                                    ([], "JSON object")):
             with self.assertRaisesRegex(ValueError, message):
                 feature.whatif_argv(FakeAPI(), arguments)
