@@ -309,6 +309,10 @@ class Client:
         sock, self.sock = self.sock, None
         if sock is not None:
             try:
+                sock.shutdown(socket.SHUT_RDWR)     # wakes a read or write blocked in another thread
+            except (OSError, ValueError):
+                pass
+            try:
                 sock.close()
             except OSError:
                 pass
