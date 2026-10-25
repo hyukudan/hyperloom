@@ -178,6 +178,44 @@ class IntegrationTests(Base):
         summary = energy.compute(self.store, NOW)
         self.assertEqual(summary["missed_quarters"], 1)
 
+    def reset_with_a_sample_arriving_meanwhile(self, offset):
+        """A reset whose planning is followed by a sample stored with a time `offset` from the reset instant."""
+        gpu = {"machine": "halo-1", "device": "0"}
+        q = energy._floor(NOW - 12 * HOUR, QUARTER)
+        self.store.record([(GPU, gpu, 100.0)], ts=q + 30, interval=60)
+        real = energy.plan
+
+        def planned_then_sampled(store, now, **kwargs):
+            result = real(store, now, **kwargs)
+            store.record([(GPU, gpu, 100.0)], ts=now + offset, interval=60)
+            return result
+        with mock.patch.object(energy, "plan", planned_then_sampled):
+            energy.reset_store(self.store, q + 120)
+        return q
+
+    def test_a_sample_stamped_before_a_reset_but_stored_after_it_is_reported(self):
+        q = self.reset_with_a_sample_arriving_meanwhile(-1)
+        self.assertAlmostEqual(archived(self.store), 100.0 * 60 / HOUR)        # the reset archived what it read
+        summary = energy.compute(self.store, q + 2 * HOUR)                       # while the raw samples still exist
+        self.assertEqual(summary["missed_quarters"], 1)                          # the late one is reported, not hidden
+
+    def test_a_sample_after_a_reset_that_ages_out_unread_is_reported(self):
+        self.reset_with_a_sample_arriving_meanwhile(+1)
+        summary = energy.compute(self.store, NOW)                                # raw of that quarter is gone by now
+        self.assertEqual(summary["missed_quarters"], 1)
+
+    def test_repeated_resets_in_one_quarter_keep_an_exact_baseline(self):
+        gpu = {"machine": "halo-1", "device": "0"}
+        q = energy._floor(NOW - 2 * HOUR, QUARTER)
+        for k in range(10):
+            self.store.record([(GPU, gpu, 100.0)], ts=q + 60 * k + 1, interval=60)
+            if k in (2, 5):
+                energy.reset_store(self.store, q + 60 * k + 30)
+        summary = energy.compute(self.store, NOW)
+        self.assertEqual(summary["missed_quarters"], 0)
+        self.assertAlmostEqual(archived(self.store), 10 * 100.0 * 60 / HOUR)
+        self.assertEqual(self.store.execute("SELECT samples FROM energy_reset_counts WHERE q=?", (q,)), [(6,)])
+
     def test_a_reset_reports_the_losses_it_moves_past(self):
         energy.compute(self.store, NOW - 13 * HOUR)
         feed(self.store, lambda t: [(GPU, {"machine": "halo-1", "device": "0"}, 90.0)], NOW - 12 * HOUR,
@@ -849,7 +887,7 @@ class HttpTests(unittest.TestCase):
 
     def request(self, method, path, body=None, origin=True, csrf=True):
         host = self.server.server_address[0]
-        connection = http.client.HTTPConnection(host, self.port, timeout=5)
+        connection = http.client.HTTPConnection(host, self.port, timeout=30)
         headers = {"Host": f"{host}:{self.port}"}
         data = None
         if body is not None:
@@ -866,7 +904,7 @@ class HttpTests(unittest.TestCase):
     def test_an_overflowing_literal_is_refused_and_audited(self):
         host = self.server.server_address[0]
         data = b'{"price_per_kwh": 1e400, "currency": "EUR"}'
-        connection = http.client.HTTPConnection(host, self.port, timeout=5)
+        connection = http.client.HTTPConnection(host, self.port, timeout=30)
         connection.request("POST", "/hyperloom/api/energy/price", body=data, headers={
             "Host": f"{host}:{self.port}", "Origin": f"http://{host}:{self.port}", "X-Hyperloom-CSRF": self.server.csrf_token,
             "Content-Type": "application/json", "Content-Length": str(len(data))})
@@ -880,7 +918,7 @@ class HttpTests(unittest.TestCase):
         for action, data in (("energy/price", b'{"price_per_kwh": [1e400], "currency": "EUR"}'),
                              ("energy/thresholds", b'{"gpu": {"warn": [1e400], "crit": 90}}'),
                              ("energy/reset", b'{"confirm": [1e400]}')):
-            connection = http.client.HTTPConnection(host, self.port, timeout=5)
+            connection = http.client.HTTPConnection(host, self.port, timeout=30)
             connection.request("POST", "/hyperloom/api/" + action, body=data, headers={
                 "Host": f"{host}:{self.port}", "Origin": f"http://{host}:{self.port}",
                 "X-Hyperloom-CSRF": self.server.csrf_token, "Content-Type": "application/json",

@@ -466,20 +466,23 @@ def plan(store, now, finalize_all=False, deadline=None):
             entry[0] += wh_both
             entry[1] += tokens_both
             entry[2] += both_s
+    # Quarters archived by this run whose samples were not all integrated (read too late for the raw tier, recorded
+    # without an interval, or stamped before a reset but stored after it): the 15-minute tier counts the samples each
+    # domain recorded; the table (older quarters) and this run (newer ones) count the samples integrated; what
+    # resets of a quarter archived is their baseline. Compared per machine and domain, duplicates summed on both
+    # sides; reported with the run that archives the quarter.
     missed = 0
-    if recompute > first:
-        # Quarters about to be archived from the table whose samples were not all integrated before they left the
-        # raw tier: the 15-minute tier still counts the samples each domain recorded, the table counts the samples
-        # integrated. Compared per machine and domain (duplicates of a domain summed on both sides); the quarter
-        # holding a reset is left out (samples before the reset were archived by it). Reported once.
+    if final_through > first:
         integrated = {}
-        for q, machine, domain, samples in store.execute(
-                "SELECT q, machine, domain, samples FROM energy_counts WHERE q >= ? AND q < ?", (first, recompute)):
-            key = (q, machine, domain.split("#")[0])
-            integrated[key] = integrated.get(key, 0) + samples
+        older = store.execute("SELECT q, machine, domain, samples FROM energy_counts WHERE q >= ? AND q < ?",
+                              (first, recompute)) if recompute > first else []
+        for q, machine, domain, samples in [*older, *counts]:
+            if q < final_through:
+                key = (q, machine, domain.split("#")[0])
+                integrated[key] = integrated.get(key, 0) + samples
         before_reset = {(q, machine, domain): samples for q, machine, domain, samples in store.execute(
-            "SELECT q, machine, domain, samples FROM energy_reset_counts WHERE q >= ? AND q < ?", (first, recompute))}
-        recorded = _recorded(store, first, min(recompute, final_through))
+            "SELECT q, machine, domain, samples FROM energy_reset_counts WHERE q >= ? AND q < ?", (first, final_through))}
+        recorded = _recorded(store, first, final_through)
         missed = sum(1 for key, n in recorded.items() if n - before_reset.get(key, 0) > integrated.get(key, 0))
 
     statements += [
@@ -525,7 +528,7 @@ def plan(store, now, finalize_all=False, deadline=None):
             "tokens_both=tokens_both+excluded.tokens_both, both_s=both_s+excluded.both_s",
             (month, wh_both, tokens_both, both_s, *g)))
     statements.append(_set("final_through", final_through, revision))
-    summary = {"skipped_s": skipped, "from": first, "recomputed_from": recompute, "quarters": (current - first) // QUARTER + 1,
+    summary = {"counts": counts, "skipped_s": skipped, "from": first, "recomputed_from": recompute, "quarters": (current - first) // QUARTER + 1,
                "rows": len(rows), "pairs": len(pairs), "archived_quarters": max(0, (final_through - first) // QUARTER),
                "final_through": final_through, "revision": revision, "missed_quarters": missed}
     return statements, summary
@@ -549,7 +552,8 @@ def _report(store, summary):
     moved the cursor past them."""
     if summary.get("missed_quarters"):
         store.event("energy", "warning", f"{summary['missed_quarters']} quarter hours of power samples were not fully "
-                    "integrated: no energy run read them before they left the raw tier")
+                    "integrated (read too late for the raw tier, recorded without a sampling interval, or taken "
+                    "before a reset and stored after it)")
     if summary.get("skipped_s"):
         store.event("energy", "warning", f"energy for {summary['skipped_s'] / 3600:.1f} h before "
                     f"{datetime.fromtimestamp(summary['from'], tz=timezone.utc).isoformat()} could not be computed: "
@@ -588,6 +592,7 @@ def compute(store, now):
     with another process changes nothing (``applied`` false); the next run redoes it."""
     deadline = time.monotonic() + COMPUTE_BUDGET_S
     statements, summary = plan(store, now, deadline=deadline)
+    summary.pop("counts")
     if time.monotonic() > deadline:
         raise ValueError(f"energy computation exceeded {COMPUTE_BUDGET_S:g} s; nothing was written")
     new, token = _new_revision(), secrets.token_hex(16)
@@ -609,10 +614,18 @@ def reset_store(store, now):
     statements, summary = plan(store, now, finalize_all=True)
     revision, new, token = summary["revision"], _new_revision(), secrets.token_hex(16)
     g = (revision,)
-    # The samples recorded so far in the reset's quarter are archived by this reset; they are kept as a baseline so
-    # samples of that quarter that come after it stay comparable with what is integrated later.
+    # The samples of the reset's quarter that this reset integrates and archives (exactly those it read, plus what
+    # earlier resets of the same quarter archived) are kept as a baseline, so the samples of that quarter that come
+    # after it stay comparable with what is integrated later; a sample that arrives late with a time before the
+    # reset is then reported as not integrated instead of being certified.
     q = _floor(now, QUARTER)
-    baseline = _recorded(store, q, q + QUARTER)
+    baseline = {(q, machine, domain.split("#")[0]): 0 for _q, machine, domain, _n in summary["counts"] if _q == q}
+    for _q, machine, domain, n in summary["counts"]:
+        if _q == q:
+            baseline[(q, machine, domain.split("#")[0])] += n
+    for _q, machine, domain, n in store.execute("SELECT q, machine, domain, samples FROM energy_reset_counts WHERE q=?",
+                                                (q,)):
+        baseline[(q, machine, domain)] = baseline.get((q, machine, domain), 0) + n
     statements += [(f"DELETE FROM energy_quarters WHERE {GUARD}", g), (f"DELETE FROM energy_pairs WHERE {GUARD}", g),
                    (f"DELETE FROM energy_counts WHERE {GUARD}", g),
                    (f"DELETE FROM energy_reset_counts WHERE q < ? AND {GUARD}", (now - KEEP_ROWS_S, *g)),
