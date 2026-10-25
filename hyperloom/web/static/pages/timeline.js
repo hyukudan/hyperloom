@@ -28,7 +28,7 @@
   function bars(title, observer, phases, {elapsed} = {}) {
     if (!phases?.length && elapsed == null) return "";
     const end = Math.max(1, elapsed || 0, ...phases.map(p => p.end_ms));
-    const W = 600, rowH = 18, L = 130, R = 60;
+    const W = Math.round(Math.max(300, Math.min(760, (document.querySelector("main")?.clientWidth || 700) - 72))), rowH = 18, L = W < 480 ? 104 : 130, R = 64;
     const x = v => L + (v / end) * (W - L - R);
     const rows = phases.map((p, i) => {
       const y = 4 + i * rowH, w = Math.max(1.5, x(p.end_ms) - x(p.start_ms));
@@ -42,7 +42,7 @@
     }
     const H_ = 8 + (phases.length + (elapsed != null ? 1 : 0)) * rowH;
     const table = `<details><summary>View as table</summary>${H().table(["Phase", "Start", "End", "Duration"], phases.map(p => H().cells([H().esc(p.phase), H().esc(ms(p.start_ms)), H().esc(ms(p.end_ms)), H().esc(ms(p.end_ms - p.start_ms))])).join(""), title)}</details>`;
-    return `<figure class="tl-fig"><figcaption>${H().esc(title)}</figcaption><svg viewBox="0 0 ${W} ${H_}" role="img" aria-label="${H().esc(title)}" preserveAspectRatio="xMinYMin meet">${rows.join("")}</svg>${table}</figure>`;
+    return `<figure class="tl-fig"><figcaption>${H().esc(title)}</figcaption><svg viewBox="0 0 ${W} ${H_}" width="${W}" height="${H_}" role="img" aria-label="${H().esc(title)}" preserveAspectRatio="xMinYMin meet">${rows.join("")}</svg>${table}</figure>`;
   }
 
   function detail(row) {

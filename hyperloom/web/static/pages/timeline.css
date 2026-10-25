@@ -1,7 +1,7 @@
 /* Observability pages: request timeline, latency, engine panel, speculative decoding. */
 .tl-fig{margin:10px 0}
 .tl-fig figcaption{font-weight:600;font-size:13px;margin-bottom:4px}
-.tl-fig svg{width:100%;max-width:760px;height:auto;display:block}
+.tl-fig svg{max-width:100%;height:auto;display:block}
 .tl-ax{font-size:10.5px;fill:var(--text-2)}
 .tl-filters{flex-wrap:wrap;gap:8px}
 .tl-filters .field{min-width:120px}

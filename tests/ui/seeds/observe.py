@@ -31,11 +31,11 @@ def _shift(now):
 def seed(store, now):
     labels = {"profile": "qwen-replicas", "replica": "halo-1", "machine": "halo-1", "model": "qwen3.8-flash-next",
               "instance": "5a5a5a5a5a5a5a5a"}
-    store.describe("engine_ttft_seconds_p50", "gauge", unit="s", interval=5)
-    store.describe("engine_draft_acceptance", "gauge", interval=5)
-    store.describe("engine_draft_accepted_per_cycle", "gauge", unit="tokens", interval=5)
-    store.describe("engine_generated_tokens", "delta", unit="tokens", interval=5)
-    store.describe("engine_queue_waiting", "gauge", interval=5)
+    store.describe("engine_ttft_seconds_p50", "gauge", unit="s", interval=30)
+    store.describe("engine_draft_acceptance", "gauge", interval=30)
+    store.describe("engine_draft_accepted_per_cycle", "gauge", unit="tokens", interval=30)
+    store.describe("engine_generated_tokens", "delta", unit="tokens", interval=30)
+    store.describe("engine_queue_waiting", "gauge", interval=30)
     t = now - 3600
     while t < now - 60:
         if not now - 1500 < t < now - 1100:          # an idle window with no samples: a gap, not zeros
@@ -44,9 +44,9 @@ def seed(store, now):
                           ("engine_ttft_seconds_p50", {**labels, "kind": "engine", "basis": "first_token"}, 0.2 + 0.3 * wave),
                           ("engine_draft_acceptance", {**labels, "method": "mtp"}, 0.68 + 0.1 * wave),
                           ("engine_draft_accepted_per_cycle", {**labels, "method": "mtp"}, 1.9 + 0.6 * wave),
-                          ("engine_generated_tokens", labels, round(75 + 35 * wave), "delta"),
-                          ("engine_queue_waiting", labels, round(3 * wave))], ts=t)
-        t += 5
+                          ("engine_generated_tokens", labels, round(450 + 210 * wave), "delta"),
+                          ("engine_queue_waiting", labels, round(3 * wave))], ts=t, interval=30)
+        t += 30
 
 
 def patches(directory, now):
