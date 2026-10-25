@@ -58,6 +58,24 @@ class Portal:
         self.server.server_close()
 
 
+# This PC's free RAM, pinned for the portal's children and for the in-process CLI alike: plan answers (the RTX service
+# plan, the free-RAM checks) depend on it, and a live value can change between the two runs.
+PINNED_MEMORY = {"free_physical_gib": 61.25, "free_commit_gib": 127.75}
+PINNED_CHILD = [sys.executable, "-c", "import sys; from hyperloom import rtx; "
+                f"rtx.memory_status = lambda: dict({PINNED_MEMORY!r}); "
+                "from hyperloom.cli import main; raise SystemExit(main(sys.argv[1:]))"]
+
+
+def pinned_memory():
+    """Pin rtx.memory_status here and in the portal's recipe children (a context manager)."""
+    from contextlib import ExitStack
+    from hyperloom import rtx
+    stack = ExitStack()
+    stack.enter_context(mock.patch.object(rtx, "memory_status", lambda: dict(PINNED_MEMORY)))
+    stack.enter_context(mock.patch.object(recipe_web, "COMMAND", PINNED_CHILD))
+    return stack
+
+
 def cli_of(document):
     """The CLI argv a portal answer names (its `cli` line)."""
     return shlex.split(document["cli"])[1:]
@@ -114,11 +132,14 @@ class ContractTests(unittest.TestCase):
                  ("plan", {"recipe": "ds-user", "profile": "ds41-rtx", **facts}),
                  ("plan", {"recipe": "deepseek-v4.1-flash.lab", "profile": "ds41-pair", "facts": "ds"})]
         for operation, body in cases:
-            with self.subTest(operation=operation, body=body):
+            with self.subTest(operation=operation, body=body), pinned_memory():
                 status, document = self.portal.request("POST", "recipes/" + operation, body)
                 self.assertIn(status, (200,), document)
                 self.assertEqual(document["schema"], f"hyperloom/recipes-{operation}-v1")
                 self.assertSameAsCli(document)
+                if operation == "plan" and body["recipe"] == "ds-user":
+                    # The child planned with the pinned free RAM (61.25 GiB free -> 41 GiB host pinned allowed).
+                    self.assertIn("this start allows (41 GiB", json.dumps(document["result"]))
         status, refused = self.portal.request("POST", "recipes/validate", {"recipe": QWEN, "set": ["a.b=1"]})
         self.assertEqual((status, refused["exit_code"], refused["ok"]), (200, 1, False))
         self.assertRegex(refused["error"], "not a settable path|is not settable")
