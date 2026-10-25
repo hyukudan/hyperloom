@@ -9,7 +9,8 @@
 
   function bars(items, color, label) {
     const max = Math.max(1, ...items.map(i => i.value || 0));
-    return `<div class="ob-bars" role="img" aria-label="${H().esc(label)}">${items.map(i => `<div class="ob-bar"><span>${H().esc(i.name)}</span><span class="track"><i style="width:${((i.value || 0) / max * 100).toFixed(1)}%;background:var(${color})"></i></span><span>${H().esc(i.text)}</span></div>`).join("")}</div>`;
+    return `<div class="ob-bars" role="img" aria-label="${H().esc(label)}">${items.map(i => `<div class="ob-bar"><span>${H().esc(i.name)}</span><span class="track"><i style="width:${((i.value || 0) / max * 100).toFixed(1)}%;background:var(${color})"></i></span><span>${H().esc(i.text)}</span></div>`).join("")}</div>`
+      + `<details><summary>View as table</summary>${H().table(["", "Value"], items.map(i => H().cells([H().esc(i.name), H().esc(i.text)])).join(""), label)}</details>`;
   }
 
   function chart(endpoint, title, unit) {
@@ -34,7 +35,8 @@
       : `<p>${unavailable(why.depth)}</p>`;
     const total = (row.window_rows || []).reduce((a, b) => a + b, 0);
     const windows = row.window_rows ? `<p class="t2">${esc(row.window_label || "rows per window")}</p>` + bars(row.window_rows.map((v, i) => ({name: String(i), value: v, text: total ? `${v} (${(v / total * 100).toFixed(0)} %)` : String(v)})), "--s4", row.window_label || "rows per window") : `<p>${unavailable(why.window_rows || "not reported")}</p>`;
-    return box(`${row.profile} / ${row.replica}`, `<div class="ob-grid">${box("Acceptance", summary)}${box("Per-depth reach and hit", depth)}${box("Verification windows", windows)}</div>`
+    const freshness = row.as_of ? `<p class="hint">${row.stale ? "stale · " : ""}as of ${esc(new Date(row.as_of * 1000).toLocaleTimeString())}</p>` : `<p>${unavailable("no reading yet")}</p>`;
+    return box(`${row.profile} / ${row.replica}`, freshness + `<div class="ob-grid">${box("Acceptance", summary)}${box("Per-depth reach and hit", depth)}${box("Verification windows", windows)}</div>`
       + chart(row.acceptance_series, "Acceptance over time (accepted / proposed per interval)", "") + chart(row.per_cycle_series, "Accepted tokens per cycle", "tokens"),
       row.model || "");
   }

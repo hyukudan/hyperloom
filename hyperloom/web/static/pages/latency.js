@@ -27,7 +27,9 @@
       lower = b.le ?? lower;
       return `<div class="ob-bar"><span>${H().esc(name)}</span><span class="track"><i style="width:${(b.count / max * 100).toFixed(1)}%;background:var(${color})"></i></span><span>${H().esc(b.count)}</span></div>`;
     }).join("");
-    return `<div class="ob-bars" role="img" aria-label="${H().esc(label)}">${rows}</div>`;
+    let low = 0;
+    const tableRows = q.histogram.map(b => { const name = b.le == null ? `> ${fmt(low, unit)}` : `≤ ${fmt(b.le, unit)}`; low = b.le ?? low; return H().cells([H().esc(name), H().esc(b.count)]); }).join("");
+    return `<div class="ob-bars" role="img" aria-label="${H().esc(label)}">${rows}</div><details><summary>View as table</summary>${H().table(["Bin", "Requests"], tableRows, label)}</details>`;
   }
 
   function group(item, definitions) {
@@ -44,8 +46,10 @@
       `${item.requests} requests · percentiles of served requests`);
   }
 
-  function estimated(items) {
+  function estimated(all) {
     const {esc, table, cells} = H();
+    const cuts = all.filter(h => h.family === "_cut");
+    const items = all.filter(h => h.family !== "_cut");
     if (!items.length) return "";
     const unit = family => family.includes("tokens_per_second") ? "tok/s" : "s";
     const show = (v, family) => v == null ? "—" : unit(family) === "s" ? (v >= 10 ? `${v.toFixed(1)} s` : `${(v * 1000).toFixed(v >= 0.1 ? 0 : 1)} ms`) : `${v.toFixed(1)} tok/s`;
@@ -54,7 +58,7 @@
       esc(`${show(h.p50, h.family)} · ${show(h.p95, h.family)} · ${show(h.p99, h.family)}`)])).join("");
     const notes = [...new Set(items.map(h => h.label).filter(Boolean))].map(n => `<p class="hint">${esc(n)}</p>`).join("");
     return H().card("Component histograms", table(["Observer", "Component", "Family", "Labels", "Count", "p50 · p95 · p99 (estimated)"], rows, "Component histograms")
-      + `<p class="hint">${esc(items[0].basis)}</p>` + notes);
+      + `<p class="hint">${esc(items[0].basis)}</p>` + notes + cuts.map(c => `<p class="hint">${esc(c.observer)} ${esc(c.replica ? `${c.profile}/${c.replica}` : c.profile)}: ${esc(c.basis)}</p>`).join(""));
   }
 
   (window.HyperloomPages ||= {}).latency = {

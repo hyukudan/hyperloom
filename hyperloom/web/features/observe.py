@@ -117,17 +117,30 @@ def _parse_url(url):
     return parts.hostname, parts.port, (parts.path or "/") + ("?" + parts.query if parts.query else "")
 
 
+HEX = re.compile(rb"[0-9A-Fa-f]{1,8}")
+
+
 def _dechunk(body):
+    """A chunked body; any malformed framing (non-hex or oversized size, a chunk running past the data, a missing
+    chunk terminator) is an error. Every step moves forward, and the output stays within the body cap."""
     out, pos = bytearray(), 0
     while True:
         end = body.find(CRLF, pos)
         if end < 0:
             raise ValueError("truncated chunked body")
-        size = int(body[pos:end].split(b";", 1)[0], 16)
+        field = body[pos:end].split(b";", 1)[0].strip()
+        if not HEX.fullmatch(field):
+            raise ValueError("malformed chunk size")
+        size = int(field, 16)
         if size == 0:
             return bytes(out)
-        out += body[end + 2:end + 2 + size]
-        pos = end + 2 + size + 2
+        start, stop = end + 2, end + 2 + size
+        if stop + 2 > len(body) or body[stop:stop + 2] != CRLF:
+            raise ValueError("malformed chunked body")
+        out += body[start:stop]
+        if len(out) > HTTP_CAP:
+            raise ValueError("response exceeds 1 MiB")
+        pos = stop + 2
 
 
 def http_get(url, headers=None, text=False, deadline=None):
@@ -216,7 +229,7 @@ def _loopback(address):
     try:
         return ipaddress.ip_address(address).is_loopback
     except ValueError:
-        return address == "localhost"
+        return False              # launch records hold addresses; a name is never taken for loopback
 
 
 def launches(api):
@@ -300,7 +313,8 @@ def _key_attempts(attempts):
     decode = [a for a in attempts if a.get("kind") == "decode"]
     served = [a for a in decode if a.get("outcome") == "served"]
     prefill = [a for a in attempts if a.get("kind") == "prefill"]
-    return [a for a in ((served or decode or [None])[-1], (prefill or [None])[-1]) if a is not None]
+    ok = [a for a in prefill if a.get("outcome") == "ok"]
+    return [a for a in ((served or decode or [None])[-1], (prefill or [None])[-1], (ok or [None])[-1]) if a is not None]
 
 
 def _encode(record):
@@ -317,6 +331,7 @@ def _encode(record):
         return text
     kept = record["attempts"][:2]
     kept += [a for a in _key_attempts(record["attempts"]) if a not in kept]
+    kept.sort(key=lambda a: a.get("n") or 0)
     trimmed["attempts"] = kept
     why["attempts"] = f"{len(record['attempts']) - len(kept)} attempts dropped: record over 8 KiB"
     text = json.dumps(trimmed, separators=(",", ":"), allow_nan=False)
@@ -352,7 +367,7 @@ def _final_points(profile, finals):
             for (route, outcome), count in sorted(counts.items())]
 
 
-def _ingest(store, profile, instance, page, now, ts, seen_callers):
+def _ingest(store, profile, instance, page, now, ts, stored_callers):
     """Apply one page in ONE transaction: record upserts, the final-once request counts and the cursor (the cursor
     is the baseline of the router's update sequence, so a crash between steps neither loses nor repeats a count).
     The baseline of an instance exists before its first page (``_pull``), so ``apply`` always runs here."""
@@ -364,6 +379,7 @@ def _ingest(store, profile, instance, page, now, ts, seen_callers):
         rows = store.execute(f"SELECT id, seq, state FROM observe_requests WHERE profile=? AND instance=? AND id IN "
                              f"({','.join('?' * len(part))})", (profile, instance, *part))
         known.update({row[0]: (row[1], row[2]) for row in rows})
+    seen_callers = list(stored_callers)          # committed with this page only
     statements, finals, skipped = [], [], 0
     for record in records:
         old = known.get(record["id"])
@@ -389,10 +405,16 @@ def _ingest(store, profile, instance, page, now, ts, seen_callers):
     points = _final_points(profile, finals)
     applied = []
 
+    callers = json.dumps(list(seen_callers), ensure_ascii=True, allow_nan=False, sort_keys=True)
+    statements.append(("INSERT INTO docs(namespace, key, ts, value) VALUES (?, ?, ?, ?) ON CONFLICT(namespace, key) "
+                       "DO UPDATE SET ts=excluded.ts, value=excluded.value", ("observe/callers", profile, now, callers)))
+
     def apply(delta, info):
         applied.append(True)
         return {"points": points, "sql": statements}
     store.counter_delta(f"observe/{profile}/router-log", instance, float(cursor), ts, apply=apply)
+    if applied:
+        stored_callers[:] = seen_callers
     return (len(records), finals, skipped) if applied else (0, [], 0)
 
 
@@ -473,7 +495,6 @@ def _pull(store, launch, headers, now, deadline):
             break
     if not complete:
         _gap(store, profile, now, "collector behind the router log (page or time share used up); continuing next run")
-    store.put("observe/callers", profile, seen)
     _abandon(store, profile, now)
     return count, finals
 
@@ -495,9 +516,15 @@ def _router_gauges(store, profile, now):
 
 
 def _bound_families(families):
-    """At most 32 families x 64 label sets; the +Inf bound is stored as null (JSON has no infinity)."""
-    return {name: [{**line, "buckets": [[None if b == math.inf else b, c] for b, c in line["buckets"]]}
+    """At most 32 families x 64 label sets; the +Inf bound is stored as null (JSON has no infinity). What is cut is
+    counted under the key ``_cut``."""
+    kept = {name: [{**line, "buckets": [[None if b == math.inf else b, c] for b, c in line["buckets"]]}
                    for line in lines[:64]] for name, lines in list(families.items())[:32]}
+    cut = {"families": max(0, len(families) - 32),
+           "label_sets": sum(max(0, len(lines) - 64) for lines in list(families.values())[:32])}
+    if cut["families"] or cut["label_sets"]:
+        kept["_cut"] = cut
+    return kept
 
 
 def _router_instance(samples):
@@ -610,7 +637,6 @@ def _read_direct(replica, now, deadline, clock=time.time):
         reading["health"] = True                 # it answered: up, without a health route
     except TimeoutError as exc:
         reading["why"]["health"] = "not read: " + str(exc)
-        return reading
     except (OSError, ValueError) as exc:
         reading["health"] = False                # advisory: status and metrics still get their own bounded reads
         reading["why"]["health"] = "health check failed: " + str(exc)
@@ -620,9 +646,16 @@ def _read_direct(replica, now, deadline, clock=time.time):
             reading[part + "_at"] = clock()
         except Unavailable as exc:
             reading["why"][part] = f"engine serves no {part} ({exc})"
-        except (OSError, ValueError, TimeoutError) as exc:
+            reading[part + "_at"] = clock()
+        except TimeoutError as exc:
+            reading["why"][part] = f"not read: {exc}"
+        except (OSError, ValueError) as exc:
             reading["why"][part] = f"engine {part} unreadable: {exc}"
+            reading[part + "_failed"] = True
     reading["observed_at"] = reading.get("status_at") or reading.get("metrics_at") or now
+    # Nothing answered and nothing definitely failed (the deadline cut every read): reachability is unknown.
+    reading["unknown"] = (reading["health"] is None and reading["status"] is None and reading["metrics_text"] is None
+                          and not reading.get("status_failed") and not reading.get("metrics_failed"))
     return reading
 
 
@@ -781,7 +814,7 @@ def _engine_sample(store, launch, replica, reading, now):
     repeat = (observed_at is not None and previous.get("observed_at") is not None
               and observed_at <= previous["observed_at"] and reading["via"] != "direct")
     stale = bool(reading.get("stale"))
-    if observed_at is None or repeat or stale:
+    if observed_at is None or repeat or stale or reading.get("unknown"):
         keep = {k: previous.get(k) for k in ("status", "metrics", "observed", "extra", "model", "instance",
                                              "instance_basis", "started_at", "last_served", "last_served_basis",
                                              "completed", "state", "observed_at")}
@@ -790,13 +823,16 @@ def _engine_sample(store, launch, replica, reading, now):
             snapshot["state"] = "unavailable"
         elif stale:
             snapshot["state"] = "stale"
+        elif reading.get("unknown"):
+            snapshot["state"] = "not read"
+            snapshot["observed_at"] = previous.get("observed_at")
         snapshot["ts"] = now
         store.put("observe/engine", key, snapshot)
         return []
     for part, ok in (("health", reading["health"]), ("status", reading["status"] is not None),
                      ("metrics", reading["metrics_text"] is not None)):
         if ok:
-            snapshot["last_ok"][part] = observed_at
+            snapshot["last_ok"][part] = reading.get(part + "_at", observed_at)
             snapshot["failing_since"].pop(part, None)
         elif part in reading["why"] and "not read" not in reading["why"][part]:
             snapshot["failing_since"].setdefault(part, now)
@@ -805,7 +841,6 @@ def _engine_sample(store, launch, replica, reading, now):
         try:
             parsed_status = engine.parse_status(reading["status"])
             observed = engine.parse_observed(reading["status"])
-            snapshot["last_ok"]["status"] = observed_at
         except AdapterError as exc:
             snapshot["why"]["status"] = "engine status: " + str(exc)
     if reading["metrics_text"] is not None:
@@ -815,7 +850,6 @@ def _engine_sample(store, launch, replica, reading, now):
             else:
                 metrics = engine.parse_metrics(reading["metrics_text"])
                 extra = engine.parse_metrics_extra(reading["metrics_text"])
-            snapshot["last_ok"]["metrics"] = observed_at
         except AdapterError as exc:
             snapshot["why"]["metrics"] = "engine metrics: " + str(exc)
     up = parsed_status is not None or metrics is not None or bool(reading["health"])
@@ -1023,6 +1057,13 @@ def _service_record(value):
     return record
 
 
+def _service_put(store, profile, now, value, ok):
+    previous = store.get("observe/service", profile) or {}
+    value["last_ok"] = now if ok else previous.get("last_ok")
+    value["failing_since"] = None if ok else previous.get("failing_since") or now
+    store.put("observe/service", profile, value)
+
+
 def _service_sample(store, launch, now, deadline):
     """The RTX prefill service's own records (joined by request id), read with the service key on its loopback
     port, when its status serves them. Returns True when the service answered."""
@@ -1032,14 +1073,14 @@ def _service_sample(store, launch, now, deadline):
         document = _http(f"http://{loopback}:{launch['service_port']}/api/status?detail=1",
                          _bearer(launch["service_key"]), deadline=deadline)
     except Unavailable as exc:
-        store.put("observe/service", profile, {"ts": now, "why": f"{NEEDS_SERVICE} ({exc})"})
+        _service_put(store, profile, now, {"ts": now, "why": f"{NEEDS_SERVICE} ({exc})"}, True)
         return True
     except (OSError, ValueError, TimeoutError) as exc:
-        store.put("observe/service", profile, {"ts": now, "why": "prefill service status unreadable: " + str(exc)})
+        _service_put(store, profile, now, {"ts": now, "why": "prefill service status unreadable: " + str(exc)}, False)
         return False
     if not isinstance(document, dict) or document.get("schema") not in (None, SERVICE_SCHEMA) or not isinstance(
             document.get("requests"), list):
-        store.put("observe/service", profile, {"ts": now, "why": NEEDS_SERVICE})
+        _service_put(store, profile, now, {"ts": now, "why": NEEDS_SERVICE}, True)
         return True
     ring = {}
     for value in document["requests"][:512]:
@@ -1048,7 +1089,7 @@ def _service_sample(store, launch, now, deadline):
             ring[record["id"]] = record
     instance, _ = engine.instance_of(document)
     _store_engine_requests(store, profile, "prefill-service", instance or "service", ring, {}, now)
-    store.put("observe/service", profile, {"ts": now, "why": None, "count": len(ring), "instance": instance})
+    _service_put(store, profile, now, {"ts": now, "why": None, "count": len(ring), "instance": instance}, True)
     return True
 
 
@@ -1264,19 +1305,31 @@ def _joined(profile, record, found, now, state=None):
         if ambiguity:
             why["engine"] = ambiguity
     service_block = None
-    # The hand-off that was used: the last prefill attempt that succeeded (failed hand-offs stay attempts and are
-    # not counted), else the last one.
+    # The hand-off that was used: the last prefill attempt that succeeded. Failed hand-offs are listed as their own
+    # observations and never counted.
     prefill = [a for a in attempts if a.get("kind") == "prefill" and a.get("n") is not None]
-    prefill = [a for a in prefill if a.get("outcome") == "ok"] or prefill
-    if prefill:
-        match, ambiguity = _match(by_attempt.get(prefill[-1]["n"]), prefill[-1].get("target"), True)
+    used = [a for a in prefill if a.get("outcome") == "ok"]
+    failed_handoffs = []
+    for attempt in prefill:
+        if attempt in used[-1:]:
+            continue
+        match, _ = _match(by_attempt.get(attempt["n"]), attempt.get("target"), True)
         if match:
-            service_block = {"observer": "prefill service", "attempt": prefill[-1]["n"],
+            failed_handoffs.append({"observer": "prefill service", "attempt": attempt["n"], "outcome": attempt.get("outcome"),
+                                    **{k: match.get(k) for k in ("computed_tokens", "prefill_ms", "duration_ms")},
+                                    "basis": "a hand-off that was not used: not counted"})
+    if used:
+        match, ambiguity = _match(by_attempt.get(used[-1]["n"]), used[-1].get("target"), True)
+        if match:
+            service_block = {"observer": "prefill service", "attempt": used[-1]["n"],
                              **{k: match.get(k) for k in ("computed_tokens", "prompt_tokens", "queue_ms", "prefill_ms",
                                                          "handoff_ms", "duration_ms")},
-                             "basis": "the service's own record; its computed tokens count once, on the service (C8)"}
+                             "basis": "the service's own record of the hand-off that was used; its computed tokens "
+                                      "count once, on the service (C8)"}
         else:
             why["service"] = ambiguity or f"no prefill service record for this hand-off attempt ({NEEDS_SERVICE})"
+    elif prefill:
+        why["service"] = "no hand-off succeeded: nothing is counted for the prefill service"
     stamps = record.get("stamps") or {}
     usage = record.get("usage") or {}
     state = state or record.get("state")
@@ -1295,7 +1348,8 @@ def _joined(profile, record, found, now, state=None):
                       "usage_why": record.get("usage_why"), "engine_reported": _reported(record.get("engine")),
                       "route_uncached_tokens": record.get("route_uncached_tokens")},
            "attempts": attempts, "decisions": record.get("decisions") or [], "engine": engine_block,
-           "service": service_block, "why": {**(record.get("parse_why") or {}), **why}}
+           "service": service_block, "failed_handoffs": failed_handoffs,
+           "why": {**(record.get("parse_why") or {}), **why}}
     if state == "in_flight" and row["started_at"] is not None:
         row["elapsed_ms"] = max(0.0, (now - row["started_at"]) * 1000.0)
     if state == "unknown":
@@ -1363,7 +1417,8 @@ def requests_document(api, query, store=None):
     if not unjoined:
         why["unjoined"] = "no engine-only records"
     return api.document("observe-requests", requests=result, unjoined=unjoined, filters=filters, sources=sources,
-                        gaps={key: value for key, _, value in store.items("observe/gaps")} or None, why=why)
+                        gaps={key: value for key, _, value in store.items("observe/gaps")} or None,
+                        inventory=store.get("observe/inventory", "router"), why=why)
 
 
 def request_document(api, rest, query, store=None):
@@ -1448,8 +1503,8 @@ def latency_document(api, query, store=None):
     args, scope = [now - span], ""
     if "profile" in query:
         scope, args = " AND profile=?", [now - span, query["profile"]]
-    rows = _rows(store, f"SELECT profile, record, state FROM observe_requests WHERE state='done' AND ended_at >= ?{scope} "
-                        "ORDER BY ended_at DESC LIMIT ?", (*args, MAX_ROWS))
+    rows = _rows(store, f"SELECT profile, record, state FROM observe_requests WHERE state='done' AND COALESCE(ended_at, updated_at) "
+                        f">= ?{scope} ORDER BY COALESCE(ended_at, updated_at) DESC LIMIT ?", (*args, MAX_ROWS))
     found = {profile: _engine_records(store, profile, {r["id"] for p, r, _ in rows if p == profile})
              for profile in {p for p, _, _ in rows}}
     groups = {}
@@ -1488,7 +1543,7 @@ def latency_document(api, query, store=None):
             histograms += _estimated(value, "router", profile, None, value.get("instance"))
     for _, _, value in store.items("observe/engine"):
         if "profile" not in query or value.get("profile") == query["profile"]:
-            histograms += _estimated({"ts": value.get("ts"), "families": (value.get("extra") or {}).get("histograms") or {}},
+            histograms += _estimated({"ts": value.get("observed_at"), "families": (value.get("extra") or {}).get("histograms") or {}},
                                      "engine", value.get("profile"), value.get("replica"), value.get("instance"))
     sources = _sources(store, query.get("profile"))
     why = {}
@@ -1505,6 +1560,12 @@ def latency_document(api, query, store=None):
 def _estimated(snapshot, observer, profile, replica, instance):
     out = []
     for family, lines in (snapshot.get("families") or {}).items():
+        if family == "_cut":
+            out.append({"observer": observer, "profile": profile, "replica": replica, "instance": instance,
+                        "family": "_cut", "cut": lines, "as_of": snapshot.get("ts"),
+                        "basis": f"{lines['families']} families and {lines['label_sets']} label sets beyond the bounds "
+                                 "not kept"})
+            continue
         for line in lines:
             buckets = [[math.inf if b is None else b, c] for b, c in line.get("buckets") or []]
             out.append({"observer": observer, "profile": profile, "replica": replica, "instance": instance,
@@ -1634,7 +1695,7 @@ def engines_document(api, query, store=None):
         if last is None:
             row["why"]["last_served"] = "no completed request seen"
         rows.append(row)
-    return api.document("observe-engines", engines=rows,
+    return api.document("observe-engines", engines=rows, inventory=store.get("observe/inventory", "engines"),
                         why={} if rows else {"engines": "no engine observed yet (" + NOT_COLLECTED + ")"})
 
 
@@ -1659,7 +1720,9 @@ def speculative_document(api, query, store=None):
         history = urlencode({"range": 3600, "l.profile": snap.get("profile"), "l.replica": snap.get("replica")})
         why = {}
         row = {"profile": snap.get("profile"), "replica": snap.get("replica"), "model": snap.get("model"),
-               "instance": snap.get("instance"), "as_of": snap.get("observed_at"), "method": None, "scope": None,
+               "instance": snap.get("instance"), "as_of": snap.get("observed_at"),
+               "stale": snap.get("observed_at") is None or api.clock() - snap["observed_at"] > stale_after(api, "observe-engines"),
+               "method": None, "scope": None,
                "accepted": None, "proposed": None, "cycles": None, "acceptance": None, "accepted_per_cycle": None,
                "depth": None, "window_rows": None, "window_label": None, "draft_seconds": None, "saved_seconds": None,
                "basis": None, "acceptance_series": "history/engine_draft_acceptance?" + history,
@@ -1725,8 +1788,16 @@ def sessions_document(api, query, store=None):
     now = api.clock()
     idle = settings(store)["affinity_idle_s"]
     result, covered, coverage = [], set(), {}
+    stale = stale_after(api)
     for profile, _, value in store.items("observe/sessions"):
         if "profile" in query and profile != query["profile"]:
+            continue
+        if value.get("ts") is None or now - value["ts"] > stale:
+            # The router's view was not refreshed lately: not shown as current; the retained records stand in.
+            coverage[profile] = {"source": "retained request records", "as_of": value.get("ts"),
+                                 "why": "the router's session view was not read for "
+                                        f"{(now - value['ts']) if value.get('ts') else 0:.0f} s; grouped from the "
+                                        "request records this portal kept instead"}
             continue
         covered.add(profile)
         coverage[profile] = {"source": "router sessions", "router_idle_s": value.get("idle_s"),
@@ -1781,6 +1852,8 @@ def sessions_document(api, query, store=None):
     if not result:
         reasons = _reasons(_sources(store, query.get("profile")), "sessions")
         why["sessions"] = "; ".join(reasons) if reasons else "no conversations seen within the expiry"
+    if len(result) > 500:
+        why["sessions_cut"] = f"{len(result) - 500} older conversations not shown (500 newest)"
     return api.document("observe-sessions", sessions=result[:500], label=AFFINITY_LABEL, idle_expiry_s=idle,
                         coverage=coverage, why=why)
 

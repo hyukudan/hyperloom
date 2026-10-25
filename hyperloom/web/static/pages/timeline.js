@@ -51,6 +51,9 @@
     const parts = [bars("Router-observed · ms from arrival", "router", router.phases || [], {elapsed: row.state === "in_flight" ? row.elapsed_ms : undefined})];
     if (row.engine) parts.push(bars(`Engine-observed · ${row.engine.replica || "engine"} · attempt ${row.engine.attempt ?? "?"} · its own clock`, "engine", row.engine.phases || []));
     else parts.push(`<p>Engine record: ${H().unavailable(row.why?.engine)}</p>`);
+    for (const f of row.failed_handoffs || []) parts.push(`<p class="t2">Hand-off attempt ${esc(f.attempt)} (${esc(f.outcome || "failed")}): computed ${esc(f.computed_tokens ?? "—")} tokens on the service · ${esc(f.basis)}</p>`);
+    const dropped = Object.entries(row.dropped || {}).map(([k, v]) => `${v} ${k.replaceAll("_", " ")}`).join(", ");
+    if (dropped) parts.push(`<p class="hint">The router dropped ${esc(dropped)} beyond its own bounds.</p>`);
     if (row.service) parts.push(`<p class="t2">Prefill service record (its own clock): prefill ${esc(ms(row.service.prefill_ms) || "—")}, hand-off ${esc(ms(row.service.handoff_ms) || "—")}, computed ${esc(row.service.computed_tokens ?? "—")} tokens · ${esc(row.service.basis)}</p>`);
     else if (row.why?.service) parts.push(`<p>Prefill service record: ${H().unavailable(row.why.service)}</p>`);
     const e = row.engine || {};
@@ -78,6 +81,8 @@
       for (const [part, stale] of Object.entries(source.stale || {})) if (stale && !(source.why || {})[part]) notes.push(`${profile} · ${part}: stale (no answer within 3 collector intervals)`);
     }
     for (const [profile, gap] of Object.entries(doc.gaps || {})) notes.push(`${profile}: ${gap.why} (${gap.count} times, last ${time(gap.last)})`);
+    const omitted = doc.inventory?.omitted || {};
+    if (omitted.profiles || omitted.replicas) notes.push(`not observed: ${omitted.profiles || 0} profiles and ${omitted.replicas || 0} replicas beyond the limits (8 x 8)`);
     const rows = (doc.requests || []).map(row => {
       const e = row.engine || {};
       const total = row.router?.total_ms ?? row.elapsed_ms;
