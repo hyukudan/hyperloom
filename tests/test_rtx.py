@@ -125,6 +125,12 @@ class ConfigTests(unittest.TestCase):
         for exc in (OSError("missing"), subprocess.TimeoutExpired("g", 60)):
             self.assertIn("did not run", rtx.run_gate(["C:/g.exe"], raises(exc)))
 
+    def test_gate_runs_a_real_command(self):
+        import sys
+        self.assertIsNone(rtx.run_gate([sys.executable, "-c", "print('open')"]))
+        self.assertEqual(rtx.run_gate([sys.executable, "-c", "print('PC-BIG open: x'); raise SystemExit(3)"]),
+                         "gate refused (rc 3): PC-BIG open: x")
+
     def test_reservation_window_opens_at_start(self):
         obj = rtx_example()
         reservation = obj["pc"]["cuda"]["reservation"]

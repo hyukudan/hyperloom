@@ -99,8 +99,7 @@ def gate(value, where):
 def run_gate(argv, run=subprocess.run):
     """None when the gate lets the start go on, else why it refused (its first output line)."""
     try:
-        result = run(argv, capture_output=True, timeout=GATE_TIMEOUT_S, stdin=subprocess.DEVNULL,
-                     creationflags=no_window())
+        result = run(argv, capture_output=True, timeout=GATE_TIMEOUT_S, stdin=subprocess.DEVNULL, **no_window())
     except (OSError, subprocess.TimeoutExpired) as exc:
         return f"gate did not run: {type(exc).__name__}"
     if result.returncode == 0:
