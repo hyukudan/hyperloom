@@ -59,8 +59,11 @@
   function mode(config) {
     const {tag} = H();
     if (!config || !Object.keys(config).length) return un("mode not in the published layout");
-    const tags = [config.busy_poll ? "busy poll" : "interrupts", config.rx_busy_poll ? "rx busy poll" : "",
-      config.gpu_direct ? "GPU direct" : "host memory", config.gpu_poll > 0 ? "GPU poll" : "",
+    const known = key => typeof config[key] === "number";
+    const tags = [known("busy_poll") ? (config.busy_poll ? "busy poll" : "interrupts") : "poll mode not published",
+      config.rx_busy_poll ? "rx busy poll" : "",
+      known("gpu_direct") ? (config.gpu_direct ? "GPU direct" : "host memory") : "memory path not published",
+      config.gpu_poll > 0 ? "GPU poll" : "",
       num(config.ring_size) ? `ring ${config.ring_size}` : "", num(config.throttling) ? `throttling ${config.throttling}` : "",
       config.gpu_quarantine ? "GPU quarantine" : ""].filter(Boolean);
     return tags.map(tag).join(" ");
@@ -136,23 +139,29 @@
     const h = H().state.docs[history(m.id)];
     if (!h) return `<p>${un("loading link history")}</p>`;
     if (h.lines == null) return `<p>${un(h.why?.lines)}</p>`;
-    const order = h.lines.map(l => `${l.labels.router}/${l.labels.direction}`).sort();
-    const lines = TS().lines(h, {label: l => `${l.router} ${l.direction}`}).map((line, i) => {
-      const key = `${h.lines[i].labels.router}/${h.lines[i].labels.direction}`;
-      return {...line, color: TS().colors[order.indexOf(key) % TS().colors.length]};
-    });
+    // A colour per link identity (domain of the router, direction), independent of which lines are present.
+    const colour = labels => { const domain = parseInt(String(labels.router).split("-")[0], 10) || 0; return TS().colors[(domain * 2 + (labels.direction === "tx" ? 1 : 0)) % TS().colors.length]; };
+    const lines = TS().lines(h, {label: l => `${l.router} ${l.direction}`}).map((line, i) => ({...line, color: colour(h.lines[i].labels)}));
     return TS().chart({title: `${m.id} · trained link rate (Gb/s) · last 24 h`, unit: "Gb/s", lines, step: h.step || 10,
       cadence: h.tier === "raw" ? h.interval_s || 10 : 0, start: h.start, end: h.end, min: 0, max: 45, group: "usb4", height: 160})
       + `<p class="hint">A step down is a retrain to a lower rate; gaps are periods without samples. rx and tx of a link overlap when they are equal.</p>`;
   }
 
+  function section(m, names, html, now) {
+    const stale = names.filter(name => m.stale?.[name]);
+    if (!stale.length) return html;
+    const last = Math.min(...stale.map(name => m.sources?.[name]?.last_ok).filter(num));
+    return `<div class="u4-stale"><p class="hint"><span class="pill p-warn">stale</span> ${H().esc(stale.join(", "))} · values as of ${H().esc(num(last) ? when(last) : "no successful collection")}</p>${html}</div>`;
+  }
+
   function machineCard(m, d, now) {
-    const {card, esc, empty} = H();
+    const {card, esc} = H();
     const s = m.summary;
     if (!s) return card(m.id, `<p>${un(m.why?.summary || m.error)}</p>${sources(m, now)}`);
     const error = m.error ? `<p class="banner warn">Last collection failed ${esc(ago(now, m.error_at))}: ${esc(m.error)}</p>` : "";
-    return card(m.id, error + sources(m, now) + linksTable(m, s, d, now) + cablesNote(s) + chart(m) + streamsTable(m, s, now)
-      + interruptsTable(m, s) + evidence(m, d, now) + parameters(s),
+    return card(m.id, error + sources(m, now) + section(m, ["links"], linksTable(m, s, d, now) + cablesNote(s), now) + chart(m)
+      + section(m, ["layout", "live"], streamsTable(m, s, now), now) + section(m, ["interrupts"], interruptsTable(m, s), now)
+      + section(m, ["journal"], evidence(m, d, now), now) + section(m, ["parameters"], parameters(s), now),
       `kernel ${s.kernel || "unknown"} · collected ${ago(now, s.collected_at)}`);
   }
 
@@ -160,15 +169,17 @@
     const {card, table, cells, esc} = H();
     const rows = (d.exchange || []).map(e => {
       const w = e.window || {}, life = e.lifetime || {};
+      const asOf = e.stale ? `<br><span class="pill p-warn">stale</span> <span class="hint">as of ${esc(when(e.observed_at) || "unknown")}</span>` : "";
       const us = v => num(v) ? `${(v * 1e6).toFixed(0)} µs` : null;
       const bytes = v => num(v) ? TS().fmt(v, "bytes") : null;
       const why = key => e.why?.[key] || e.why?.window || "no window";
-      return cells([`<span class="mono">${esc(e.engine)}</span><br><span class="hint">${esc((e.machines || []).join(", ") || `profile ${e.profile || "unknown"}`)} · ${esc(e.group?.transport || "transport unknown")} · ${esc(e.observer)}</span>`,
+      const row = cells([`<span class="mono">${esc(e.engine)}</span><br><span class="hint">${esc((e.machines || []).join(", ") || `profile ${e.profile || "unknown"}`)} · ${esc(e.group?.transport || "transport unknown")} · ${esc(e.observer)}</span>${asOf}`,
         us(w.seconds_per_step) ? `<b>${esc(us(w.seconds_per_step))}</b>` : un(why("seconds_per_step")),
         bytes(w.bytes_per_step) ? esc(bytes(w.bytes_per_step)) : un(why("bytes_per_step")),
         us(w.seconds_per_exchange) ? esc(us(w.seconds_per_exchange)) : un(why("seconds_per_exchange")),
         num(w.span_s) ? `${esc(Math.round(w.span_s))} s · ${esc(w.steps ?? "?")} steps` : un(why("window")),
         us(life.seconds_per_exchange) ? `${esc(us(life.seconds_per_exchange))} · ${esc(bytes(life.bytes_per_exchange) || "?")}` : un(e.why?.group || "no group counters")]);
+      return e.stale ? row.replace("<tr>", '<tr class="u4-stale-row">') : row;
     }).join("");
     const body = rows ? table(["Engine group", "Exchange time per step", "Bytes per step", "Per exchange", "Window", "Since the group formed (per exchange)"], rows, "Engine exchange")
       : `<p>${un(d.why?.exchange)}</p>`;

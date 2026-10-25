@@ -253,6 +253,16 @@ class NodeVerbTests(unittest.TestCase):
         self.assertEqual(report["layout"]["live"]["status"], "unavailable")
         self.assertIn("2 live checks failed", report["layout"]["live"]["why"])
 
+    def test_a_failed_listing_is_unavailable_not_an_empty_observation(self):
+        reader = TreeReader(self.dir.name, FIXTURE, runner=Runner())
+        original = reader.listdir
+        reader.listdir = lambda logical: None if logical == "/sys/bus/thunderbolt/devices" else original(logical)
+        report = node.Collector(reader).collect({})
+        self.assertEqual(report["links"]["status"], "unavailable")
+        self.assertIn("cannot list", report["links"]["why"])
+        missing = node.Reader(self.dir.name).listdir("/sys/bus/thunderbolt/nothing-here")
+        self.assertEqual(missing, [])
+
     def test_stream_devices_are_only_ever_lstat(self):
         reader = node.Reader(self.dir.name)
         self.assertEqual(reader.device("/dev/tbstream0")[0], "absent")
@@ -279,7 +289,7 @@ class NodeVerbTests(unittest.TestCase):
         started = time.monotonic()
         report = node.Collector(slow, deadline_s=0.5).collect({})
         self.assertLess(time.monotonic() - started, 2.8)
-        self.assertIn("deadline", report["why"])
+        self.assertIn("deadline", report["interrupts"]["why"] + " ".join(report["why"]))
         self.assertEqual(report["interrupts"]["status"], "unavailable")
         self.assertIsInstance(report["links"], list)
 
@@ -326,6 +336,17 @@ class NodeVerbTests(unittest.TestCase):
         report = node.Collector(reader).collect({})
         self.assertEqual(report["layout"]["status"], "unavailable")
         self.assertEqual(report["domains"]["0"], "0000:c7:00.5")
+
+    @unittest.skipUnless(hasattr(os, "symlink") and os.name == "posix", "symlinks need a POSIX host")
+    def test_a_symlinked_device_directory_is_refused(self):
+        outside = Path(self.dir.name).parent / (Path(self.dir.name).name + "-outside")
+        outside.mkdir()
+        self.addCleanup(shutil.rmtree, outside, True)
+        (outside / "tbstream0").write_text("x", encoding="utf-8")
+        (Path(self.dir.name) / "dev").symlink_to(outside)
+        state, why = node.Reader(self.dir.name).device("/dev/tbstream0")
+        self.assertEqual(state, "error")
+        self.assertIn("outside /dev", why)
 
     def test_classification_of_kernel_lines(self):
         cases = {

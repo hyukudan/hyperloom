@@ -33,7 +33,7 @@ class FakeAPI:
                     for i, (mid, system, access) in enumerate((("workstation", "windows", "local"),
                                                                 ("halo-1", "linux", "ssh"), ("halo-2", "linux", "ssh")))}
         self._cluster = config.Cluster(machines, {}, {"ds-pair": {"rank0": "halo-1", "rank1": "halo-2"},
-                                                      "qwen-two": {"nodes": ["halo-1", "halo-2"]}}, {}, {}, {})
+                                                      "replicas": {"nodes": ["halo-1", "halo-2"]}}, {}, {}, {})
         self.sampler = None
 
     def cluster(self):
@@ -216,6 +216,27 @@ class CollectorTests(unittest.TestCase):
         doc = usb4._account_journal(self.store, "halo-1", {"status": "unavailable", "why": "kernel journal not readable"}, t0 + 240)
         self.assertEqual((doc["status"], doc["totals"]["host_reset"], doc["why"]), ("unavailable", initial["counts"]["host_reset"], "kernel journal not readable"))
 
+    def test_a_reboot_retires_the_previous_boot_totals(self):
+        t0 = 1_800_000_000.0
+        initial = REPORTS["halo-1"]["journal"]
+        self.replies = {"halo-1": report("halo-1", journal=initial), "halo-2": report("halo-2")}
+        self.run_at(t0)
+        self.replies["halo-1"] = report("halo-1", boot_id="a" * 32)          # rebooted; journal not due yet
+        self.run_at(t0 + 10)
+        doc = self.store.get(usb4.JOURNAL_NS, "halo-1")
+        self.assertEqual((doc["status"], doc.get("totals")), ("unavailable", None))
+        self.assertIn("booted again", doc["why"])
+        self.assertEqual(doc["previous_boot"]["totals"]["host_reset"], initial["counts"]["host_reset"])
+        self.calls.clear()
+        self.replies["halo-1"] = report("halo-1", boot_id="a" * 32,
+                                        journal={"status": "unavailable", "why": "journalctl did not answer"})
+        self.run_at(t0 + 20)                                                # the new boot is scanned at once
+        self.assertEqual(dict(self.calls)["halo-1"], {"journal": {"boot_id": None, "cursor": None}})
+        doc = self.store.get(usb4.JOURNAL_NS, "halo-1")
+        self.assertEqual((doc["status"], doc.get("totals")), ("unavailable", None))
+        view = usb4.document(self.api, {})["machines"][0]
+        self.assertIsNone(view["journal"].get("totals"))
+
     def test_more_entries_pending_and_malformed_reads(self):
         t0 = 1_800_000_000.0
         initial = REPORTS["halo-1"]["journal"]
@@ -311,6 +332,20 @@ class ExchangeTests(unittest.TestCase):
         view = self.observe(self.stats(t0 + 20, 1300, uptime=4020.0, bytes_sent=0))
         self.assertIsNone(view["window"]["seconds_per_step"])
         self.assertIn("idle", view["why"]["seconds_per_step"])
+
+    def test_retained_exchange_values_are_marked_stale(self):
+        t0 = 1_800_000_000.0
+        self.observe(self.stats(t0, 1000))
+        self.observe(self.stats(t0 + 10, 1300, uptime=4010.0))
+        self.clock.now = t0 + 25
+        view = usb4.document(self.api, {})["exchange"][0]
+        self.assertFalse(view["stale"])
+        self.clock.now = t0 + 41
+        view = usb4.document(self.api, {})["exchange"][0]
+        self.assertTrue(view["stale"])
+        self.assertIn("as of", view["why"]["stale"])
+        self.clock.now = t0 + 200
+        self.assertEqual(usb4.document(self.api, {})["exchange"], [])
 
     def test_old_snapshots_are_not_used(self):
         self.api._cached = {"stats": self.stats(1_800_000_000.0 - 31, 1000)}

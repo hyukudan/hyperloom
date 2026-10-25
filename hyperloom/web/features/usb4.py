@@ -30,6 +30,7 @@ FULL_LANE_GBPS, FULL_LANES = 20.0, 2
 FULL_RATE_GBPS = FULL_LANE_GBPS * FULL_LANES
 SNAPSHOT_MAX_AGE_S = 30.0
 EXCHANGE_MAX_AGE_S = 120.0
+EXCHANGE_STALE_S = 3 * INTERVAL_S       # three collector intervals without a new observation
 MAX_PARALLEL = 8
 JOIN_S = 15.0
 NODE_NS, JOURNAL_NS, EXCHANGE_NS = "usb4/node", "usb4/journal", "usb4/exchange"
@@ -255,10 +256,20 @@ def _account_irqs(store, machine, boot, vectors, now, previous):
     return nhi_rates(vectors, {(n, v): (t, g, d, i, u) for n, v, t, g, d, i, u in rows}, now, previous)
 
 
-def _account_journal(store, machine, read, now):
-    """Fold one journal read into the stored per-boot state; returns the state document."""
+def _account_journal(store, machine, read, now, boot=None):
+    """Fold one journal read into the stored per-boot state; returns the state document. `boot` is the boot id
+    the node reported in this collection: when it differs from the stored one and this collection did not read
+    the new boot's journal, the stored totals are retired (they describe the previous boot) and the next
+    collection scans the new boot."""
     doc = store.get(JOURNAL_NS, machine) or {}
     status = read.get("status")
+    if boot and doc.get("boot_id") and doc["boot_id"] != boot and status != "ok":
+        doc = {"status": "unavailable", "attempted_at": None, "boot_id": None,
+               "why": "the node booted again; the kernel journal of this boot is read at the next collection"
+               + ("" if status == "skipped" else " (last read: %s)" % read.get("why")),
+               "previous_boot": {"boot_id": doc["boot_id"], "totals": doc.get("totals"), "read_at": doc.get("read_at")}}
+        store.put(JOURNAL_NS, machine, doc)
+        return doc
     if status == "skipped":
         return doc
     if status != "ok":
@@ -458,7 +469,7 @@ def sample(api, now):
         if summary["interrupts"].get("status") == "ok" and summary["boot_id"]:
             summary["interrupts"]["nhis"] = _account_irqs(store, machine.id, summary["boot_id"],
                                                           summary["interrupts"]["vectors"], now, previous.get("summary"))
-        _account_journal(store, machine.id, summary.pop("journal_read"), now)
+        _account_journal(store, machine.id, summary.pop("journal_read"), now, summary["boot_id"])
         points.extend(_gauges(machine.id, summary))
         store.put(NODE_NS, machine.id, {"summary": summary, "sources": _sources(previous.get("sources"), attempted, now),
                                         "error": None, "error_at": None})
@@ -513,6 +524,10 @@ def document(api, query):
             view = dict(value.get("view") or {})
             view["age_s"] = now - value["observed_at"] if _finite(value.get("observed_at")) else None
             if view["age_s"] is None or view["age_s"] <= EXCHANGE_MAX_AGE_S:
+                view["stale"] = view["age_s"] is None or view["age_s"] > EXCHANGE_STALE_S
+                if view["stale"]:
+                    view["why"] = dict(view.get("why") or {}, stale="no new engine observation for more than %d s; "
+                                       "values are as of their observation time" % EXCHANGE_STALE_S)
                 exchange.append(view)
         if not exchange:
             why["exchange"] = ("engine status not sampled in the last %d s (the shared snapshot refreshes while a portal "

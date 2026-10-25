@@ -272,6 +272,7 @@ class Reader:
             return None
 
     def listdir(self, logical):
+        """Sorted entry names (at most MAX_ENTRIES); [] for a missing directory, None when listing failed."""
         try:
             names = []
             with os.scandir(self.path(logical)) as entries:
@@ -280,8 +281,10 @@ class Reader:
                     if len(names) >= MAX_ENTRIES:
                         break
             return sorted(names)
-        except (OSError, ValueError):
+        except (FileNotFoundError, NotADirectoryError):
             return []
+        except (OSError, ValueError):
+            return None
 
     def probe(self, logical):
         """("present", stat) | ("absent", None) | ("error", why) for a path inside READ_ALLOWED."""
@@ -320,8 +323,14 @@ class Reader:
         if not isinstance(logical, str) or not DEVICE.fullmatch(logical):
             return "error", "not a stream device path"
         try:
-            _base, mapped = self._map(logical)
-            info = os.lstat(mapped)
+            base, mapped = self._map(logical)
+            # The directory is resolved and must be the inspected tree's /dev itself (inside the root when one
+            # is set); only the final component is examined without following it.
+            parent = mapped.parent.resolve()
+            expected = (base / "dev").resolve() if self.root is not None else Path("/dev")
+            if parent != expected or (self.root is not None and self.root not in parent.parents):
+                return "error", "the device directory resolves outside /dev"
+            info = os.lstat(parent / mapped.name)
         except FileNotFoundError:
             return "absent", None
         except (OSError, ValueError) as exc:
@@ -359,7 +368,7 @@ class Collector:
     def domains(self):
         """{domain: NHI PCI address}: the parent of each resolved /sys/bus/thunderbolt/devices/domainN."""
         out = {}
-        for name in self.io.listdir("/sys/bus/thunderbolt/devices"):
+        for name in self.io.listdir("/sys/bus/thunderbolt/devices") or []:
             match = DOMAIN.fullmatch(name)
             if match:
                 parent = self.io.parent_name("/sys/bus/thunderbolt/devices/" + name)
@@ -370,7 +379,10 @@ class Collector:
     def links(self, domains):
         base = "/sys/bus/thunderbolt/devices"
         out = []
-        for name in self.io.listdir(base):
+        names = self.io.listdir(base)
+        if names is None:
+            return unavailable("cannot list " + base)
+        for name in names:
             match = ROUTER.fullmatch(name)
             if not match:
                 continue
@@ -380,7 +392,10 @@ class Collector:
             entry = base + "/" + name
             raw = {f: self.io.read(entry + "/" + f) for f in ("rx_speed", "rx_lanes", "tx_speed", "tx_lanes")}
             if raw["rx_speed"] is None and raw["tx_speed"] is None:
-                continue                    # host routers and devices without a trained link of their own
+                present = [f for f in ("rx_speed", "tx_speed") if self.io.probe(entry + "/" + f)[0] != "absent"]
+                if not present:
+                    continue                # host routers and devices without a trained link of their own
+                raw["unreadable"] = present  # the attributes exist but could not be read: an unknown rate
             rx = link_direction(raw["rx_speed"], raw["rx_lanes"])
             tx = link_direction(raw["tx_speed"], raw["tx_lanes"])
             domain, route = int(match[1]), int(match[2], 16)
@@ -392,7 +407,8 @@ class Collector:
                         "peer_vendor": _text(self.io.read(entry + "/vendor_name"), 64),
                         "peer_unique_id": _text(self.io.read(entry + "/unique_id"), 64),
                         "rx": rx, "tx": tx, "full_rate": (not below) if known else (False if below else None),
-                        "below_full_rate": below})
+                        "below_full_rate": below,
+                        **({"why": "unreadable: " + ", ".join(raw["unreadable"])} if raw.get("unreadable") else {})})
             if len(out) >= MAX_LINKS:
                 break
         return out
@@ -508,7 +524,11 @@ class Collector:
                 out[module] = unavailable("module not loaded" if state == "absent" else "module check failed: " + str(why))
                 continue
             values, write_only, unreadable = {}, [], []
-            for name in self.io.listdir(base)[:MAX_PARAMS]:
+            names = self.io.listdir(base)
+            if names is None:
+                out[module] = unavailable("cannot list " + base)
+                continue
+            for name in names[:MAX_PARAMS]:
                 self.check()
                 if not PARAM.fullmatch(name):
                     continue
@@ -694,7 +714,7 @@ class Collector:
                 result[name] = part()
             except Deadline:
                 result[name] = unavailable("node deadline reached")
-        if isinstance(result["links"], list) and not result["links"]:
+        if isinstance(result.get("links"), list) and not result["links"]:
             result["why"]["links"] = ("thunderbolt driver not loaded" if self.io.stat("/sys/bus/thunderbolt") is None
                                       else "no USB4 link reports a trained speed (no cable or no peer)")
         if result["layout"].get("status") == "ok":
@@ -746,8 +766,8 @@ class Collector:
 
 def cap(result):
     """Keep the encoded result within MAX_OUTPUT by trimming the long lists (and saying so)."""
-    def size():
-        return len(json.dumps(result, ensure_ascii=True, allow_nan=False))
+    def size():                         # exactly what is written: the compact encoding and its newline
+        return len(json.dumps(result, ensure_ascii=True, allow_nan=False)) + 1
     if size() <= MAX_OUTPUT:
         return result
     result["truncated"] = True
