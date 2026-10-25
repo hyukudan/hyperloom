@@ -994,7 +994,12 @@ def placement_check(cluster, profile_name, request=_request, health=_health, lon
         return request(endpoint["address"], endpoint["port"], method, path, body, key)
 
     def counts():
-        return ((call("GET", "/api/status", None)[2] or {}).get("prefill") or {}).get("counts", {})
+        # The router reports its prefill placements under /api/status -> prefill -> placements; a missing block is an
+        # error, not zero counts (W3 read a wrong key and saw every delta as 0).
+        placements = ((call("GET", "/api/status", None)[2] or {}).get("prefill") or {}).get("placements")
+        if not isinstance(placements, dict):
+            raise ServiceError("router status has no prefill placements")
+        return placements
 
     rows = []
     for kind, tokens in (("long", long_tokens), ("short", short_tokens)):

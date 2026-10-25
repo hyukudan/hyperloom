@@ -824,7 +824,7 @@ class AcceptanceToolTests(unittest.TestCase):
             if path == "/tokenize":
                 return 200, {}, {"tokens": [0] * len(body["prompt"].split(" "))}
             if path == "/api/status":
-                return 200, {}, {"prefill": {"counts": dict(counts)}}
+                return 200, {}, {"prefill": {"placements": dict(counts)}}
             place = "offload" if len(body["prompt"].split(" ")) > 2048 else "local"
             counts[place] += 1
             served["n"] += place == "offload"
@@ -845,6 +845,22 @@ class AcceptanceToolTests(unittest.TestCase):
             return status, headers, reply
         self.assertFalse(rtx.placement_check(self.cluster, "ds41-rtx", request=fallback,
                                              health=lambda port: {"served": served["n"]})["pass"])
+
+        def old_key(address, port, method, path, body, key):
+            if path == "/api/status":
+                return 200, {}, {"prefill": {"counts": dict(counts)}}
+            return request(address, port, method, path, body, key)
+        with self.assertRaisesRegex(rtx.ServiceError, "no prefill placements"):
+            rtx.placement_check(self.cluster, "ds41-rtx", request=old_key, health=lambda port: {"served": served["n"]})
+
+    def test_router_status_names_its_placement_counts(self):
+        """The check reads the key the pinned router publishes (W3 read a key the router never sent)."""
+        router = (Path(__file__).resolve().parents[1] / "third_party" / "tensormeld" / "src" / "tensormeld"
+                  / "replica_router.py")
+        if not router.is_file():
+            self.skipTest("pinned TensorMeld not checked out")
+        source = router.read_text(encoding="utf-8")
+        self.assertIn('"placements": dict(self.counts)', source)
 
 
 @unittest.skipUnless(os.name == "nt", "the service runs on the Windows control machine; its files use Windows paths")
