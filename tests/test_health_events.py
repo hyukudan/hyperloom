@@ -108,6 +108,14 @@ class ClearTests(Base):
         code = events.document(other, {})["clear"]["confirm"]
         self.assertIsNone(code)                                   # expired and not yet renewed
 
+    def test_the_boundary_only_moves_forward(self):
+        stale = events.clear_statements(self.store, "7d", T0)          # read before a newer clear commits
+        events.clear(self.store, "all", T0 + 10)
+        with self.assertRaises(sqlite3.IntegrityError):
+            health.commit(self.store, stale)
+        events.clear(self.store, "7d", T0 + 20)                        # a later, older-cutoff clear keeps the newest
+        self.assertEqual(self.store.get(events.BOUNDARY, "cutoff")["cutoff"], T0 + 10)
+
     def test_cli_clear_has_no_code(self):
         self.store.event("health", "info", "x", ts=T0 - 10)
         self.assertEqual(events.clear(self.store, "all", T0), 1)

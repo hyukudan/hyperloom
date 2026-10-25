@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 import re
 import secrets as random
+import sqlite3
 
 from hyperloom import telemetry
 from hyperloom.telemetry.store import MAX_EVENTS, SEVERITIES
@@ -96,11 +97,13 @@ def clear_statements(store, older_than, now):
     """Delete, record the cutoff the audit mirror must respect, and log the clear (one transaction's statements)."""
     seconds = OPTIONS[older_than]
     cutoff = now if seconds is None else now - seconds
-    previous = store.get(BOUNDARY, "cutoff") or {}
-    boundary = {"cutoff": max(cutoff, previous.get("cutoff", cutoff) if type(previous.get("cutoff")) in (int, float) else cutoff),
-                "at": now}
+    text = health.stored_text(store, BOUNDARY, "cutoff")
+    previous = json.loads(text) if text else {}
+    newest = previous.get("cutoff") if type(previous.get("cutoff")) in (int, float) else cutoff
+    boundary = {"cutoff": max(cutoff, newest), "at": now}
     delete = ("DELETE FROM events", ()) if seconds is None else ("DELETE FROM events WHERE ts < ?", (cutoff,))
-    return [delete, health.upsert_doc(BOUNDARY, "cutoff", boundary, now),
+    # The boundary only moves forward: a concurrent clear that moved it meanwhile aborts this one (callers retry).
+    return [health.unchanged(BOUNDARY, "cutoff", text), delete, health.upsert_doc(BOUNDARY, "cutoff", boundary, now),
             health.insert_event(now, "config", "info", f"activity log cleared ({LABELS[older_than]})",
                                 data={"older_than": older_than})]
 
@@ -116,14 +119,32 @@ def clear(store, older_than, now):
     health.prepare(store)
     _check_option(older_than)
     seconds = OPTIONS[older_than]
-    count = store.execute("SELECT COUNT(*) FROM events" + ("" if seconds is None else " WHERE ts < ?"),
-                          () if seconds is None else (now - seconds,))[0][0]
-    health.commit(store, clear_statements(store, older_than, now))
-    return count
+    for _ in range(5):
+        count = store.execute("SELECT COUNT(*) FROM events" + ("" if seconds is None else " WHERE ts < ?"),
+                              () if seconds is None else (now - seconds,))[0][0]
+        try:
+            health.commit(store, clear_statements(store, older_than, now))
+            return count
+        except sqlite3.IntegrityError:
+            continue
+    raise PermissionError("the activity log kept changing while clearing; try again")
 
 
 def clear_with_code(store, older_than, code, now):
     """The portal path: the code must be the current one for this option; the codes are replaced atomically."""
+    for _ in range(5):
+        try:
+            return _clear_with_code(store, older_than, code, now)
+        except _Retry:
+            continue
+    raise PermissionError("the activity log kept changing while clearing; try again")
+
+
+class _Retry(Exception):
+    pass
+
+
+def _clear_with_code(store, older_than, code, now):
     health.prepare(store)
     _check_option(older_than)
     text = health.stored_text(store, CONFIRM, "codes")
@@ -138,10 +159,8 @@ def clear_with_code(store, older_than, code, now):
     try:
         health.commit(store, [health.unchanged(CONFIRM, "codes", text), *clear_statements(store, older_than, now),
                               health.upsert_doc(CONFIRM, "codes", _fresh_codes(now), now)])
-    except Exception as exc:
-        if "CHECK" in str(exc) or "constraint" in str(exc).lower():
-            raise ValueError("the confirmation code was just used or renewed; reload the activity log and confirm again") from None
-        raise
+    except sqlite3.IntegrityError:
+        raise _Retry() from None             # the codes or the boundary changed: read again (a used code then fails)
     return count
 
 
@@ -152,7 +171,7 @@ def clear_post(api, arguments):
         if set(arguments) - {"older_than", "confirm"}:
             raise ValueError("events/clear takes older_than and confirm")
         removed = clear_with_code(store, arguments.get("older_than"), arguments.get("confirm"), api.clock())
-    except (ValueError, LookupError) as exc:
+    except (ValueError, LookupError, PermissionError) as exc:
         api.audit("events/clear", {"older_than": option}, {"state": "refused", "error": str(exc)})
         raise
     result = {"older_than": option, "removed": removed}

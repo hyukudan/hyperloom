@@ -525,6 +525,18 @@ class DocumentTests(Base):
         health.set_rule_post(self.api, {"rule": "gpu-hot", "reset": True})
         self.assertIsNone(self.store.get(health.CONFIG, "gpu-hot"))
 
+    def test_concurrent_partial_rule_updates_both_survive(self):
+        original, calls = health._merged_rule, []
+
+        def racing(rule, arguments, stored, now):
+            if not calls:
+                calls.append(1)
+                health.set_rule(self.store, {"rule": "gpu-hot", "enabled": False})     # lands between read and commit
+            return original(rule, arguments, stored, now)
+        with mock.patch.object(health, "_merged_rule", racing):
+            health.set_rule(self.store, {"rule": "gpu-hot", "hold_s": 5})
+        self.assertEqual(self.store.get(health.CONFIG, "gpu-hot"), {"enabled": False, "hold_s": 5.0})
+
     def test_registration(self):
         reg = features.Registry()
         health.register(reg)

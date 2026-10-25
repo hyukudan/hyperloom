@@ -20,6 +20,7 @@ import math
 import os
 from pathlib import Path
 import re
+import sqlite3
 import threading
 import uuid
 
@@ -875,10 +876,24 @@ def set_rule(store, arguments):
         raise LookupError("unknown rule")
     if "reset" in arguments and arguments["reset"] is not True:
         raise ValueError("reset must be true")
+    prepare(store)
+    for _ in range(5):
+        # A partial update merges into the record it read; a concurrent change of the same rule aborts the commit
+        # and the merge is redone on the current record.
+        text = stored_text(store, CONFIG, rule.id)
+        result, statement = _merged_rule(rule, arguments, json.loads(text) if text else None, store.clock())
+        try:
+            commit(store, [unchanged(CONFIG, rule.id, text), statement])
+            return result
+        except sqlite3.IntegrityError:
+            continue
+    raise PermissionError("the rule kept changing while saving; try again")
+
+
+def _merged_rule(rule, arguments, stored, now):
     if arguments.get("reset") is True:
-        store.delete(CONFIG, rule.id)
-        return effective(rule, None)
-    override = dict(store.get(CONFIG, rule.id) or {})
+        return effective(rule, None), delete_doc(CONFIG, rule.id)
+    override = dict(stored or {})
     if "enabled" in arguments:
         if not isinstance(arguments["enabled"], bool):
             raise ValueError("enabled must be true or false")
@@ -903,8 +918,7 @@ def set_rule(store, arguments):
     for low_name, high_name in (("warn_c", "crit_c"), ("percent", "critical_percent")):
         if low_name in result["params"] and result["params"][low_name] > result["params"][high_name]:
             raise ValueError(f"{low_name} must not exceed {high_name}")
-    store.put(CONFIG, rule.id, override)
-    return result
+    return result, upsert_doc(CONFIG, rule.id, override, now)
 
 
 # -- state machine --------------------------------------------------------------------------------------------------
@@ -1253,8 +1267,8 @@ def set_rule_post(api, arguments):
     store = telemetry.open_store(api)
     try:
         result = {"rule": arguments.get("rule"), "effective": set_rule(store, arguments)}
-    except (ValueError, LookupError) as exc:
-        api.audit("health/rules/set", audit_arguments(arguments), {"state": "refused", "error": str(exc)})
+    except (ValueError, LookupError, PermissionError) as exc:
+        api.audit("health/rules/set", audit_arguments(arguments), {"state": "refused", "error": str(exc).strip("'\"")})
         raise
     api.audit("health/rules/set", audit_arguments(arguments), {"state": "succeeded", "result": result})
     return result
