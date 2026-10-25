@@ -64,6 +64,28 @@ class NodeGateTests(unittest.TestCase):
         self.assertIsNotNone(release)
         release()
 
+    def test_the_portal_creates_no_lock_file_while_answering(self):
+        from unittest import mock
+        with mock.patch.object(nodegate, "_create", True):
+            nodegate.portal(self.config, ["halo-1", "../bad"])          # startup: the configured machines' files
+            locks = Path(self.dir.name) / "node-locks"
+            self.assertEqual(sorted(p.name for p in locks.iterdir()), ["halo-1.lock"])
+            before = (locks / "halo-1.lock").read_bytes()
+            with nodegate.hold(self.config, "halo-1", wait=0.2):      # an existing file: opened, never written
+                pass
+            self.assertEqual((locks / "halo-1.lock").read_bytes(), before)
+            # A machine without a file (added by hand meanwhile): gated in this process only, nothing created.
+            release = nodegate.try_hold(self.config, "halo-2")
+            self.assertIsNotNone(release)
+            self.assertIsNone(nodegate.try_hold(self.config, "halo-2"))
+            release()
+            with nodegate.hold(self.config, "halo-2", wait=0.2):
+                pass
+            self.assertEqual(sorted(p.name for p in locks.iterdir()), ["halo-1.lock"])
+            nodegate.prepare(self.config, ["halo-2"])                 # a configuration save makes it
+            self.assertTrue((locks / "halo-2.lock").is_file())
+        self.assertTrue(nodegate._create)
+
     def test_machine_ids_are_checked(self):
         with self.assertRaises(ValueError):
             nodegate.gate_path(self.config, "../x")

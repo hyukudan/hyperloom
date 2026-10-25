@@ -1004,6 +1004,8 @@ def save_config_any(api, arguments):
                 raise PermissionError("the configuration changed since it was read; reload and review")
             new_raw, cluster = check_edit(api, arguments, raw, fresh=True)
             new_version = write_config(api.config_path, new_raw)
+        from hyperloom import nodegate
+        nodegate.prepare(api.config_path, list(cluster.machines))     # a new machine's node-gate lock file
     finally:
         if hold:
             try:

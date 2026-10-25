@@ -22,13 +22,16 @@ class InstanceLock:
         self.path = Path(path)
         self.file = None
 
-    def acquire(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        stream = self.path.open("a+b")
+    def acquire(self, create=True):
+        """Take the lock (ProcessError when another holder has it). ``create=False``: an existing lock file only
+        (FileNotFoundError otherwise), nothing created or written."""
+        if create:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        stream = self.path.open("a+b" if create else "r+b")
         try:
             if os.name == "nt":
                 import msvcrt
-                if self.path.stat().st_size == 0:
+                if create and self.path.stat().st_size == 0:
                     stream.write(b"\0")
                     stream.flush()
                 stream.seek(0)

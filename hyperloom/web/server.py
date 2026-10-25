@@ -342,6 +342,13 @@ def serve(port=18700, no_browser=False):
     with create_server(port) as server:
         # Mutations survive the portal process; test fixtures with patched backends stay in-process.
         server.api.detached = os.environ.get("HYPERLOOM_UI_INPROCESS") != "1"
+        # Node-gate lock files are made now: answering a request never creates them.
+        from hyperloom import nodegate
+        try:
+            machines = list(server.api._cluster().machines)
+        except Exception:  # noqa: BLE001 - an unreadable configuration is shown by the pages; no machines yet
+            machines = []
+        nodegate.portal(server.api.config_path, machines)
         # Background samplers feed the history store (features' collectors); HYPERLOOM_TELEMETRY=0 disables them.
         if os.environ.get("HYPERLOOM_TELEMETRY", "1") != "0":
             from hyperloom import telemetry

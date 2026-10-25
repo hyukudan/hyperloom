@@ -4,6 +4,11 @@ Every node verb over ssh goes through ``hold`` (blocking, bounded wait) or ``try
 samplers that simply skip a busy machine this round). The gate is an OS file lock at
 ``<config dir>/node-locks/<machine>.lock`` plus an in-process lock, and it is reentrant for the thread that holds
 it, so a holder may call ``API.node`` (which takes the gate itself) without deadlocking.
+
+The portal never creates a lock file while it answers a request (its GETs have no side effects): ``portal`` makes
+the files of every configured machine at startup (``prepare`` again after a configuration save) and from then on
+this process only opens existing files. A machine without a file yet (added to the configuration by hand while the
+portal runs) is gated in this process only until the CLI, which creates files as before, or a save makes it.
 """
 
 from contextlib import contextmanager
@@ -17,13 +22,35 @@ from . import procs
 
 _guard = threading.Lock()
 _locks = {}       # path -> threading.Lock
-_owners = {}      # path -> [thread ident, depth, InstanceLock]
+_owners = {}      # path -> [thread ident, depth, InstanceLock or None (in-process only)]
+_create = True    # False in the portal process (see ``portal``)
 
 
 def gate_path(config_path, machine_id):
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", str(machine_id)):
         raise ValueError("invalid machine id for the node gate")
     return Path(config_path).parent / "node-locks" / (str(machine_id) + ".lock")
+
+
+def prepare(config_path, machine_ids):
+    """Create the lock files of these machines (startup, configuration save; never while answering a GET)."""
+    for machine_id in machine_ids:
+        try:
+            path = gate_path(config_path, machine_id)
+        except ValueError:
+            continue
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a+b") as stream:
+                if stream.tell() == 0:
+                    stream.write(b"\0")
+
+
+def portal(config_path, machine_ids):
+    """This process is the portal: the lock files are made now, and node calls only open existing ones."""
+    global _create
+    prepare(config_path, machine_ids)
+    _create = False
 
 
 def _enter(path, deadline, reentrant=True):
@@ -44,7 +71,10 @@ def _enter(path, deadline, reentrant=True):
         return False
     while True:
         try:
-            handle = procs.InstanceLock(path).acquire()
+            handle = procs.InstanceLock(path).acquire(create=_create)
+            break
+        except FileNotFoundError:
+            handle = None          # portal, no lock file yet: this process's own lock only (nothing created)
             break
         except (procs.ProcessError, OSError):
             if deadline is None or time.monotonic() >= deadline:
@@ -66,7 +96,8 @@ def _leave(path):
         del _owners[key]
         local = _locks[key]
     try:
-        owner[2].close()
+        if owner[2] is not None:
+            owner[2].close()
     finally:
         local.release()
 
