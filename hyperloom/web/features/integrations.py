@@ -784,7 +784,9 @@ def _history(document, shared):
     for line in document["lines"]:
         values = line.get("labels") or {}
         for point in line.get("points") or []:
-            t, avg, high, low, n, total, last, coverage = point
+            if not isinstance(point, list) or len(point) < 8:
+                continue
+            t, avg, high, low, n, total, last, coverage = point[:8]     # later fields (cadence) are not exported
             rows.append({"time": t, "time_utc": _utc(t), "avg": avg, "min": low, "max": high, "n": n, "sum": total,
                          "last": last, "coverage": coverage, **{"l." + key: values.get(key) for key in labels}})
     return columns, rows
