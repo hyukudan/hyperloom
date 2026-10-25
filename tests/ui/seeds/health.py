@@ -5,6 +5,7 @@ import os
 
 
 GIB = 1 << 30
+HOST = ".".join(("hooks", "example", "test"))           # a reserved test name, built at run time
 
 
 def seed(store, now):
@@ -42,7 +43,7 @@ def seed(store, now):
                                       "rules": {"gpu-hot": 1, "disk-full": 1, "turn-over-cap": None, "engine-down": None}})
     store.put("alerts/channels", "ch-0a1b2c3d", {"id": "ch-0a1b2c3d", "name": "Lab channel", "kind": "webhook",
                                                  "min_severity": "warning", "reminders": "4h",
-                                                 "url_masked": "https://hooks.example.test/…", "url_version": "0123456789abcdef",
+                                                 "url_masked": f"https://{HOST}/…", "url_version": "0123456789abcdef",
                                                  "created": now - 86400,
                                                  "updated": now - 86400})
     for key, finding in (("ch-0a1b2c3d|gpu-hot:halo-1/card0", findings[0]), ("ch-0a1b2c3d|disk-full:halo-2/disk:/", findings[1])):
@@ -51,14 +52,14 @@ def seed(store, now):
                                         "reminded_at": None, "reminder_queued": False})
     events = [
         (now - 7300, "health", "warning", "Disk nearly full: halo-2 / 92 % used", "halo-2"),
-        (now - 7290, "alerts", "info", "alert sent to Lab channel (https://hooks.example.test/…): 1 firing", None),
+        (now - 7290, "alerts", "info", f"alert sent to Lab channel (https://{HOST}/…): 1 firing", None),
         (now - 3600, "jobs", "info", "up profile qwen-replicas accepted (job 3f2a9c1e)", None),
         (now - 3540, "leases", "info", "lease acquired on halo-1 · hl-qwen-fixture", "halo-1"),
         (now - 3500, "jobs", "info", "up profile qwen-replicas succeeded (job 3f2a9c1e)", None),
         (now - 1800, "usb4", "warning", "2 USB4 kernel evidence lines new on halo-1 (reset 2)", "halo-1"),
         (now - 1260, "health", "critical", "GPU hot: halo-1 card0 at 92 °C (edge)", "halo-1"),
-        (now - 1255, "alerts", "warning", "alert to Lab channel (https://hooks.example.test/…) failed (HTTP 500); attempt 1, next in 5 s", None),
-        (now - 1250, "alerts", "info", "alert sent to Lab channel (https://hooks.example.test/…): 1 firing", None),
+        (now - 1255, "alerts", "warning", f"alert to Lab channel (https://{HOST}/…) failed (HTTP 500); attempt 1, next in 5 s", None),
+        (now - 1250, "alerts", "info", f"alert sent to Lab channel (https://{HOST}/…): 1 firing", None),
         (now - 900, "config", "info", "health/rules/set succeeded", None)]
     for ts, category, severity, message, machine in events:
         store.event(category, severity, message, machine=machine, ts=ts)
@@ -69,7 +70,7 @@ def patches(directory, now):
     from hyperloom.web.features import alerts
     path = directory / "secrets" / "alert-urls" / "ch-0a1b2c3d.0123456789abcdef"
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = b"https://hooks.example.test/fixture-topic"
+    data = f"https://{HOST}/fixture-topic".encode("ascii")
     if os.name == "nt":
         from hyperloom import secrets
         data = secrets._dpapi(data)

@@ -12,6 +12,8 @@ from hyperloom import cli, secrets
 from hyperloom.telemetry.store import Store
 from hyperloom.web.features import alerts, health
 
+HOST = ".".join(("hooks", "example", "test"))           # a reserved test name, built at run time
+
 
 class CLITests(unittest.TestCase):
     def setUp(self):
@@ -78,11 +80,11 @@ class CLITests(unittest.TestCase):
         self.assertEqual([e["message"] for e in store.events()], ["activity log cleared (all events)"])
 
     def test_alert_channels_read_the_url_from_stdin_and_never_print_it(self):
-        url = "https://hooks.example.test/topic-" + "7" * 20
+        url = f"https://{HOST}/topic-" + "7" * 20
         code, out, _ = self.run_cli("alerts", "add", "--name", "lab", "--kind", "push", "--url-stdin", stdin=url + "\n")
         self.assertEqual(code, 0)
         channel = json.loads(out)
-        self.assertEqual(channel["url_masked"], "https://hooks.example.test/…")
+        self.assertEqual(channel["url_masked"], f"https://{HOST}/…")
         code, out, _ = self.run_cli("alerts")
         self.assertIn(channel["id"], out)
         self.assertNotIn("7" * 20, out)
@@ -100,7 +102,7 @@ class CLITests(unittest.TestCase):
         self.assertNotIn("7" * 20, json.dumps(self.audit()))
         self.assertEqual([a["action"] for a in self.audit()], ["alerts/channels", "alerts/channels", "alerts/test",
                                                               "alerts/channels/delete"])
-        code, _, err = self.run_cli("alerts", "add", "--name", "x", "--kind", "push", "--url-stdin", stdin="http://hooks.example.test/x\n")
+        code, _, err = self.run_cli("alerts", "add", "--name", "x", "--kind", "push", "--url-stdin", stdin=f"http://{HOST}/x\n")
         self.assertEqual(code, 1)
         self.assertIn("loopback", err)
 

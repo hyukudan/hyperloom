@@ -5,7 +5,6 @@
   const blank = () => ({id: null, name: "", kind: "webhook", url: "", min_severity: "warning", reminders: "none"});
   const view = {form: null, removing: null, busy: false, note: "", result: null};
   const doc = () => H().state.docs.alerts;
-  const time = ts => typeof ts === "number" ? new Date(ts * 1000).toLocaleString() : "";
   const SEVERITY = {critical: "err", warning: "warn", info: "info"};
   async function post(action, body) {
     const token = H().csrf();
@@ -42,15 +41,16 @@
       const d = doc();
       if (d.channels == null) return empty("Alert channels unavailable", display(null, d.why?.channels || "store not open"));
       const pending = d.outbox?.per_channel || {};
-      const rows = d.channels.map(c => cells([`<b>${esc(c.name)}</b><div class="hint mono">${esc(c.id)}</div>`, tag(c.kind), `<span class="mono">${esc(c.url_masked || "")}</span>`,
-        `<span class="pill p-${SEVERITY[c.min_severity] || "off"}">${esc(c.min_severity)}</span>`, esc(c.reminders), esc(pending[c.id] || 0),
+      const rows = d.channels.map(c => cells([`<b>${esc(c.name)}</b> ${tag(c.kind)}<div class="hint mono hl-url">${esc(c.url_masked || "")}</div><div class="hint mono">${esc(c.id)}</div>`,
+        `<span class="pill p-${SEVERITY[c.min_severity] || "off"}">${esc(c.min_severity)}</span><div class="hint">reminders ${esc(c.reminders)}</div>`,
+        `<span class="hide-n">${esc(pending[c.id] || 0)}</span>`,
         `<div class="row">${button("Test", "", {extra: `data-page-action="alerts-test" data-id="${esc(c.id)}" aria-label="Send a test to ${esc(c.name)}"`, disabled: view.busy ? "Busy…" : ""})}${button("Edit", "", {extra: `data-page-action="alerts-edit" data-id="${esc(c.id)}" aria-label="Edit ${esc(c.name)}"`})}${button("Remove", "", {style: "dan", extra: `data-page-action="alerts-remove" data-id="${esc(c.id)}" aria-label="Remove ${esc(c.name)}"`})}</div>`])).join("");
       const removing = d.channels.find(c => c.id === view.removing);
       const confirm = removing ? `<div class="banner warn" role="alertdialog" aria-labelledby="remove-question"><p id="remove-question"><b>Remove ${esc(removing.name)}?</b> Its stored URL and its queued messages are deleted.</p><div class="row">${button("Confirm remove", "", {style: "dan", extra: `data-page-action="alerts-remove-confirm" id="alerts-remove-confirm"`, disabled: view.busy ? "Removing…" : ""})}${button("Cancel", "", {extra: `data-page-action="alerts-remove-cancel"`})}</div></div>` : "";
       const result = view.result ? `<div class="banner ${view.result.ok ? "info" : "warn"}" role="status">Test to ${esc(view.result.name)}: ${view.result.ok ? `delivered (HTTP ${esc(view.result.status)})` : esc(view.result.error || "failed")}</div>` : "";
-      const list = d.channels.length ? table(["Channel", "Kind", "URL", "From severity", "Reminders", "Queued", ""], rows, "Alert channels")
+      const list = d.channels.length ? table(["Channel", "From severity", ["Queued", "hide-n"], ""], rows, "Alert channels")
         : `<p>No channels yet. Findings still appear in the exceptions strip and the activity log.</p>`;
-      const recent = (d.recent || []).length ? table(["Time", "Result", "Message"], d.recent.map(e => cells([`<span class="mono">${esc(time(e.ts))}</span>`, `<span class="pill p-${e.severity === "info" ? "ok" : "warn"}">${e.severity === "info" ? "sent" : "failed"}</span>`, esc(e.message)])).join(""), "Recent deliveries") : `<p class="hint">No deliveries yet.</p>`;
+      const recent = (d.recent || []).length ? table(["When", "Result", "Message"], d.recent.map(e => cells([`<span class="mono hl-nowrap">${esc(new Date(e.ts * 1000).toLocaleTimeString())}</span><div class="hint">${esc(new Date(e.ts * 1000).toLocaleDateString())}</div>`, `<span class="pill p-${e.severity === "info" ? "ok" : "warn"}">${e.severity === "info" ? "sent" : "failed"}</span>`, esc(e.message)])).join(""), "Recent deliveries") : `<p class="hint">No deliveries yet.</p>`;
       const outbox = d.outbox ? `${esc(d.outbox.length)} queued message(s)${d.outbox.oldest_age_s != null ? ` · oldest ${esc(Math.round(d.outbox.oldest_age_s))} s` : ""}` : display(null, d.why?.outbox);
       return `${view.form ? form(d) : ""}${result}${card("Channels", list + confirm + `<p class="hint">One message per channel per evaluation with every change (firing, escalated, resolved, reminders); sent oldest first, retried after 5 s, 20 s, 60 s and then every 5 min; redirects are refused.</p>`, outbox)}${card("Recent deliveries", recent, "activity log · category alerts")}`;
     },

@@ -125,12 +125,13 @@ def unchanged(namespace, key, text):
 
 
 def _version_sql(namespace):
-    return ("(SELECT group_concat(entry, ',') FROM (SELECT key || '@' || ts AS entry FROM docs WHERE namespace=? "
-            "ORDER BY key))")
+    # The complete canonical records (key and JSON text), not update times: a same-clock change is still a change.
+    return ("(SELECT group_concat(entry, char(10)) FROM (SELECT key || char(9) || value AS entry FROM docs "
+            "WHERE namespace=? ORDER BY key))")
 
 
 def version(store, namespace):
-    """A revision of a whole document namespace (keys and update times)."""
+    """A revision of a whole document namespace: its complete records."""
     return store.execute("SELECT " + _version_sql(namespace), (namespace,))[0][0]
 
 

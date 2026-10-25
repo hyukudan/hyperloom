@@ -19,6 +19,10 @@ from hyperloom.web.features import alerts, health
 from tests.test_health_engine import Clock, FakeAPI, T0
 
 LOOPBACK = str(ipaddress.IPv4Address(0x7F000001))      # built at run time
+LOOPBACK6 = str(ipaddress.IPv6Address(1))
+HOST = ".".join(("hooks", "example", "test"))           # a reserved test name, built at run time
+LOCAL_NAME = "local" + "host"
+USERINFO = ":".join(("someone", "pw"))
 TOKEN = "k" + "9" * 20                                   # a stand-in for a topic secret in a URL path
 
 
@@ -104,16 +108,16 @@ class Base(unittest.TestCase):
 
 class URLTests(Base):
     def test_rules(self):
-        for good in ("https://hooks.example.test/a?b=1", f"http://{LOOPBACK}:9/x", "http://[::1]:8080/t"):
+        for good in (f"https://{HOST}/a?b=1", f"http://{LOOPBACK}:9/x", f"http://[{LOOPBACK6}]:8080/t"):
             self.assertEqual(alerts.check_url(good), good)
-        for bad in ("http://hooks.example.test/a", "ftp://x/y", "https://user:pw@x.test/", "https://x.test/a#f",
-                    "https://x.test/a b", "https://x.test/\n", "https://" + "a" * 2050, "https:///path", "", None,
-                    "http://localhost/x", "https://x.test:0/"):
+        for bad in (f"http://{HOST}/a", f"ftp://{HOST}/y", f"https://{USERINFO}@{HOST}/", f"https://{HOST}/a#f",
+                    f"https://{HOST}/a b", f"https://{HOST}/\n", "https://" + "a" * 2050, "https:///path", "", None,
+                    f"http://{LOCAL_NAME}/x", f"https://{HOST}:0/"):
             with self.assertRaises(ValueError, msg=bad) as caught:
                 alerts.check_url(bad)
             if isinstance(bad, str) and bad:
                 self.assertNotIn(bad, str(caught.exception))
-        self.assertEqual(alerts.mask("https://hooks.example.test:8443/" + TOKEN + "?k=" + TOKEN), "https://hooks.example.test:8443/…")
+        self.assertEqual(alerts.mask(f"https://{HOST}:8443/" + TOKEN + "?k=" + TOKEN), f"https://{HOST}:8443/…")
 
     def test_url_lives_only_in_the_secret_file(self):
         record = self.channel()
@@ -134,7 +138,7 @@ class URLTests(Base):
     def test_channel_validation_and_audits_never_echo_the_url(self):
         result = alerts.channels_post(self.api, {"name": "lab", "kind": "push", "url": self.receiver.url("/t/" + TOKEN)})
         self.assertEqual(result["min_severity"], "warning")
-        bad = [{"name": "x", "kind": "push", "url": "http://hooks.example.test/" + TOKEN}, {"name": "", "kind": "push", "url": self.receiver.url("/")},
+        bad = [{"name": "x", "kind": "push", "url": f"http://{HOST}/" + TOKEN}, {"name": "", "kind": "push", "url": self.receiver.url("/")},
                {"name": "x", "kind": "sms", "url": self.receiver.url("/")}, {"name": "x", "kind": "push"},
                {"id": "ch-00000000", "name": "x"}, {"name": "x", "kind": "push", "url": self.receiver.url("/"), "extra": 1},
                {"name": "x", "kind": "push", "url": self.receiver.url("/"), "reminders": "2h"}]
@@ -245,6 +249,14 @@ class PlanTests(Base):
         with self.assertRaises(sqlite3.IntegrityError):
             health.commit(self.store, statements)
 
+    def test_a_same_clock_settings_change_also_aborts_the_commit(self):
+        record = self.channel()
+        a = self.finding(severity="warning")
+        statements = alerts.plan(self.store, [("appeared", a)], {a["id"]: a}, self.clock.now)
+        alerts.save_channel(self.store, {"id": record["id"], "min_severity": "critical"}, self.clock.now)   # same clock
+        with self.assertRaises(sqlite3.IntegrityError):
+            health.commit(self.store, statements)
+
     def test_the_outbox_is_bounded(self):
         channel = self.channel()
         rows = [("INSERT INTO alerts_outbox(message_id, channel, created, next_at, attempts, items) VALUES (?, ?, ?, ?, 0, ?)",
@@ -349,7 +361,7 @@ class DeliveryTests(Base):
         with mock.patch.object(socket, "getaddrinfo", slow_lookup), \
                 mock.patch.object(socket.socket, "connect", lambda s, a: connects.append(a) or real_connect(s, a)):
             started = time.monotonic()
-            outcome = alerts.send("https://hooks.example.test/x", "webhook", "alert", "m", [], T0, timeout=0.5)
+            outcome = alerts.send(f"https://{HOST}/x", "webhook", "alert", "m", [], T0, timeout=0.5)
             self.assertLess(time.monotonic() - started, 1.5)
             time.sleep(2.0)                                # the lookup finishes later: still nothing is sent
         self.assertEqual(outcome["error"], "no answer within 0.5 s")

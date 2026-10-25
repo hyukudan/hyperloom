@@ -123,9 +123,18 @@ def load_url(channel, version):
     return check_url(data.decode("utf-8"))
 
 
-def drop_urls(channel, keep=None, min_age_s=0.0):
-    """Remove a channel's URL versions other than ``keep`` (older than ``min_age_s``: a concurrent save's new
-    version is never removed before it could be published)."""
+def retire_url(channel, version):
+    """Remove one URL version that a committed record no longer names (explicit retirement only)."""
+    if version is None:
+        return
+    try:
+        _url_path(channel, version).unlink(missing_ok=True)
+    except (OSError, ValueError):
+        pass
+
+
+def drop_urls(channel):
+    """Remove every URL version of a deleted channel."""
     if not isinstance(channel, str) or not CHANNEL_ID.fullmatch(channel):
         raise ValueError("invalid channel id")
     directory = secrets._directory() / "alert-urls"
@@ -135,13 +144,11 @@ def drop_urls(channel, keep=None, min_age_s=0.0):
         return
     for path in entries:
         stem, _, version = path.name.partition(".")
-        if stem != channel or not VERSION.fullmatch(version) or version == keep or path.is_symlink():
-            continue
-        try:
-            if time.time() - path.stat().st_mtime >= min_age_s:
+        if stem == channel and VERSION.fullmatch(version) and not path.is_symlink():
+            try:
                 path.unlink()
-        except OSError:
-            pass
+            except OSError:
+                pass
 
 
 # -- channels -------------------------------------------------------------------------------------------------------
@@ -221,8 +228,8 @@ def save_channel(store, arguments, now):
                     health.commit(store, statements)
                 except sqlite3.IntegrityError:
                     continue
-                if version is not None:
-                    drop_urls(cid, keep=version, min_age_s=60.0)
+                if version is not None and (current or {}).get("url_version") != version:
+                    retire_url(cid, (current or {}).get("url_version"))     # the version this commit replaced
                 version = None                      # published: never removed below
                 return _public(record)
         raise PermissionError("the channel or the findings kept changing while saving; try again")
@@ -256,8 +263,8 @@ def _item(finding, state):
             "machine": finding.get("machine"), "since": finding.get("since"), "occurrence": finding.get("occurrence")}
 
 
-CHANNELS_VERSION = ("(SELECT group_concat(entry, ',') FROM (SELECT key || '@' || ts AS entry FROM docs "
-                    "WHERE namespace='" + CHANNELS + "' ORDER BY key))")
+CHANNELS_VERSION = ("(SELECT group_concat(entry, char(10)) FROM (SELECT key || char(9) || value AS entry FROM docs "
+                    "WHERE namespace='" + CHANNELS + "' ORDER BY key))")      # the complete records, not update times
 
 
 def channels_version(store):
@@ -293,12 +300,12 @@ def plan(store, transitions, states, now):
     (in order) and due reminders. The caller commits them with the finding states while holding BOOK_LOCK; the
     statements abort the commit if the channels changed meanwhile (the evaluation is then simply redone)."""
     prepare(store)
-    configured = channels(store)
     with BOOK_LOCK:
+        statements = [channels_unchanged(channels_version(store))]     # captured before the reads it protects
+        configured = channels(store)
         texts = {key: text for key, text in store.execute("SELECT key, value FROM docs WHERE namespace=?", (TRACK,))}
         track = {key: json.loads(text) for key, text in texts.items()}
         queued = {row[0] for row in store.execute("SELECT message_id FROM alerts_outbox")}
-        statements = [channels_unchanged(channels_version(store))]
         rows = 0
         active = {fid: f for fid, f in states.items() if f.get("state") in ("firing", "clearing")}
         known = {c["id"] for c in configured}

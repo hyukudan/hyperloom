@@ -84,7 +84,7 @@
       const params = Object.entries(rule.params || {}).map(([k, v]) => `${esc(k)} ${esc(v)}${esc(rule.bounds?.[k]?.unit ? " " + rule.bounds[k].unit : "")}`).join("<br>");
       const status = !rule.enabled ? `<span class="pill p-off">disabled</span>` : rule.available === true ? `<span class="pill p-ok">evaluating</span>` : rule.available == null ? `<span class="pill p-off">not yet evaluated</span>` : unavailable(rule.why || "source unavailable");
       return cells([`<b>${esc(rule.title)}</b>${rule.overridden ? ` <span class="tag">changed</span>` : ""}<div class="hint">${esc(rule.description)}</div>`, severity(rule.severity),
-        `${esc(rule.hold_s)} s / ${esc(rule.clear_s)} s`, `<span class="hide-n">${params || "—"}</span>`,
+        `<span class="hl-nowrap">${esc(rule.hold_s)} s / ${esc(rule.clear_s)} s</span>`, `<span class="hide-n">${params || "—"}</span>`,
         `${status}${rule.notes?.length ? `<div class="hint">${esc(rule.notes.join(" · "))}</div>` : ""}`, `${esc(rule.active)}${rule.pending ? ` <span class="hint">+${esc(rule.pending)} pending</span>` : ""}`,
         button("Edit", "", {extra: `data-page-action="health-rule-edit" data-rule="${esc(rule.id)}" aria-label="Edit ${esc(rule.title)}"`})]);
     }).join("");
@@ -98,14 +98,17 @@
     if (d.events == null) return empty("Activity log unavailable", display(null, d.why?.events || "store not open"));
     const select = (key, label, options) => `<div class="field"><label for="events-${key}">${esc(label)}</label><select class="inp" id="events-${key}" data-page-action="health-filter" data-key="${key}"><option value="">All</option>${options.map(o => `<option value="${esc(o)}" ${view[key] === o ? "selected" : ""}>${esc(o)}</option>`).join("")}</select></div>`;
     const filters = `<div class="row hl-filters">${select("category", "Category", d.categories || [])}${select("machine", "Machine", d.machines || [])}${select("severity", "Severity at least", ["info", "warning", "critical"])}</div>`;
-    const rows = d.events.map(e => cells([`<span class="mono">${esc(time(e.ts))}</span>`, severity(e.severity), tag(e.category), esc(e.machine || "—"), esc(e.message)])).join("");
+    const clock = ts => typeof ts === "number" ? new Date(ts * 1000).toLocaleTimeString() : "";
+    const day = ts => typeof ts === "number" ? new Date(ts * 1000).toLocaleDateString() : "";
+    const rows = d.events.map(e => cells([`<span class="mono hl-nowrap">${esc(clock(e.ts))}</span><div class="hint">${esc(day(e.ts))}</div>`, severity(e.severity),
+      `${esc(e.message)}<div class="hint">${tag(e.category)}${e.machine ? ` · ${esc(e.machine)}` : ""}</div>`])).join("");
     const paging = `<div class="row">${button("Newest", "", {extra: `data-page-action="health-page" data-to="newest"`, disabled: view.before ? "" : "Showing the newest events"})}${button("Older", "", {extra: `data-page-action="health-page" data-to="older"`, disabled: d.next_before ? "" : "No older events"})}<span class="hint">${esc(d.total)} events kept (at most ${esc(d.retention)})</span></div>`;
     const codes = d.clear?.confirm;
     const options = d.clear?.options || [];
     const labels = d.clear?.labels || {};
     const confirm = view.confirming ? `<div class="banner warn" role="alertdialog" aria-labelledby="clear-question"><p id="clear-question"><b>Clear ${esc(labels[view.confirming] || view.confirming)}?</b> This cannot be undone; the clear itself is logged.</p><div class="row">${button("Confirm clear", "", {style: "dan", extra: `data-page-action="health-clear-confirm" id="health-clear-confirm"`, disabled: view.busy ? "Clearing…" : codes?.[view.confirming] ? "" : "confirmation codes are being renewed; try again in a few seconds"})}${button("Cancel", "", {extra: `data-page-action="health-clear-cancel"`})}</div></div>` : "";
     const clear = `<div class="row">${options.map(o => button(`Clear ${labels[o] || o}`, "", {style: "dan", extra: `data-page-action="health-clear" data-option="${esc(o)}"`, disabled: codes ? "" : d.why?.confirm || "confirmation unavailable"})).join("")}</div>${confirm}${view.note && !view.editing ? `<p class="field-error" role="alert">${esc(view.note)}</p>` : ""}`;
-    return `${card("Filters", filters)}${card("Activity log", (d.events.length ? table(["Time", "Severity", "Category", "Machine", "Event"], rows, "Activity log") : `<p>No events match these filters.</p>`) + paging, "findings, alerts, jobs, leases, configuration, kernel evidence")}${card("Clear the log", clear, "kept events: 2,000")}`;
+    return `${card("Filters", filters)}${card("Activity log", (d.events.length ? table(["When", "Severity", "Event"], rows, "Activity log") : `<p>No events match these filters.</p>`) + paging, "findings, alerts, jobs, leases, configuration, kernel evidence")}${card("Clear the log", clear, "kept events: 2,000")}`;
   }
 
   (window.HyperloomPages ||= {}).health = {
