@@ -49,7 +49,13 @@ class Server:
         return f"http://{LOOPBACK}:{self.port}{path}"
 
     def close(self):
+        # On Linux close() alone does not wake a thread blocked in accept(); shutdown() does.
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
         self.sock.close()
+        self.thread.join(5)
 
 
 def fixed(status, body, headers=()):
