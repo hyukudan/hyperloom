@@ -308,7 +308,9 @@ POST up {"recipe_inputs": "055e5fe5...d8cbd"}
 
 Any model with a recipe can be started this way (the portal's plain `up` stays limited to Qwen replica profiles).
 Without `profile`, the recipe's model must be served by exactly one deployment profile (or the snapshot names it);
-the accepted job's `arguments.profile` is that profile, which `cancel {job}` stops. `recipe` is an id or
+the accepted job's `arguments.profile` is that profile. `cancel {job}` works as for a deploy (the job runs
+`up --job <id>`): before the hand-over only its marker, and `up` starts nothing; once `up` owns the profile, the
+cancel stops it; the answer has the same fields. `recipe` is an id or
 `auto` (a file only on the command line). A recipe `up` runs on the portal's own configuration (a `config` naming
 another file is refused). Refusals come back as the job's `error`, with the CLI's text. A pending recipe is
 refused. Some profiles cannot run a recipe yet; the refusal says why (for example, a MiniMax pair binds loopback and

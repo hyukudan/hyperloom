@@ -38,6 +38,7 @@ from hyperloom.winproc import no_window
 from hyperloom.web import recipes as recipe_web
 
 
+MEASUREMENT = re.compile(r"(?i)[a-z0-9_]*(?:tokens|per_token)[a-z0-9_]*")   # token counts, never a secret name
 IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")      # profile and machine ids (orchestrate._identifier)
 SCREENS = frozenset(("devices", "topology", "models", "profiles", "stats", "logs", "settings"))
 MUTATIONS = frozenset(("up", "down", "install", "hosts/pin", "doctor", "keys/rotate", "cancel")) | recipe_web.JOBS
@@ -96,8 +97,9 @@ def redact(value, text=True):
                 {"storage": "DPAPI", "values": "never shown"},
                 {"storage": "0600 files", "values": "never shown"})
             sensitive = re.search(r"password|secret|token|authorization|api[_-]?key|private[_-]?key", key, re.I)
-            # Numbers are measurements, never secrets (a recipe's prompt_tokens_min, max_copies_per_token).
-            measurement = item is None or isinstance(item, (bool, int, float))
+            # Token counts are measurements (a recipe's prompt_tokens_min, max_copies_per_token), not secrets.
+            measurement = (item is None or isinstance(item, (int, float)) and not isinstance(item, bool)) and \
+                MEASUREMENT.fullmatch(key)
             result[key] = "[redacted]" if sensitive and not metadata and not measurement and not key.endswith(
                 ("_file", "_path", "_tokens")) else redact(item, text)
         return result
@@ -1100,6 +1102,8 @@ class API:
                           ("approval_end", "--approval-end")):
             if key in args:
                 argv += [flag, str(args[key])]
+        if args.get("_job"):
+            argv += ["--job", args["_job"]]            # set by mutate: the job's cancel marker
         return argv
 
     def _cli_argv(self, action, args):
@@ -1165,7 +1169,7 @@ class API:
             for switch in switches:
                 try:
                     cancels.append(self._cancel_deploy(switch, stop_target=False))
-                except APIError as exc:         # the stop itself still runs
+                except (APIError, OSError, ValueError) as exc:         # the stop itself still runs
                     cancels.append({"cancelled": switch["job"], "error": str(exc)})
             result = self._execute_action(action, args)
             return dict(result, cancelled_switches=cancels) if cancels and isinstance(result, dict) else result
@@ -1214,7 +1218,8 @@ class API:
                     raise APIError("only an up or a recipes/deploy job can be cancelled; use down with a profile")
                 if job["state"] != "running":
                     raise APIError(f"job {job['job']} has already {job['state']}: use down with a profile", 409)
-                if job["action"] == "recipes/deploy":
+                if job["action"] == "recipes/deploy" or job["arguments"].get("recipe") or \
+                        job["arguments"].get("recipe_inputs"):
                     return self._cancel_deploy(job)
                 profile = job["arguments"].get("profile")
                 if not profile:
@@ -1274,8 +1279,12 @@ class API:
         from hyperloom.recipes import service
         with service.configured(self.config_path):
             marker = service.cancel_marker(job["job"])
-            marker.parent.mkdir(parents=True, exist_ok=True)
-            marker.touch()
+            try:
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.touch()
+            except OSError as exc:
+                raise APIError(f"the cancel marker could not be written ({exc}): nothing was cancelled; stop the "
+                               "profile with down", 500) from exc
             try:
                 progress = service.read_progress(job["job"]) or {"phase": "not started", "profile": None,
                                                                  "stopped": [], "stopping": None}
@@ -1285,7 +1294,7 @@ class API:
                 raise APIError(f"{exc}. The cancel marker is written: the deploy stops before its next step and "
                                f"starts nothing after it; if its launch had begun, stop that profile with down", 500)
         down = None
-        if stop_target and progress.get("phase") in ("launching", "done") and progress.get("profile"):
+        if stop_target and service.launch_began(progress) and progress.get("profile"):
             down = self.orchestrate.down(progress["profile"])
         return {"cancelled": job["job"], "phase": progress.get("phase"), "profile": progress.get("profile"),
                 "stopped_by_deploy": progress.get("stopped") or [], "stopping": progress.get("stopping"),
@@ -1317,8 +1326,8 @@ class API:
                 if self._jobs[old]["state"] != "running":
                     del self._jobs[old]
             response = dict(job)
-        if action == "recipes/deploy":
-            arguments = dict(arguments, _job=jid)    # the deploy's cancel marker is named by its job
+        if action == "recipes/deploy" or (action == "up" and (arguments.get("recipe") or arguments.get("recipe_inputs"))):
+            arguments = dict(arguments, _job=jid)    # the launch's cancel marker is named by its job
         def run():
             try:
                 result = self._execute(action, arguments)

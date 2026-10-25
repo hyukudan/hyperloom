@@ -258,6 +258,12 @@ class ContractTests(unittest.TestCase):
         status, document = self.portal.request("GET", "recipes/" + QWEN)
         when = next(r["when"] for r in document["result"]["structure"]["routes"] if r["id"] == "prefill_rtx")
         self.assertEqual(when["prompt_tokens_min"], 1024)                   # a measurement is not a secret
+        from hyperloom.web.api import redact
+        self.assertEqual(redact({"password": 123456, "api_key": 7, "token": 5, "secret": None, "prompt_tokens_min": 1,
+                                 "prompt_tokens_max": None, "max_copies_per_token": 2}),
+                         {"password": "[redacted]", "api_key": "[redacted]", "token": "[redacted]",
+                          "secret": "[redacted]", "prompt_tokens_min": 1, "prompt_tokens_max": None,
+                          "max_copies_per_token": 2})
         self.assertSameAsCli(document)
         with mock.patch.object(recipe_web, "COMMAND", [sys.executable, "-c", (
                 "import sys; sys.stderr.write('hyperloom: refused: Authorization: Bearer abc.def\\n'); sys.exit(1)")]):
@@ -494,7 +500,13 @@ class JobTests(unittest.TestCase):
         for body, profile in (({"recipe": QWEN}, "qwen-replicas"), ({"recipe_inputs": digest}, "ds41-rtx")):
             with self.subTest(body=body):
                 inside, release = threading.Event(), threading.Event()
-                self.orch.up.side_effect = lambda *a, **kw: (inside.set(), release.wait(30), {"state": "running"})[2]
+
+                def launching(*a, **kw):
+                    self.assertFalse(kw["cancelled"]())              # up owns the profile: the hand-over passed
+                    inside.set()
+                    release.wait(30)
+                    return {"state": "running"}
+                self.orch.up.side_effect = launching
                 self.orch.down.reset_mock()
                 with mock.patch.object(commands, "live_source", return_value=self.source):
                     job = self.api.mutate("up", body)
@@ -506,7 +518,31 @@ class JobTests(unittest.TestCase):
                         release.set()
                     self.wait(job)
                 self.assertEqual(cancelled["state"], "succeeded", cancelled["error"])
+                self.assertEqual(cancelled["result"]["phase"], "launching")
                 self.orch.down.assert_called_once_with(profile)
+
+    def test_cancel_an_up_with_a_recipe_before_its_hand_over(self):
+        # Cancelled while it prepares (before up owns the profile): only the marker; up then starts nothing.
+        cancelled, proceed = threading.Event(), threading.Event()
+        answers = []
+
+        def preparing(*a, **kw):
+            proceed.wait(30)                                     # the cancel lands before the hand-over check
+            if kw["cancelled"]():
+                raise orchestrate.OrchestrationError("profile stop requested")
+            return {"state": "running"}
+        self.orch.up.side_effect = preparing
+        with mock.patch.object(commands, "live_source", return_value=self.source):
+            job = self.api.mutate("up", {"recipe": QWEN})
+            answers.append(self.wait(self.api.mutate("cancel", {"job": job["job"]})))
+            proceed.set()
+            finished = self.wait(job)
+        self.assertEqual(answers[0]["state"], "succeeded", answers[0]["error"])
+        self.assertIn(answers[0]["result"]["phase"], ("not started", "checks"))
+        self.assertIsNone(answers[0]["result"]["down"])
+        self.assertIn("nothing was started", answers[0]["result"]["summary"])
+        self.assertEqual(finished["state"], "failed")
+        self.orch.down.assert_not_called()
         with self.assertRaises(APIError):
             self.api.mutate("up", {"recipe": DS})                       # two profiles serve it: name one
 
@@ -718,8 +754,8 @@ class DeployCancelTests(unittest.TestCase):
         self.assertEqual((answer["phase"], answer["profile"], answer["down"]), ("launching", "ds41-rtx",
                                                                                  {"state": "stopped"}))
         self.assertIn("ds41-rtx: stopped; this deploy had stopped qwen-replicas (stopped)", answer["summary"])
-        self.assertIn("deploy cancelled after the launch began: ds41-rtx was stopped; this deploy had stopped "
-                      "qwen-replicas", finished["error"])
+        self.assertIn("deploy cancelled after the launch began: the cancel stops ds41-rtx (its answer says how); this "
+                      "deploy had stopped qwen-replicas (stopped)", finished["error"])
 
     def test_after_the_deploy_finished(self):
         finished = self.deploy([])
@@ -735,7 +771,7 @@ class DeployCancelTests(unittest.TestCase):
     def test_unreadable_progress_is_never_nothing_to_undo(self):
         # The launch has begun ("launching"); the cancel cannot read the progress: it fails, saying so, and does not
         # claim the deploy had not started.
-        real = Path.read_text
+        real = Path.read_bytes
 
         def unreadable(path, *a, **kw):
             if path.parent.name == "deploy-cancel":
@@ -745,7 +781,7 @@ class DeployCancelTests(unittest.TestCase):
 
         def up(*a, **kw):
             self.assertFalse(kw["cancelled"]())
-            with mock.patch.object(Path, "read_text", unreadable), mock.patch("time.sleep"):
+            with mock.patch.object(Path, "read_bytes", unreadable), mock.patch("time.sleep"):
                 try:
                     self.cancel()
                 except APIError as exc:
@@ -761,9 +797,10 @@ class DeployCancelTests(unittest.TestCase):
         self.assertEqual(self.downs(), [])
         with service.configured(self.env.config):
             service.deploy_progress("ab12cd34").parent.mkdir(parents=True, exist_ok=True)
-            service.deploy_progress("ab12cd34").write_text("{", encoding="utf-8")
-            with self.assertRaisesRegex(RecipeError, "not valid JSON"):
-                service.read_progress("ab12cd34")
+            for data in (b"{", b"\xff\xfe{}"):
+                service.deploy_progress("ab12cd34").write_bytes(data)
+                with self.assertRaisesRegex(RecipeError, "not valid JSON"):
+                    service.read_progress("ab12cd34")
             self.assertIsNone(service.read_progress("cd34ab12"))
 
     def test_outcomes_are_reported_as_they_are(self):
@@ -782,8 +819,12 @@ class DeployCancelTests(unittest.TestCase):
         self.assertIn("ds41-rtx: stop requested; this deploy had stopped mm (stop requested), qwen-replicas "
                       "(stopped)", answer["summary"])
         self.assertIn("mm (stop requested)", finished["error"])
-        failed = service.cancel_summary({"phase": "failed", "profile": "ds41-rtx", "launched": True, "stopped": []})
-        self.assertIn("its launch of ds41-rtx had begun and failed", failed)
+        # A launch that began and then failed may keep its ownership (its cleanup can fail): the cancel stops it.
+        failed = {"phase": "failed", "profile": "ds41-rtx", "launched": True, "stopped": []}
+        self.assertTrue(service.launch_began(failed))
+        self.assertIn("had begun (the launch had then failed): ds41-rtx: stopped",
+                      service.cancel_summary(failed, down={"state": "stopped"}))
+        self.assertFalse(service.launch_began(dict(failed, launched=False)))
 
     def test_a_finished_job_is_refused_over_http(self):
         finished = self.deploy([])
@@ -804,6 +845,35 @@ class DeployCancelTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
         self.assertEqual(self.downs(), [])
+
+    def test_a_stop_runs_even_when_the_cancel_files_fail(self):
+        def stop_with(failure):
+            def hook():
+                with failure():
+                    self.cancel("down", profile="mm")
+            return hook
+        real_touch = Path.touch
+
+        def no_marker():
+            def touch(path, *a, **kw):
+                if path.parent.name == "deploy-cancel":
+                    raise PermissionError(13, "denied")
+                return real_touch(path, *a, **kw)
+            return mock.patch.object(Path, "touch", touch)
+
+        def garbled_progress():
+            jid = next(j["job"] for j in self.api._jobs.values()
+                       if j["action"] == "recipes/deploy" and j["state"] == "running")
+            with service.configured(self.env.config):
+                service.deploy_progress(jid).write_bytes(b"\xff\xfe")
+            return mock.patch("time.sleep")
+        for failure, expected in ((no_marker, "could not be written"), (garbled_progress, "not valid JSON")):
+            with self.subTest(failure=failure.__name__):
+                self.orch.down.reset_mock()
+                self.answers.clear()
+                self.deploy(["qwen-replicas"], prepare=stop_with(failure))
+                self.assertEqual(self.downs()[0], "mm")                  # the stop asked for ran
+                self.assertIn(expected, self.answers[0]["cancelled_switches"][0]["error"])
 
     def test_a_stop_of_another_profile_only_cancels(self):
         # Before the hand-over: the switch stops at its next step; only the named profile is stopped.

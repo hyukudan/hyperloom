@@ -546,9 +546,9 @@ def cancel_marker(job):
 
 
 def deploy_progress(job):
-    """The deploy's progress file, next to its cancel marker: its phase (checks, stopping, launching once `up` owns
-    the target profile, done, failed), the target profile and the profiles it has stopped. A cancel reads it after
-    writing the marker, to undo only what the deploy did."""
+    """The progress file of a portal launch job (a deploy, or an up with a recipe), next to its cancel marker: its
+    phase (checks, stopping, launching once `up` owns the target profile, done, failed), the target profile and the
+    profiles it has stopped. A cancel reads it after writing the marker, to undo only what the job did."""
     return cancel_marker(job).with_name(f"{job}.json")
 
 
@@ -559,14 +559,14 @@ def read_progress(job):
     """The progress a deploy recorded, or None when it has recorded none yet. A file that exists but cannot be read
     or parsed raises (RecipeError): a cancel must not take it for "nothing recorded"."""
     try:
-        text = retry_sharing(lambda: deploy_progress(job).read_text(encoding="utf-8"))
+        data = retry_sharing(lambda: deploy_progress(job).read_bytes())
     except FileNotFoundError:
         return None
     except OSError as exc:
         raise RecipeError(f"deploy {job}: its progress cannot be read ({exc})") from exc
     try:
-        value = json.loads(text)
-    except ValueError as exc:
+        value = json.loads(data.decode("utf-8"))
+    except ValueError as exc:                                # UnicodeDecodeError included
         raise RecipeError(f"deploy {job}: its progress is not valid JSON") from exc
     if not isinstance(value, dict) or not isinstance(value.get("phase"), str):
         raise RecipeError(f"deploy {job}: its progress has no phase")
@@ -605,28 +605,36 @@ def stop_outcome(result):
 def _had(progress):
     stopped = progress.get("stopped") or []
     states = progress.get("stop_states") or {}
+    what = progress.get("what") or "deploy"
     if stopped:
-        had = ("this deploy had stopped " + ", ".join(f"{p} ({states.get(p, 'stopped')})" for p in stopped)
+        had = (f"this {what} had stopped " + ", ".join(f"{p} ({states.get(p, 'stopped')})" for p in stopped)
                + ": they stay stopped (run up to start them again)")
     else:
-        had = "this deploy had stopped nothing"
+        had = f"this {what} had stopped nothing"
     if progress.get("stopping"):
         had += f"; it was stopping {progress['stopping']}"
     return had
 
 
+def launch_began(progress):
+    """True once the job's `up` owned the target and went past the hand-over (it may have failed since: a failed
+    launch can keep its ownership when its cleanup fails, so its profile is the cancel's to stop)."""
+    progress = progress or {}
+    return progress.get("phase") in ("launching", "done") or (progress.get("phase") == "failed"
+                                                              and bool(progress.get("launched")))
+
+
 def cancel_summary(progress, *, down=None):
-    """One sentence: what a cancelled deploy had changed and what the cancel undid."""
+    """One sentence: what a cancelled job had changed and what the cancel undid."""
     progress = progress or {}
     had, profile = _had(progress), progress.get("profile")
+    ended = " (the launch had then failed)" if progress.get("phase") == "failed" else ""
     if down is not None:
-        return f"the launch of {profile} had begun: {profile}: {stop_outcome(down)}; {had}"
-    if progress.get("phase") in ("launching", "done"):
-        return f"the launch of {profile} had begun and was not stopped by this request; {had}"
+        return f"the launch of {profile} had begun{ended}: {profile}: {stop_outcome(down)}; {had}"
+    if launch_began(progress):
+        return f"the launch of {profile} had begun{ended} and was not stopped by this request; {had}"
     if progress.get("phase") == "failed":
-        launched = (f"its launch of {profile} had begun and failed (a failed launch stops what it started)"
-                    if progress.get("launched") else "nothing was started")
-        return f"the deploy had already ended with an error: {launched}; {had}"
+        return f"the {progress.get('what') or 'deploy'} had already ended with an error before its launch; {had}"
     return f"cancelled before the launch: nothing was started; {had}"
 
 
@@ -933,14 +941,16 @@ def _table(table):
 
 
 class _Progress:
-    """A deploy's progress (``deploy_progress``) and its cancel marker. Order matters: the deploy records "launching"
-    BEFORE it looks at the marker at the hand-over, and a cancel writes the marker BEFORE it reads the progress, so
-    either the launch sees the marker and starts nothing, or the cancel sees "launching" and stops the profile."""
+    """A launch job's progress (``deploy_progress``) and its cancel marker. Order matters: the job records
+    "launching" BEFORE it looks at the marker at the hand-over, and a cancel writes the marker BEFORE it reads the
+    progress, so either the launch sees the marker and starts nothing, or the cancel sees "launching" and stops the
+    profile."""
 
-    def __init__(self, job):
+    def __init__(self, job, what="deploy"):
+        self.what = what
         self.marker = cancel_marker(job) if job else None
         self.path = deploy_progress(job) if job else None
-        self.state = {"phase": "checks", "profile": None, "stopped": [], "stopping": None}
+        self.state = {"phase": "checks", "what": what, "profile": None, "stopped": [], "stopping": None}
         self.handoff_refused = False
         if self.path is not None:
             _prune_progress(self.path.parent)
@@ -961,13 +971,34 @@ class _Progress:
 
     def check(self):
         if self.cancelled():
-            raise RecipeError("deploy cancelled: " + cancel_summary(self.state))
+            raise RecipeError(f"{self.what} cancelled: " + cancel_summary(self.state))
 
     def handoff(self):
         """up calls this once, right after it owns the target profile and before it starts anything."""
         self.record(phase="launching")
         self.handoff_refused = self.cancelled()
         return self.handoff_refused
+
+
+@contextmanager
+def launch_progress(job, what, profile=None):
+    """The progress and cancel marker of a portal launch job around its work (no job: nothing is recorded). Checks
+    the marker first; records "failed" (with whether the launch had begun) or "done" at the end, best effort."""
+    progress = _Progress(job, what)
+    try:
+        progress.record(profile=profile)
+        progress.check()
+        yield progress
+    except BaseException:
+        launched = progress.state["phase"] == "launching" and not progress.handoff_refused
+        progress.record_best_effort(phase="failed", stopping=None, launched=launched)
+        raise
+    else:
+        # Best effort: "launching", already recorded, makes a later cancel stop the target all the same.
+        progress.record_best_effort(phase="done", stopping=None)
+    finally:
+        if progress.marker is not None:
+            progress.marker.unlink(missing_ok=True)
 
 
 def deploy(digest, stop=(), *, source=None, orchestrate=None, approval=None, job=None):
@@ -982,22 +1013,8 @@ def deploy(digest, stop=(), *, source=None, orchestrate=None, approval=None, job
     so a cancel undoes only what the deploy did (a cancelled deploy's error says what it had stopped)."""
     from .. import orchestrate as default_orchestrate
     orchestrate = orchestrate or default_orchestrate
-    progress = _Progress(job)
-    try:
-        progress.record()
-        progress.check()
-        result = _deploy(digest, stop, source, orchestrate, approval, progress)
-    except BaseException:
-        launched = progress.state["phase"] == "launching" and not progress.handoff_refused
-        progress.record_best_effort(phase="failed", stopping=None, launched=launched)
-        raise
-    else:
-        # Best effort: "launching", already recorded, makes a later cancel stop the target all the same.
-        progress.record_best_effort(phase="done", stopping=None)
-        return result
-    finally:
-        if progress.marker is not None:
-            progress.marker.unlink(missing_ok=True)
+    with launch_progress(job, "deploy") as progress:
+        return _deploy(digest, stop, source, orchestrate, approval, progress)
 
 
 def _deploy(digest, stop, source, orchestrate, approval, progress):
@@ -1046,7 +1063,7 @@ def _deploy_pinned(digest, stop, source, orchestrate, approval, progress):
         if progress.handoff_refused or progress.state["phase"] != "launching":
             raise RecipeError("deploy cancelled at the launch hand-over: nothing was started; "
                               + _had(progress.state)) from exc
-        raise RecipeError(f"deploy cancelled after the launch began: {profile} was stopped; "
+        raise RecipeError(f"deploy cancelled after the launch began: the cancel stops {profile} (its answer says how); "
                           + _had(progress.state)) from exc
     return {"inputs": digest, "profile": profile, "stopped": stopped, "up": result}
 
