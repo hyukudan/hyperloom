@@ -219,7 +219,7 @@ def parse_sessions(obj):
 
 
 def histograms(samples, prefix):
-    """Histogram families of parsed Prometheus samples whose name starts with ``prefix``:
+    """Histogram families of parsed metrics-text samples whose name starts with ``prefix``:
     {family: [{labels, buckets: [[le, cumulative count]], sum, count}]}, cumulative since the component started.
     A label set whose buckets decrease, lack +Inf or hold non-finite counts is dropped. Bounds: 64 buckets per label
     set, 8 labels of at most 128 characters (longer label sets are dropped)."""

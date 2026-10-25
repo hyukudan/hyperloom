@@ -292,11 +292,23 @@ class EngineCollectorTests(unittest.TestCase):
         snapshot = env.store.get("observe/engine", "qwen/halo-1")
         self.assertIn("serves no status", snapshot["why"]["status"])
         self.assertEqual(snapshot["instance"], "5a5a5a5a5a5a5a5a")            # identity from the metrics
-        env.http.routes.pop(f"http://{NODE1}:18501/health")
+        for path in ("/health", "/api/status", "/metrics"):
+            env.http.routes.pop(f"http://{NODE1}:18501{path}")
         errors = env.collect()
         self.assertEqual(self.series("engine_up")[0]["points"][-1][6], 0)
         self.assertEqual(env.store.get("observe/engine", "qwen/halo-1")["state"], "unreachable")
         self.assertTrue(errors)                                                # every engine source failed
+        snapshot = env.store.get("observe/engine", "qwen/halo-1")
+        self.assertIn("metrics", snapshot["failing_since"])
+        # A failing health check is advisory: status and metrics still get their reads.
+        env.engine(NODE1, 18501)
+        env.http.routes[f"http://{NODE1}:18501/health"] = OSError("HTTP 500")
+        env.collect()
+        snapshot = env.store.get("observe/engine", "qwen/halo-1")
+        self.assertIsNotNone(snapshot["status"])
+        self.assertEqual(self.series("engine_up")[0]["points"][-1][6], 1)
+        self.assertIn("health", snapshot["failing_since"])
+        self.assertNotIn("metrics", snapshot["failing_since"])
 
     def test_loopback_engines_come_from_the_fleet_sampler(self):
         env = self.env

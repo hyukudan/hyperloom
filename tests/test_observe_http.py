@@ -124,7 +124,7 @@ class HttpTests(unittest.TestCase):
             server.close()
 
     def test_only_plain_http_urls(self):
-        for url in ("https://example.invalid:1/x", "http://nohostport/x", "file:///x"):
+        for url in (f"https://{LOOPBACK}:1/x", f"http://{LOOPBACK}/x", "file:///x"):
             with self.assertRaises(ValueError):
                 observe.http_get(url)
 

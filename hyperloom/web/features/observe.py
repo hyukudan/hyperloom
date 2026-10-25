@@ -612,17 +612,17 @@ def _read_direct(replica, now, deadline, clock=time.time):
         reading["why"]["health"] = "not read: " + str(exc)
         return reading
     except (OSError, ValueError) as exc:
-        reading["health"] = False
-        reading["why"]["health"] = "engine unreachable: " + str(exc)
-        return reading
+        reading["health"] = False                # advisory: status and metrics still get their own bounded reads
+        reading["why"]["health"] = "health check failed: " + str(exc)
     for part, path, text in (("status", "/api/status?detail=1", False), ("metrics", "/metrics", True)):
         try:
             reading["status" if part == "status" else "metrics_text"] = _http(base + path, text=text, deadline=deadline)
-            reading["observed_at"] = clock()
+            reading[part + "_at"] = clock()
         except Unavailable as exc:
             reading["why"][part] = f"engine serves no {part} ({exc})"
         except (OSError, ValueError, TimeoutError) as exc:
             reading["why"][part] = f"engine {part} unreadable: {exc}"
+    reading["observed_at"] = reading.get("status_at") or reading.get("metrics_at") or now
     return reading
 
 
@@ -639,7 +639,7 @@ def _read_via_fleet(store, profile, replica, now, stale=STALE_S):
         return reading
     mismatch = [name for name, want in (("machine", replica["node"]), ("profile", profile), ("port", replica["port"]))
                 if found.get(name) != want]
-    if found.get("replica") is not None and found["replica"] != replica["id"]:
+    if found.get("replica") != replica["id"]:
         mismatch.append("replica")
     if mismatch or type(found.get("ts")) not in (int, float):
         reading["why"]["status"] = "node sample does not match the launch record (" + ", ".join(mismatch or ["ts"]) + ")"
@@ -774,6 +774,7 @@ def _engine_sample(store, launch, replica, reading, now):
     snapshot = {"profile": profile, "replica": rid, "machine": machine, "family": family, "via": reading["via"],
                 "ts": now, "observed_at": observed_at, "status": None, "metrics": None, "observed": None, "extra": None,
                 "why": dict(reading["why"]), "last_ok": dict(previous.get("last_ok") or {}),
+                "failing_since": dict(previous.get("failing_since") or {}),
                 "counter_resets": list(previous.get("counter_resets") or [])[-20:]}
     labels = {"profile": profile, "replica": rid, "machine": machine}
     # A fleet document is one node sample: it is accounted once, at its own time, however often it is read.
@@ -792,6 +793,13 @@ def _engine_sample(store, launch, replica, reading, now):
         snapshot["ts"] = now
         store.put("observe/engine", key, snapshot)
         return []
+    for part, ok in (("health", reading["health"]), ("status", reading["status"] is not None),
+                     ("metrics", reading["metrics_text"] is not None)):
+        if ok:
+            snapshot["last_ok"][part] = observed_at
+            snapshot["failing_since"].pop(part, None)
+        elif part in reading["why"] and "not read" not in reading["why"][part]:
+            snapshot["failing_since"].setdefault(part, now)
     parsed_status = observed = metrics = extra = None
     if reading["status"] is not None:
         try:
@@ -841,15 +849,16 @@ def _engine_sample(store, launch, replica, reading, now):
                   "imported_tokens": (observed.get("totals") or {}).get("imported_tokens")}
     else:
         values = {"completed": metrics.completed if metrics else None}
+    counter_at = reading.get("metrics_at", observed_at) if source == "metrics" else observed_at
     if instance is not None and source is not None:
         for field, name in COUNTERS.items():
             value = values.get(field)
             if value is None:
                 continue
-            _, info = store.counter_delta(f"observe/{key}/{field}", instance, value, observed_at, max_gap=6 * INTERVAL,
+            _, info = store.counter_delta(f"observe/{key}/{field}", instance, value, counter_at, max_gap=6 * INTERVAL,
                                           apply=lambda delta, info, name=name: {"points": [(name, series_labels, delta, "delta")]})
             if info.get("unobserved_s"):
-                snapshot["counter_resets"] = (snapshot["counter_resets"] + [{"ts": observed_at, "counter": field,
+                snapshot["counter_resets"] = (snapshot["counter_resets"] + [{"ts": counter_at, "counter": field,
                                               "unobserved_s": info["unobserved_s"], "instance": instance}])[-20:]
             if info.get("uncertain"):
                 snapshot["why"][field] = "increase spread over a gap longer than 30 s (placement in time approximate)"
