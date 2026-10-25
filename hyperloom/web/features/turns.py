@@ -90,18 +90,24 @@ def fetch(api, machines=None, clock=time.time, skip_busy=False):
             if _running.get((key, machine.id)):
                 continue            # the previous call to this machine is still running: coalesced
             _running[(key, machine.id)] = True
-        if skip_busy:
-            ok, enter, release = ops.sampler_gate(api, machine)
-        else:
-            ok, enter, release = True, (lambda: None), (lambda: None)
-        if not ok:                          # another node call holds this machine: its previous reply stays
+        release = None
+        try:
+            if skip_busy:
+                ok, enter, release = ops.sampler_gate(api, machine)
+            else:
+                ok, enter, release = True, (lambda: None), (lambda: None)
+            if not ok:                      # another node call holds this machine: its previous reply stays
+                raise ops._Skip
+            thread = threading.Thread(target=one, args=(machine, enter, release), name="hyperloom-turns-" + machine.id,
+                                      daemon=True)
+            thread.start()
+        except Exception:                   # held gate, or the gate or the worker could not be set up: skipped
+            if release is not None:
+                release()
             with _state_lock:
                 _running.pop((key, machine.id), None)
             continue
-        thread = threading.Thread(target=one, args=(machine, enter, release), name="hyperloom-turns-" + machine.id,
-                                  daemon=True)
         threads.append(thread)
-        thread.start()
     for thread in threads:
         thread.join(15)
     return results

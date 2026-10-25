@@ -120,6 +120,10 @@ def machine_of(api, mid, cluster=None):
     return cluster.machines[mid]
 
 
+class _Skip(Exception):
+    """A collector leaves this machine out of the round."""
+
+
 def sampler_gate(api, machine):
     """For a collector: the shared node gate taken now or not at all (a machine another call holds is skipped this
     round). Returns (ok, enter, release): the worker thread calls enter() before its node calls and release() after."""
@@ -451,15 +455,21 @@ def sample_nodes(api, now):
             if key in _checks_busy:
                 continue
             _checks_busy.add(key)
-        ok, enter, release = sampler_gate(api, machine)
-        if not ok:                          # another node call holds this machine: checked next round
+        release = None
+        try:
+            ok, enter, release = sampler_gate(api, machine)
+            if not ok:                      # another node call holds this machine: checked next round
+                raise _Skip
+            thread = threading.Thread(target=one, args=(machine, key, enter, release),
+                                      name="hyperloom-node-check-" + machine.id, daemon=True)
+            thread.start()
+        except Exception:                   # held gate, or the gate or the worker could not be set up: skipped
+            if release is not None:
+                release()
             with _checks_lock:
                 _checks_busy.discard(key)
             continue
-        thread = threading.Thread(target=one, args=(machine, key, enter, release),
-                                  name="hyperloom-node-check-" + machine.id, daemon=True)
         threads.append(thread)
-        thread.start()
     for thread in threads:
         thread.join(30)
     return []

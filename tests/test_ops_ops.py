@@ -99,6 +99,9 @@ class NodeToolTests(Base, unittest.TestCase):
         def record(api, machine, verb, payload=None):
             calls.append((machine.id, verb))
             return {"schema": "hyperloom/node-v1", "checks": {"tool": {"value": "x"}}} if verb != "host" else {}
+        lab = mock.patch.object(turns, "eligible", lambda c: ([m for m in c.machines.values() if m.access == "ssh"], {}))
+        lab.start()
+        self.addCleanup(lab.stop)
         release = nodegate.try_hold(self.api.config_path, "halo-1")
         self.assertIsNotNone(release)
         try:
@@ -111,10 +114,40 @@ class NodeToolTests(Base, unittest.TestCase):
             release()
         self.assertNotIn("halo-1", {mid for mid, _ in calls})
         self.assertIn(("halo-2", "version"), calls)
+        self.assertIn(("halo-2", "turns"), calls)
         self.assertFalse(ops._checks_busy)
         with mock.patch.object(ops, "_node_call", record):
             ops.sample_nodes(self.api, 2.0)
         self.assertIn(("halo-1", "version"), calls)
+
+    def test_collectors_release_the_gate_when_a_worker_cannot_start_or_the_gate_fails(self):
+        from hyperloom import nodegate
+        from hyperloom.web.features import turns
+
+        def refuse(self, *a, **k):
+            raise RuntimeError("can't start new thread")
+        lab = mock.patch.object(turns, "eligible", lambda c: ([m for m in c.machines.values() if m.access == "ssh"], {}))
+        lab.start()
+        self.addCleanup(lab.stop)
+        self.assertTrue(turns.eligible(self.api.cluster())[0])
+        with mock.patch.object(threading.Thread, "start", refuse):
+            ops.sample_nodes(self.api, 1.0)
+            turns.fetch(self.api, skip_busy=True)
+            turns.fetch(self.api)
+        self.assertFalse(ops._checks_busy)
+        self.assertFalse([k for k in turns._running if k[0] == id(self.api)])
+        for mid in ("halo-1", "halo-2"):
+            release = nodegate.try_hold(self.api.config_path, mid)
+            self.assertIsNotNone(release, mid + " gate left held")
+            release()
+
+        def broken(api, machine):
+            raise OSError("lock directory unavailable")
+        with mock.patch.object(ops, "sampler_gate", broken):
+            ops.sample_nodes(self.api, 2.0)
+            turns.fetch(self.api, skip_busy=True)
+        self.assertFalse(ops._checks_busy)
+        self.assertFalse([k for k in turns._running if k[0] == id(self.api)])
 
     def test_node_checks_never_overlap_and_late_results_are_kept(self):
         gate, started = threading.Event(), threading.Event()
