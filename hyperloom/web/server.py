@@ -188,6 +188,10 @@ class Handler(BaseHTTPRequestHandler):
                     if not candidate.is_symlink():
                         root = root / parts[1]
                         name = parts[2]
+            if name is None and path == "/sw.js" and "sw.js" in manifest(root, "assets"):
+                # The installable shell's worker is served at the root so that its scope is the whole portal.
+                if not (root / "assets" / "sw.js").is_symlink():
+                    root, name = root / "assets", "sw.js"
             if name is None:
                 self._error(404, "not found")
                 return
