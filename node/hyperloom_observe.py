@@ -350,7 +350,8 @@ def diskstats(reader):
         fields = line.split()
         if len(fields) >= 10 and WHOLE_DISK.fullmatch(fields[2]):
             try:
-                rows.append({"device": fields[2], "read_bytes": int(fields[5]) * 512, "write_bytes": int(fields[9]) * 512})
+                rows.append({"device": fields[2], "dev": f"{int(fields[0])}:{int(fields[1])}",
+                             "read_bytes": int(fields[5]) * 512, "write_bytes": int(fields[9]) * 512})
             except ValueError:
                 continue
     return ok(rows[:64]) if rows else unavailable("no whole-disk counters in /proc/diskstats")
@@ -372,7 +373,8 @@ def network(reader):
             continue
         physical = reader.exists(f"/sys/class/net/{name}/device")
         try:
-            rows.append({"iface": name, "rx_bytes": int(fields[0]), "tx_bytes": int(fields[8]), "physical": physical,
+            rows.append({"iface": name, "ifindex": reader.integer(f"/sys/class/net/{name}/ifindex"),
+                         "rx_bytes": int(fields[0]), "tx_bytes": int(fields[8]), "physical": physical,
                          "operstate": reader.value(f"/sys/class/net/{name}/operstate")})
         except ValueError:
             continue

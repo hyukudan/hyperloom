@@ -90,6 +90,7 @@ def build_tree(root):
         "/sys/class/drm/card1/device/vendor": "0x10de\n",
         "/sys/class/net/eno1/address": "02:00:00:00:00:01\n",
         "/sys/class/net/eno1/operstate": "up\n",
+        "/sys/class/net/eno1/ifindex": "2\n",
         "/sys/class/net/eno1/device/uevent": "\n",
         "/sys/class/net/veth9/address": "02:00:00:00:00:09\n",
         "/sys/class/kfd/kfd/proc/4321/vram_51102": "1048576\n",
@@ -163,7 +164,7 @@ class HostVerbTests(unittest.TestCase):
         self.assertEqual(disks[0]["total_bytes"], 1000 * 4096)
         self.assertEqual(disks[0]["used_bytes"], 600 * 4096)
         self.assertEqual(disks[0]["free_bytes"], 300 * 4096)
-        self.assertEqual(checks["diskstats"]["value"], [{"device": "nvme0n1", "read_bytes": 2000 * 512, "write_bytes": 4000 * 512}])
+        self.assertEqual(checks["diskstats"]["value"], [{"device": "nvme0n1", "dev": "259:0", "read_bytes": 2000 * 512, "write_bytes": 4000 * 512}])
         net = {row["iface"]: row for row in checks["net"]["value"]}
         self.assertEqual(set(net), {"eno1", "veth9"})
         self.assertEqual((net["eno1"]["rx_bytes"], net["eno1"]["tx_bytes"], net["eno1"]["physical"]), (5000, 7000, True))

@@ -147,7 +147,7 @@ class DocumentTests(unittest.TestCase):
         self.assertEqual(doc["gpus"][0]["power_sensor"], "PPT")
         self.assertIn("power_limit_w", doc["gpus"][0]["why"])
         self.assertEqual(doc["memory"]["limiting"]["level"], "ok")
-        self.assertEqual(doc["processes"][0]["comm"], "strix-deepseek4")
+        self.assertEqual(doc["processes"][0]["comm"], host("halo-1")["checks"]["gpu_processes"]["value"][0]["comm"])
         self.assertIn("k10temp/Tctl", [t["sensor"] for t in doc["cpu"]["temperatures"]])
         self.assertEqual(doc["events"][0]["message"], "GPU hot")
         self.assertEqual(doc["history"]["node_gpu_busy_percent"], "history/node_gpu_busy_percent?l.machine=halo-1")

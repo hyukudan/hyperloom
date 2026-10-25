@@ -45,7 +45,7 @@ class HostPointsTests(unittest.TestCase):
         self.assertFalse(any(s.startswith("amdgpu") for s in sensors))   # GPU sensors are GPU series only
         self.assertEqual({name for name, *_ in counters}, {"node_disk_read_bytes", "node_disk_write_bytes",
                                                            "node_net_rx_bytes", "node_net_tx_bytes"})
-        self.assertEqual({labels["iface"] for name, labels, _ in counters if name == "node_net_rx_bytes"}, {"eno1", "wlp195s0"})
+        self.assertEqual({labels["iface"] for name, labels, *_ in counters if name == "node_net_rx_bytes"}, {"eno1", "wlp195s0"})
 
     def test_sensor_identity_is_device_qualified_and_never_joins_unstable_ones(self):
         chips = [{"hwmon": "hwmon1", "name": "nvme", "device": "nvme0", "temps": [{"sensor": "Composite", "input": "temp1", "celsius": 50}]},
@@ -283,7 +283,7 @@ class ControlTests(unittest.TestCase):
                 self.rx = 1000
 
             def uptime(self):
-                return 3600.0
+                return 3600.0 + self.now - 1_800_000_000.0      # a running clock since the same boot
 
             def memory(self):
                 return {"MemTotal": 128 * 2 ** 30, "MemAvailable": 64 * 2 ** 30, "CommitTotal": 100 * 2 ** 30,
@@ -308,9 +308,12 @@ class ControlTests(unittest.TestCase):
         gpus, apps = nvidia_csv()
         with mock.patch.object(machines.os, "name", "nt"), \
                 mock.patch.object(machines, "_control_nvidia", lambda: {"status": "ok", "value": machines.parse_nvidia(gpus, apps)}):
-            first = machines.sample_control(self.api, 1_800_000_000.0)
-            second = machines.sample_control(self.api, 1_800_000_002.0)
-            third = machines.sample_control(self.api, 1_800_000_006.0)
+            system.now = 1_800_000_000.0
+            first = machines.sample_control(self.api, system.now)
+            system.now = 1_800_000_002.0
+            second = machines.sample_control(self.api, system.now)
+            system.now = 1_800_000_006.0
+            third = machines.sample_control(self.api, system.now)
         found = series(second)
         self.assertEqual(found[("node_commit_available_bytes", (("machine", "workstation"),))], 60 * 2 ** 30)
         self.assertAlmostEqual(found[("node_cpu_busy_percent", (("machine", "workstation"),))], 50.0)
@@ -384,3 +387,72 @@ class CLITests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SourceIdentityTests(unittest.TestCase):
+    """Counters are never joined across devices, boots or launches, and never committed too often."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.api = FakeAPI(self.dir.name)
+        self.records = {}
+        patcher = mock.patch.object(machines, "launch_records", lambda api: self.records)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def rx(self, now):
+        lines = self.api.telemetry.query("node_net_rx_bytes", now - 100, now + 1, labels={"machine": "halo-1", "iface": "eno1"}, tier="raw")["lines"]
+        return [p[1] for p in lines[0]["points"]] if lines else []
+
+    def test_a_replaced_interface_is_a_new_counter(self):
+        first = host("halo-1")
+        self.api.answers = {"halo-1": first, "halo-2": host("halo-2")}
+        machines.sample_nodes(self.api, 1_800_000_000.0)
+        replaced = bump(first, rx=900)
+        next(r for r in replaced["checks"]["net"]["value"] if r["iface"] == "eno1")["ifindex"] = 9
+        self.api.answers["halo-1"] = replaced
+        machines.sample_nodes(self.api, 1_800_000_005.0)
+        self.assertEqual(self.rx(1_800_000_005.0), [])
+
+    def test_commits_keep_their_spacing_whoever_records(self):
+        store = self.api.telemetry
+        machines.describe(self.api, store)
+        key, rate_key = "fleet/halo-1/x", "halo-1|x"
+        self.assertIsNone(machines.account(store, key, "halo-1", "b/s", 100, 1000.0, rate_key))
+        self.assertIsNone(machines.account(store, key, "halo-1", "b/s", 200, 1001.0, rate_key))     # 1 s later: waits
+        self.assertEqual(machines.account(store, key, "halo-1", "b/s", 600, 1005.0, rate_key), 500)
+        self.assertEqual(machines.rates(store, "halo-1", 1005.0, 60)[rate_key][:2], (100.0, 5.0))
+
+    def test_windows_boot_identity_never_joins_two_boots(self):
+        answer = lambda uptime: {"checks": {"uptime_s": {"status": "ok", "value": uptime}}}
+        one = machines._entry(None, "workstation", "local", answer(100.0), None, 1_800_000_000.0)["instance"]
+        same = machines._entry(None, "workstation", "local", answer(105.0), None, 1_800_000_005.0)["instance"]
+        rebooted = machines._entry(None, "workstation", "local", answer(20.0), None, 1_800_000_010.0)["instance"]
+        self.assertEqual(one, same)
+        self.assertNotEqual(one, rebooted)
+
+    def test_another_launch_never_shows_the_previous_engine(self):
+        self.records = pair_records()
+        key = machines.engine_key("halo-1", "mm", 18441)
+        store = self.api.telemetry
+        machines.describe(self.api, store)
+        store.put(machines.ENGINES, key, {"ts": 1_800_000_000.0, "machine": "halo-1", "profile": "mm", "port": 18441,
+                                          "launch": "old-launch", "status": {"model": "old"}, "instance": "x", "why": {}})
+        rows = machines.engine_rows(store, "halo-1", self.records, "workstation", 1_800_000_001.0)
+        self.assertIsNone(rows[0]["model"])
+        self.assertIsNone(rows[0]["observer"])
+
+    def test_a_failed_process_query_is_unavailable_not_empty(self):
+        gpus, _ = nvidia_csv()
+
+        def run(arguments):
+            if "--query-compute-apps" in arguments[0]:
+                raise RuntimeError("nvidia-smi exited with 6")
+            return gpus
+
+        cards = machines.nvidia_sample(run)["value"]
+        self.assertTrue(all(card["processes"] is None for card in cards))
+        self.assertIn("exited with 6", cards[0]["why"]["processes"])
+        ok = machines.parse_nvidia(gpus, "")
+        self.assertEqual([card["processes"] for card in ok], [[], []])     # a query that found nothing

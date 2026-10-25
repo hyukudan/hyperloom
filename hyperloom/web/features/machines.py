@@ -246,7 +246,9 @@ def sensor_labels(entries):
 
 def host_points(machine, host):
     """(gauges, counters) from one ``host`` answer. gauges: [(name, labels, value[, kind])]; counters:
-    [(name, labels, value)] (raw cumulative byte counters, converted to deltas by the caller)."""
+    [(name, labels, value, source)] (raw cumulative byte counters, converted to deltas by the caller; source names
+    the device behind the label, so a replaced interface or disk is a new counter instance; a counter without a
+    source identity is not accounted)."""
     checks = (host or {}).get("checks") or {}
     gauges, counters = [], []
     base = {"machine": machine}
@@ -298,13 +300,16 @@ def host_points(machine, host):
         add("node_disk_used_bytes", disk.get("used_bytes"), mount=disk.get("mount"))
         add("node_disk_total_bytes", disk.get("total_bytes"), mount=disk.get("mount"))
     for row in _value(checks.get("diskstats")) or []:
+        source = "dev:" + str(row.get("dev")) if row.get("dev") else None
         for field, name in (("read_bytes", "node_disk_read_bytes"), ("write_bytes", "node_disk_write_bytes")):
-            if _finite(row.get(field)):
-                counters.append((name, {**base, "device": row["device"]}, row[field]))
+            if _finite(row.get(field)) and source:
+                counters.append((name, {**base, "device": row["device"]}, row[field], source))
     for row in _value(checks.get("net")) or []:
+        source = ("luid:" + str(row["luid"]) if row.get("luid") is not None else
+                  "ifindex:" + str(row["ifindex"]) if row.get("ifindex") is not None else None)
         for field, name in (("rx_bytes", "node_net_rx_bytes"), ("tx_bytes", "node_net_tx_bytes")):
-            if _finite(row.get(field)):
-                counters.append((name, {**base, "iface": row["iface"]}, row[field]))
+            if _finite(row.get(field)) and source:
+                counters.append((name, {**base, "iface": row["iface"]}, row[field], source))
     return gauges, counters
 
 
@@ -313,6 +318,12 @@ RATES_DDL = ("CREATE TABLE IF NOT EXISTS fleet_rates (key TEXT PRIMARY KEY, mach
 RATE_SQL = ("INSERT INTO fleet_rates(key, machine, instance, ts, rate, window_s) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(key) "
             "DO UPDATE SET machine=excluded.machine, instance=excluded.instance, ts=excluded.ts, rate=excluded.rate, "
             "window_s=excluded.window_s")
+
+
+# A counter sample is committed only when at least this long after the previous committed one (persisted in the
+# baseline, so the portal, the CLI and manual refreshes all respect it): every delta then stands for at least the
+# described interval of its series.
+MIN_SPACING_S = 0.98 * 5.0
 
 
 def counter_key(name, labels):
@@ -326,6 +337,9 @@ def account(store, key, machine, instance, value, ts, rate_key, points=()):
     baseline read here is the one counter_delta replaces. A new baseline (first sample, reset, new instance)
     removes the key's rate. Returns the delta."""
     before = store.get(BASELINE_NAMESPACE, key) or {}
+    if (before.get("instance") == str(instance) and _finite(before.get("ts")) and _finite(before.get("value"))
+            and value >= before["value"] and ts - before["ts"] < MIN_SPACING_S):
+        return None       # too soon after the committed sample: it waits (coverage is never overstated)
     if before.get("instance") != str(instance) or not _finite(before.get("value")) or value < before["value"]:
         # This sample starts a new baseline: the old rate goes first, so an interruption can never leave it readable.
         store.execute("DELETE FROM fleet_rates WHERE key=?", (rate_key,))
@@ -346,9 +360,9 @@ def account(store, key, machine, instance, value, ts, rate_key, points=()):
 def record_counters(store, counters, instance, ts):
     """Byte counters -> deltas through the store's persisted baselines (one transaction each; C3)."""
     recorded = 0
-    for name, labels, value in counters:
+    for name, labels, value, source in counters:
         key = "fleet/" + labels["machine"] + "/" + counter_key(name, labels)
-        delta = account(store, key, labels["machine"], instance, value, ts,
+        delta = account(store, key, labels["machine"], f"{instance}/{source}", value, ts,
                         labels["machine"] + "|" + counter_key(name, labels), points=[(name, labels)])
         recorded += delta is not None
     return recorded
@@ -529,7 +543,9 @@ def _entry(store, machine_id, access, answer, error, now, *, engines=()):
     instance = _value(checks.get("boot_id"))
     if instance is None:
         uptime = _value(checks.get("uptime_s"))
-        instance = f"boot-{int((now - uptime) // 60)}" if _finite(uptime) else None
+        # No boot id (Windows): the boot time to 10 s. Two boots never fall in one 10 s step (a restart takes
+        # longer); jitter across a step boundary only starts a new baseline (an unobserved interval).
+        instance = f"boot-{int(round((now - uptime) / 10.0))}" if _finite(uptime) else None
     gauges, counters = host_points(machine_id, answer)
     result["gauges"] = [("node_up", {"machine": machine_id}, 1), *gauges]
     result["counters"] = counters
@@ -620,6 +636,9 @@ def persist(api, store, round_, *, counters_due=True):
                 if counters_due and result["counters"] and result.get("instance"):
                     record_counters(store, result["counters"], result["instance"], now)
                 for key, row in result["engines"]:
+                    if (store.get(ENGINES, key) or {}).get("launch") != row.get("launch"):
+                        # Another launch on this machine, profile and port: the old rate goes first.
+                        store.execute("DELETE FROM fleet_rates WHERE key=?", ("engine|" + key,))
                     if row.get("instance") and _finite(row.get("generated_tokens")):
                         account(store, "fleet/engine/" + key, result["machine"], row["instance"],
                                 row["generated_tokens"], now, "engine|" + key)
@@ -682,7 +701,7 @@ def _number(text):
     return value if math.isfinite(value) else None
 
 
-def parse_nvidia(gpus_csv, apps_csv=""):
+def parse_nvidia(gpus_csv, apps_csv="", apps_why=None):
     cards = []
     for row in csv.reader(io.StringIO(gpus_csv)):
         if len(row) != len(NVIDIA_FIELDS):
@@ -705,8 +724,10 @@ def parse_nvidia(gpus_csv, apps_csv=""):
             except ValueError:
                 mask = None
         card["throttle"], card["throttle_reasons"] = throttle_state(mask)
-        card["processes"] = []
+        card["processes"] = [] if apps_csv is not None else None
         card["why"] = {key: "not reported by nvidia-smi" for key, value in card.items() if value is None}
+        if card["processes"] is None:
+            card["why"]["processes"] = "nvidia-smi process query failed: " + str(apps_why or "unknown error")[:200]
         cards.append(card)
     by_uuid = {card["uuid"]: card for card in cards}
     for row in csv.reader(io.StringIO(apps_csv or "")):
@@ -714,7 +735,7 @@ def parse_nvidia(gpus_csv, apps_csv=""):
             continue
         uuid, pid, name, used = (_cell(v) for v in row)
         card = by_uuid.get(uuid or "")
-        if card is None or not (pid or "").isdigit() or len(card["processes"]) >= 64:
+        if card is None or card["processes"] is None or not (pid or "").isdigit() or len(card["processes"]) >= 64:
             continue
         mib = _number(used)
         # Only the executable's file name: full paths name users and folders.
@@ -745,9 +766,10 @@ def nvidia_sample(run=_nvidia_run):
         return {"status": "unavailable", "value": None, "why": "nvidia-smi: " + str(exc)[:200]}
     try:
         apps = run(["--query-compute-apps=gpu_uuid,pid,process_name,used_memory", "--format=csv,noheader,nounits"])
-    except (OSError, subprocess.SubprocessError, RuntimeError):
-        apps = ""
-    cards = parse_nvidia(gpus, apps)
+        apps_why = None
+    except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+        apps, apps_why = None, str(exc)
+    cards = parse_nvidia(gpus, apps, apps_why)
     return {"status": "ok", "value": cards} if cards else {"status": "unavailable", "value": None,
                                                            "why": "nvidia-smi reported no cards"}
 
@@ -1009,14 +1031,7 @@ def collect_control(api, now):
 def sample_control(api, now):
     """The fleet-control collector. Its byte counters are committed at most once per node interval, so every delta
     series is sampled at no less than its described interval (coverage never overstated)."""
-    store = telemetry.open_store(api)
-    state = _state(api)
-    round_ = collect_control(api, now)
-    last = state.windows.get("counters_committed")
-    due = last is None or now - last >= NODE_INTERVAL
-    if due and any(r.get("counters") for r in round_["machines"]):
-        state.windows["counters_committed"] = now
-    return persist(api, store, round_, counters_due=due)
+    return persist(api, telemetry.open_store(api), collect_control(api, now))
 
 
 # -- thresholds (F2) ----------------------------------------------------------------------------------------------
@@ -1201,10 +1216,13 @@ def fresh_engines(store, machine_id, now, records):
     """Loopback engine documents of this machine that are current (key in the launch records, < 3 intervals old)."""
     if store is None:
         return {}
-    keys = {engine_key(m, t["profile"], t["port"]) for m, rows in loopback_engines(records).items() for t in rows}
+    launches = {engine_key(m, t["profile"], t["port"]): t.get("launch")
+                for m, rows in loopback_engines(records).items() for t in rows}
+    keys = set(launches)
     found = {}
     for key, _, value in store.items(ENGINES, limit=64):
-        if key in keys and value.get("machine") == machine_id and _finite(value.get("ts")) and now - value["ts"] <= 3 * NODE_INTERVAL:
+        if (key in keys and value.get("machine") == machine_id and value.get("launch") == launches.get(key)
+                and _finite(value.get("ts")) and now - value["ts"] <= 3 * NODE_INTERVAL):
             found[value.get("profile")] = (key, value)
     return found
 
@@ -1398,7 +1416,14 @@ def machine_document(api, rest, query):
         why["gpus"] = _why(checks.get("gpus"), "") or _why(nvidia, "") or "no GPU reported by this machine"
     processes = _value(checks.get("gpu_processes"))
     if processes is None and _value(nvidia):
-        processes = [{"device": card["device"], **p} for card in _value(nvidia) for p in card.get("processes") or []]
+        cards = _value(nvidia)
+        if all(card.get("processes") is None for card in cards):
+            why["processes"] = (cards[0].get("why") or {}).get("processes") or "process query failed"
+        else:
+            processes = [{"device": card["device"], **p} for card in cards for p in card.get("processes") or []]
+            failed = [card["device"] for card in cards if card.get("processes") is None]
+            if failed:
+                why["processes"] = "process query failed for " + ", ".join(failed)
     if processes is None:
         why["processes"] = _why(checks.get("gpu_processes"), "no GPU process list on this machine")
     cpu = _value(checks.get("cpu")) or {}
@@ -1420,7 +1445,8 @@ def machine_document(api, rest, query):
 
     def rate(name, label):
         found = committed.get(machine.id + "|" + name + "|" + label)
-        return found[0] if found and found[2] == str((entry or {}).get("instance")) else None
+        # Rates are bound to "<boot>/<source>": usable only while the machine is still in that boot.
+        return found[0] if found and found[2].rsplit("/", 1)[0] == str((entry or {}).get("instance")) else None
 
     net = []
     for row in _value(checks.get("net")) or []:

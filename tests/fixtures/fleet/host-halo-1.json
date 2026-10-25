@@ -8,22 +8,22 @@
   },
   "uptime_s": {
    "status": "ok",
-   "value": 160836.42
+   "value": 166178.08
   },
   "load": {
    "status": "ok",
    "value": [
-    1.96,
-    2.3,
-    2.61
+    3.11,
+    3.1,
+    2.98
    ]
   },
   "cpu": {
    "status": "ok",
    "value": {
-    "busy_percent": 11.432926829268293,
-    "total": 515966698,
-    "idle": 494694371,
+    "busy_percent": 10.599078341013826,
+    "total": 533145881,
+    "idle": 510422115,
     "cores": 32
    }
   },
@@ -31,13 +31,13 @@
    "status": "ok",
    "value": {
     "MemTotal": 131745644544,
-    "MemFree": 9836429312,
-    "MemAvailable": 39343529984,
-    "Buffers": 43286528,
-    "Cached": 30517448704,
+    "MemFree": 24544088064,
+    "MemAvailable": 33603190784,
+    "Buffers": 530112512,
+    "Cached": 9686380544,
     "SwapTotal": 8589930496,
-    "SwapFree": 7837167616,
-    "Shmem": 146796544
+    "SwapFree": 6831755264,
+    "Shmem": 326078464
    }
   },
   "gpus": {
@@ -45,25 +45,26 @@
    "value": [
     {
      "card": "card0",
-     "busy_percent": 84,
-     "vram_used_bytes": 168202240,
+     "busy_percent": 100,
+     "vram_used_bytes": 167448576,
      "vram_total_bytes": 536870912,
-     "vis_vram_used_bytes": 168202240,
+     "vis_vram_used_bytes": 167448576,
      "vis_vram_total_bytes": 536870912,
-     "gtt_used_bytes": 88558280704,
+     "gtt_used_bytes": 94318182400,
      "gtt_total_bytes": 125829120000,
      "hwmon": "hwmon5",
      "temps": [
       {
        "sensor": "edge",
-       "celsius": 78.0
+       "input": "temp1",
+       "celsius": 98.0
       }
      ],
-     "power_w": 119.909,
+     "power_w": 137.178,
      "power_sensor": "PPT",
      "power_field": "average",
      "power_cap_w": null,
-     "sclk_mhz": 2535,
+     "sclk_mhz": 2891,
      "why": {
       "power_cap_w": "no readable power cap for this card"
      }
@@ -80,7 +81,8 @@
      "temps": [
       {
        "sensor": "temp1",
-       "celsius": 66.0
+       "input": "temp1",
+       "celsius": 97.0
       }
      ],
      "power": [],
@@ -93,15 +95,18 @@
      "temps": [
       {
        "sensor": "Composite",
+       "input": "temp1",
        "celsius": 53.85
       },
       {
        "sensor": "Sensor 1",
-       "celsius": 52.85
+       "input": "temp2",
+       "celsius": 53.85
       },
       {
        "sensor": "Sensor 2",
-       "celsius": 55.85
+       "input": "temp3",
+       "celsius": 52.85
       }
      ],
      "power": [],
@@ -114,7 +119,8 @@
      "temps": [
       {
        "sensor": "Tctl",
-       "celsius": 80.125
+       "input": "temp1",
+       "celsius": 98.5
       }
      ],
      "power": [],
@@ -127,7 +133,8 @@
      "temps": [
       {
        "sensor": "temp1",
-       "celsius": 57.5
+       "input": "temp1",
+       "celsius": 68.0
       }
      ],
      "power": [],
@@ -140,7 +147,8 @@
      "temps": [
       {
        "sensor": "temp1",
-       "celsius": 50.0
+       "input": "temp1",
+       "celsius": 57.0
       }
      ],
      "power": [],
@@ -153,25 +161,28 @@
      "temps": [
       {
        "sensor": "edge",
-       "celsius": 76.0
+       "input": "temp1",
+       "celsius": 96.0
       }
      ],
      "power": [
       {
        "sensor": "PPT",
+       "input": "power1",
        "field": "average",
-       "watts": 120.139
+       "watts": 137.266
       },
       {
        "sensor": "PPT",
+       "input": "power1",
        "field": "input",
-       "watts": 120.139
+       "watts": 137.266
       }
      ],
      "freq": [
       {
        "sensor": "sclk",
-       "mhz": 2541.0
+       "mhz": 2892.0
       }
      ]
     }
@@ -184,8 +195,8 @@
      "mount": "/",
      "fstype": "ext4",
      "total_bytes": 1966736678912,
-     "used_bytes": 1236997017600,
-     "free_bytes": 629759410176
+     "used_bytes": 1303257595904,
+     "free_bytes": 563498831872
     },
     {
      "mount": "/boot/efi",
@@ -201,8 +212,9 @@
    "value": [
     {
      "device": "nvme0n1",
-     "read_bytes": 92542119100928,
-     "write_bytes": 881218544640
+     "dev": "259:0",
+     "read_bytes": 95634005451264,
+     "write_bytes": 959779177472
     }
    ]
   },
@@ -211,13 +223,15 @@
    "value": [
     {
      "iface": "eno1",
-     "rx_bytes": 321407772184,
-     "tx_bytes": 56151122951,
+     "ifindex": 2,
+     "rx_bytes": 369110250085,
+     "tx_bytes": 58621163876,
      "physical": true,
      "operstate": "up"
     },
     {
      "iface": "wlp195s0",
+     "ifindex": 3,
      "rx_bytes": 0,
      "tx_bytes": 0,
      "physical": true,
@@ -242,10 +256,10 @@
    "status": "ok",
    "value": [
     {
-     "pid": 1473002,
+     "pid": 2045375,
      "own": true,
-     "comm": "strix-deepseek4",
-     "vram_bytes": 88528355328
+     "comm": "strix-minimax-r",
+     "vram_bytes": 94294552576
     }
    ]
   },
