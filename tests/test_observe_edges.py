@@ -442,5 +442,40 @@ class ExactIdentityTests(FleetBase):
         self.assertEqual(float(observe._start_id(1799990000.123456)[len("start-"):]), 1799990000.123456)
 
 
+class UsablePayloadTests(FleetBase):
+    """Only a payload that parsed is a good answer; an answer that does not parse is failing (and still an answer)."""
+
+    def check(self, snapshot):
+        self.assertIn("status", snapshot["last_answer"])
+        self.assertNotIn("status", snapshot["last_ok"])
+        self.assertIn("status", snapshot["failing_since"])
+        self.assertIn("metrics", snapshot["last_ok"])
+
+    def test_wrong_schema_status_direct(self):
+        env = self.env
+        env.launch("qwen", [("halo-1", NODE1, 18501)])
+        env.router()
+        env.engine(NODE1, 18501, {**fixture("engine-status-c1.json"), "schema": "another-schema-v9"})
+        env.collect()
+        snapshot = env.store.get("observe/engine", "qwen/halo-1")
+        self.check(snapshot)
+        self.assertIn("engine status", snapshot["why"]["status"])
+
+    def test_wrong_schema_status_from_the_node(self):
+        self.fleet(self.env.clock() - 2, {**fixture("engine-status-c1.json"), "schema": "another-schema-v9"})
+        self.env.collect()
+        self.check(self.env.store.get("observe/engine", "lb/halo-1"))
+
+
+class RouterIdentityTests(unittest.TestCase):
+    def test_page_identity_is_exact(self):
+        from hyperloom.adapters import AdapterError, router
+        page = fixture("router-requests.json")
+        self.assertEqual(router.parse_requests({**page, "instance": "r" * 128}).instance, "r" * 128)
+        for bad in ("r" * 129, "a" + chr(10) + "b"):
+            with self.assertRaises(AdapterError):
+                router.parse_requests({**page, "instance": bad})
+
+
 if __name__ == "__main__":
     unittest.main()

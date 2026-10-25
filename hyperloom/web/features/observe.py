@@ -929,17 +929,6 @@ def _engine_sample(store, launch, replica, reading, now, interval=INTERVAL):
         snapshot["ts"] = now
         store.put("observe/engine", key, snapshot)
         return []
-    for part, ok in (("health", reading["health"]), ("status", reading["status"] is not None),
-                     ("metrics", reading["metrics_text"] is not None)):
-        if ok or part in reading.get("answered", ()):
-            snapshot["last_answer"][part] = reading.get(part + "_at") or reading.get(part + "_answered_at") or observed_at
-        if ok:
-            snapshot["last_ok"][part] = reading.get(part + "_at", observed_at)
-            snapshot["failing_since"].pop(part, None)
-        elif part in reading.get("unsupported", ()):
-            snapshot["failing_since"].pop(part, None)      # answered: the engine build does not serve it
-        elif part in reading["why"] and "not read" not in reading["why"][part]:
-            snapshot["failing_since"].setdefault(part, now)
     parsed_status = observed = metrics = extra = None
     if reading["status"] is not None:
         try:
@@ -956,6 +945,19 @@ def _engine_sample(store, launch, replica, reading, now, interval=INTERVAL):
                 extra = engine.parse_metrics_extra(reading["metrics_text"])
         except AdapterError as exc:
             snapshot["why"]["metrics"] = "engine metrics: " + str(exc)
+    # Freshness: any HTTP answer is an answer; only a payload that parsed is a good one.
+    for part, payload, usable in (("health", reading["health"], reading["health"]),
+                                  ("status", reading["status"] is not None, parsed_status is not None),
+                                  ("metrics", reading["metrics_text"] is not None, metrics is not None)):
+        if payload or part in reading.get("answered", ()):
+            snapshot["last_answer"][part] = reading.get(part + "_at") or reading.get(part + "_answered_at") or observed_at
+        if usable:
+            snapshot["last_ok"][part] = reading.get(part + "_at", observed_at)
+            snapshot["failing_since"].pop(part, None)
+        elif part in reading.get("unsupported", ()):
+            snapshot["failing_since"].pop(part, None)      # answered: the engine build does not serve it
+        elif payload or (part in snapshot["why"] and "not read" not in snapshot["why"][part]):
+            snapshot["failing_since"].setdefault(part, now)
     up = parsed_status is not None or metrics is not None or _reachable(reading)
     points = [("engine_up", labels, 1 if up else 0, "state")]
     if parsed_status is None and metrics is None:

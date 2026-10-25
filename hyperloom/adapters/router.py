@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import math
 
 from . import AdapterError, Reader, check_schema
+from .engine import identity_text
 
 
 SCHEMA = "tensormeld/replica-router-status-v1"
@@ -173,8 +174,13 @@ def parse_record(value):
 def parse_requests(obj) -> RouterRequests:
     why = {}
     _schema(obj, REQUESTS_SCHEMA, why)
+    instance = obj.get("instance")
+    if instance is not None and identity_text(instance) is None:
+        # The page's identity decides restarts: one that is not kept exactly makes the page unusable.
+        raise AdapterError("router request log instance is not a printable identity of at most 128 characters")
     head = _fields(obj, {"instance": str, "started_at": float, "capacity": int, "seq": int, "evicted": int,
                          "armed": bool, "next": int, "more": bool}, why)
+    head["instance"] = identity_text(instance)
     rows = obj.get("records")
     if not isinstance(rows, list):
         raise AdapterError("router request log without records")
