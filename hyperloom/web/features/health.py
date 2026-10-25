@@ -275,8 +275,9 @@ class Context:
         """Resources held by live stops from any process (CLI included), or None when unreadable."""
         def read():
             from hyperloom import admission
-            database = getattr(self.api, "admission_db", None) or admission.for_config(self.api.config_path)
-            return [(set(hold["resources"]), str(hold.get("label") or "")) for hold in database.holds()
+            # Read without writing (no purge, no database created): health documents are GETs.
+            holds = admission.read_holds(self.api.config_path, getattr(self.api, "admission_db", None))
+            return [(set(hold["resources"]), str(hold.get("label") or "")) for hold in holds
                     if hold.get("kind") == "stop"]
         return self._once("admission", read)
 

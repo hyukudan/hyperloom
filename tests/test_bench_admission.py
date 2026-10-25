@@ -88,5 +88,42 @@ class AdmissionTests(unittest.TestCase):
             self.assertEqual([h["kind"] for h in db.holds()], ["stop"])
 
 
+class ReadHoldsTests(unittest.TestCase):
+    """GET documents read the admission holds without writing: no purge, no database created."""
+
+    def test_reads_live_holds_without_purging(self):
+        now = [1000.0]
+        db = admission.Admission(":memory:", clock=lambda: now[0])
+        live = db.acquire("bench", {"m1"}, label="live")
+        db.acquire("stop", {"m2"}, label="old", lease_s=1)
+        now[0] += 10
+        statements = []
+        db._db.set_trace_callback(statements.append)
+        self.assertEqual([h["id"] for h in admission.read_holds("cfg.json", db)], [live])
+        self.assertFalse([s for s in statements if not s.lstrip().upper().startswith("SELECT")], statements)
+        self.assertEqual(db._db.execute("SELECT COUNT(*) FROM holds").fetchone()[0], 2)    # the expired one stays
+
+    def test_no_database_is_created(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.dict("os.environ", {"HYPERLOOM_ADMISSION_DB": ""}):
+            config = Path(directory, "cluster.json")
+            self.assertEqual(admission.read_holds(config), [])
+            self.assertFalse(Path(directory, "run").exists())
+
+    def test_ops_and_health_documents_read_without_writing(self):
+        from hyperloom.web.features import health, ops
+        db = admission.Admission(":memory:")
+        db.acquire("bench", {"m1"}, label="bench m1")
+        db.acquire("stop", {"m2"}, label="down p")
+        api = mock.Mock(config_path="cfg.json", admission_db=db)
+        statements = []
+        db._db.set_trace_callback(statements.append)
+        self.assertEqual(ops.bench_holds(api, {"m1"}), ["bench m1"])
+        context = health.Context(api, None, 0.0, None)
+        self.assertEqual(context.stop_resources(), [({"m2"}, "down p")])
+        self.assertFalse([s for s in statements if not s.lstrip().upper().startswith("SELECT")], statements)
+
+
 if __name__ == "__main__":
     unittest.main()

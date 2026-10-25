@@ -195,3 +195,30 @@ def for_config(config_path, clock=time.time):
         if path not in _opened:
             _opened[path] = Admission(path, clock=clock)
         return _opened[path]
+
+
+def read_holds(config_path, database=None, clock=time.time):
+    """The live holds, read without writing anything (for GET documents): expired or ownerless records are skipped,
+    never purged; no database file or directory is created. ``database``: an Admission this process already opened
+    (else the one opened for this configuration, else the file read-only). Raises sqlite3.Error when unreadable."""
+    path = os.environ.get("HYPERLOOM_ADMISSION_DB") or str(Path(config_path).parent / "run" / "admission.sqlite3")
+    if database is None:
+        with _opened_lock:
+            database = _opened.get(path)
+    if database is not None:
+        with database._lock:
+            holds = database._holds()
+    elif path == ":memory:" or not Path(path).is_file():
+        return []
+    else:
+        connection = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=2)
+        try:
+            holds = [{"id": h, "kind": k, "resources": json.loads(r), "label": label, "pid": pid, "started": s,
+                      "expires": e, "cancelled": c}
+                     for h, k, r, label, pid, s, e, c in connection.execute(
+                         "SELECT id, kind, resources, label, pid, started, expires, cancelled FROM holds"
+                         " ORDER BY started")]
+        finally:
+            connection.close()
+    now = (database.clock if database is not None else clock)()
+    return [h for h in holds if h["expires"] >= now and _alive(h["pid"])]

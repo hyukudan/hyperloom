@@ -249,9 +249,11 @@ def core_job_running(api):
 
 
 def bench_holds(api, resources):
-    """Labels of benchmark holds overlapping these resources (shared admission database)."""
+    """Labels of benchmark holds overlapping these resources (shared admission database, read without writing:
+    the documents that ask are GETs)."""
+    from hyperloom import admission
     try:
-        holds = api._admission().holds()
+        holds = admission.read_holds(api.config_path, getattr(api, "admission_db", None))
     except Exception:
         return []
     resources = set(resources)
