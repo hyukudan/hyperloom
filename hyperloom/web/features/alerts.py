@@ -38,7 +38,7 @@ REMINDERS = {"none": None, "1h": 3600, "4h": 4 * 3600, "12h": 12 * 3600, "24h": 
 CHANNEL_ID = re.compile(r"ch-[0-9a-f]{8}")
 MAX_CHANNELS, MAX_OUTBOX, SAVE_TRIES = 20, 100, 5
 BACKOFF, COOLDOWN_S = (5.0, 20.0, 60.0), 300.0
-SEND_TIMEOUT, RUN_BUDGET_S, CLAIM_S = 5.0, 12.0, 30.0
+SEND_TIMEOUT, RUN_BUDGET_S, RUN_SENDS, CLAIM_S = 5.0, 12.0, 3, 30.0
 RESPONSE_CAP = 4096
 SEVERITIES = health.SEVERITIES
 _TABLE = """
@@ -220,7 +220,12 @@ def save_channel(store, arguments, now):
                 lowered = current is None or health.RANK[record["min_severity"]] < health.RANK.get(current.get("min_severity"), 1)
                 revision = health.version(store, health.STATE)
                 states = {key: value for key, _, value in store.items(health.STATE)}
+                if current is None and len(channels(store)) >= MAX_CHANNELS:
+                    raise PermissionError(f"at most {MAX_CHANNELS} channels")
                 statements = [health.unchanged(CHANNELS, cid, text), health.same_version(health.STATE, revision),
+                              # the channel cap, checked inside the transaction (concurrent creates cannot pass it)
+                              ("INSERT INTO health_guard(x) SELECT 1 WHERE ? AND (SELECT COUNT(*) FROM docs WHERE "
+                               "namespace=?) >= ?", (current is None, CHANNELS, MAX_CHANNELS)),
                               health.upsert_doc(CHANNELS, cid, record, now)]
                 if lowered:
                     statements += catch_up(store, record, states, now)
@@ -302,7 +307,9 @@ def bound(now):
              + victim + " || '|'", (TRACK, now, now)),
             ("DELETE FROM alerts_outbox WHERE " + over + " AND channel = " + victim +
              " AND (claimed_until IS NULL OR claimed_until < ?)", (now, now))]
-    return once * 3 + [health.RETENTION]
+    # One pass drops one channel's backlog; claimed rows (at most one per channel) are never dropped, so passes
+    # for every possible channel always restore the bound.
+    return once * (MAX_CHANNELS + 2) + [health.RETENTION]
 
 
 def plan(store, transitions, states, now):
@@ -648,12 +655,12 @@ def deliver(api, now, store=None, clock=time.monotonic, sender=None):
     generation = health.held(store, owner, now)
     if generation is None:
         return []
-    started = clock()
+    started, sends = clock(), 0
     heads = store.execute("SELECT id, message_id, channel, attempts, items, next_at, claimed_until FROM alerts_outbox "
                           "WHERE id IN (SELECT MIN(id) FROM alerts_outbox GROUP BY channel) ORDER BY id")
     for oid, message, cid, attempts, items, next_at, claimed in heads:
         left = RUN_BUDGET_S - (clock() - started)
-        if left < 1.0:
+        if left < 1.0 or sends >= RUN_SENDS:
             break
         if next_at > now or (claimed is not None and claimed >= now):
             continue
@@ -680,6 +687,7 @@ def deliver(api, now, store=None, clock=time.monotonic, sender=None):
             health.commit(store, health.guard(owner, generation, now) + [
                 ("UPDATE alerts_outbox SET claimed_until=NULL WHERE id=?", (oid,))])
             break
+        sends += 1
         _ack(store, owner, generation, row, channel, outcome, now)
     return []
 

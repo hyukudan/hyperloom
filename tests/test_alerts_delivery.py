@@ -277,6 +277,33 @@ class PlanTests(Base):
         self.assertEqual([items for channel, items in self.outbox() if channel == victim], [[("firing", b["id"])]])
         self.assertEqual(self.store.items(alerts.RESYNC), [])
 
+    def test_overflow_with_many_channels_restores_the_bound(self):
+        made = [self.channel(path=f"/c{i}") for i in range(alerts.MAX_CHANNELS)]
+        filler = [("INSERT INTO alerts_outbox(message_id, channel, created, next_at, attempts, items) VALUES (?, ?, ?, ?, 0, '[]')",
+                   (f"x{i}", made[i % len(made)]["id"], T0, T0)) for i in range(alerts.MAX_OUTBOX)]
+        health.commit(self.store, filler)
+        findings = {f"disk-full:m{i}/disk:/": self.finding(f"disk-full:m{i}/disk:/", "warning", f"o{i}") for i in range(3)}
+        self.plan([("appeared", f) for f in findings.values()], findings)
+        self.assertLessEqual(self.store.execute("SELECT COUNT(*) FROM alerts_outbox")[0][0], alerts.MAX_OUTBOX)
+
+    def test_concurrent_creates_respect_the_channel_cap(self):
+        path = Path(self.dir.name) / "telemetry.sqlite3"
+        first, second = Store(path, clock=self.clock), Store(path, clock=self.clock)
+        self.addCleanup(first.close)
+        self.addCleanup(second.close)
+        for i in range(alerts.MAX_CHANNELS - 1):
+            alerts.save_channel(first, {"name": f"c{i}", "kind": "push", "url": self.receiver.url("/x")}, self.clock.now)
+        original, raced = alerts.catch_up, []
+
+        def racing(store, record, states, now):
+            if not raced:
+                raced.append(1)
+                alerts.save_channel(second, {"name": "late", "kind": "push", "url": self.receiver.url("/y")}, now)
+            return original(store, record, states, now)
+        with mock.patch.object(alerts, "catch_up", racing), self.assertRaises(PermissionError):
+            alerts.save_channel(first, {"name": "early", "kind": "push", "url": self.receiver.url("/z")}, self.clock.now)
+        self.assertEqual(len(alerts.channels(first)), alerts.MAX_CHANNELS)
+
     def test_the_bound_holds_for_writers_on_separate_connections(self):
         path = Path(self.dir.name) / "telemetry.sqlite3"
         first, second = Store(path, clock=self.clock), Store(path, clock=self.clock)
@@ -333,6 +360,15 @@ class DeliveryTests(Base):
             self.assertEqual(dict(self.store.execute("SELECT channel, attempts FROM alerts_outbox"))[failing["id"]], attempt)
         message_ids = {json.loads(b)["message_id"] for p, _, b in self.receiver.received if p.startswith("/fail")}
         self.assertEqual(len(message_ids), 1)             # the same message id on every retry
+
+    def test_at_most_three_sends_per_run(self):
+        for i in range(5):
+            self.channel(path=f"/s{i}")
+        a = self.finding()
+        self.plan([("appeared", a)], {a["id"]: a})
+        sent = []
+        self.deliver(sender=lambda *args, **kw: sent.append(1) or {"ok": True, "status": 200})
+        self.assertEqual(len(sent), alerts.RUN_SENDS)
 
     def test_a_later_message_waits_for_the_earlier_one(self):
         self.channel(path="/fail/x")

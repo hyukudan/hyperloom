@@ -116,6 +116,12 @@ class ClearTests(Base):
         events.clear(self.store, "7d", T0 + 20)                        # a later, older-cutoff clear keeps the newest
         self.assertEqual(self.store.get(events.BOUNDARY, "cutoff")["cutoff"], T0 + 10)
 
+    def test_malformed_options_are_refused_and_audited(self):
+        for bad in ({}, [], 7):
+            with self.assertRaises(ValueError):
+                events.clear_post(self.api, {"older_than": bad, "confirm": "x"})
+        self.assertEqual([a[1] for a in self.api.audits], [{"older_than": "[invalid]"}] * 3)
+
     def test_cli_clear_has_no_code(self):
         self.store.event("health", "info", "x", ts=T0 - 10)
         self.assertEqual(events.clear(self.store, "all", T0), 1)

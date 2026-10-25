@@ -109,7 +109,7 @@ def clear_statements(store, older_than, now):
 
 
 def _check_option(older_than):
-    if older_than not in OPTIONS:
+    if not isinstance(older_than, str) or older_than not in OPTIONS:
         raise ValueError("older_than must be 24h, 7d or all")
     return older_than
 
@@ -166,7 +166,8 @@ def _clear_with_code(store, older_than, code, now):
 
 def clear_post(api, arguments):
     store = telemetry.open_store(api)
-    option = arguments.get("older_than") if arguments.get("older_than") in OPTIONS else "[invalid]"
+    given = arguments.get("older_than")
+    option = given if isinstance(given, str) and given in OPTIONS else "[invalid]"
     try:
         if set(arguments) - {"older_than", "confirm"}:
             raise ValueError("events/clear takes older_than and confirm")
