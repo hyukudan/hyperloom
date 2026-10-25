@@ -612,7 +612,8 @@ def _had(progress):
     else:
         had = f"this {what} had stopped nothing"
     if progress.get("stopping"):
-        had += f"; it was stopping {progress['stopping']}"
+        had += (f"; it was stopping {progress['stopping']} (or, meeting this cancel first, left it running: the "
+                f"{what}'s own error says which)")
     return had
 
 
@@ -973,6 +974,15 @@ class _Progress:
         if self.cancelled():
             raise RecipeError(f"{self.what} cancelled: " + cancel_summary(self.state))
 
+    def before_stop(self, name):
+        """Right before the job stops ``name``: "stopping NAME" is recorded FIRST, then the marker is checked (the
+        hand-over's order). A cancel either wrote its marker before this record (the job then stops nothing more) or
+        reads "stopping NAME" (its answer names the stop under way)."""
+        self.record(phase="stopping", stopping=name)
+        if self.cancelled():
+            self.state["stopping"] = None          # met the marker first: NAME is left as it is
+            self.check()
+
     def handoff(self):
         """up calls this once, right after it owns the target profile and before it starts anything."""
         self.record(phase="launching")
@@ -1044,8 +1054,7 @@ def _deploy_pinned(digest, stop, source, orchestrate, approval, progress):
                        source=source or commands.live_source(cluster))
     stopped = []
     for name in sorted(set(stop)):
-        check()
-        progress.record(phase="stopping", stopping=name)
+        progress.before_stop(name)
         stopped.append({"profile": name, "down": orchestrate.down(name)})
         progress.record(stopping=None, stopped=progress.state["stopped"] + [name],
                         stop_states=dict(progress.state.get("stop_states") or {},

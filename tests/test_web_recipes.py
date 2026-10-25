@@ -757,6 +757,40 @@ class DeployCancelTests(unittest.TestCase):
         self.assertIn("it was stopping mm", answer["summary"])
         self.assertIn("nothing was started; this deploy had stopped mm (stopped): they stay stopped", finished["error"])
 
+    def test_a_cancel_at_a_stop_never_answers_nothing_while_the_stop_runs(self):
+        # The cancel lands right next to the record of "stopping qwen-replicas", on either side of it. Before it: the
+        # cancel reads the checks and the deploy, meeting the marker, stops nothing. After it: the deploy still meets
+        # the marker (recorded first, checked next) and leaves qwen-replicas running; the cancel's answer had named
+        # that stop. Never "stopped nothing" while the deploy goes on to stop it.
+        real = service._write_progress
+        for before in (True, False):
+            with self.subTest(before=before):
+                self.orch.down.reset_mock()
+                self.answers.clear()
+
+                def write(path, state):
+                    landing = state["phase"] == "stopping" and state["stopping"] == "qwen-replicas" \
+                        and not self.answers
+                    if landing and before:
+                        self.cancel()
+                    real(path, state)
+                    if landing and not before:
+                        self.cancel()
+                with mock.patch.object(service, "_write_progress", side_effect=write):
+                    finished = self.deploy(["qwen-replicas"])
+                self.assertEqual(self.downs(), [])                       # nothing stopped, by the deploy or the cancel
+                self.orch.up.assert_not_called()
+                answer = self.answers[0]
+                self.assertEqual((answer["phase"], answer["stopping"], answer["down"]),
+                                 ("checks", None, None) if before else ("stopping", "qwen-replicas", None))
+                if not before:
+                    self.assertIn("it was stopping qwen-replicas (or, meeting this cancel first, left it running",
+                                  answer["summary"])
+                self.assertEqual(finished["state"], "failed")
+                self.assertIn("deploy cancelled: cancelled before the launch: nothing was started; this deploy had "
+                              "stopped nothing", finished["error"])
+                self.assertNotIn("it was stopping", finished["error"])
+
     def test_at_the_hand_over_up_starts_nothing(self):
         def up(*a, **kw):
             self.cancel()                                                # before up's own check
