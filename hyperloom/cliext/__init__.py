@@ -10,7 +10,7 @@ import sys
 
 
 MODULES = ("bench", "telemetry", "observe", "ledger", "usb4", "energy", "health", "alerts", "turns", "library", "logsearch",
-           "ops", "planner", "integrations")
+           "ops", "planner", "endpoints", "integrations")
 
 
 def add_all(commands):
@@ -30,7 +30,9 @@ def add_all(commands):
             continue
         module = sys.modules[full]
         try:
-            scratch = argparse.ArgumentParser(add_help=False).add_subparsers(dest="command")
+            # Built once, in isolation, then grafted: a failure anywhere leaves the real parser untouched.
+            scratch = argparse.ArgumentParser(prog="hyperloom", add_help=False).add_subparsers(dest="command")
+            scratch._prog_prefix = commands._prog_prefix
             module.add(scratch)
             taken = sorted(set(scratch.choices) & set(commands.choices))
             if taken:
@@ -38,4 +40,5 @@ def add_all(commands):
         except Exception as exc:
             print(f"hyperloom: CLI extension {name} unavailable ({type(exc).__name__}: {exc})", file=sys.stderr)
             continue
-        module.add(commands)
+        commands._name_parser_map.update(scratch._name_parser_map)
+        commands._choices_actions.extend(scratch._choices_actions)

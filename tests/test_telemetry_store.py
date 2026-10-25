@@ -119,6 +119,14 @@ class TypedSeriesTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.describe("tokens", "gauge")
 
+    def test_coverage_of_history_survives_interval_changes(self):
+        base = int(self.clock.now // 60) * 60 - 120
+        for i in range(30):
+            self.store.record([("busy", {}, 1)], ts=base + 2 * i, interval=2)
+        self.store.describe("busy", "gauge", interval=1)        # a later change of cadence
+        point = self.store.query("busy", base, tier="m1")["lines"][0]["points"][0]
+        self.assertEqual(point[7], 1.0)
+
     def test_state_rollup_keeps_the_last_value(self):
         self.store.describe("engine_state", "state", legend={0: "stopped", 1: "ready"})
         base = int(self.clock.now // 60) * 60 - 120
@@ -210,6 +218,32 @@ class SamplerTests(unittest.TestCase):
             sampler.set_interval("slow", 0.1)
         sampler.set_interval("slow", 5)
         self.assertEqual(sampler.snapshot()["slow"]["interval_s"], 5)
+
+    def test_refresh_during_a_run_is_absorbed(self):
+        store = Store(":memory:")
+        self.addCleanup(store.close)
+        gate, calls = threading.Event(), []
+
+        def slow(api, now):
+            calls.append(now)
+            gate.wait(5)
+            return []
+        sampler = telemetry.Sampler(object(), store, {"slow": (slow, 60.0)}).start()
+        self.addCleanup(sampler.stop)
+        for _ in range(200):
+            if calls:
+                break
+            time.sleep(0.01)
+        self.assertFalse(sampler.refresh("slow"))              # absorbed by the running collection
+        gate.set()
+        time.sleep(0.5)
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(sampler.refresh("slow"))
+        for _ in range(200):
+            if len(calls) == 2:
+                break
+            time.sleep(0.01)
+        self.assertEqual(len(calls), 2)
 
     def test_start_is_atomic_and_stop_joins(self):
         with tempfile.TemporaryDirectory() as directory:

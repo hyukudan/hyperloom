@@ -27,10 +27,11 @@
       const buttons = `<div class="row" role="group" aria-label="Range">${ranges.map(([label, seconds]) => `<button type="button" class="btn ${seconds === view.range ? "pri" : ""}" data-page-action="history-range" data-range="${seconds}" aria-pressed="${seconds === view.range}">${esc(label)}</button>`).join("")}</div>`;
       const chart = doc.lines == null ? `<p>${display(null, doc.why?.lines || "loading")}</p>` : window.HyperloomTS.chart({
         title: `${current()}${doc.unit ? ` (${doc.unit})` : ""} · ${doc.kind || "series"} · ${doc.value || "avg"} per ${doc.step || "?"} s bucket`,
-        unit: doc.unit || "", step: doc.step || 2, start: doc.start, end: doc.end,
+        unit: doc.unit || "", step: doc.step || 2, cadence: doc.tier === "raw" ? doc.interval_s || 0 : 0, start: doc.start, end: doc.end,
         lines: window.HyperloomTS.lines(doc), group: "history", height: 220});
-      const notes = [doc.why?.truncated, doc.interval_s ? `Sampled every ${doc.interval_s} s; coverage per bucket is in the table.` : "",
-        "Stored in UTC; times shown in this browser's time zone. Gaps are periods without samples."].filter(Boolean);
+      const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || "this browser's time zone";
+      const notes = [doc.why?.truncated, doc.interval_s ? `Sampled every ${doc.interval_s} s; coverage per bucket is in the table (unavailable on the 2 s tier).` : "",
+        `Stored in UTC; times shown in ${zone}. Gaps are periods without samples.`].filter(Boolean);
       return `<div class="grid">${card("Series", `<div class="row between">${picker}${buttons}</div>`)}${card("History", chart + notes.map(n => `<p class="hint">${esc(n)}</p>`).join(""))}</div>`;
     },
     after(main) { window.HyperloomTS.bind(main); },

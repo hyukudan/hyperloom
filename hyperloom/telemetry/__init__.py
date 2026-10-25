@@ -70,13 +70,13 @@ class Sampler:
                 self.state[name]["coalesced"] += 1
             return False
         try:
-            sample, _ = self.collectors[name]
+            sample, interval = self.collectors[name]
             now = self.clock()
             with self._state_lock:
                 self.state[name]["running_since"] = now
             try:
                 points = sample(self.api, now) or []
-                count = self.store.record(points, ts=now)
+                count = self.store.record(points, ts=now, interval=interval)
                 with self._state_lock:
                     self.state[name].update(last_ok=now, points=count, error=None)
             except Exception as exc:  # a failing source never stops the others
@@ -94,7 +94,13 @@ class Sampler:
         """Ask for a collection now (coalesced with a run in progress)."""
         if name not in self.collectors:
             raise LookupError("unknown collector " + name)
+        # A request that arrives while this collector runs is absorbed by that run (no second collection).
+        if self._running[name].locked():
+            with self._state_lock:
+                self.state[name]["coalesced"] += 1
+            return False
         self._wake[name].set()
+        return True
 
     def set_interval(self, name, interval):
         if name not in self.collectors:

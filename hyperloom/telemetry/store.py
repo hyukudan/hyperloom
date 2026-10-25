@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS raw (series INTEGER NOT NULL, ts REAL NOT NULL, value
 CREATE INDEX IF NOT EXISTS raw_series_ts ON raw(series, ts);
 CREATE TABLE IF NOT EXISTS agg (tier TEXT NOT NULL, series INTEGER NOT NULL, bucket INTEGER NOT NULL,
                                 sum REAL NOT NULL, count INTEGER NOT NULL, min REAL NOT NULL, max REAL NOT NULL,
-                                last REAL NOT NULL, last_ts REAL NOT NULL, PRIMARY KEY(tier, series, bucket));
+                                last REAL NOT NULL, last_ts REAL NOT NULL, observed REAL NOT NULL DEFAULT 0,
+                                PRIMARY KEY(tier, series, bucket));
 CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, category TEXT NOT NULL,
                                    severity TEXT NOT NULL, machine TEXT, message TEXT NOT NULL, data TEXT);
 CREATE INDEX IF NOT EXISTS events_ts ON events(ts);
@@ -167,7 +168,7 @@ class Store:
                 rows.append((name, canonical_labels(labels), float(value), kind))
         return rows
 
-    def _insert(self, pending, rows, ts):
+    def _insert(self, pending, rows, ts, interval=None):
         for name, labels, value, kind in rows:
             descriptor = self._descriptor(name, pending)
             if descriptor is None or (kind is not None and kind != descriptor["kind"]):
@@ -175,26 +176,33 @@ class Store:
             if descriptor["kind"] == "delta" and value < 0:
                 raise ValueError("delta samples must be non-negative")
             sid = self._series_id(pending, name, labels)
+            # The time this sample stands for is fixed when it is taken (the sampling interval then), so later
+            # interval changes never rewrite the coverage of history.
+            observed = interval if interval is not None else descriptor.get("interval_s") or 0.0
             self._db.execute("INSERT INTO raw(series, ts, value) VALUES (?, ?, ?)", (sid, ts, value))
             for tier, step, _ in TIERS[1:]:
                 bucket = int(ts // step) * step
                 self._db.execute(
-                    "INSERT INTO agg(tier, series, bucket, sum, count, min, max, last, last_ts) "
-                    "VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?) ON CONFLICT(tier, series, bucket) DO UPDATE SET "
+                    "INSERT INTO agg(tier, series, bucket, sum, count, min, max, last, last_ts, observed) "
+                    "VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?) ON CONFLICT(tier, series, bucket) DO UPDATE SET "
                     "sum=sum+excluded.sum, count=count+1, min=MIN(min, excluded.min), max=MAX(max, excluded.max), "
                     "last=CASE WHEN excluded.last_ts >= last_ts THEN excluded.last ELSE last END, "
-                    "last_ts=MAX(last_ts, excluded.last_ts)",
-                    (tier, sid, bucket, value, value, value, value, ts))
+                    "last_ts=MAX(last_ts, excluded.last_ts), observed=observed+excluded.observed",
+                    (tier, sid, bucket, value, value, value, value, ts, observed))
         return len(rows)
 
-    def record(self, points, ts=None):
+    def record(self, points, ts=None, interval=None):
         """Record (name, labels, value[, kind]) points at ts (default now). The kind must match the metric's
-        descriptor (an undescribed metric is described by its first point, default gauge)."""
+        descriptor (an undescribed metric is described by its first point, default gauge). ``interval`` is the
+        sampling interval these points stand for (the sampler passes its collector's current interval; default:
+        the metric's described interval); it sets their coverage permanently."""
         ts = self.clock() if ts is None else float(ts)
+        if interval is not None and not (_finite(interval) and interval > 0):
+            raise ValueError("interval must be positive")
         rows = self._rows(points)
         if not rows:
             return 0
-        count = self._atomic(lambda pending: self._insert(pending, rows, ts))
+        count = self._atomic(lambda pending: self._insert(pending, rows, ts, interval))
         if ts - self._last_prune > 300:
             self.prune(ts)
         return count
@@ -275,8 +283,8 @@ class Store:
 
     def query(self, name, start, end=None, labels=None, tier=None):
         """{descriptor, lines: [{labels, points: [[t, avg, max, min, n, sum, last, coverage], ...]}], tier, step,
-        truncated}. ``coverage`` = n x interval / step (capped at 1) when the metric's interval is known, else
-        None. ``truncated`` names the lines whose oldest buckets were cut at MAX_POINTS (never silent)."""
+        truncated}. ``coverage`` = observed seconds / step (capped at 1), from the interval each sample was taken
+        at; None when no sample carried an interval and on the raw tier. ``truncated`` names the lines whose oldest buckets were cut at MAX_POINTS (never silent)."""
         now = self.clock()
         end = now if end is None else end
         if not (_finite(start) and _finite(end)) or end < start:
@@ -291,10 +299,9 @@ class Store:
         lines, truncated = [], []
         with self._lock:
             descriptor = self._descriptor(name, {"metrics": {}})
-            interval = (descriptor or {}).get("interval_s")
 
-            def coverage(n):
-                return None if not interval else min(1.0, n * interval / step)
+            def coverage(observed):
+                return None if not observed else min(1.0, observed / step)
 
             for sid, have in self._matching(name, labels):
                 if tier == "raw":
@@ -302,10 +309,10 @@ class Store:
                                             (sid, start, end)).fetchall()
                     points = [[t, v, v, v, 1, v, v, None] for t, v in rows]
                 else:
-                    rows = self._db.execute("SELECT bucket, sum, count, min, max, last FROM agg WHERE tier=? AND series=? "
-                                            "AND bucket>=? AND bucket<=? ORDER BY bucket",
+                    rows = self._db.execute("SELECT bucket, sum, count, min, max, last, observed FROM agg WHERE tier=? "
+                                            "AND series=? AND bucket>=? AND bucket<=? ORDER BY bucket",
                                             (tier, sid, int(start // step) * step, end)).fetchall()
-                    points = [[b, s / c, mx, mn, c, s, last, coverage(c)] for b, s, c, mn, mx, last in rows]
+                    points = [[b, s / c, mx, mn, c, s, last, coverage(o)] for b, s, c, mn, mx, last, o in rows]
                 if len(points) > MAX_POINTS:
                     truncated.append(have)
                     points = points[-MAX_POINTS:]
