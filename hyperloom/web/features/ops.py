@@ -371,41 +371,66 @@ def macs_in(reply):
     return found
 
 
+_checks_lock = threading.Lock()
+_checks_busy = set()        # (id(api), machine id) with a node tool check in flight (kept until the call returns)
+
+
+def _publish_check(api, store, mid, row, found, now):
+    """Record one machine's check as soon as it finishes (also after the collection that started it returned)."""
+    with _checks_lock:
+        known = dict(store.get(NAMESPACE, "node_tool", {}) or {})
+        if row["seen_at"] is None:
+            row["seen_at"] = (known.get(mid) or {}).get("seen_at")
+        known[mid] = row
+        store.put(NAMESPACE, "node_tool", known)
+        if found:
+            macs = dict(store.get(NAMESPACE, "macs", {}) or {})
+            macs[mid] = {"macs": found, "learned_at": now}
+            store.put(NAMESPACE, "macs", macs)
+
+
 def sample_nodes(api, now):
-    """Collector ops-nodes: one version call per ssh machine (and one host call for its MACs); no series."""
+    """Collector ops-nodes: one version call per ssh machine (and one host call for its MACs); no series. A machine
+    whose previous check is still running is skipped (one call in flight per machine); every check publishes its
+    own result when it finishes."""
     store = store_for_write(api)
     cluster = api.cluster()
-    known = dict(store.get(NAMESPACE, "node_tool", {}) or {})
-    macs = dict(store.get(NAMESPACE, "macs", {}) or {})
-    lock = threading.Lock()
 
-    def one(machine):
-        row = {"checked_at": now, "deployed": None, "error": None, "seen_at": (known.get(machine.id) or {}).get("seen_at")}
+    def one(machine, key):
         try:
-            reply = _node_call(api, machine, "version", {})
-            if not isinstance(reply, dict) or reply.get("error"):
-                raise ValueError((reply or {}).get("error") or "malformed reply")
-            row.update(deployed=_tool_of(reply), seen_at=now)
-        except Exception as exc:
-            row["error"] = str(exc)[:300]
-        found = []
-        if row["error"] is None:
+            row = {"checked_at": now, "deployed": None, "error": None, "seen_at": None}
             try:
-                found = macs_in(_node_call(api, machine, "host", {}))
-            except Exception:
-                pass
-        with lock:
-            known[machine.id] = row
-            if found:
-                macs[machine.id] = {"macs": found, "learned_at": now}
-    threads = [threading.Thread(target=one, args=(m,), daemon=True) for m in cluster.machines.values() if m.access == "ssh"]
-    for thread in threads:
+                reply = _node_call(api, machine, "version", {})
+                if not isinstance(reply, dict) or reply.get("error"):
+                    raise ValueError((reply or {}).get("error") or "malformed reply")
+                row.update(deployed=_tool_of(reply), seen_at=now)
+            except Exception as exc:
+                row["error"] = str(exc)[:300]
+            found = []
+            if row["error"] is None:
+                try:
+                    found = macs_in(_node_call(api, machine, "host", {}))
+                except Exception:
+                    pass
+            _publish_check(api, store, machine.id, row, found, now)
+        finally:
+            with _checks_lock:
+                _checks_busy.discard(key)
+
+    threads = []
+    for machine in cluster.machines.values():
+        if machine.access != "ssh":
+            continue
+        key = (id(api), machine.id)
+        with _checks_lock:
+            if key in _checks_busy:
+                continue
+            _checks_busy.add(key)
+        thread = threading.Thread(target=one, args=(machine, key), name="hyperloom-node-check-" + machine.id, daemon=True)
+        threads.append(thread)
         thread.start()
     for thread in threads:
         thread.join(30)
-    with lock:
-        store.put(NAMESPACE, "node_tool", known)
-        store.put(NAMESPACE, "macs", macs)
     return []
 
 

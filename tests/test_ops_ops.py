@@ -73,6 +73,33 @@ class NodeToolTests(Base, unittest.TestCase):
         self.assertIn("not part of any profile", rows["halo-2"]["why"]["actions"])
         self.assertEqual(self.api.telemetry.get("ops", "macs")["halo-1"]["macs"], ["02:00:5e:10:00:01"])
 
+    def test_node_checks_never_overlap_and_late_results_are_kept(self):
+        gate, started = threading.Event(), threading.Event()
+        calls = []
+
+        def slow(api, machine, verb, payload=None):
+            calls.append((machine.id, verb))
+            if machine.id == "halo-1" and verb == "version":
+                started.set()
+                gate.wait(5)
+            return {"checks": {"tool": {"value": "late"}}} if verb == "version" else {}
+        with mock.patch.object(ops, "_node_call", slow), mock.patch.object(threading.Thread, "join", lambda self, timeout=None: None):
+            ops.sample_nodes(self.api, 1.0)                 # the collection returns while halo-1 is still being read
+            started.wait(5)
+            ops.sample_nodes(self.api, 2.0)                 # halo-1 is skipped: its check is still in flight
+            self.assertEqual(calls.count(("halo-1", "version")), 1)
+            gate.set()
+            for _ in range(200):
+                if (self.api.telemetry.get("ops", "node_tool") or {}).get("halo-1"):
+                    break
+                time.sleep(0.01)
+        self.assertEqual(self.api.telemetry.get("ops", "node_tool")["halo-1"]["deployed"], "late")
+        for _ in range(200):
+            if not ops._checks_busy:
+                break
+            time.sleep(0.01)
+        self.assertFalse(ops._checks_busy)
+
     def test_update_job_is_profile_scoped_unforced_and_refused_while_a_lease_lives(self):
         orchestrate = self.api.orchestrate
         orchestrate.nodes_update = mock.Mock(return_value={"halo-1": {"tool": "new"}})
