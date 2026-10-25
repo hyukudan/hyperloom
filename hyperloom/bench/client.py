@@ -6,7 +6,8 @@ failure ("redirect refused") and nothing is sent anywhere else. Responses are bo
 line 1 MiB, a whole stream 16 MiB. A watchdog thread shuts the socket down when the run is cancelled or the
 request's own timeout passes, so a blocked read returns promptly and the stream is closed.
 
-Client measurements use ``time.monotonic()`` relative to the moment the request was sent:
+Client measurements use ``time.perf_counter()`` (``_clock``) relative to the moment the request was sent; not
+``time.monotonic()``, which ticks every 15.6 ms on Windows before Python 3.13 and would read a fast TTFT as 0:
 ``headers_s`` (status line and headers received), ``first_event_s`` (first ``data:`` event), ``ttft_s``
 (first event carrying content, reasoning or a tool-call delta: the client TTFT), ``last_output_s`` (the last such
 event) and ``end_s`` (last byte).
@@ -30,6 +31,7 @@ CONNECT_TIMEOUT_S = 10.0
 KEPT_HEADERS = ("x-tensormeld-replica", "x-tensormeld-prefill", "x-tensormeld-route-id", "x-tensormeld-request-id",
                 "content-type")
 EVENT_TIMES = 32
+_clock = time.perf_counter     # measurement clock: sub-microsecond everywhere (see the module docstring)
 
 
 class ClientError(Exception):
@@ -176,7 +178,7 @@ class Reply:
     tool_calls: list = None
     event_times: list = field(default_factory=list)
     cancelled: bool = False
-    sent_at: float = None       # time.monotonic() when the request was written (absolute, for windows across streams)
+    sent_at: float = None       # _clock() when the request was written (absolute, for windows across streams)
 
     @property
     def ok(self):
@@ -379,7 +381,7 @@ def chat(endpoint, body, *, timeout=600.0, cancelled=lambda: False, request_id=N
     if request_id:
         headers["X-Request-Id"] = request_id
     watchdog = None
-    sent = time.monotonic()
+    sent, deadline = _clock(), time.monotonic() + timeout     # the watchdog's deadline counts the connect too
     connection = None
     try:
         if cancelled():
@@ -391,12 +393,12 @@ def chat(endpoint, body, *, timeout=600.0, cancelled=lambda: False, request_id=N
             reply.error, reply.cancelled = str(exc), str(exc) == "cancelled"
             return reply
         connection.sock.settimeout(max(1.0, timeout))
-        watchdog = _Watchdog(connection, cancelled, sent + timeout)
-        sent = time.monotonic()
+        watchdog = _Watchdog(connection, cancelled, deadline)
+        sent = _clock()
         reply.sent_at = sent
         connection.request("POST", path, body=payload, headers=headers)
         response = connection.getresponse()
-        reply.headers_s = time.monotonic() - sent
+        reply.headers_s = _clock() - sent
         reply.status = response.status
         reply.headers = {k.lower(): v for k, v in response.getheaders() if k.lower() in KEPT_HEADERS}
         if 300 <= response.status < 400:
@@ -409,11 +411,11 @@ def chat(endpoint, body, *, timeout=600.0, cancelled=lambda: False, request_id=N
             body.get("stream") and "json" not in reply.headers.get("content-type", ""))
         if not streaming:
             data = _read_capped(response, JSON_CAP)
-            now = time.monotonic() - sent
+            now = _clock() - sent
             reply.first_event_s = now
             _apply_event(reply, json.loads(data), now, on_delta)
             reply.events = 1
-            reply.end_s = time.monotonic() - sent
+            reply.end_s = _clock() - sent
             return reply
         parser, total, done = SSEParser(), 0, False
         while not done:
@@ -425,7 +427,7 @@ def chat(endpoint, body, *, timeout=600.0, cancelled=lambda: False, request_id=N
                 raise ClientError("stream exceeds its size cap")
             payloads = parser.line(line) if line.endswith(b"\n") else parser.line(line) + parser.flush()
             for data in payloads:
-                now = time.monotonic() - sent
+                now = _clock() - sent
                 if data.strip() == "[DONE]":
                     done = True
                     break
@@ -445,16 +447,16 @@ def chat(endpoint, body, *, timeout=600.0, cancelled=lambda: False, request_id=N
             for data in parser.flush():
                 if data.strip() != "[DONE]":
                     try:
-                        _apply_event(reply, json.loads(data), time.monotonic() - sent, on_delta)
+                        _apply_event(reply, json.loads(data), _clock() - sent, on_delta)
                     except ValueError:
                         pass
-        reply.end_s = time.monotonic() - sent
+        reply.end_s = _clock() - sent
         if watchdog.reason and not done:
             reply.error, reply.cancelled = watchdog.reason, watchdog.reason == "cancelled"
         elif not done and reply.finish_reason is None and reply.error is None:
             reply.error = "stream ended before completion (no finish reason and no end marker)"
     except (OSError, http.client.HTTPException, ValueError, ClientError) as exc:
-        reply.end_s = time.monotonic() - sent
+        reply.end_s = _clock() - sent
         if watchdog is not None and watchdog.reason:
             reply.error, reply.cancelled = watchdog.reason, watchdog.reason == "cancelled"
         else:
