@@ -208,6 +208,13 @@ def scan_validate(api, arguments):
     return {"machines": machines}
 
 
+def scan_rollback(api, arguments):
+    """The scan was validated but not started (refused or not audited): its machines are free again."""
+    with _scan_lock:
+        for mid in arguments.get("machines") or []:
+            _scans.pop(mid, None)
+
+
 def scan(api, arguments, ctx):
     machines = arguments["machines"]
     try:
@@ -290,5 +297,5 @@ def register(reg):
     reg.post("library/cancel", cancel, audited=True)
     reg.post("library/roots", roots, audited=True)
     reg.post("library/ledger-accept", ledger_accept, audited=True)
-    reg.job("library/scan", scan, validate=scan_validate, deadline_s=600)
+    reg.job("library/scan", scan, validate=scan_validate, deadline_s=600, rollback=scan_rollback)
     reg.job("library/verify", verify, validate=verify_validate, deadline_s=12 * 3600)

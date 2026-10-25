@@ -1181,9 +1181,10 @@ class API:
 
     def _feature_job(self, action, arguments):
         spec = feature_registry.registry().jobs[action]
+        validated = None     # the validated arguments: only these are ever rolled back (never the client's own)
         try:
             if spec.validate is not None:
-                arguments = self._feature_call(spec.validate, arguments)
+                arguments = validated = self._feature_call(spec.validate, arguments)
             resources = set()
             if spec.admission or (spec.exclusive and spec.resources is not None):
                 resources = {str(r) for r in self._feature_call(spec.resources, arguments)}
@@ -1192,7 +1193,11 @@ class API:
             elif spec.exclusive:
                 resources = {"*"}
         except APIError as exc:
+            self._rollback(spec, validated)
             self._audit(action, arguments, {"state": "refused", "error": str(exc)})
+            raise
+        except Exception:
+            self._rollback(spec, validated)
             raise
         jid = uuid.uuid4().hex
         with self._job_lock:
@@ -1200,23 +1205,30 @@ class API:
             if spec.exclusive and self._active:
                 refusal = "another mutating job is running"
             elif spec.admission and self._active:
-                refusal = "a deploy, stop or install job is running (" + str(self._jobs[self._active]["action"]) + ")"
-            if refusal:
-                self._audit(action, arguments, {"state": "refused", "error": refusal})
-                raise APIError(refusal, 409)
-            if spec.exclusive:
+                # The slot may be reserved by a job not yet listed (its admission is being decided).
+                running = (self._jobs.get(self._active) or {}).get("action") or "starting"
+                refusal = "a deploy, stop or install job is running (" + str(running) + ")"
+            if not refusal and spec.exclusive:
                 self._active = jid      # reserve the slot while the shared admission decides
+        if refusal:
+            self._rollback(spec, validated)
+            self._audit(action, arguments, {"state": "refused", "error": refusal})
+            raise APIError(refusal, 409)
         hold = None
         try:
             if spec.admission or spec.exclusive:
                 hold = self._hold(jid, "bench" if spec.admission else "core", resources, action + " " + jid[:8])
-        except APIError as exc:
+            context = JobContext(spec.deadline_s, self._admission() if hold else None, hold,
+                                 owned=bool(spec.admission))
+        except Exception as exc:
+            self._unhold(jid)
             with self._job_lock:
                 if self._active == jid:
                     self._active = None
-            self._audit(action, arguments, {"state": "refused", "error": str(exc)})
-            raise
-        context = JobContext(spec.deadline_s, self._admission() if hold else None, hold, owned=bool(spec.admission))
+            self._rollback(spec, validated)
+            error = exc if isinstance(exc, APIError) else APIError(f"admission unavailable: {exc}", 503)
+            self._audit(action, arguments, {"state": "refused", "error": str(error)})
+            raise error from exc
         with self._job_lock:
             job = {"job": jid, "id": jid, "action": action, "arguments": redact(arguments),
                    "state": "running", "started_at": self.clock(), "finished_at": None,
@@ -1234,6 +1246,7 @@ class API:
                     del self._jobs[old]
             response = dict(job)
         if accepted is not None:
+            self._rollback(spec, validated)
             self._unaccept(jid, accepted)
 
         def progress(text):
@@ -1328,6 +1341,9 @@ class API:
             raise APIError("fingerprint is required; compare on the machine")
         if action == "cancel" and not (arguments.get("job") or arguments.get("profile")):
             raise APIError("cancel requires job or profile")
+        if action == "cancel" and arguments.get("job") and arguments.get("profile"):
+            # The job names what is stopped (and so the stop's admission resources): never a second profile.
+            raise APIError("cancel takes job or profile, not both")
         if action == "cancel" and arguments.get("job"):
             with self._job_lock:
                 job = self._jobs.get(arguments["job"])
@@ -1641,6 +1657,14 @@ class API:
                 "stopped_by_deploy": progress.get("stopped") or [], "stopping": progress.get("stopping"),
                 "down": down, "summary": service.cancel_summary(progress, down=down)}
 
+    def _rollback(self, spec, arguments):
+        """A validated feature job that does not start: its validation's reservations are undone."""
+        if spec.rollback is not None and isinstance(arguments, dict):    # None: nothing was validated
+            try:
+                self._feature_call(spec.rollback, arguments)
+            except Exception:  # noqa: BLE001 - the refusal is the answer; a failing rollback must not replace it
+                pass
+
     def _accepted(self, action, arguments, jid):
         """Write a job's "accepted" audit entry (under the job lock); the error when it could not be written: the job
         does not start, and the caller releases what it reserved (``_unaccept``) once the lock is released."""
@@ -1692,12 +1716,13 @@ class API:
             # hold keeps new ones out until it finishes. A deploy is refused while a benchmark holds its resources.
             try:
                 self._hold(jid, "stop" if stopping else "core", resources, action + " " + str(profile or ""))
-            except APIError as exc:
+            except Exception as exc:
                 with self._job_lock:
                     if self._active == jid:
                         self._active = None
-                self._audit(action, arguments, {"state": "refused", "error": str(exc)})
-                raise
+                error = exc if isinstance(exc, APIError) else APIError(f"admission unavailable: {exc}", 503)
+                self._audit(action, arguments, {"state": "refused", "error": str(error)})
+                raise error from exc
             if stopping:
                 with self._job_lock:
                     contexts = [self._features_running[j] for j in self._holds if j in self._features_running]

@@ -268,6 +268,70 @@ class APIDispatchTests(unittest.TestCase):
                 self.assertEqual(self.api.admission_db.holds(), [])
                 self.assertFalse([j for j in self.api._jobs.values() if j["state"] == "running"])
 
+    def test_cancel_takes_a_job_or_a_profile(self):
+        bench = self.api.mutate("demo/bench", {"on": ["halo-1"]})
+        with self.assertRaises(APIError) as caught:
+            self.api.mutate("cancel", {"job": bench["id"], "profile": "other"})
+        self.assertIn("not both", str(caught.exception))
+        self.wait(self.api.mutate("cancel", {"job": bench["id"]})["id"])
+        self.wait(bench["id"])
+
+    def test_an_admission_error_releases_the_slot(self):
+        import sqlite3
+        with mock.patch.object(self.api.admission_db, "acquire", side_effect=sqlite3.OperationalError("locked")):
+            for action, arguments in (("demo/exclusive-on", {}), ("demo/bench", {"on": ["halo-1"]}),
+                                      ("up", {"profile": "qwen"}), ("down", {"profile": "qwen"})):
+                with self.subTest(action=action):
+                    with self.assertRaises(APIError) as caught:
+                        self.api.mutate(action, arguments)
+                    self.assertEqual(caught.exception.status, 503)
+                    self.assertEqual((self.api._active, self.api._holds), (None, {}))
+        self.wait(self.api.mutate("demo/exclusive", {})["id"])             # the slot is free
+
+    def test_a_reserved_slot_not_yet_listed_refuses_with_409(self):
+        with self.api._job_lock:
+            self.api._active = "reserved-not-listed"
+        try:
+            with self.assertRaises(APIError) as caught:
+                self.api.mutate("demo/bench", {"on": ["halo-1"]})
+            self.assertEqual(caught.exception.status, 409)
+            self.assertIn("(starting)", str(caught.exception))
+        finally:
+            self.api._active = None
+
+    def test_a_job_not_started_rolls_its_validation_back(self):
+        reserved = set()
+
+        def validate(api, a):
+            if "machines" in a:
+                raise ValueError("unknown argument machines")
+            reserved.add(a["on"])
+            return {"machines": [a["on"]]}
+
+        def rollback(api, a):
+            reserved.difference_update(a["machines"])
+        reg = features.registry()
+        reg.job("demo/reserving", lambda api, a, ctx: {}, validate=validate, exclusive=True, rollback=rollback)
+        reserved.add("taken-by-another")
+        # Not audited: the reservation is undone.
+        with mock.patch.object(self.api, "_audit", side_effect=OSError("disk full")):
+            with self.assertRaises(APIError):
+                self.api.mutate("demo/reserving", {"on": "halo-1"})
+        self.assertEqual(reserved, {"taken-by-another"})
+        # Refused (the slot is taken): undone too.
+        with self.api._job_lock:
+            self.api._active = "other"
+        try:
+            with self.assertRaises(APIError):
+                self.api.mutate("demo/reserving", {"on": "halo-1"})
+        finally:
+            self.api._active = None
+        self.assertEqual(reserved, {"taken-by-another"})
+        # A refused validation rolls nothing back (the client's arguments never reach the rollback).
+        with self.assertRaises(APIError):
+            self.api.mutate("demo/reserving", {"on": "x", "machines": ["taken-by-another"]})
+        self.assertEqual(reserved, {"taken-by-another"})
+
     def test_a_finished_feature_job_cancel_is_409(self):
         job = self.api.mutate("demo/job", {"n": 1})
         self.wait(job["id"])

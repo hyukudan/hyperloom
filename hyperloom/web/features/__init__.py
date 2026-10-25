@@ -51,6 +51,7 @@ class Job:
     admission: str = None       # "bench": shared admission controller (C11)
     resources: object = None    # fn(api, arguments) -> set of resource ids (required with admission)
     deadline_s: float = DEFAULT_DEADLINE_S
+    rollback: object = None     # fn(api, arguments): undo what validate reserved when the job is not started
 
 
 @dataclass
@@ -89,12 +90,12 @@ class Registry:
             self.audited.add(name)
 
     def job(self, name, run, validate=None, exclusive=False, admission=None, resources=None,
-            deadline_s=DEFAULT_DEADLINE_S):
+            deadline_s=DEFAULT_DEADLINE_S, rollback=None):
         if admission is not None and (admission not in ADMISSIONS or resources is None or exclusive):
             raise ValueError("an admitted job names its admission class and resources and is not exclusive")
         if not 1 <= float(deadline_s) <= 24 * 3600:
             raise ValueError("job deadline must be in 1 s..24 h")
-        self.jobs[self._name(name)] = Job(run, validate, exclusive, admission, resources, float(deadline_s))
+        self.jobs[self._name(name)] = Job(run, validate, exclusive, admission, resources, float(deadline_s), rollback)
 
     def collector(self, name, sample, interval=2.0):
         if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_-]*", name) or name in self.collectors:

@@ -125,6 +125,16 @@ class JobTests(LibraryFeatureCase):
             self.api.mutate("library/scan", {"machine": "halo-1"})
         self.assertEqual(caught.exception.status, 409)
 
+    def test_a_scan_not_started_frees_its_machines(self):
+        with mock.patch.object(self.api, "_audit", side_effect=OSError("disk full")):
+            with self.assertRaises(APIError) as caught:
+                self.api.mutate("library/scan", {"machine": "halo-1"})
+        self.assertEqual(caught.exception.status, 503)
+        self.assertNotIn("halo-1", library._scans)
+        with mock.patch.object(downloads, "inventory", return_value={"machine": "halo-1", "scanned_at": 5, "roots": []}):
+            self.assertEqual(self.wait(self.api.mutate("library/scan", {"machine": "halo-1"})["id"])["state"],
+                             "succeeded")
+
     def run_verify(self, final):
         with mock.patch.object(downloads, "verify_start", return_value={"mode": "node", "machine": "halo-1",
                                                                         "job": "n1"}), \
