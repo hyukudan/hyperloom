@@ -356,11 +356,13 @@ class RtxTests(Base):
 
 @unittest.skipUnless(NODE, "needs node to render the page")
 class RtxPageTests(unittest.TestCase):
-    def render(self, service):
+    def render(self, service, last=None):
         doc = {"services": [{"profile": "ds", "port": 18500, "health": None, "provider": None,
                              "why": {"service": "x", "provider": "x", **service.pop("why", {})}, **service}],
                "runs": [], "logs_dir_set": False, "logs_dir": None, "notes": [], "why": {"last": "none"},
                "observer": "fixture"}
+        if last is not None:
+            doc["last"] = {"id": "0" * 16, "name": "run.log", "bytes": 1, "mtime": 0, "parsed_at": 0, "stats": last}
         answer = subprocess.run([NODE, str(FIXTURES / "render_rtx.js")], input=json.dumps({"doc": doc}),
                                 capture_output=True, text=True, encoding="utf-8", timeout=60)
         if answer.returncode:
@@ -374,6 +376,20 @@ class RtxPageTests(unittest.TestCase):
                 html = self.render({key: stats})
                 self.assertIn("Tier statistics", html)
                 self.assertIn("strix-stream/stats-v1 · backend cuda", html)
+        # The new key wins over the legacy one (32 vs 31 hits of 60 routed).
+        legacy = ledger.parse_stats(json.loads(STREAM_LINES[-1]))
+        html = self.render({"tierstream": stats, "strix_stream": legacy})
+        self.assertIn("32 of 60 units", html)
+        self.assertNotIn("31 of 60 units", html)
+        # Records under either schema spelling, as a service or as the last batch run (the page shows the record's id).
+        for schema in ledger.STATS_SCHEMAS:
+            record = {**stats, "schema": schema}
+            for key in ("tierstream", "strix_stream"):
+                with self.subTest(schema=schema, key=key):
+                    html = self.render({key: record}, last=record)
+                    self.assertEqual(html.count("Tier statistics"), 1)
+                    self.assertIn("Last batch run · run.log", html)
+                    self.assertEqual(html.count(f"{schema} · backend cuda"), 2)
         for key in ("tierstream", "strix_stream"):
             with self.subTest(why=key):
                 html = self.render({"why": {key: "reason " + key}})
