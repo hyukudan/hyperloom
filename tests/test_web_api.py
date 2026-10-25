@@ -306,6 +306,32 @@ class APITests(unittest.TestCase):
                 self.assertEqual(finished["state"], "failed" if stops_it else "succeeded")
                 self.assertEqual("cancelled_switches" in stopped["result"], stops_it)
 
+    def test_every_mutation_runs_on_the_portals_configuration(self):
+        # A configuration file named by the client is refused on every mutation that took one (nothing runs); the
+        # portal's own path is accepted and is what runs.
+        bodies = {"up": {"profile": "qwen-replicas"}, "install": {"profile": "qwen-replicas"},
+                  "doctor": {"machine": "halo-1"}, "hosts/pin": {"machine": "halo-1", "fingerprint": "SHA256:fixture"}}
+        for action, body in bodies.items():
+            for other in ("//pc/share/cluster.json", str(self.directory / "other" / "cluster.json"), "cluster.json"):
+                with self.subTest(action=action, config=other):
+                    with self.assertRaisesRegex(APIError, "portal's configuration: drop config"):
+                        self.api.mutate(action, dict(body, config=other))
+        self.orch.load_cluster.assert_not_called()
+        self.orch.up.assert_not_called()
+        self.orch.install.assert_not_called()
+        self.remote.keyscan.assert_not_called()
+        self.remote.keyscan.return_value = [SimpleNamespace(algorithm="ssh-ed25519", sha256_fingerprint="SHA256:fixture")]
+        for action, body in bodies.items():
+            with self.subTest(action=action, config="the portal's"):
+                job = wait_job(self.api, self.api.mutate(action, dict(body, config=str(self.directory / "cluster.json"))))
+                self.assertEqual(job["state"], "succeeded", job["error"])
+                self.assertNotIn("config", job["arguments"])
+        self.assertEqual({c.args[0] for c in self.orch.load_cluster.call_args_list}, {self.directory / "cluster.json"})
+        # The detached CLI is always given the portal's configuration.
+        for action in ("up", "install"):
+            argv = self.api._cli_argv(action, {"profile": "qwen-replicas"})
+            self.assertEqual(argv[argv.index("--config") + 1], str(self.directory / "cluster.json"))
+
     def test_detached_plain_up_carries_its_job(self):
         argv = self.api._cli_argv("up", {"profile": "qwen-replicas", "_job": "ab12cd34"})
         self.assertEqual(argv[argv.index("--job") + 1], "ab12cd34")

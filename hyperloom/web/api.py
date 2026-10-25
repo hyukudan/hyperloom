@@ -997,6 +997,13 @@ class API:
                 raise APIError(key + " must be a nonempty string not starting with '-'")
             elif key in ("profile", "machine", "build_on", "router") and not IDENTIFIER.fullmatch(value):
                 raise APIError(f"{key} must be an id ([A-Za-z0-9][A-Za-z0-9_.-]{{0,63}})")
+        if "config" in arguments:
+            # Every mutation runs on the portal's own configuration: a configuration file is never named by the
+            # client (any local user can read the CSRF token from the page; a named file could send node keys to the
+            # machines it lists, or pin and probe them).
+            if Path(arguments["config"]).absolute() != Path(self.config_path).absolute():
+                raise APIError(f"{action} runs on the portal's configuration: drop config")
+            del arguments["config"]
         if action == "hosts/pin" and not arguments.get("fingerprint"):
             raise APIError("fingerprint is required; compare on the machine")
         if action == "cancel" and not (arguments.get("job") or arguments.get("profile")):
@@ -1010,11 +1017,6 @@ class API:
             if job["state"] != "running":
                 raise APIError(f"job {job['job']} has already {job['state']}: use down with a profile", 409)
         if action == "up" and (arguments.get("recipe") or arguments.get("recipe_inputs")):
-            # A recipe launch runs on the portal's own configuration: its recipe directories, snapshots and layers
-            # derive from it, and a configuration file is never named by the client here.
-            if "config" in arguments and Path(arguments["config"]).absolute() != Path(self.config_path).absolute():
-                raise APIError("an up with a recipe runs on the portal's configuration: drop config")
-            arguments.pop("config", None)
             try:
                 self._recipe_up_argv(arguments)
                 if not arguments.get("profile"):
@@ -1030,7 +1032,7 @@ class API:
         """The profile an up with a recipe and no profile launches: the snapshot's, or the only profile serving the
         recipe's model (as `hyperloom up --recipe ID` decides it); None for auto (the CLI asks for a profile)."""
         from hyperloom.recipes import service
-        path = Path(args.get("config", self.config_path))
+        path = Path(self.config_path)
         with service.configured(path):
             if args.get("recipe_inputs"):
                 return service.load_inputs(args["recipe_inputs"])[1]["intent"]["profile"]
@@ -1073,12 +1075,12 @@ class API:
     def _recipe_up_argv(self, args):
         """The `hyperloom up` argv of an API up with a recipe (layer files are names in the user layers directory)."""
         from hyperloom.recipes import service
-        with service.configured(Path(args.get("config", self.config_path))):    # the layers of the config up uses
+        with service.configured(Path(self.config_path)):    # the layers of the config up uses
             return self._recipe_up_argv_in(args, service)
 
     def _recipe_up_argv_in(self, args, service):
         argv = ["up"] + ([args["profile"]] if args.get("profile") else [])
-        argv += ["--config", str(Path(args.get("config", self.config_path))), "--router", args.get("router", "local"),
+        argv += ["--config", str(Path(self.config_path)), "--router", args.get("router", "local"),
                  "--deadline", str(args.get("deadline", 1140))]
         # Every accepted argument goes to the CLI, which refuses the combinations it does not allow.
         for key, flag in (("node", "--node"), ("device", "--device")):
@@ -1116,7 +1118,7 @@ class API:
             return [sys.executable, "-m", "hyperloom", *self._deploy_argv(args, job=args.get("_job"))]
         argv = [sys.executable, "-m", "hyperloom", action, args["profile"]]
         if action in ("up", "install"):
-            argv += ["--config", str(Path(args.get("config", self.config_path)))]
+            argv += ["--config", str(Path(self.config_path))]
         if action == "install" and args.get("build_on"):
             argv += ["--build-on", args["build_on"]]
         if action == "down" and args.get("force"):
@@ -1211,7 +1213,7 @@ class API:
                                       approval=commands._approval(parsed), job=parsed.job)
         if self.detached and action in ("up", "down", "install"):
             if action in ("up", "install"):
-                cluster = self.orchestrate.load_cluster(Path(args.get("config", self.config_path)), config)
+                cluster = self.orchestrate.load_cluster(Path(self.config_path), config)
                 _, kind, _ = self.orchestrate._profile(cluster, args["profile"])
                 if engines.adapter(kind).topology != "replicas":
                     raise APIError("later phase · only replica profiles are available in Phase 1b")
@@ -1237,7 +1239,7 @@ class API:
         if action == "doctor" and "machine" not in args:
             from types import SimpleNamespace
             return self._node(SimpleNamespace(access="local"), "doctor")
-        cluster = self.orchestrate.load_cluster(Path(args.get("config", self.config_path)), config)
+        cluster = self.orchestrate.load_cluster(Path(self.config_path), config)
         if action in ("up", "install"):
             _, kind, mids = self.orchestrate._profile(cluster, args["profile"])
             if engines.adapter(kind).topology != "replicas":
