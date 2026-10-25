@@ -1,0 +1,458 @@
+{
+ "char_devices": [
+  "/dev/tbstream0",
+  "/dev/tbstream1",
+  "/dev/tbstream2",
+  "/dev/tbstream3"
+ ],
+ "files": {
+  "/proc/interrupts": "            CPU0       CPU1       CPU2       CPU3       CPU4       CPU5       CPU6       CPU7       CPU8       CPU9       CPU10      CPU11      CPU12      CPU13      CPU14      CPU15      CPU16      CPU17      CPU18      CPU19      CPU20      CPU21      CPU22      CPU23      CPU24      CPU25      CPU26      CPU27      CPU28      CPU29      CPU30      CPU31      \n   0:        130          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0  IR-IO-APIC                  2-edge      timer\n   1:          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0         13          0          0          0          0          0          0          0          0          0          0          0          0          0  IR-IO-APIC                  1-edge      i8042\n  53:          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0      93088          0          0          0          0          0          0          0          0          0          0  IR-PCI-MSIX-0000:c7:00.5    0-edge      thunderbolt\n  54:          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0      92864          0          0          0          0          0          0          0          0          0  IR-PCI-MSIX-0000:c7:00.5    1-edge      thunderbolt\n  55:          0   10444179     773874          1    5277077          1     934968          0          0          0          0          0    2662270          0   15986568          0          0          0          0          0          0          0          0          0          0          0          0          0          0  150280459          0          0  IR-PCI-MSIX-0000:c7:00.5    2-edge      thunderbolt\n  56:          0  151997363   10357158     984261          0    5187250          1     942298          0          0          0          0    2066175          0   12701343          0          0          0          0          0          0          0          0          0          0          0          0          0          0         20          0          0  IR-PCI-MSIX-0000:c7:00.5    3-edge      thunderbolt\n  57:          0          6  141397158   10084682    9180925          0   10701787          1          0          0          0          0    1331571          0    6721184          0          0          0          0          0          0          0          0          0          0          0          0          0          0     966307          0          0  IR-PCI-MSIX-0000:c7:00.5    4-edge      thunderbolt\n  58:          0     989949          5  141138454    9968750    3996938          0   10647156          1          0          0          0     852813          0    4360098          0          0          0          0          0          0          0          0          0          0          0          0          0          0          2          0          0  IR-PCI-MSIX-0000:c7:00.5    5-edge      thunderbolt\n  88:          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0      61215          0          0          0          0          0          0  IR-PCI-MSIX-0000:c7:00.6    0-edge      thunderbolt\n  89:          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0      60864          0          0          0          0          0  IR-PCI-MSIX-0000:c7:00.6    1-edge      thunderbolt\n  90:          0          9   15248964         11  139419978   11449793     390970          0          0          0          0          0    2705845          0   16344633          0          0          0          0          0          0          0          0          0          0          0          0          0          0    5341393          0          0  IR-PCI-MSIX-0000:c7:00.6    2-edge      thunderbolt\n  91:          0    5995895         11    9677964          7  137478499   11383253     389721          0          0          0          0    1776876          0   11831837          0          0          0          0          0          0          0          0          0          0          0          0          0          0         17          0          0  IR-PCI-MSIX-0000:c7:00.6    3-edge      thunderbolt\n  92:          0          6    4926089          1    6516818          0  147643732   11172343          0          0          0          0    1303063          0    6681537          0          0          0          0          0          0          0          0          0          0          0          0          0          0     546095          0          0  IR-PCI-MSIX-0000:c7:00.6    4-edge      thunderbolt\n  93:          0     553085          8    4986527          3    6389880          0  140245191   10746319          0          0          0     825101          0    4076581          0          0          0          0          0          0          0          0          0          0          0          0          0          0          1          0          0  IR-PCI-MSIX-0000:c7:00.6    5-edge      thunderbolt\n NMI:       3173       3225        524        560        834        471        412        595        220        126        211         92        132         61        265        368       4214       4070        357        509        827        441        372        582        108         82        108         73         80        176        183        441  Non-maskable interrupts\n LOC:  157687342   78501658   21946741   20982256   27038121   18443849   16099750   19015249   10813127    7738572   10393759    6909088    7569827    4836633    9427424   13057689   87056022   88589619   15466850   15132498   19636437   13363542   12084437   14197935    7376207    6446266    6110653    5521701    5385664    8770624    8615571   14985008  Local timer interrupts\n",
+  "/proc/sys/kernel/random/boot_id": "00000000-0000-0000-0000-0000000000b1",
+  "/run/usb4stream-layout.json": "{\n \"0-2.0/data0\": {\n  \"device\": \"/dev/tbstream0\",\n  \"configfs\": \"/sys/kernel/config/thunderbolt/stream/0-2.0/data0\",\n  \"service\": \"0-2.0\",\n  \"stream\": \"data0\",\n  \"index\": 0,\n  \"in_hopid\": 8,\n  \"out_hopid\": 8,\n  \"config\": {\n   \"busy_poll\": 0,\n   \"gpu_direct\": 0,\n   \"gpu_poll\": -1,\n   \"gpu_quarantine\": 0,\n   \"gpu_timing\": \"none\",\n   \"irq_cpu\": -1,\n   \"latency_qos_us\": -1,\n   \"open_timeout_ms\": -1,\n   \"ring_size\": 1024,\n   \"rx_busy_poll\": 0,\n   \"rx_napi\": -1,\n   \"spin_us\": -1,\n   \"throttling\": 8192\n  },\n  \"exists\": true,\n  \"attached\": true,\n  \"openable\": true,\n  \"open_checked\": false,\n  \"local\": {\n   \"nhi_pci\": \"0000:c7:00.5\",\n   \"nhi_device_id\": \"1022:158d\",\n   \"nhi_acpi_path\": \"\\\\_SB_.PCI0.GPPC.NHI0\",\n   \"domain\": 0,\n   \"usb4_port\": 2,\n   \"port_label\": null\n  },\n  \"link\": {\n   \"rx\": {\n    \"gbps_per_lane\": 10.0,\n    \"lanes\": 2,\n    \"gbps\": 20.0,\n    \"raw_speed\": \"10.0 Gb/s\",\n    \"raw_lanes\": \"2\"\n   },\n   \"tx\": {\n    \"gbps_per_lane\": 10.0,\n    \"lanes\": 2,\n    \"gbps\": 20.0,\n    \"raw_speed\": \"10.0 Gb/s\",\n    \"raw_lanes\": \"2\"\n   },\n   \"gbps\": 20.0,\n   \"full_speed\": false,\n   \"note\": \"sysfs speed is per lane; gbps = per-lane speed x lanes, minimum of both directions; raw link rate, not throughput\"\n  },\n  \"remote\": {\n   \"xdomain\": \"0-2\",\n   \"route\": \"0x2\",\n   \"device_name\": \"halo-1\",\n   \"vendor_name\": \"Linux\",\n   \"unique_id\": \"00000000-0000-4000-8000-000000000003\"\n  },\n  \"cable\": \"A\"\n },\n \"0-2.0/data1\": {\n  \"device\": \"/dev/tbstream2\",\n  \"configfs\": \"/sys/kernel/config/thunderbolt/stream/0-2.0/data1\",\n  \"service\": \"0-2.0\",\n  \"stream\": \"data1\",\n  \"index\": 2,\n  \"in_hopid\": 9,\n  \"out_hopid\": 9,\n  \"config\": {\n   \"busy_poll\": 0,\n   \"gpu_direct\": 0,\n   \"gpu_poll\": -1,\n   \"gpu_quarantine\": 0,\n   \"gpu_timing\": \"none\",\n   \"irq_cpu\": -1,\n   \"latency_qos_us\": -1,\n   \"open_timeout_ms\": -1,\n   \"ring_size\": 1024,\n   \"rx_busy_poll\": 0,\n   \"rx_napi\": -1,\n   \"spin_us\": -1,\n   \"throttling\": 8192\n  },\n  \"exists\": true,\n  \"attached\": true,\n  \"openable\": true,\n  \"open_checked\": false,\n  \"local\": {\n   \"nhi_pci\": \"0000:c7:00.5\",\n   \"nhi_device_id\": \"1022:158d\",\n   \"nhi_acpi_path\": \"\\\\_SB_.PCI0.GPPC.NHI0\",\n   \"domain\": 0,\n   \"usb4_port\": 2,\n   \"port_label\": null\n  },\n  \"link\": {\n   \"rx\": {\n    \"gbps_per_lane\": 10.0,\n    \"lanes\": 2,\n    \"gbps\": 20.0,\n    \"raw_speed\": \"10.0 Gb/s\",\n    \"raw_lanes\": \"2\"\n   },\n   \"tx\": {\n    \"gbps_per_lane\": 10.0,\n    \"lanes\": 2,\n    \"gbps\": 20.0,\n    \"raw_speed\": \"10.0 Gb/s\",\n    \"raw_lanes\": \"2\"\n   },\n   \"gbps\": 20.0,\n   \"full_speed\": false,\n   \"note\": \"sysfs speed is per lane; gbps = per-lane speed x lanes, minimum of both directions; raw link rate, not throughput\"\n  },\n  \"remote\": {\n   \"xdomain\": \"0-2\",\n   \"route\": \"0x2\",\n   \"device_name\": \"halo-1\",\n   \"vendor_name\": \"Linux\",\n   \"unique_id\": \"00000000-0000-4000-8000-000000000003\"\n  },\n  \"cable\": \"A\"\n },\n \"1-2.0/data0\": {\n  \"device\": \"/dev/tbstream1\",\n  \"configfs\": \"/sys/kernel/config/thunderbolt/stream/1-2.0/data0\",\n  \"service\": \"1-2.0\",\n  \"stream\": \"data0\",\n  \"index\": 1,\n  \"in_hopid\": 8,\n  \"out_hopid\": 8,\n  \"config\": {\n   \"busy_poll\": 0,\n   \"gpu_direct\": 0,\n   \"gpu_poll\": -1,\n   \"gpu_quarantine\": 0,\n   \"gpu_timing\": \"none\",\n   \"irq_cpu\": -1,\n   \"latency_qos_us\": -1,\n   \"open_timeout_ms\": -1,\n   \"ring_size\": 1024,\n   \"rx_busy_poll\": 0,\n   \"rx_napi\": -1,\n   \"spin_us\": -1,\n   \"throttling\": 8192\n  },\n  \"exists\": true,\n  \"attached\": true,\n  \"openable\": true,\n  \"open_checked\": false,\n  \"local\": {\n   \"nhi_pci\": \"0000:c7:00.6\",\n   \"nhi_device_id\": \"1022:158e\",\n   \"nhi_acpi_path\": \"\\\\_SB_.PCI0.GPPC.NHI1\",\n   \"domain\": 1,\n   \"usb4_port\": 2,\n   \"port_label\": null\n  },\n  \"link\": {\n   \"rx\": {\n    \"gbps_per_lane\": 20.0,\n    \"lanes\": 2,\n    \"gbps\": 40.0,\n    \"raw_speed\": \"20.0 Gb/s\",\n    \"raw_lanes\": \"2\"\n   },\n   \"tx\": {\n    \"gbps_per_lane\": 20.0,\n    \"lanes\": 2,\n    \"gbps\": 40.0,\n    \"raw_speed\": \"20.0 Gb/s\",\n    \"raw_lanes\": \"2\"\n   },\n   \"gbps\": 40.0,\n   \"full_speed\": true,\n   \"note\": \"sysfs speed is per lane; gbps = per-lane speed x lanes, minimum of both directions; raw link rate, not throughput\"\n  },\n  \"remote\": {\n   \"xdomain\": \"1-2\",\n   \"route\": \"0x2\",\n   \"device_name\": \"halo-1\",\n   \"vendor_name\": \"Linux\",\n   \"unique_id\": \"00000000-0000-4000-8000-000000000004\"\n  },\n  \"cable\": \"B\"\n },\n \"1-2.0/data1\": {\n  \"device\": \"/dev/tbstream3\",\n  \"configfs\": \"/sys/kernel/config/thunderbolt/stream/1-2.0/data1\",\n  \"service\": \"1-2.0\",\n  \"stream\": \"data1\",\n  \"index\": 3,\n  \"in_hopid\": 9,\n  \"out_hopid\": 9,\n  \"config\": {\n   \"busy_poll\": 0,\n   \"gpu_direct\": 0,\n   \"gpu_poll\": -1,\n   \"gpu_quarantine\": 0,\n   \"gpu_timing\": \"none\",\n   \"irq_cpu\": -1,\n   \"latency_qos_us\": -1,\n   \"open_timeout_ms\": -1,\n   \"ring_size\": 1024,\n   \"rx_busy_poll\": 0,\n   \"rx_napi\": -1,\n   \"spin_us\": -1,\n   \"throttling\": 8192\n  },\n  \"exists\": true,\n  \"attached\": true,\n  \"openable\": true,\n  \"open_checked\": false,\n  \"local\": {\n   \"nhi_pci\": \"0000:c7:00.6\",\n   \"nhi_device_id\": \"1022:158e\",\n   \"nhi_acpi_path\": \"\\\\_SB_.PCI0.GPPC.NHI1\",\n   \"domain\": 1,\n   \"usb4_port\": 2,\n   \"port_label\": null\n  },\n  \"link\": {\n   \"rx\": {\n    \"gbps_per_lane\": 20.0,\n    \"lanes\": 2,\n    \"gbps\": 40.0,\n    \"raw_speed\": \"20.0 Gb/s\",\n    \"raw_lanes\": \"2\"\n   },\n   \"tx\": {\n    \"gbps_per_lane\": 20.0,\n    \"lanes\": 2,\n    \"gbps\": 40.0,\n    \"raw_speed\": \"20.0 Gb/s\",\n    \"raw_lanes\": \"2\"\n   },\n   \"gbps\": 40.0,\n   \"full_speed\": true,\n   \"note\": \"sysfs speed is per lane; gbps = per-lane speed x lanes, minimum of both directions; raw link rate, not throughput\"\n  },\n  \"remote\": {\n   \"xdomain\": \"1-2\",\n   \"route\": \"0x2\",\n   \"device_name\": \"halo-1\",\n   \"vendor_name\": \"Linux\",\n   \"unique_id\": \"00000000-0000-4000-8000-000000000004\"\n  },\n  \"cable\": \"B\"\n },\n \"version\": 2,\n \"topology\": {\n  \"host\": \"halo-2\",\n  \"tool\": \"usb4stream-describe 2\",\n  \"generated_at\": \"2026-10-23T09:15:20+00:00\",\n  \"summary\": \"halo-2: 2 cable slot(s), 2 up; A 0000:c7:00.5 port2 -> halo-1 20 Gb/s (10 Gb/s x2 lanes), 2/2 streams openable; B 0000:c7:00.6 port2 -> halo-1 40 Gb/s (20 Gb/s x2 lanes), 2/2 streams openable\",\n  \"cables_total\": 2,\n  \"cables_up\": 2,\n  \"gbps_total\": 60.0,\n  \"controllers\": [\n   {\n    \"pci\": \"0000:c7:00.5\",\n    \"device_id\": \"1022:158d\",\n    \"acpi_path\": \"\\\\_SB_.PCI0.GPPC.NHI0\",\n    \"driver\": \"thunderbolt\",\n    \"domain\": 0,\n    \"state\": \"up\",\n    \"host_router\": \"0-0\",\n    \"host_router_uuid\": \"00000000-0000-4000-8000-000000000002\",\n    \"generation\": 4,\n    \"usb4_ports\": [\n     2\n    ],\n    \"port_link\": {\n     \"2\": \"usb4\"\n    },\n    \"port_label\": null\n   },\n   {\n    \"pci\": \"0000:c7:00.6\",\n    \"device_id\": \"1022:158e\",\n    \"acpi_path\": \"\\\\_SB_.PCI0.GPPC.NHI1\",\n    \"driver\": \"thunderbolt\",\n    \"domain\": 1,\n    \"state\": \"up\",\n    \"host_router\": \"1-0\",\n    \"host_router_uuid\": \"00000000-0000-4000-8000-000000000001\",\n    \"generation\": 4,\n    \"usb4_ports\": [\n     2\n    ],\n    \"port_link\": {\n     \"2\": \"usb4\"\n    },\n    \"port_label\": null\n   }\n  ],\n  \"cables\": [\n   {\n    \"key\": \"0000:c7:00.5/usb4_port2\",\n    \"local\": {\n     \"pci\": \"0000:c7:00.5\",\n     \"device_id\": \"1022:158d\",\n     \"acpi_path\": \"\\\\_SB_.PCI0.GPPC.NHI0\",\n     \"domain\": 0,\n     \"port_label\": null,\n     \"host_router_uuid\": \"00000000-0000-4000-8000-000000000002\",\n     \"usb4_port\": 2\n    },\n    \"remote\": {\n     \"xdomain\": \"0-2\",\n     \"route\": \"0x2\",\n     \"hops\": 1,\n     \"device_name\": \"halo-1\",\n     \"vendor_name\": \"Linux\",\n     \"unique_id\": \"00000000-0000-4000-8000-000000000003\",\n     \"maxhopid\": 16\n    },\n    \"link\": {\n     \"rx\": {\n      \"gbps_per_lane\": 10.0,\n      \"lanes\": 2,\n      \"gbps\": 20.0,\n      \"raw_speed\": \"10.0 Gb/s\",\n      \"raw_lanes\": \"2\"\n     },\n     \"tx\": {\n      \"gbps_per_lane\": 10.0,\n      \"lanes\": 2,\n      \"gbps\": 20.0,\n      \"raw_speed\": \"10.0 Gb/s\",\n      \"raw_lanes\": \"2\"\n     },\n     \"gbps\": 20.0,\n     \"full_speed\": false,\n     \"note\": \"sysfs speed is per lane; gbps = per-lane speed x lanes, minimum of both directions; raw link rate, not throughput\"\n    },\n    \"state\": \"up\",\n    \"id\": \"A\",\n    \"streams\": [\n     \"0-2.0/data0\",\n     \"0-2.0/data1\"\n    ],\n    \"devices\": [\n     \"/dev/tbstream0\",\n     \"/dev/tbstream2\"\n    ],\n    \"streams_openable\": 2\n   },\n   {\n    \"key\": \"0000:c7:00.6/usb4_port2\",\n    \"local\": {\n     \"pci\": \"0000:c7:00.6\",\n     \"device_id\": \"1022:158e\",\n     \"acpi_path\": \"\\\\_SB_.PCI0.GPPC.NHI1\",\n     \"domain\": 1,\n     \"port_label\": null,\n     \"host_router_uuid\": \"00000000-0000-4000-8000-000000000001\",\n     \"usb4_port\": 2\n    },\n    \"remote\": {\n     \"xdomain\": \"1-2\",\n     \"route\": \"0x2\",\n     \"hops\": 1,\n     \"device_name\": \"halo-1\",\n     \"vendor_name\": \"Linux\",\n     \"unique_id\": \"00000000-0000-4000-8000-000000000004\",\n     \"maxhopid\": 16\n    },\n    \"link\": {\n     \"rx\": {\n      \"gbps_per_lane\": 20.0,\n      \"lanes\": 2,\n      \"gbps\": 40.0,\n      \"raw_speed\": \"20.0 Gb/s\",\n      \"raw_lanes\": \"2\"\n     },\n     \"tx\": {\n      \"gbps_per_lane\": 20.0,\n      \"lanes\": 2,\n      \"gbps\": 40.0,\n      \"raw_speed\": \"20.0 Gb/s\",\n      \"raw_lanes\": \"2\"\n     },\n     \"gbps\": 40.0,\n     \"full_speed\": true,\n     \"note\": \"sysfs speed is per lane; gbps = per-lane speed x lanes, minimum of both directions; raw link rate, not throughput\"\n    },\n    \"state\": \"up\",\n    \"id\": \"B\",\n    \"streams\": [\n     \"1-2.0/data0\",\n     \"1-2.0/data1\"\n    ],\n    \"devices\": [\n     \"/dev/tbstream1\",\n     \"/dev/tbstream3\"\n    ],\n    \"streams_openable\": 2\n   }\n  ],\n  \"peers\": {\n   \"halo-1\": {\n    \"unique_ids\": [\n     \"00000000-0000-4000-8000-000000000003\",\n     \"00000000-0000-4000-8000-000000000004\"\n    ],\n    \"cables\": [\n     \"A\",\n     \"B\"\n    ],\n    \"gbps\": 60.0\n   }\n  },\n  \"warnings\": [\n   \"cable A (0000:c7:00.5/usb4_port2) trained below Gen3 x2: rx 10x2, tx 10x2\"\n  ],\n  \"notes\": [\n   \"stream entries are the top-level keys containing \\\"/\\\"; \\\"version\\\" and \\\"topology\\\" are the only other keys\",\n   \"openable is derived without opening the device (open starts rings, close sends CLOSE to the peer)\",\n   \"streams pair across hosts by stream name on the same cable (dataN <-> dataN); use --merge or the engine handshake to resolve which remote tbstreamN that is\"\n  ],\n  \"passes\": 1\n }\n}",
+  "/sys/bus/thunderbolt/devices/0-0/uevent": "DEVTYPE=thunderbolt_device",
+  "/sys/bus/thunderbolt/devices/0-0/unique_id": "00000000-0000-4000-8000-000000000002",
+  "/sys/bus/thunderbolt/devices/0-0:2.1/uevent": "DEVTYPE=thunderbolt_retimer",
+  "/sys/bus/thunderbolt/devices/0-0:2.2/uevent": "DEVTYPE=thunderbolt_retimer",
+  "/sys/bus/thunderbolt/devices/0-2.0/uevent": "DEVTYPE=thunderbolt_service",
+  "/sys/bus/thunderbolt/devices/0-2/device_name": "halo-1",
+  "/sys/bus/thunderbolt/devices/0-2/rx_lanes": "2",
+  "/sys/bus/thunderbolt/devices/0-2/rx_speed": "10.0 Gb/s",
+  "/sys/bus/thunderbolt/devices/0-2/tx_lanes": "2",
+  "/sys/bus/thunderbolt/devices/0-2/tx_speed": "10.0 Gb/s",
+  "/sys/bus/thunderbolt/devices/0-2/uevent": "DEVTYPE=thunderbolt_xdomain",
+  "/sys/bus/thunderbolt/devices/0-2/unique_id": "00000000-0000-4000-8000-000000000003",
+  "/sys/bus/thunderbolt/devices/0-2/vendor_name": "Linux",
+  "/sys/bus/thunderbolt/devices/1-0/uevent": "DEVTYPE=thunderbolt_device",
+  "/sys/bus/thunderbolt/devices/1-0/unique_id": "00000000-0000-4000-8000-000000000001",
+  "/sys/bus/thunderbolt/devices/1-0:2.1/uevent": "DEVTYPE=thunderbolt_retimer",
+  "/sys/bus/thunderbolt/devices/1-0:2.2/uevent": "DEVTYPE=thunderbolt_retimer",
+  "/sys/bus/thunderbolt/devices/1-2.0/uevent": "DEVTYPE=thunderbolt_service",
+  "/sys/bus/thunderbolt/devices/1-2/device_name": "halo-1",
+  "/sys/bus/thunderbolt/devices/1-2/rx_lanes": "2",
+  "/sys/bus/thunderbolt/devices/1-2/rx_speed": "20.0 Gb/s",
+  "/sys/bus/thunderbolt/devices/1-2/tx_lanes": "2",
+  "/sys/bus/thunderbolt/devices/1-2/tx_speed": "20.0 Gb/s",
+  "/sys/bus/thunderbolt/devices/1-2/uevent": "DEVTYPE=thunderbolt_xdomain",
+  "/sys/bus/thunderbolt/devices/1-2/unique_id": "00000000-0000-4000-8000-000000000004",
+  "/sys/bus/thunderbolt/devices/1-2/vendor_name": "Linux",
+  "/sys/bus/thunderbolt/devices/domain0/uevent": "DEVTYPE=thunderbolt_domain",
+  "/sys/bus/thunderbolt/devices/domain1/uevent": "DEVTYPE=thunderbolt_domain",
+  "/sys/module/thunderbolt/parameters/asym_threshold": "45000",
+  "/sys/module/thunderbolt/parameters/bw_alloc_mode": "Y",
+  "/sys/module/thunderbolt/parameters/clx": "Y",
+  "/sys/module/thunderbolt/parameters/dma_credits": "14",
+  "/sys/module/thunderbolt/parameters/dma_wq_percpu": "N",
+  "/sys/module/thunderbolt/parameters/dprx_timeout": "12000",
+  "/sys/module/thunderbolt/parameters/gen3_retrain": "0",
+  "/sys/module/thunderbolt/parameters/host_reset": "Y",
+  "/sys/module/thunderbolt/parameters/start_icm": "N",
+  "/sys/module/thunderbolt/parameters/teardown_reset": "Y",
+  "/sys/module/thunderbolt/parameters/xdomain": "Y",
+  "/sys/module/thunderbolt_stream/parameters/contig_buffers": "0",
+  "/sys/module/thunderbolt_stream/parameters/gpu_dma_timeout_ms": "30000",
+  "/sys/module/thunderbolt_stream/parameters/gpu_poll": "N",
+  "/sys/module/thunderbolt_stream/parameters/gpu_poll_budget": "64",
+  "/sys/module/thunderbolt_stream/parameters/gpu_poll_fallback_ms": "1",
+  "/sys/module/thunderbolt_stream/parameters/gpu_reap_orphans": "",
+  "/sys/module/thunderbolt_stream/parameters/gpu_stall_ms": "10",
+  "/sys/module/thunderbolt_stream/parameters/gpu_standby_timeout_ms": "300000",
+  "/sys/module/thunderbolt_stream/parameters/latency_qos_us": "-1",
+  "/sys/module/thunderbolt_stream/parameters/open_timeout_ms": "30000",
+  "/sys/module/thunderbolt_stream/parameters/rx_napi": "N",
+  "/sys/module/thunderbolt_stream/parameters/spin_us": "0"
+ },
+ "journal": [
+  {
+   "MESSAGE": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a5274;b=000000000000000000000000000000b1;m=249e79cd49;t=65e9e30733d51;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "157277605193",
+   "__REALTIME_TIMESTAMP": "1792883370966353"
+  },
+  {
+   "MESSAGE": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a5456;b=000000000000000000000000000000b1;m=24b034bd58;t=65e9e422e2d60;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "157575069016",
+   "__REALTIME_TIMESTAMP": "1792883668430176"
+  },
+  {
+   "MESSAGE": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a5457;b=000000000000000000000000000000b1;m=24b034be10;t=65e9e422e2e19;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "157575069200",
+   "__REALTIME_TIMESTAMP": "1792883668430361"
+  },
+  {
+   "MESSAGE": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a553c;b=000000000000000000000000000000b1;m=24ba0dfc10;t=65e9e4c076c18;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "157740301328",
+   "__REALTIME_TIMESTAMP": "1792883833662488"
+  },
+  {
+   "MESSAGE": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a553d;b=000000000000000000000000000000b1;m=24ba0dff5a;t=65e9e4c076f62;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "157740302170",
+   "__REALTIME_TIMESTAMP": "1792883833663330"
+  },
+  {
+   "MESSAGE": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a56be;b=000000000000000000000000000000b1;m=24cb013a83;t=65e9e5cfaaa8b;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "158024678019",
+   "__REALTIME_TIMESTAMP": "1792884118039179"
+  },
+  {
+   "MESSAGE": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a56bf;b=000000000000000000000000000000b1;m=24cb013b78;t=65e9e5cfaab80;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "158024678264",
+   "__REALTIME_TIMESTAMP": "1792884118039424"
+  },
+  {
+   "MESSAGE": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a5711;b=000000000000000000000000000000b1;m=24d2856c43;t=65e9e647edc4c;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "158150782019",
+   "__REALTIME_TIMESTAMP": "1792884244143180"
+  },
+  {
+   "MESSAGE": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a5712;b=000000000000000000000000000000b1;m=24d2856d46;t=65e9e647edd4f;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "158150782278",
+   "__REALTIME_TIMESTAMP": "1792884244143439"
+  },
+  {
+   "MESSAGE": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a57be;b=000000000000000000000000000000b1;m=24d65d4b6d;t=65e9e6856bb75;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "158215261037",
+   "__REALTIME_TIMESTAMP": "1792884308622197"
+  },
+  {
+   "MESSAGE": "thunderbolt domain0: host interface reset after DMA teardown pending: NHI in use (2 TX and 2 RX rings allocated besides control; a DMA tunnel or a reset in progress also prevents it), runs when the last data ring is freed or after the next path teardown",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a57d3;b=000000000000000000000000000000b1;m=24d6a215f7;t=65e9e689b85ff;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "158219769335",
+   "__REALTIME_TIMESTAMP": "1792884313130495"
+  },
+  {
+   "MESSAGE": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a5a9e;b=000000000000000000000000000000b1;m=24e0873967;t=65e9e7280a96e;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "158385781095",
+   "__REALTIME_TIMESTAMP": "1792884479142254"
+  },
+  {
+   "MESSAGE": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a5a9f;b=000000000000000000000000000000b1;m=24e087585a;t=65e9e7280c862;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "158385789018",
+   "__REALTIME_TIMESTAMP": "1792884479150178"
+  },
+  {
+   "MESSAGE": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a5ae7;b=000000000000000000000000000000b1;m=24e0cf5de3;t=65e9e72c8cdeb;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "158390509027",
+   "__REALTIME_TIMESTAMP": "1792884483870187"
+  },
+  {
+   "MESSAGE": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a5ae8;b=000000000000000000000000000000b1;m=24e0cf616a;t=65e9e72c8d173;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "158390509930",
+   "__REALTIME_TIMESTAMP": "1792884483871091"
+  },
+  {
+   "MESSAGE": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a5ae9;b=000000000000000000000000000000b1;m=24e0d7142f;t=65e9e72d08437;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "158391014447",
+   "__REALTIME_TIMESTAMP": "1792884484375607"
+  },
+  {
+   "MESSAGE": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a5aea;b=000000000000000000000000000000b1;m=24e0e074e5;t=65e9e72d9e4ed;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "158391629029",
+   "__REALTIME_TIMESTAMP": "1792884484990189"
+  },
+  {
+   "MESSAGE": "thunderbolt domain0: host interface reset after DMA teardown pending: NHI in use (2 TX and 2 RX rings allocated besides control; a DMA tunnel or a reset in progress also prevents it), runs when the last data ring is freed or after the next path teardown",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a5af5;b=000000000000000000000000000000b1;m=24e12482cd;t=65e9e731df2d6;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "158396089037",
+   "__REALTIME_TIMESTAMP": "1792884489450198"
+  },
+  {
+   "MESSAGE": "thunderbolt domain1: host interface reset after DMA teardown pending: NHI in use (2 TX and 2 RX rings allocated besides control; a DMA tunnel or a reset in progress also prevents it), runs when the last data ring is freed or after the next path teardown",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a5b00;b=000000000000000000000000000000b1;m=24e1351cca;t=65e9e732e8cd2;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "158397177034",
+   "__REALTIME_TIMESTAMP": "1792884490538194"
+  },
+  {
+   "MESSAGE": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a5d37;b=000000000000000000000000000000b1;m=24ea058550;t=65e9e7bfef558;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "158545053008",
+   "__REALTIME_TIMESTAMP": "1792884638414168"
+  },
+  {
+   "MESSAGE": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a5d3a;b=000000000000000000000000000000b1;m=24ea058cf0;t=65e9e7bfefcf9;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "158545054960",
+   "__REALTIME_TIMESTAMP": "1792884638416121"
+  },
+  {
+   "MESSAGE": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a5d87;b=000000000000000000000000000000b1;m=24ea6112ed;t=65e9e7c5a82f5;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "158551053037",
+   "__REALTIME_TIMESTAMP": "1792884644414197"
+  },
+  {
+   "MESSAGE": "thunderbolt domain0: host interface reset after DMA teardown pending: NHI in use (2 TX and 2 RX rings allocated besides control; a DMA tunnel or a reset in progress also prevents it), runs when the last data ring is freed or after the next path teardown",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a5db0;b=000000000000000000000000000000b1;m=24eaa5fb8b;t=65e9e7c9f6b94;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "158555569035",
+   "__REALTIME_TIMESTAMP": "1792884648930196"
+  },
+  {
+   "MESSAGE": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a6010;b=000000000000000000000000000000b1;m=24f42939ce;t=65e9e8622a9d6;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "158715165134",
+   "__REALTIME_TIMESTAMP": "1792884808526294"
+  },
+  {
+   "MESSAGE": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a6011;b=000000000000000000000000000000b1;m=24f4293cbc;t=65e9e8622acc5;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "158715165884",
+   "__REALTIME_TIMESTAMP": "1792884808527045"
+  },
+  {
+   "MESSAGE": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a62ab;b=000000000000000000000000000000b1;m=250cabc2f1;t=65e9e9ea532f9;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "159126373105",
+   "__REALTIME_TIMESTAMP": "1792885219734265"
+  },
+  {
+   "MESSAGE": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a62ac;b=000000000000000000000000000000b1;m=250cabc823;t=65e9e9ea5382c;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "159126374435",
+   "__REALTIME_TIMESTAMP": "1792885219735596"
+  },
+  {
+   "MESSAGE": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a6326;b=000000000000000000000000000000b1;m=2517b3437e;t=65e9ea9acb386;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "159311414142",
+   "__REALTIME_TIMESTAMP": "1792885404775302"
+  },
+  {
+   "MESSAGE": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a6327;b=000000000000000000000000000000b1;m=2517b34650;t=65e9ea9acb658;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "159311414864",
+   "__REALTIME_TIMESTAMP": "1792885404776024"
+  },
+  {
+   "MESSAGE": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a6466;b=000000000000000000000000000000b1;m=2524ca3311;t=65e9eb6c3a319;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "159531021073",
+   "__REALTIME_TIMESTAMP": "1792885624382233"
+  },
+  {
+   "MESSAGE": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a6467;b=000000000000000000000000000000b1;m=2524ca34a8;t=65e9eb6c3a4b1;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "159531021480",
+   "__REALTIME_TIMESTAMP": "1792885624382641"
+  },
+  {
+   "MESSAGE": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a6487;b=000000000000000000000000000000b1;m=252538cb63;t=65e9eb7323b6b;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "159538269027",
+   "__REALTIME_TIMESTAMP": "1792885631630187"
+  },
+  {
+   "MESSAGE": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a6488;b=000000000000000000000000000000b1;m=252538ccb7;t=65e9eb7323cc0;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "159538269367",
+   "__REALTIME_TIMESTAMP": "1792885631630528"
+  },
+  {
+   "MESSAGE": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a688c;b=000000000000000000000000000000b1;m=2540e40d57;t=65e9ed2dd7d5f;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "160002477399",
+   "__REALTIME_TIMESTAMP": "1792886095838559"
+  },
+  {
+   "MESSAGE": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a688d;b=000000000000000000000000000000b1;m=2540e40ef0;t=65e9ed2dd7ef9;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "160002477808",
+   "__REALTIME_TIMESTAMP": "1792886095838969"
+  },
+  {
+   "MESSAGE": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a6d71;b=000000000000000000000000000000b1;m=255dac93d4;t=65e9eefa603dc;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "160485381076",
+   "__REALTIME_TIMESTAMP": "1792886578742236"
+  },
+  {
+   "MESSAGE": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a6d72;b=000000000000000000000000000000b1;m=255dac9584;t=65e9eefa6058c;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "160485381508",
+   "__REALTIME_TIMESTAMP": "1792886578742668"
+  },
+  {
+   "MESSAGE": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a6d73;b=000000000000000000000000000000b1;m=255dbc33ac;t=65e9eefb5a3b4;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "160486405036",
+   "__REALTIME_TIMESTAMP": "1792886579766196"
+  },
+  {
+   "MESSAGE": "thunderbolt domain0: host interface reset after DMA teardown pending: NHI in use (2 TX and 2 RX rings allocated besides control; a DMA tunnel or a reset in progress also prevents it), runs when the last data ring is freed or after the next path teardown",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a6d7e;b=000000000000000000000000000000b1;m=255df94c51;t=65e9eeff2bc5a;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "160490409041",
+   "__REALTIME_TIMESTAMP": "1792886583770202"
+  },
+  {
+   "MESSAGE": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a6e97;b=000000000000000000000000000000b1;m=2562113b5c;t=65e9ef40aab64;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "160559086428",
+   "__REALTIME_TIMESTAMP": "1792886652447588"
+  },
+  {
+   "MESSAGE": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a6e98;b=000000000000000000000000000000b1;m=2562113eb0;t=65e9ef40aaeb9;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "160559087280",
+   "__REALTIME_TIMESTAMP": "1792886652448441"
+  },
+  {
+   "MESSAGE": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a6ee0;b=000000000000000000000000000000b1;m=25625a36e8;t=65e9ef453a6f0;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "160563869416",
+   "__REALTIME_TIMESTAMP": "1792886657230576"
+  },
+  {
+   "MESSAGE": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a6ee1;b=000000000000000000000000000000b1;m=25625a388e;t=65e9ef453a897;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "160563869838",
+   "__REALTIME_TIMESTAMP": "1792886657230999"
+  },
+  {
+   "MESSAGE": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a6ee2;b=000000000000000000000000000000b1;m=2562624597;t=65e9ef45bb59f;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "160564397463",
+   "__REALTIME_TIMESTAMP": "1792886657758623"
+  },
+  {
+   "MESSAGE": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a6ee3;b=000000000000000000000000000000b1;m=2562626321;t=65e9ef45bd32a;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "160564405025",
+   "__REALTIME_TIMESTAMP": "1792886657766186"
+  },
+  {
+   "MESSAGE": "thunderbolt domain0: host interface reset after DMA teardown pending: NHI in use (2 TX and 2 RX rings allocated besides control; a DMA tunnel or a reset in progress also prevents it), runs when the last data ring is freed or after the next path teardown",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a6efc;b=000000000000000000000000000000b1;m=2562b6d067;t=65e9ef4b0406f;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "160569938023",
+   "__REALTIME_TIMESTAMP": "1792886663299183"
+  },
+  {
+   "MESSAGE": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a700e;b=000000000000000000000000000000b1;m=256695f2d7;t=65e9ef88f62df;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "160634893015",
+   "__REALTIME_TIMESTAMP": "1792886728254175"
+  },
+  {
+   "MESSAGE": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a700f;b=000000000000000000000000000000b1;m=256695f43d;t=65e9ef88f6446;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "160634893373",
+   "__REALTIME_TIMESTAMP": "1792886728254534"
+  },
+  {
+   "MESSAGE": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a705a;b=000000000000000000000000000000b1;m=2566d4923f;t=65e9ef8ce0247;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "160638997055",
+   "__REALTIME_TIMESTAMP": "1792886732358215"
+  },
+  {
+   "MESSAGE": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a705b;b=000000000000000000000000000000b1;m=2566d4b15a;t=65e9ef8ce2162;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "160639005018",
+   "__REALTIME_TIMESTAMP": "1792886732366178"
+  },
+  {
+   "MESSAGE": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a705c;b=000000000000000000000000000000b1;m=2566dcfe64;t=65e9ef8d66e6c;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "160639549028",
+   "__REALTIME_TIMESTAMP": "1792886732910188"
+  },
+  {
+   "MESSAGE": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a705d;b=000000000000000000000000000000b1;m=2566dd0008;t=65e9ef8d67011;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "160639549448",
+   "__REALTIME_TIMESTAMP": "1792886732910609"
+  },
+  {
+   "MESSAGE": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a705e;b=000000000000000000000000000000b1;m=2566e4af24;t=65e9ef8de1f2c;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "160640053028",
+   "__REALTIME_TIMESTAMP": "1792886733414188"
+  },
+  {
+   "MESSAGE": "thunderbolt domain1: host interface reset after DMA teardown pending: NHI in use (2 TX and 2 RX rings allocated besides control; a DMA tunnel or a reset in progress also prevents it), runs when the last data ring is freed or after the next path teardown",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a7073;b=000000000000000000000000000000b1;m=256738f93e;t=65e9ef9326946;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "160645577022",
+   "__REALTIME_TIMESTAMP": "1792886738938182"
+  },
+  {
+   "MESSAGE": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a7175;b=000000000000000000000000000000b1;m=256afe4283;t=65e9efcf7b28b;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "160708838019",
+   "__REALTIME_TIMESTAMP": "1792886802199179"
+  },
+  {
+   "MESSAGE": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a7176;b=000000000000000000000000000000b1;m=256afe441f;t=65e9efcf7b428;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "160708838431",
+   "__REALTIME_TIMESTAMP": "1792886802199592"
+  },
+  {
+   "MESSAGE": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a71b7;b=000000000000000000000000000000b1;m=256b4e912c;t=65e9efd480134;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "160714101036",
+   "__REALTIME_TIMESTAMP": "1792886807462196"
+  },
+  {
+   "MESSAGE": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a71b8;b=000000000000000000000000000000b1;m=256b4eb060;t=65e9efd482069;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "160714109024",
+   "__REALTIME_TIMESTAMP": "1792886807470185"
+  },
+  {
+   "MESSAGE": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a71b9;b=000000000000000000000000000000b1;m=256b56615e;t=65e9efd4fd166;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "160714613086",
+   "__REALTIME_TIMESTAMP": "1792886807974246"
+  },
+  {
+   "MESSAGE": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+   "__CURSOR": "s=000000000000000000000000000005e9;i=3a71ba;b=000000000000000000000000000000b1;m=256b5e311f;t=65e9efd57a128;x=0000000000000000",
+   "__MONOTONIC_TIMESTAMP": "160715125023",
+   "__REALTIME_TIMESTAMP": "1792886808486184"
+  }
+ ],
+ "links": {
+  "/sys/bus/thunderbolt/devices/0-2.0/driver": "/sys/bus/thunderbolt/drivers/thunderbolt_stream",
+  "/sys/bus/thunderbolt/devices/1-2.0/driver": "/sys/bus/thunderbolt/drivers/thunderbolt_stream",
+  "/sys/bus/thunderbolt/devices/domain0": "/sys/devices/pci0000:00/0000:c7:00.5/domain0",
+  "/sys/bus/thunderbolt/devices/domain1": "/sys/devices/pci0000:00/0000:c7:00.6/domain1"
+ },
+ "modes": {
+  "/sys/module/thunderbolt/parameters/asym_threshold": "0o444",
+  "/sys/module/thunderbolt/parameters/bw_alloc_mode": "0o444",
+  "/sys/module/thunderbolt/parameters/clx": "0o444",
+  "/sys/module/thunderbolt/parameters/dma_credits": "0o644",
+  "/sys/module/thunderbolt/parameters/dma_wq_percpu": "0o644",
+  "/sys/module/thunderbolt/parameters/dprx_timeout": "0o444",
+  "/sys/module/thunderbolt/parameters/gen3_retrain": "0o644",
+  "/sys/module/thunderbolt/parameters/host_reset": "0o444",
+  "/sys/module/thunderbolt/parameters/start_icm": "0o444",
+  "/sys/module/thunderbolt/parameters/teardown_reset": "0o644",
+  "/sys/module/thunderbolt/parameters/xdomain": "0o444",
+  "/sys/module/thunderbolt_stream/parameters/contig_buffers": "0o644",
+  "/sys/module/thunderbolt_stream/parameters/gpu_dma_timeout_ms": "0o644",
+  "/sys/module/thunderbolt_stream/parameters/gpu_poll": "0o644",
+  "/sys/module/thunderbolt_stream/parameters/gpu_poll_budget": "0o644",
+  "/sys/module/thunderbolt_stream/parameters/gpu_poll_fallback_ms": "0o644",
+  "/sys/module/thunderbolt_stream/parameters/gpu_reap_orphans": "0o200",
+  "/sys/module/thunderbolt_stream/parameters/gpu_stall_ms": "0o644",
+  "/sys/module/thunderbolt_stream/parameters/gpu_standby_timeout_ms": "0o644",
+  "/sys/module/thunderbolt_stream/parameters/latency_qos_us": "0o644",
+  "/sys/module/thunderbolt_stream/parameters/open_timeout_ms": "0o644",
+  "/sys/module/thunderbolt_stream/parameters/rx_napi": "0o644",
+  "/sys/module/thunderbolt_stream/parameters/spin_us": "0o644"
+ },
+ "note": "read-only capture of one node (sanitised): thunderbolt sysfs, module parameters with their modes, thunderbolt lines of /proc/interrupts, the published layout and kernel journal entries"
+}

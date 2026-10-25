@@ -1,0 +1,477 @@
+{
+ "boot_id": "000000000000000000000000000000b0",
+ "collected_at": 1792888336.6058912,
+ "domains": {
+  "0": "0000:c7:00.5",
+  "1": "0000:c7:00.6"
+ },
+ "full_rate": {
+  "gbps_per_lane": 20.0,
+  "lanes": 2
+ },
+ "interrupts": {
+  "note": "counts since boot per host-interface vector; busy-poll streams hold data rings without interrupts and interrupts cannot be attributed to a single stream",
+  "status": "ok",
+  "vectors": [
+   {
+    "count": 146953,
+    "domain": 0,
+    "irq": 53,
+    "nhi": "0000:c7:00.5",
+    "ring": "control",
+    "vector": 0
+   },
+   {
+    "count": 146628,
+    "domain": 0,
+    "irq": 54,
+    "nhi": "0000:c7:00.5",
+    "ring": "control",
+    "vector": 1
+   },
+   {
+    "count": 196442,
+    "domain": 1,
+    "irq": 88,
+    "nhi": "0000:c7:00.6",
+    "ring": "control",
+    "vector": 0
+   },
+   {
+    "count": 196370,
+    "domain": 1,
+    "irq": 89,
+    "nhi": "0000:c7:00.6",
+    "ring": "control",
+    "vector": 1
+   }
+  ]
+ },
+ "journal": {
+  "boot_id": "000000000000000000000000000000b0",
+  "complete": true,
+  "counts": {
+   "close_not_sent": 1,
+   "contexts_retained": 0,
+   "hop_deactivation_failed": 11,
+   "host_reset": 1752,
+   "quarantine": 0,
+   "reset_pending": 1055,
+   "ring_leaked": 0,
+   "teardown": 0
+  },
+  "cursor": "s=000000000000000000000000000005e9;i=417b41;b=000000000000000000000000000000b0;m=25bf42c68c;t=65e9f513c4f60;x=0000000000000000",
+  "entries": 10276,
+  "incomplete_why": null,
+  "malformed": 0,
+  "matched": 2819,
+  "mode": "initial",
+  "more": false,
+  "recent": [
+   {
+    "kind": "host_reset",
+    "message": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+    "ts": 1792887503.485561
+   },
+   {
+    "kind": "host_reset",
+    "message": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+    "ts": 1792887503.48594
+   },
+   {
+    "kind": "reset_pending",
+    "message": "thunderbolt domain1: host interface reset after DMA teardown pending: NHI in use (2 TX and 2 RX rings allocated besides control; a DMA tunnel or a reset in progress also prevents it), runs when the last data ring is freed or after the next path teardown",
+    "ts": 1792887570.137883
+   },
+   {
+    "kind": "reset_pending",
+    "message": "thunderbolt domain0: host interface reset after DMA teardown pending: NHI in use (2 TX and 2 RX rings allocated besides control; a DMA tunnel or a reset in progress also prevents it), runs when the last data ring is freed or after the next path teardown",
+    "ts": 1792887570.145533
+   },
+   {
+    "kind": "host_reset",
+    "message": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+    "ts": 1792887684.797526
+   },
+   {
+    "kind": "host_reset",
+    "message": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+    "ts": 1792887684.798271
+   },
+   {
+    "kind": "reset_pending",
+    "message": "thunderbolt domain1: host interface reset after DMA teardown pending: NHI in use (2 TX and 2 RX rings allocated besides control; a DMA tunnel or a reset in progress also prevents it), runs when the last data ring is freed or after the next path teardown",
+    "ts": 1792887696.945561
+   },
+   {
+    "kind": "reset_pending",
+    "message": "thunderbolt domain0: host interface reset after DMA teardown pending: NHI in use (2 TX and 2 RX rings allocated besides control; a DMA tunnel or a reset in progress also prevents it), runs when the last data ring is freed or after the next path teardown",
+    "ts": 1792887697.95355
+   },
+   {
+    "kind": "host_reset",
+    "message": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+    "ts": 1792887755.973522
+   },
+   {
+    "kind": "host_reset",
+    "message": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+    "ts": 1792887755.973805
+   },
+   {
+    "kind": "host_reset",
+    "message": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+    "ts": 1792887984.102641
+   },
+   {
+    "kind": "host_reset",
+    "message": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+    "ts": 1792887984.103016
+   },
+   {
+    "kind": "host_reset",
+    "message": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+    "ts": 1792888042.350516
+   },
+   {
+    "kind": "host_reset",
+    "message": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+    "ts": 1792888042.350743
+   },
+   {
+    "kind": "host_reset",
+    "message": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+    "ts": 1792888107.981526
+   },
+   {
+    "kind": "host_reset",
+    "message": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+    "ts": 1792888107.981837
+   },
+   {
+    "kind": "host_reset",
+    "message": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+    "ts": 1792888161.149527
+   },
+   {
+    "kind": "host_reset",
+    "message": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+    "ts": 1792888161.149886
+   },
+   {
+    "kind": "host_reset",
+    "message": "thunderbolt domain0: host interface reset after DMA teardown (attempt 1)",
+    "ts": 1792888215.981625
+   },
+   {
+    "kind": "host_reset",
+    "message": "thunderbolt domain1: host interface reset after DMA teardown (attempt 1)",
+    "ts": 1792888215.98192
+   }
+  ],
+  "scanned_from": 1792726095.664802,
+  "status": "ok"
+ },
+ "kernel": "7.3.0-rc5-lab",
+ "layout": {
+  "cables": [
+   {
+    "domain": 0,
+    "full_speed": true,
+    "gbps": 40.0,
+    "id": "A",
+    "nhi": "0000:c7:00.5",
+    "peer": "halo-2",
+    "router": "0-2",
+    "state": "up",
+    "streams": [
+     "0-2.0/data0",
+     "0-2.0/data1"
+    ],
+    "streams_openable": 2,
+    "usb4_port": 2
+   },
+   {
+    "domain": 1,
+    "full_speed": false,
+    "gbps": 20.0,
+    "id": "B",
+    "nhi": "0000:c7:00.6",
+    "peer": "halo-2",
+    "router": "1-2",
+    "state": "up",
+    "streams": [
+     "1-2.0/data0",
+     "1-2.0/data1"
+    ],
+    "streams_openable": 2,
+    "usb4_port": 2
+   }
+  ],
+  "generated_at": "2026-10-23T09:15:20+00:00",
+  "live": {
+   "status": "ok"
+  },
+  "modified_at": 1792746920.62083,
+  "status": "ok",
+  "streams": [
+   {
+    "cable": "A",
+    "config": {
+     "busy_poll": 0,
+     "gpu_direct": 0,
+     "gpu_poll": -1,
+     "gpu_quarantine": 0,
+     "irq_cpu": -1,
+     "latency_qos_us": -1,
+     "open_timeout_ms": -1,
+     "ring_size": 1024,
+     "rx_busy_poll": 0,
+     "rx_napi": -1,
+     "spin_us": -1,
+     "throttling": 8192
+    },
+    "device": "/dev/tbstream0",
+    "domain": 0,
+    "id": "0-2.0/data0",
+    "in_hopid": 8,
+    "index": 0,
+    "live": {
+     "attached_now": true,
+     "device_present": true,
+     "driver": "thunderbolt_stream"
+    },
+    "out_hopid": 8,
+    "published": {
+     "attached": true,
+     "exists": true,
+     "openable": true,
+     "openable_reason": null
+    },
+    "service": "0-2.0",
+    "stream": "data0",
+    "usb4_port": 2
+   },
+   {
+    "cable": "A",
+    "config": {
+     "busy_poll": 0,
+     "gpu_direct": 0,
+     "gpu_poll": -1,
+     "gpu_quarantine": 0,
+     "irq_cpu": -1,
+     "latency_qos_us": -1,
+     "open_timeout_ms": -1,
+     "ring_size": 1024,
+     "rx_busy_poll": 0,
+     "rx_napi": -1,
+     "spin_us": -1,
+     "throttling": 8192
+    },
+    "device": "/dev/tbstream2",
+    "domain": 0,
+    "id": "0-2.0/data1",
+    "in_hopid": 9,
+    "index": 2,
+    "live": {
+     "attached_now": true,
+     "device_present": true,
+     "driver": "thunderbolt_stream"
+    },
+    "out_hopid": 9,
+    "published": {
+     "attached": true,
+     "exists": true,
+     "openable": true,
+     "openable_reason": null
+    },
+    "service": "0-2.0",
+    "stream": "data1",
+    "usb4_port": 2
+   },
+   {
+    "cable": "B",
+    "config": {
+     "busy_poll": 0,
+     "gpu_direct": 0,
+     "gpu_poll": -1,
+     "gpu_quarantine": 0,
+     "irq_cpu": -1,
+     "latency_qos_us": -1,
+     "open_timeout_ms": -1,
+     "ring_size": 1024,
+     "rx_busy_poll": 0,
+     "rx_napi": -1,
+     "spin_us": -1,
+     "throttling": 8192
+    },
+    "device": "/dev/tbstream1",
+    "domain": 1,
+    "id": "1-2.0/data0",
+    "in_hopid": 8,
+    "index": 1,
+    "live": {
+     "attached_now": true,
+     "device_present": true,
+     "driver": "thunderbolt_stream"
+    },
+    "out_hopid": 8,
+    "published": {
+     "attached": true,
+     "exists": true,
+     "openable": true,
+     "openable_reason": null
+    },
+    "service": "1-2.0",
+    "stream": "data0",
+    "usb4_port": 2
+   },
+   {
+    "cable": "B",
+    "config": {
+     "busy_poll": 0,
+     "gpu_direct": 0,
+     "gpu_poll": -1,
+     "gpu_quarantine": 0,
+     "irq_cpu": -1,
+     "latency_qos_us": -1,
+     "open_timeout_ms": -1,
+     "ring_size": 1024,
+     "rx_busy_poll": 0,
+     "rx_napi": -1,
+     "spin_us": -1,
+     "throttling": 8192
+    },
+    "device": "/dev/tbstream3",
+    "domain": 1,
+    "id": "1-2.0/data1",
+    "in_hopid": 9,
+    "index": 3,
+    "live": {
+     "attached_now": true,
+     "device_present": true,
+     "driver": "thunderbolt_stream"
+    },
+    "out_hopid": 9,
+    "published": {
+     "attached": true,
+     "exists": true,
+     "openable": true,
+     "openable_reason": null
+    },
+    "service": "1-2.0",
+    "stream": "data1",
+    "usb4_port": 2
+   }
+  ],
+  "version": 2,
+  "warnings": [
+   "cable B (0000:c7:00.6/usb4_port2) trained below Gen3 x2: rx 10x2, tx 10x2"
+  ]
+ },
+ "links": [
+  {
+   "below_full_rate": [],
+   "domain": 0,
+   "full_rate": true,
+   "nhi": "0000:c7:00.5",
+   "peer": "halo-2",
+   "peer_unique_id": "00000000-0000-4000-8000-000000000001",
+   "peer_vendor": "Linux",
+   "router": "0-2",
+   "rx": {
+    "full_rate": true,
+    "gbps": 40.0,
+    "gbps_per_lane": 20.0,
+    "lanes": 2,
+    "raw_lanes": "2",
+    "raw_speed": "20.0 Gb/s"
+   },
+   "tx": {
+    "full_rate": true,
+    "gbps": 40.0,
+    "gbps_per_lane": 20.0,
+    "lanes": 2,
+    "raw_lanes": "2",
+    "raw_speed": "20.0 Gb/s"
+   },
+   "usb4_port": 2
+  },
+  {
+   "below_full_rate": [
+    "rx",
+    "tx"
+   ],
+   "domain": 1,
+   "full_rate": false,
+   "nhi": "0000:c7:00.6",
+   "peer": "halo-2",
+   "peer_unique_id": "00000000-0000-4000-8000-000000000002",
+   "peer_vendor": "Linux",
+   "router": "1-2",
+   "rx": {
+    "full_rate": false,
+    "gbps": 20.0,
+    "gbps_per_lane": 10.0,
+    "lanes": 2,
+    "raw_lanes": "2",
+    "raw_speed": "10.0 Gb/s"
+   },
+   "tx": {
+    "full_rate": false,
+    "gbps": 20.0,
+    "gbps_per_lane": 10.0,
+    "lanes": 2,
+    "raw_lanes": "2",
+    "raw_speed": "10.0 Gb/s"
+   },
+   "usb4_port": 2
+  }
+ ],
+ "parameters": {
+  "modules": {
+   "thunderbolt": {
+    "status": "ok",
+    "unreadable": [],
+    "values": {
+     "asym_threshold": "45000",
+     "bw_alloc_mode": "Y",
+     "clx": "Y",
+     "dma_credits": "14",
+     "dma_wq_percpu": "N",
+     "dprx_timeout": "12000",
+     "gen3_retrain": "0",
+     "host_reset": "Y",
+     "start_icm": "N",
+     "teardown_reset": "Y",
+     "xdomain": "Y"
+    },
+    "write_only": []
+   },
+   "thunderbolt_stream": {
+    "status": "ok",
+    "unreadable": [],
+    "values": {
+     "contig_buffers": "0",
+     "gpu_dma_timeout_ms": "30000",
+     "gpu_poll": "N",
+     "gpu_poll_budget": "64",
+     "gpu_poll_fallback_ms": "1",
+     "gpu_stall_ms": "10",
+     "gpu_standby_timeout_ms": "300000",
+     "latency_qos_us": "-1",
+     "open_timeout_ms": "30000",
+     "rx_napi": "N",
+     "spin_us": "0"
+    },
+    "write_only": [
+     "gpu_reap_orphans"
+    ]
+   }
+  },
+  "status": "ok"
+ },
+ "schema": "hyperloom/node-v1",
+ "verb": "usb4",
+ "why": {}
+}
