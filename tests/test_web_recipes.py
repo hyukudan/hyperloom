@@ -260,10 +260,13 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(when["prompt_tokens_min"], 1024)                   # a measurement is not a secret
         from hyperloom.web.api import redact
         self.assertEqual(redact({"password": 123456, "api_key": 7, "token": 5, "secret": None, "prompt_tokens_min": 1,
-                                 "prompt_tokens_max": None, "max_copies_per_token": 2}),
+                                 "prompt_tokens_max": None, "max_copies_per_token": 2, "api_key_per_token": 3,
+                                 "password_tokens_min": 4, "secret_tokens": None, "private_key_tokens": 5}),
                          {"password": "[redacted]", "api_key": "[redacted]", "token": "[redacted]",
                           "secret": "[redacted]", "prompt_tokens_min": 1, "prompt_tokens_max": None,
-                          "max_copies_per_token": 2})
+                          "max_copies_per_token": 2, "api_key_per_token": "[redacted]",
+                          "password_tokens_min": "[redacted]", "secret_tokens": "[redacted]",
+                          "private_key_tokens": "[redacted]"})
         self.assertSameAsCli(document)
         with mock.patch.object(recipe_web, "COMMAND", [sys.executable, "-c", (
                 "import sys; sys.stderr.write('hyperloom: refused: Authorization: Bearer abc.def\\n'); sys.exit(1)")]):
@@ -545,6 +548,48 @@ class JobTests(unittest.TestCase):
         self.orch.down.assert_not_called()
         with self.assertRaises(APIError):
             self.api.mutate("up", {"recipe": DS})                       # two profiles serve it: name one
+
+    def test_a_stop_of_its_profile_cancels_a_preparing_recipe_up(self):
+        # `down P` (or a cancel by profile) while a recipe up prepares P: its marker is written too, so up, which
+        # clears P's own stop marker when it takes P, starts nothing. A stop of another profile leaves it alone.
+        for action, body, stops_it in (("down", {"profile": "qwen-replicas"}, True),
+                                       ("cancel", {"profile": "qwen-replicas"}, True),
+                                       ("down", {"profile": "mm"}, False)):
+            with self.subTest(action=action, body=body):
+                proceed = threading.Event()
+
+                def preparing(*a, **kw):
+                    proceed.wait(30)
+                    if kw["cancelled"]():
+                        raise orchestrate.OrchestrationError("profile stop requested")
+                    return {"state": "running"}
+                self.orch.up.side_effect = preparing
+                self.orch.down.reset_mock()
+                with mock.patch.object(commands, "live_source", return_value=self.source):
+                    job = self.api.mutate("up", {"recipe": QWEN})
+                    stopped = self.wait(self.api.mutate(action, body))
+                    proceed.set()
+                    finished = self.wait(job)
+                self.assertEqual(stopped["state"], "succeeded", stopped["error"])
+                self.assertEqual([c.args[0] for c in self.orch.down.call_args_list], [body["profile"]])
+                if stops_it:
+                    self.assertEqual(stopped["result"]["cancelled_switches"][0]["cancelled"], job["job"])
+                    self.assertEqual(finished["state"], "failed")
+                    self.assertRegex(finished["error"], "stop requested|up cancelled")   # nothing was started
+                else:
+                    self.assertNotIn("cancelled_switches", stopped["result"])
+                    self.assertEqual(finished["state"], "succeeded", finished["error"])
+
+    def test_detached_stop_marks_a_recipe_up_of_that_profile(self):
+        self.api.detached = True
+        self.api._jobs["u1"] = {"job": "cd34ab12", "action": "up", "state": "running",
+                                "arguments": {"recipe": QWEN, "profile": "qwen-replicas"}}
+        with mock.patch.object(self.api, "_run_detached", return_value={"state": "stopped"}) as detached:
+            result = self.api._execute("down", {"profile": "qwen-replicas"})
+        detached.assert_called_once()
+        self.assertEqual(result["cancelled_switches"][0]["cancelled"], "cd34ab12")
+        with service.configured(self.env.config):
+            self.assertTrue(service.cancel_marker("cd34ab12").exists())
 
     def test_detached_error_tail(self):
         # A recipe launch's refusal keeps the CLI's whole explanation; the other actions keep their short tail.

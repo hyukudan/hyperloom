@@ -38,7 +38,10 @@ from hyperloom.winproc import no_window
 from hyperloom.web import recipes as recipe_web
 
 
-MEASUREMENT = re.compile(r"(?i)[a-z0-9_]*(?:tokens|per_token)[a-z0-9_]*")   # token counts, never a secret name
+# Token counts (a recipe's prompt_tokens_min, max_copies_per_token) are measurements; a key that also names a secret
+# (password, secret, authorization, api key, private key) is redacted whatever its value.
+MEASUREMENT = re.compile(r"(?i)[a-z0-9_]*(?:tokens|per_token)[a-z0-9_]*")
+SECRET_NAME = re.compile(r"(?i)password|secret|authorization|api[_-]?key|private[_-]?key")
 IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")      # profile and machine ids (orchestrate._identifier)
 SCREENS = frozenset(("devices", "topology", "models", "profiles", "stats", "logs", "settings"))
 MUTATIONS = frozenset(("up", "down", "install", "hosts/pin", "doctor", "keys/rotate", "cancel")) | recipe_web.JOBS
@@ -99,9 +102,9 @@ def redact(value, text=True):
             sensitive = re.search(r"password|secret|token|authorization|api[_-]?key|private[_-]?key", key, re.I)
             # Token counts are measurements (a recipe's prompt_tokens_min, max_copies_per_token), not secrets.
             measurement = (item is None or isinstance(item, (int, float)) and not isinstance(item, bool)) and \
-                MEASUREMENT.fullmatch(key)
-            result[key] = "[redacted]" if sensitive and not metadata and not measurement and not key.endswith(
-                ("_file", "_path", "_tokens")) else redact(item, text)
+                MEASUREMENT.fullmatch(key) and not SECRET_NAME.search(key)
+            counted = key.endswith("_tokens") and not SECRET_NAME.search(key)
+            result[key] = "[redacted]" if sensitive and not metadata and not measurement and not counted and                 not key.endswith(("_file", "_path")) else redact(item, text)
         return result
     if isinstance(value, (list, tuple)):
         result, hide = [], False
@@ -1160,11 +1163,14 @@ class API:
     def _execute(self, action, args):
         if action in ("down", "cancel") and not args.get("job"):
             # Any stop (detached or in process) while a switch runs cancels the switch too: it would otherwise go
-            # on and launch. Only its marker: this stop names its own profile, and the switch's target is stopped
-            # only when that is the profile named here.
+            # on and launch. So does a stop of the profile a recipe up is launching (up would otherwise clear the
+            # profile's stop marker when it takes the profile). Only their markers: this stop names its own profile,
+            # and a launch's target is stopped only when that is the profile named here (by this stop itself).
             with self._job_lock:
-                switches = [dict(j) for j in self._jobs.values()
-                            if j["action"] == "recipes/deploy" and j["state"] == "running"]
+                switches = [dict(j) for j in self._jobs.values() if j["state"] == "running" and (
+                    j["action"] == "recipes/deploy" or j["action"] == "up" and (
+                        j["arguments"].get("recipe") or j["arguments"].get("recipe_inputs"))
+                    and j["arguments"].get("profile") == args.get("profile"))]
             cancels = []
             for switch in switches:
                 try:

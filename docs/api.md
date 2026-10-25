@@ -310,7 +310,8 @@ Any model with a recipe can be started this way (the portal's plain `up` stays l
 Without `profile`, the recipe's model must be served by exactly one deployment profile (or the snapshot names it);
 the accepted job's `arguments.profile` is that profile. `cancel {job}` works as for a deploy (the job runs
 `up --job <id>`): before the hand-over only its marker, and `up` starts nothing; once `up` owns the profile, the
-cancel stops it; the answer has the same fields. `recipe` is an id or
+cancel stops it; the answer has the same fields. A `down` (or a cancel by profile) of the profile it launches
+writes its marker too, so it starts nothing if it has not taken the profile yet. `recipe` is an id or
 `auto` (a file only on the command line). A recipe `up` runs on the portal's own configuration (a `config` naming
 another file is refused). Refusals come back as the job's `error`, with the CLI's text. A pending recipe is
 refused. Some profiles cannot run a recipe yet; the refusal says why (for example, a MiniMax pair binds loopback and
