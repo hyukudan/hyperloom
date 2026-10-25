@@ -116,6 +116,16 @@ class NodeSearchTests(unittest.TestCase):
         refused = self.run_search(text="outside", roots=[str(self.tree.root / "link")])
         self.assertTrue(refused["report"]["roots"][0]["error"])
 
+    def test_windows_roots_through_a_junction_are_refused(self):
+        if os.name != "nt":
+            self.skipTest("Windows junctions")
+        import _winapi
+        junction = self.tree.base / "via-junction"
+        _winapi.CreateJunction(str(self.tree.base), str(junction))
+        refused = self.run_search(text="alpha", roots=[str(junction / "runs")])
+        self.assertTrue(refused["report"]["roots"][0]["error"])
+        self.assertEqual(refused["results"], [])
+
     def test_regex_subset_and_worker_deadline(self):
         for pattern in ("(ab)+", r"(a)\1", "(?=x)", "(a|b)*", "a" * 129):
             self.assertIn("error", self.run_search(regex=pattern), pattern)
@@ -126,6 +136,22 @@ class NodeSearchTests(unittest.TestCase):
         stalled = self.run_search(regex="a*a*a*a*a*a*a*b", deadline_s=1)
         self.assertLess(time.monotonic() - started, 4.5)
         self.assertIn("deadline", stalled["report"]["truncated"])
+
+    def test_budgets_count_every_read(self):
+        for index in range(20):
+            (self.tree.root / f"bin-{index}.log").write_bytes(b"\0" * 8000)
+        result = self.run_search(text="x", max_files=1, max_bytes=1)
+        self.assertLessEqual(result["report"]["files"], 1)
+        self.assertLessEqual(result["report"]["bytes"], 1)
+        self.assertTrue(set(result["report"]["truncated"]) & {"files", "bytes"})
+
+    def test_credential_names_are_pruned_whatever_their_case(self):
+        (self.tree.root / "Secrets").mkdir()
+        (self.tree.root / "Secrets" / "x.log").write_text("ERROR mixed case\n")
+        (self.tree.root / ".SSH").mkdir()
+        (self.tree.root / ".SSH" / "y.log").write_text("ERROR upper case\n")
+        self.assertEqual(self.run_search(text="case")["results"], [])
+        self.assertIsNotNone(node.protected(Path(os.path.realpath(self.tree.root / ".SSH"))))
 
     def test_output_budget(self):
         (self.tree.root / "big.log").write_text("".join(f"match {'y' * 380} {i}\n" for i in range(600)))
@@ -173,7 +199,7 @@ class PortalSearchTests(APIFixture, unittest.TestCase):
                 self.api.feature_post("logsearch/query", bad)
 
     def test_roots_are_validated_and_audited(self):
-        for roots in (["relative"], ["/home/x/.ssh"], ["/etc/x"], ["/"], ["/a"] * 17):
+        for roots in (["relative"], ["/srv/x/.ssh"], ["/etc/x"], ["/"], ["/a"] * 17):
             with self.assertRaises(Exception, msg=roots):
                 self.api.feature_post("logsearch/roots", {"machine": "halo-1", "roots": roots})
         self.api.feature_post("logsearch/roots", {"machine": "halo-1", "roots": ["/srv/lab/runs", "/srv/lab/runs"]})
@@ -186,6 +212,24 @@ class PortalSearchTests(APIFixture, unittest.TestCase):
         self.assertNotIn("root", self.calls[-1][2])
         audit = [json.loads(line)["action"] for line in (Path(self.dir.name) / "audit.jsonl").read_text().splitlines()]
         self.assertIn("logsearch/roots", audit)
+
+    def test_overlapping_searches_are_coalesced_per_machine(self):
+        import threading as threads
+        gate, entered = threads.Event(), threads.Event()
+
+        def slow(api, machine, verb, payload):
+            entered.set()
+            gate.wait(5)
+            return {"schema": "hyperloom/node-v1", "verb": verb, "results": [], "report": {"files": 0}}
+        with mock.patch.object(ops, "_node_call", slow):
+            first = threads.Thread(target=self.api.feature_post, args=("logsearch/query", {"text": "x", "machines": ["halo-1"]}))
+            first.start()
+            entered.wait(5)
+            _, second = self.api.feature_post("logsearch/query", {"text": "x", "machines": ["halo-1", "halo-1"]})
+            gate.set()
+            first.join()
+        self.assertEqual(len(second["machines"]), 1)
+        self.assertIn("still running", second["machines"][0]["error"])
 
     def test_cli_runs_the_same_query(self):
         from hyperloom.cliext import logsearch as cli

@@ -14,6 +14,7 @@ and its configured roots. Clients never send paths: they choose root ids from th
 """
 
 import concurrent.futures
+import threading
 from pathlib import PurePosixPath, PureWindowsPath
 import re
 import time
@@ -138,7 +139,7 @@ def build(api, arguments):
     if wanted is not None and (not isinstance(wanted, list) or not wanted or len(wanted) > 64
                                or any(not isinstance(m, str) for m in wanted)):
         raise ValueError("machines must be a non-empty list of machine ids")
-    chosen = list(cluster.machines) if wanted is None else wanted
+    chosen = list(cluster.machines) if wanted is None else list(dict.fromkeys(wanted))
     for mid in chosen:
         ops.machine_of(api, mid, cluster)
     root_ids = arguments.get("roots")
@@ -165,8 +166,21 @@ def build(api, arguments):
     return plans, limit
 
 
+_busy_lock = threading.Lock()
+_busy = set()          # (id(api), machine id) with a search call in flight (also after a query gave up waiting)
+
+
 def _search(api, machine, payload):
-    reply = ops._node_call(api, machine, "logs-search", payload)
+    key = (id(api), machine.id)
+    with _busy_lock:
+        if key in _busy:
+            raise PermissionError("a search of this machine is still running; try again when it finishes")
+        _busy.add(key)
+    try:
+        reply = ops._node_call(api, machine, "logs-search", payload)
+    finally:
+        with _busy_lock:
+            _busy.discard(key)
     if not isinstance(reply, dict) or reply.get("schema") != "hyperloom/node-v1":
         raise ValueError("unexpected reply from the node tool")
     if reply.get("error"):

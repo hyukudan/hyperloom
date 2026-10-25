@@ -130,7 +130,8 @@ def safe_open(path):
 
     POSIX: opened from "/" one component at a time with O_NOFOLLOW (so no ancestor can be a link) and checked to be a
     regular file by fstat. Windows: opened by handle without following reparse points; the handle's own final path
-    must equal the requested file's and its attributes must be a plain file."""
+    must equal the configured path itself (normalized case: a junction or link anywhere in it makes them differ)
+    and its attributes must be a plain file."""
     path = Path(path)
     if not path.is_absolute():
         raise OSError("absolute path required")
@@ -161,9 +162,14 @@ def safe_open(path):
         kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
                                        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
         kernel.GetFinalPathNameByHandleW.argtypes = [wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD]
-        kernel.GetFileAttributesW.argtypes = [wintypes.LPCWSTR]
-        kernel.GetFileAttributesW.restype = wintypes.DWORD
         kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+
+        class Info(ctypes.Structure):
+            _fields_ = [("attributes", wintypes.DWORD), ("created", wintypes.FILETIME), ("accessed", wintypes.FILETIME),
+                        ("written", wintypes.FILETIME), ("serial", wintypes.DWORD), ("size_high", wintypes.DWORD),
+                        ("size_low", wintypes.DWORD), ("links", wintypes.DWORD), ("index_high", wintypes.DWORD),
+                        ("index_low", wintypes.DWORD)]
+        kernel.GetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.POINTER(Info)]
         handle = kernel.CreateFileW(str(path), 0x80000000, 7, None, 3, 0x00200000, None)   # no reparse following
         if handle in (None, wintypes.HANDLE(-1).value):
             raise OSError("cannot open the file")
@@ -172,9 +178,11 @@ def safe_open(path):
             if not kernel.GetFinalPathNameByHandleW(handle, buffer, 1024, 0):
                 raise OSError("cannot read the final path")
             final = buffer.value[4:] if buffer.value.startswith("\\\\?\\") else buffer.value
-            attributes = kernel.GetFileAttributesW(final)
-            if (os.path.normcase(final) != os.path.normcase(os.path.realpath(path)) or attributes == 0xFFFFFFFF
-                    or attributes & (0x400 | 0x10)):
+            info = Info()
+            if not kernel.GetFileInformationByHandle(handle, ctypes.byref(info)):
+                raise OSError("cannot read the file information")
+            attributes = info.attributes
+            if os.path.normcase(final) != os.path.normcase(os.path.abspath(path)) or attributes & (0x400 | 0x10):
                 raise OSError("not a plain file at the configured path")
             return os.fdopen(msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY), "rb")
         except OSError:
@@ -302,10 +310,12 @@ def occupancy(api, cluster, mid, inside_job=False):
             reply = _node_call(api, machine, "status", {"root": machine.install_root})
             if not isinstance(reply, dict) or reply.get("error"):
                 raise ValueError((reply or {}).get("error") or "malformed reply")
+            leases = reply.get("leases")
+            if not isinstance(leases, list) or any(not isinstance(row, dict) or "state" not in row for row in leases):
+                raise ValueError("the reply carries no lease list")
         except Exception as exc:
             return f"the node's lease records are unreadable ({str(exc)[:200]})", True
-        live = [row for row in reply.get("leases") or [] if isinstance(row, dict)
-                and row.get("state") not in FINAL_LEASE_STATES]
+        live = [row for row in leases if row.get("state") not in FINAL_LEASE_STATES]
         if live:
             return f"lease {live[0].get('lease') or live[0].get('label') or '?'} is live on {mid}", False
     return None, False
@@ -451,7 +461,11 @@ def nodes_document(api, query):
     return api.document("ops-nodes", machines=rows, expected=expected, why=why,
                         rule="the update runs the profile's node tool update without force, machine by machine, and "
                              "is refused while a lease is live or the state cannot be read",
-                        limitation="an update already running on one machine cannot be interrupted")
+                        limitation="an update already running on one machine cannot be interrupted: the node tool "
+                                   "update checks the leases and then copies the tool without a cancellation point, so "
+                                   "a cancellation that arrives during its lease check can still be followed by the "
+                                   "copy; the job keeps its admission until that call returns, and a machine is only "
+                                   "started with at least 180 s left (a start threshold, not a completion bound)")
 
 
 def validate_nodes_update(api, arguments):
@@ -501,7 +515,9 @@ def nodes_update(api, arguments, ctx=None, deadline=None):
         done.update(result or {})
         _remember_update(api, result)
     out = {"updated": done, "skipped": skipped,
-           "note": "machines were updated one at a time; an update in progress on one machine cannot be interrupted"}
+           "note": "machines were updated one at a time; an update in progress on one machine cannot be interrupted "
+                   "(a cancellation during its lease check can still be followed by the copy), and a machine is only "
+                   "started with at least 180 s left, which is a start threshold, not a completion bound"}
     if ctx is not None and ctx.cancelled() and skipped:
         return None
     return out
@@ -798,11 +814,10 @@ def check_edit(api, arguments, raw=None, fresh=True):
         if violation:
             try:
                 current = config_module.parse(raw)
-            except config_module.ConfigError:
-                current = None
-            if current is None or mid not in current.machines:
-                reason, unknown = None, False
-            elif fresh:
+            except config_module.ConfigError as exc:
+                raise PermissionError(f"the current configuration does not validate ({exc}); identity changes and "
+                                      "removals are refused until it does (edit other fields or the file by hand)") from None
+            if fresh:
                 reason, unknown = occupancy(api, current, mid)
             else:
                 reason, unknown = snapshot_occupancy(api, mid), False
@@ -885,6 +900,15 @@ class ConfigLock:
 
 
 def save_config(api, arguments):
+    """POST ops/config/save: the page must send the version it reviewed."""
+    _edit(arguments, ("version",))
+    if not isinstance(arguments.get("version"), str):
+        raise ValueError("version is required: reload the configuration and review it")
+    return save_config_any(api, arguments)
+
+
+def save_config_any(api, arguments):
+    """The save itself (the command line may omit the version: it re-reads and applies under the lock)."""
     _edit(arguments, ("version",))
     job = core_job_running(api)
     if job:
@@ -956,6 +980,13 @@ def config_document(api, query):
                 "reachable": None if not entry else entry.get("error") is None}
         if cluster is not None and mid in cluster.machines:
             item["frozen"] = snapshot_occupancy(api, mid)
+            if item["frozen"] is None and cluster.machines[mid].access == "ssh":
+                if not entry:
+                    item["frozen"] = "lease state not checked yet (identity edits wait for the node's first answer)"
+                elif entry.get("error"):
+                    item["frozen"] = "lease state unknown: the node did not answer its last check"
+        elif cluster is None:
+            item["frozen"] = "the configuration does not validate: identity changes wait until it does"
         rows.append(item)
     why = {"configuration": "the configuration does not validate: " + error} if error else {}
     return api.document("ops-config", machines=rows, version=version, path=str(api.config_path), why=why,
@@ -1208,7 +1239,7 @@ def request_state(api, rid):
 
 
 def _finish(store, rid, owner, state, result, now):
-    store.execute("UPDATE ops_requests SET state=?, finished=?, result=? WHERE id=? AND owner=?",
+    store.execute("UPDATE ops_requests SET state=?, finished=?, result=? WHERE id=? AND owner=? AND state='claimed'",
                   (state, now, json.dumps(result, ensure_ascii=True), rid, owner))
 
 
@@ -1254,9 +1285,11 @@ def sample_control(api, now):
             detail = json.loads(previous) if previous else {}
             if detail.get("requested_at") is None:
                 detail = {"requested_at": clock(), "keep_s": max(REQUEST_KEEP_S, 2 * sampler.collectors[name][1] + 60)}
-                store.execute("UPDATE ops_requests SET result=? WHERE id=? AND owner=?", (json.dumps(detail), rid, owner))
+                store.execute("UPDATE ops_requests SET result=? WHERE id=? AND owner=? AND state='claimed'",
+                              (json.dumps(detail), rid, owner))
             woke = sampler.refresh(name)
-            store.execute("UPDATE ops_requests SET state=? WHERE id=? AND owner=?", ("queued" if woke else "joined", rid, owner))
+            store.execute("UPDATE ops_requests SET state=? WHERE id=? AND owner=? AND state='claimed'",
+                          ("queued" if woke else "joined", rid, owner))
     # A refresh is done once a collection that STARTED after it was requested has finished (the sampler stamps
     # last_ok/last_error with a run's start time on its own clock); a run that began earlier, or at the same clock
     # reading, never satisfies it.

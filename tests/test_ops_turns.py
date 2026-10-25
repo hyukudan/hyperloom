@@ -202,6 +202,34 @@ class TurnsNodeTests(TreeMixin, unittest.TestCase):
             result = self.collect()
             self.assertIsNone(result["holder"])
 
+    def test_unreadable_holder_is_not_a_free_gpu(self):
+        os.unlink(self.state / "holder")
+        (self.state / "holder").mkdir()                  # not a plain file
+        result = self.collect()
+        self.assertTrue(result["holder"]["unreadable"])
+        self.assertIn("unreadable", result["why"]["holder"])
+
+    def test_linked_ancestor_is_refused(self):
+        if not node.FD_WALK:
+            self.skipTest("descriptor walk is POSIX only")
+        link = Path(self.tmp.name) / "lab-link"
+        os.symlink(self.lab, link)
+        result = node.collect(link, proc=self.proc.root, now=self.now, uid=self.uid)
+        self.assertFalse(result["present"])
+
+    def test_full_queues_stay_within_the_output_limit(self):
+        for queue in ("single-q", "pair-q"):
+            for index in range(300):
+                ts = self.now - 600 + index * 0.5
+                pid = 200000 + index + (0 if queue == "single-q" else 5000)
+                (self.state / queue / f"{int(ts * 1e9)}-{pid}").write_bytes(b"")
+                self.proc.add(pid, ts - 1, turn_argv("l" * 120 + str(index)))
+        result = self.collect()
+        self.assertLessEqual(len(json.dumps(result)), node.OUTPUT_BUDGET)
+        examined = len(result["queues"]["single-q"]) + len(result["queues"]["pair-q"])
+        self.assertLessEqual(examined, node.MAX_TICKETS)
+        self.assertIn("enumeration_truncated", result["why"])
+
     def test_output_is_bounded(self):
         lines = "".join(f"00:{i // 60 % 60:02d}:{i % 60:02d} wait  job-{i} pid {i + 10} {'x' * 300}\n" for i in range(4000))
         (self.state / "log").write_text(lines)
@@ -339,6 +367,18 @@ class TurnsPortalTests(APIFixture, TreeMixin, unittest.TestCase):
         second = next(n for n in turns.compose(self.api, replies, now=now)["nodes"] if n["machine"] == "halo-2")
         self.assertIn("unconfirmed", second["holder"]["pair_state"])
 
+    def test_remote_holder_without_log_records_is_unconfirmed(self):
+        now = 10_000.0
+        main = {"parsed": True, "kind": "pair", "label": "job-p", "side": "local", "since": 9900.0, "pid": 7,
+                "alive": True, "verified": True}
+        remote_holder = {"parsed": True, "kind": "pair", "label": "job-p", "side": "remote", "since": 9898.0, "pid": None}
+        replies = {"halo-1": {"reply": self.reply(main, [], True, now, pair_q=[]), "fetched_at": now, "error": None,
+                              "offset_s": 0.0, "offset_uncertainty_s": 0.0},
+                   "halo-2": {"reply": self.reply(remote_holder, [], False, now), "fetched_at": now, "error": None,
+                              "offset_s": 0.0, "offset_uncertainty_s": 0.0}}
+        second = next(n for n in turns.compose(self.api, replies, now=now)["nodes"] if n["machine"] == "halo-2")
+        self.assertIn("unconfirmed", second["holder"]["pair_state"])
+
     def test_holder_cap_and_estimates(self):
         now = 10_000.0
         holder = {"parsed": True, "kind": "single", "label": "job-h", "side": "local", "since": now - 500, "pid": 3,
@@ -423,6 +463,16 @@ class LedgerTests(APIFixture, unittest.TestCase):
         self.assertIn(ledger["state"], ("held", "free"))
         audit = [json.loads(line) for line in (Path(self.dir.name) / "audit.jsonl").read_text().splitlines()]
         self.assertEqual(audit[-1]["action"], "turns/settings")
+
+    def test_ledger_through_a_junction_is_refused(self):
+        if os.name != "nt":
+            self.skipTest("Windows junctions")
+        import _winapi
+        junction = Path(self.dir.name) / "via-junction"
+        _winapi.CreateJunction(self.dir.name, str(junction))
+        with self.assertRaises(OSError):
+            turns.read_ledger(str(junction / "coordination.md"))
+        self.assertTrue(turns.read_ledger(str(self.path))[0])
 
     def test_conflicting_opens(self):
         records = turns.parse_ledger("- 10:00 job-a: PC-BIG start x\n- 10:05 job-b: PC-BIG start y\n", self.anchor)

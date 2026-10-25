@@ -180,7 +180,7 @@ def machine(args):
     elif operation == "validate":
         edit = json.loads(Path(args.file).read_text(encoding="utf-8"))
         return _print(ops.validate_config(api, edit))
-    return _print(_audited(api, "ops/config/save", edit, lambda: ops.save_config(api, edit)))
+    return _print(_audited(api, "ops/config/save", edit, lambda: ops.save_config_any(api, edit)))
 
 
 def collectors(args):

@@ -159,6 +159,24 @@ def confirm_pairs(coordinator, second, used=None):
     return confirmed, unconfirmed
 
 
+def remote_holder_state(holder, coordinator, confirmed):
+    """The second node's `PAIR X (remote)` holder is running only with the whole evidence: the coordinator's holder
+    is `PAIR X (local)` and verified, its open run (same pid) is one-to-one confirmed by a remote attempt, and that
+    attempt's own clock is the remote holder's (they are written together); otherwise it is a lock attempt."""
+    main = coordinator["node"]["holder"] or {}
+    if not (main.get("parsed") and main.get("kind") == "pair" and main.get("side") == "local"
+            and main.get("label") == holder.get("label") and main.get("alive") and main.get("verified")):
+        return "lock attempt (unconfirmed: the first node holds no verified run of this pair)"
+    runs = [t for t in coordinator["turns"] if t["kind"] == "pair" and t["side"] == "local" and t["outcome"] == "running"
+            and t["label"] == main["label"] and t.get("pid") == main.get("pid")]
+    if len(runs) != 1:
+        return "lock attempt (unconfirmed: the first node's log does not show this run)"
+    matches = [attempt for attempt, start in confirmed if start is runs[0]]
+    if len(matches) != 1 or holder.get("since") is None or abs(matches[0]["start"] - holder["since"]) > 1.5:
+        return "lock attempt (unconfirmed: no attempt of this node matches the first node's run)"
+    return "running (confirmed by the first node)"
+
+
 def _settings(api):
     stored = ops.pref(api, NAMESPACE, "settings", {}) or {}
     return {"ledger_path": stored.get("ledger_path"), "ledger_cap_s": stored.get("ledger_cap_s", LEDGER_CAP_DEFAULT_S),
@@ -232,13 +250,7 @@ def compose(api, replies, now=None):
                 node["unconfirmed_attempts"] = len(unconfirmed)
                 holder = node["holder"]
                 if holder and holder.get("kind") == "pair":
-                    main = coordinator["node"]["holder"] or {}
-                    shift = (coordinator["offset"] or 0.0) - (view["offset"] or 0.0)
-                    slack = CONFIRM_BEFORE_S + (coordinator["uncertainty"] or 0) + (view["uncertainty"] or 0) + 1
-                    running = (main.get("kind") == "pair" and main.get("label") == holder.get("label")
-                               and main.get("alive") and main.get("verified")
-                               and abs((holder["since"] + shift) - main["since"]) <= slack)
-                    holder["pair_state"] = "running (confirmed by the first node)" if running else "lock attempt (unconfirmed)"
+                    holder["pair_state"] = remote_holder_state(holder, coordinator, confirmed)
             else:
                 node["unconfirmed_attempts"] = len([t for t in view["turns"] if t["kind"] == "pair" and t["side"] == "remote"])
                 node["why"]["unconfirmed_attempts"] = "the first node is not readable: pair attempts are not confirmed"
@@ -270,10 +282,27 @@ def compose(api, replies, now=None):
         node["unverified"] = [t for queue in (reply.get("unverified") or {}).values() for t in queue or []]
     if pair_queue is not None:
         median_pair = _median(pair_durations)
-        pair_queue = [{**t, "position": i + 1,
-                       "estimated_start_s": None if median_pair is None or t["kind"] == "gate" else i * median_pair,
-                       "estimate": "estimate: queue position x the median of the last pair turns"}
-                      for i, t in enumerate(pair_queue)]
+        base = None
+        main = coordinator["node"]["holder"]
+        if not main:
+            base = 0.0
+        elif main.get("parsed") and main.get("verified"):
+            typical = median_pair if main["kind"] == "pair" else _median(
+                [t["duration_s"] for t in coordinator["turns"] if t["kind"] == "single" and t["duration_s"] is not None][-20:])
+            if typical is not None:
+                base = max(0.0, min(typical - main["elapsed_s"], max(main.get("remaining_s", 0.0), 0.0)))
+        position = 0
+        rows = []
+        for t in pair_queue:
+            estimate = None
+            if t["kind"] != "gate" and base is not None and median_pair is not None:
+                estimate = base + position * median_pair
+            if t["kind"] != "gate":
+                position += 1
+            rows.append({**t, "position": len(rows) + 1, "estimated_start_s": estimate,
+                         "estimate": "estimate: the first node's holder's typical remaining time + the pair position x "
+                                     "the median of the last pair turns; single turns owed in between are not modelled"})
+        pair_queue = rows
     ledger = ledger_view(api, settings, now)
     why = {}
     if not chosen:

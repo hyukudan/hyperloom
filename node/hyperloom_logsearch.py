@@ -185,10 +185,11 @@ def protected(real):
             return "system directories cannot be searched"
     if real == Path(os.path.realpath(Path.home())):
         return "the whole home directory cannot be searched; configure a log directory"
-    if any(part in PRUNE_DIRS for part in real.parts):
+    if any(part.lower() in PRUNE_DIRS for part in real.parts):
         return "credential directories cannot be searched"
     for ancestor in (real, *real.parents):
-        if real.is_relative_to(ancestor / "etc") and (ancestor / ".hyperloom-root").is_file():
+        relative = [p.lower() for p in real.parts[len(ancestor.parts):]]
+        if relative[:1] == ["etc"] and (ancestor / ".hyperloom-root").is_file():
             return "an install root's etc directory cannot be searched"
     return None
 
@@ -265,7 +266,7 @@ def walk(label, root, opts, budget, report, found):
                         report["truncated"].append("entries" if budget.entries > MAX_ENTRIES else "deadline")
                         return
                     rows.append(entry)
-                marked = any(e.name == ".hyperloom-root" and e.is_file(follow_symlinks=False) for e in rows)
+                marked = any(e.name.lower() == ".hyperloom-root" and e.is_file(follow_symlinks=False) for e in rows)
                 for entry in rows:
                     try:
                         info = entry.stat(follow_symlinks=False)
@@ -274,7 +275,8 @@ def walk(label, root, opts, budget, report, found):
                     if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & REPARSE:
                         continue
                     if stat.S_ISDIR(info.st_mode):
-                        if (depth + 1 > MAX_DEPTH or entry.name in PRUNE_DIRS or (marked and entry.name == "etc")
+                        if (depth + 1 > MAX_DEPTH or entry.name.lower() in PRUNE_DIRS
+                                or (marked and entry.name.lower() == "etc")
                                 or SKIP_NAME.search(entry.name)):
                             continue
                         child = directory / entry.name
@@ -348,6 +350,22 @@ def _windows_close(handle):
     ctypes.WinDLL("kernel32").CloseHandle(handle)
 
 
+def windows_root(root):
+    """Windows: the final path of the opened root directory, which must be the configured root itself (normalized
+    case): a junction or link anywhere in its ancestors makes them differ. The protected-path policy is applied to
+    that final path."""
+    top, final, attributes = _windows_handle(root, directory=True)
+    _windows_close(top)
+    if attributes & REPARSE or not attributes & 0x10:
+        raise OSError("the root is not a plain directory")
+    if os.path.normcase(str(final)).rstrip("\\") != os.path.normcase(os.path.abspath(str(root))).rstrip("\\"):
+        raise OSError("the root resolves elsewhere (a link or junction in its path)")
+    reason = protected(Path(final))
+    if reason:
+        raise OSError(reason)
+    return final
+
+
 def open_file(root, parts):
     """A binary stream of a regular file root/parts reached without following any link: POSIX by descriptors from "/",
     Windows by a handle whose own final path must lie inside the root's (checked on the opened object)."""
@@ -367,10 +385,7 @@ def open_file(root, parts):
             raise
     if os.name == "nt":
         import msvcrt
-        top, top_final, top_attributes = _windows_handle(root, directory=True)
-        _windows_close(top)
-        if top_attributes & REPARSE:
-            raise OSError("root is a reparse point")
+        top_final = windows_root(root)
         handle, final, attributes = _windows_handle(Path(root).joinpath(*parts))
         if attributes & (REPARSE | 0x10) or not os.path.normcase(str(final)).startswith(
                 os.path.normcase(str(top_final)).rstrip("\\") + "\\"):
@@ -391,6 +406,12 @@ def candidates(opts, report, budget):
         if not root.is_dir():
             report["roots"].append({"root": label, "error": "not a directory"})
             continue
+        if os.name == "nt":
+            try:
+                windows_root(root)
+            except OSError as exc:
+                report["roots"].append({"root": label, "error": str(exc)})
+                continue
         report["roots"].append({"root": label, "error": None})
         walk(label, root, opts, budget, report, found)
         if report["truncated"]:
@@ -411,10 +432,13 @@ def matcher(opts):
 
 
 def lines_of(stream, room, budget):
-    """Yield (text, consumed_bytes) per line, capped at LINE_CAP; the rest of a longer line is consumed (bounded by
-    the remaining byte budget and the deadline) and not matched."""
+    """Yield (text, consumed_bytes) per line, capped at LINE_CAP and at the remaining byte allowance; the rest of a
+    longer line is consumed (bounded by the remaining byte budget and the deadline) and not matched."""
     while True:
-        raw = stream.readline(LINE_CAP)
+        allowance = room()
+        if allowance <= 0:
+            return
+        raw = stream.readline(min(LINE_CAP, allowance))
         if not raw:
             return
         consumed = len(raw)
@@ -441,21 +465,24 @@ def search(opts, emit, deadline):
         if stop:
             report["truncated"].append(stop)
             break
+        report["files"] += 1          # every attempted file counts, binary or unreadable ones too
         try:
             stream = open_file(root, parts)
         except OSError:
             continue
         with stream:
-            head = stream.read(4096)
+            head = stream.read(min(4096, room()))
+            report["bytes"] += len(head)
             if b"\0" in head:
                 report["skipped_binary"] += 1
                 continue
             stream.seek(0)
-            report["files"] += 1
+            credit = len(head)                # the probe's bytes are read again below: charged once
             before, pending, number = deque(maxlen=context), [], 0
             for text, consumed in lines_of(stream, room, budget):
                 number += 1
-                report["bytes"] += consumed
+                report["bytes"] += max(0, consumed - credit)
+                credit = max(0, credit - consumed)
                 for item in pending:
                     item["after"].append(show(text))
                 for item in [i for i in pending if len(i["after"]) >= context]:
@@ -476,6 +503,8 @@ def search(opts, emit, deadline):
                     break
             for item in pending:
                 emit(item)
+            if stop is None and room() <= 0:
+                stop = "bytes"
         if stop:
             report["truncated"].append(stop)
             break

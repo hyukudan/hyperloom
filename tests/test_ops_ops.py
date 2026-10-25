@@ -59,7 +59,7 @@ class NodeToolTests(Base, unittest.TestCase):
     def test_status_document_from_the_collector(self):
         expected = ops.expected_digest()
         self.replies[("halo-1", "version")] = {"checks": {"tool": {"value": expected}}}
-        self.replies[("halo-2", "version")] = RuntimeError("OpenSSH command failed (exit 255)")
+        self.replies[("halo-2", "version")] = RuntimeError("ssh command failed (exit 255)")
         self.replies[("halo-1", "host")] = {"interfaces": [{"name": "eth0", "mac": "02:00:5E:10:00:01"},
                                                            {"name": "x", "mac": "01:00:5e:00:00:01"}]}
         before = self.api.read("ops/nodes", {})
@@ -92,6 +92,14 @@ class NodeToolTests(Base, unittest.TestCase):
         orchestrate.nodes_update.assert_called_once()
         self.assertFalse(orchestrate.nodes_update.call_args.kwargs["force"])
         self.assertEqual(self.api.telemetry.get("ops", "node_tool")["halo-1"]["deployed"], "new")
+
+    def test_a_status_reply_without_lease_records_is_unknown(self):
+        self.api.orchestrate.nodes_update = mock.Mock()
+        for reply in ({"schema": "hyperloom/node-v1"}, {"leases": ["x"]}, {"leases": [{"lease": "a"}]}):
+            self.replies[("halo-1", "status")] = reply
+            job = self.wait(self.api.mutate("ops/nodes-update", {"profile": "qwen-replicas"}))
+            self.assertIn("unreadable", job["error"], reply)
+        self.api.orchestrate.nodes_update.assert_not_called()
 
     def test_update_is_refused_while_a_saved_launch_or_a_benchmark_holds_the_machine(self):
         self.api.orchestrate.statuses = {"qwen-replicas": {"nodes": {"halo-1": {"leases": []}}}}
@@ -143,7 +151,7 @@ class PowerTests(Base, unittest.TestCase):
         with self.assertRaises(Exception):
             self.api.feature_post("ops/wake", {"machine": "workstation"})
         with self.assertRaises(Exception):
-            self.api.feature_post("ops/machine-extras", {"machine": "halo-2", "wol_broadcast": "100.64.0.1"})
+            self.api.feature_post("ops/machine-extras", {"machine": "halo-2", "wol_broadcast": "::1"})
 
     def test_shutdown_needs_a_cli_configured_helper_and_typed_id(self):
         doc = self.api.read("ops/power", {})
@@ -185,22 +193,22 @@ class ConfigTests(Base, unittest.TestCase):
     def test_add_edit_move_remove_with_validation_and_atomic_write(self):
         new = {"id": "halo-3", "os": "linux", "access": "ssh", "http_address": "192.0.2.12", "ssh_target": "halo-3",
                "install_root": "/opt/hl"}
-        _, check = self.api.feature_post("ops/config/validate", {"op": "add", "machine": {**new, "http_address": "100.64.0.1"}})
+        _, check = self.api.feature_post("ops/config/validate", {"op": "add", "machine": {**new, "http_address": "fe80::1"}})
         self.assertFalse(check["valid"])
-        self.assertIn("private", check["error"])
+        self.assertIn("http_address", check["error"])
         with self.assertRaises(Exception):
             self.api.feature_post("ops/config/save", {"op": "add", "machine": new, "version": "0" * 64})
         self.api.feature_post("ops/config/save", {"op": "add", "machine": new, "version": self.version()})
         self.assertEqual([m["id"] for m in json.loads(self.config.read_text())["machines"]][-1], "halo-3")
         self.assertTrue(self.config.with_name("cluster.json.prev").exists())
-        self.api.feature_post("ops/config/save", {"op": "move", "id": "halo-3", "index": 0})
+        self.api.feature_post("ops/config/save", {"op": "move", "id": "halo-3", "index": 0, "version": self.version()})
         self.replies[("halo-3", "status")] = {"leases": []}
-        self.api.feature_post("ops/config/save", {"op": "edit", "id": "halo-3", "machine": {**new, "http_address": "192.0.2.13"}})
+        self.api.feature_post("ops/config/save", {"op": "edit", "id": "halo-3", "machine": {**new, "http_address": "192.0.2.13"}, "version": self.version()})
         rows = json.loads(self.config.read_text())["machines"]
         self.assertEqual((rows[0]["id"], rows[0]["http_address"]), ("halo-3", "192.0.2.13"))
         with self.assertRaises(Exception):          # used by a profile: the schema refuses the removal
-            self.api.feature_post("ops/config/save", {"op": "remove", "id": "halo-1"})
-        self.api.feature_post("ops/config/save", {"op": "remove", "id": "halo-3"})
+            self.api.feature_post("ops/config/save", {"op": "remove", "id": "halo-1", "version": self.version()})
+        self.api.feature_post("ops/config/save", {"op": "remove", "id": "halo-3", "version": self.version()})
         self.assertEqual([m["id"] for m in json.loads(self.config.read_text())["machines"]], ["workstation", "halo-1", "halo-2"])
         self.assertFalse([p for p in self.config.parent.iterdir() if p.name.endswith(".tmp")])
         audit = [json.loads(line)["action"] for line in (Path(self.dir.name) / "audit.jsonl").read_text().splitlines()]
@@ -210,28 +218,31 @@ class ConfigTests(Base, unittest.TestCase):
         row = dict(RAW["machines"][2])
         self.replies[("halo-2", "status")] = {"leases": [{"lease": "l9", "state": "ready"}]}
         with self.assertRaises(Exception) as caught:
-            self.api.feature_post("ops/config/save", {"op": "edit", "id": "halo-2", "machine": {**row, "http_address": "192.0.2.99"}})
+            self.api.feature_post("ops/config/save", {"op": "edit", "id": "halo-2", "machine": {**row, "http_address": "192.0.2.99"}, "version": self.version()})
         self.assertIn("frozen: http_address", str(caught.exception))
         with self.assertRaises(Exception):
-            self.api.feature_post("ops/config/save", {"op": "remove", "id": "halo-2"})
+            self.api.feature_post("ops/config/save", {"op": "remove", "id": "halo-2", "version": self.version()})
         # a non-identity change (a device's type) is still allowed while in use
-        self.api.feature_post("ops/config/save", {"op": "edit", "id": "halo-2", "machine": {**row, "devices": [{"id": "gpu", "type": "igpu"}]}})
+        self.api.feature_post("ops/config/save", {"op": "edit", "id": "halo-2", "machine": {**row, "devices": [{"id": "gpu", "type": "igpu"}]}, "version": self.version()})
         self.replies[("halo-2", "status")] = RuntimeError("unknown host key")
         with self.assertRaises(Exception) as caught:
-            self.api.feature_post("ops/config/save", {"op": "edit", "id": "halo-2", "machine": {**row, "ssh_target": "x"}})
+            self.api.feature_post("ops/config/save", {"op": "edit", "id": "halo-2", "machine": {**row, "ssh_target": "x"}, "version": self.version()})
         self.assertIn("cannot be read", str(caught.exception))
         with self.assertRaises(Exception):
-            self.api.feature_post("ops/config/save", {"op": "edit", "id": "halo-2", "machine": row, "assume_idle": "halo-2"})
+            self.api.feature_post("ops/config/save", {"op": "edit", "id": "halo-2", "machine": row, "assume_idle": "halo-2", "version": self.version()})
+        with self.assertRaises(Exception) as missing:
+            self.api.feature_post("ops/config/save", {"op": "move", "id": "halo-2", "index": 0})
+        self.assertIn("version is required", str(missing.exception))
         self.replies[("halo-2", "status")] = {"leases": []}
-        self.api.feature_post("ops/config/save", {"op": "move", "id": "halo-2", "index": 0})       # order is not identity
-        self.api.feature_post("ops/config/save", {"op": "edit", "id": "halo-2", "machine": {**row, "http_address": "192.0.2.99"}})
+        self.api.feature_post("ops/config/save", {"op": "move", "id": "halo-2", "index": 0, "version": self.version()})       # order is not identity
+        self.api.feature_post("ops/config/save", {"op": "edit", "id": "halo-2", "machine": {**row, "http_address": "192.0.2.99"}, "version": self.version()})
 
     def test_the_control_machine_is_in_use_while_a_saved_launch_routes_there(self):
         self.api.orchestrate.statuses = {"qwen-replicas": {"profile": "qwen-replicas", "nodes": {}}}
         self.api.orchestrate._read = lambda path: {"router": {"machine": "local"}, "machines": {}}
         row = RAW["machines"][0]
         with self.assertRaises(Exception) as caught:
-            self.api.feature_post("ops/config/save", {"op": "edit", "id": "workstation", "machine": {**row, "http_address": "127.0.0.2"}})
+            self.api.feature_post("ops/config/save", {"op": "edit", "id": "workstation", "machine": {**row, "http_address": "127.0.0.2"}, "version": self.version()})
         self.assertIn("saved launch", str(caught.exception))
 
     def test_concurrent_saves_are_serialized(self):
@@ -392,6 +403,26 @@ class CollectorTests(Base, unittest.TestCase):
         ops.sample_control(self.api, clock[0])
         self.assertEqual(ops.request_state(self.api, rid)["state"], "done")
 
+
+    def test_a_late_claimant_never_overwrites_a_finished_request(self):
+        sampler = self.sampler({"fast": (lambda api, now: [], 2.0)})
+        clock = [3000.0]
+        sampler.clock = lambda: clock[0]
+        rid = ops.queue_request(self.api, "refresh", {"collector": "fast"})
+        store = self.api.telemetry
+        original = sampler.refresh
+
+        def paused(name):
+            # while this claimant is paused, the collection runs and another portal records the outcome
+            clock[0] = 3001.0
+            original(name)
+            sampler.run_once(name)
+            store.execute("UPDATE ops_requests SET state='done', finished=?, result=? WHERE id=?",
+                          (3001.0, json.dumps({"ok": True}), rid))
+            return True
+        with mock.patch.object(sampler, "refresh", side_effect=paused):
+            ops.sample_control(self.api, clock[0])
+        self.assertEqual(ops.request_state(self.api, rid)["state"], "done")
 
     def test_recovery_after_ten_minutes_keeps_a_long_retention(self):
         sampler = self.sampler({"slow": (lambda api, now: [], 3600.0)})

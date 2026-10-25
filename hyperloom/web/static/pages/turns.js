@@ -76,7 +76,7 @@
   function holderBlock(node) {
     const {esc, statusPill, unavailable} = H(), h = node.holder;
     if (!h) return `<div class="ops-holder"><div class="big">GPU free</div><p class="ops-note">${esc(node.why?.holder || "no holder file")}</p></div>`;
-    if (!h.parsed) return `<div class="ops-holder">${unavailable("holder line not recognised")}<p class="ops-mono">${esc(h.raw || "")}</p></div>`;
+    if (!h.parsed) return `<div class="ops-holder">${unavailable(node.why?.holder || "holder line not recognised")}${h.raw ? `<p class="ops-mono">${esc(h.raw)}</p>` : ""}</div>`;
     const left = h.past_cap ? statusPill("past its cap") : UI.show(UI.dur(h.remaining_s), "cap unknown", " left");
     const live = h.alive === false ? `<p class="field-error">${esc(h.why_alive)}</p>` : h.verified === false && h.alive ? `<p class="ops-note">${esc(h.why_alive)}</p>` : "";
     return `<div class="ops-holder"><div class="row between"><span class="big">${esc(h.label)}</span><span class="row">${H().tag(h.kind)}${H().tag(h.side)}${h.pair_state ? H().tag(h.pair_state) : ""}</span></div>`

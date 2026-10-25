@@ -56,20 +56,32 @@ NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 class Reader:
     """Bounded, no-follow reads below one directory (the turn state directory).
 
-    POSIX: the directory is opened once with O_DIRECTORY|O_NOFOLLOW and every entry is opened relative to that
-    descriptor with O_NOFOLLOW (a swapped ancestor cannot redirect a read); every opened file must be a regular file
-    (fstat), so a FIFO or a device is never read. Elsewhere (tests on the control machine): path-based with the same
-    link refusal and file-type checks."""
+    POSIX: the directory is opened from "/" one component at a time with O_DIRECTORY|O_NOFOLLOW (no component of its
+    path, ancestors included, can be a link, and a swapped ancestor cannot redirect a read) and every entry is opened
+    relative to that descriptor with O_NOFOLLOW; every opened file must be a regular file (fstat), so a FIFO or a
+    device is never read. Elsewhere (tests on the control machine): path-based with link refusal on every component
+    and the same file-type checks."""
 
     def __init__(self, base):
         self.base = Path(base)
-        if os.path.islink(self.base):
-            raise ValueError("symbolic link refused")
         self.fd = None
         if FD_WALK:
-            self.fd = os.open(self.base, os.O_RDONLY | os.O_DIRECTORY | NOFOLLOW)
-        elif not stat.S_ISDIR(os.lstat(self.base).st_mode):
-            raise ValueError("turn state directory is not a plain directory")
+            fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                for part in self.base.parts[1:]:
+                    child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | NOFOLLOW, dir_fd=fd)
+                    os.close(fd)
+                    fd = child
+            except OSError:
+                os.close(fd)
+                raise
+            self.fd = fd
+        else:
+            for ancestor in (self.base, *self.base.parents):
+                if os.path.islink(ancestor):
+                    raise ValueError("symbolic link refused")
+            if not stat.S_ISDIR(os.lstat(self.base).st_mode):
+                raise ValueError("turn state directory is not a plain directory")
         self.subdirs = {}
 
     def close(self):
@@ -111,6 +123,21 @@ class Reader:
         if len(parts) > 2:
             raise OSError("too deep")
         return os.open(parts[-1], flags, dir_fd=parent)
+
+    def presence(self, *parts):
+        """"missing", "present" or "unreadable" (a link, a permission error, ...)."""
+        try:
+            parts = [self._plain(p) for p in parts]
+            if self.fd is None:
+                info = os.lstat(self.base.joinpath(*parts))
+            else:
+                parent = self.fd if len(parts) == 1 else self._dir(parts[0])
+                info = os.stat(parts[-1], dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError:
+            return "missing"
+        except OSError:
+            return "unreadable"
+        return "present" if stat.S_ISREG(info.st_mode) else "unreadable"
 
     def stat(self, *parts):
         try:
@@ -286,17 +313,20 @@ GATE = re.compile(r"0-0-single-([A-Za-z0-9._-]{1,64})-([1-9][0-9]{0,9})")
 LOG_LABEL_WINDOW_S = 2.0
 
 
-def tickets(reader, procs, queue, now, deadline):
+def tickets(reader, procs, queue, now, deadline, budget):
     """(verified live tickets in the turn tool's order, unverified live ones, count of the others, enumeration cut) of
     one queue directory. Unverified = the process exists and is old enough but its command line cannot be read."""
     names, cut = reader.listdir(queue)
     if names is None:
         return None, None, 0, False
     live, unverified, dead = [], [], 0
-    for name in names[:MAX_TICKETS]:
-        if time.monotonic() >= deadline:
+    examined = 0
+    for name in names:
+        if time.monotonic() >= deadline or budget[0] <= 0:
             cut = True
             break
+        budget[0] -= 1
+        examined += 1
         gate = GATE.fullmatch(name)
         match = TICKET.fullmatch(name)
         if gate:
@@ -320,7 +350,7 @@ def tickets(reader, procs, queue, now, deadline):
         if verdict != "verified":
             row["unverified_why"] = facts["why"] or "command line unreadable"
         (live if verdict == "verified" else unverified).append(row)
-    return live, unverified, dead + max(0, len(names) - MAX_TICKETS), cut or len(names) > MAX_TICKETS
+    return live, unverified, dead, cut or examined < len(names)
 
 
 def _seconds(hhmmss):
@@ -472,9 +502,12 @@ HOLDER = re.compile(r"(PAIR )?(\S{1,128}?)(?: \((local|remote)\))? since (\d{2}:
 
 
 def holder_of(reader, procs, now):
-    found = reader.read("holder", limit=512)
-    if found is None:
+    presence = reader.presence("holder")
+    if presence == "missing":
         return None, "no holder file (the GPU is free)"
+    found = reader.read("holder", limit=512) if presence == "present" else None
+    if found is None:
+        return {"raw": None, "parsed": False, "unreadable": True}, "holder file unreadable (not a plain file or no permission)"
     text = found[0].decode("utf-8", "replace").strip()
     if not text:
         return None, "holder file empty (the GPU is free)"
@@ -556,8 +589,9 @@ def collect(lab_dir, proc="/proc", now=None, uid=None, budget_s=4.0):
         result["flags"] = flags(reader)
         result["long_ok"] = long_ok(reader)
         queues, unverified, stale, cut = {}, {}, {}, []
+        budget = [MAX_TICKETS]          # tickets examined per call, both queues together
         for queue in ("single-q", "pair-q"):
-            rows, loose, dead, truncated = tickets(reader, procs, queue, now, deadline)
+            rows, loose, dead, truncated = tickets(reader, procs, queue, now, deadline, budget)
             queues[queue], unverified[queue], stale[queue] = rows, loose, dead
             if truncated:
                 cut.append(queue)
@@ -565,7 +599,8 @@ def collect(lab_dir, proc="/proc", now=None, uid=None, budget_s=4.0):
                 result["why"][queue] = "queue directory absent"
         result["queues"], result["unverified"], result["stale_tickets"] = queues, unverified, stale
         if cut:
-            result["why"]["enumeration_truncated"] = "only the first entries of " + ", ".join(cut) + " were examined"
+            result["why"]["enumeration_truncated"] = ("only the first entries of " + ", ".join(cut)
+                                                      + " were examined (budget, deadline or directory size)")
         log = reader.read("log", limit=MAX_LOG, tail=True)
         info = reader.stat("log")
         if log is None or info is None:
@@ -593,19 +628,33 @@ def collect(lab_dir, proc="/proc", now=None, uid=None, budget_s=4.0):
 
 
 def fit(result):
-    """Keep the serialized reply under the output budget: drop the oldest events, then turns, and say so."""
+    """Keep the serialized reply under the output budget: drop the oldest events, then the oldest turns, then the
+    tail of the unverified lists, then the tail of the queues (their order is kept), and say what was cut."""
     trimmed = set()
-    while len(json.dumps(result, ensure_ascii=True, allow_nan=False)) > OUTPUT_BUDGET:
+
+    def size():
+        return len(json.dumps(result, ensure_ascii=True, allow_nan=False))
+    while size() > OUTPUT_BUDGET:
         if result.get("events"):
             result["events"] = result["events"][max(1, len(result["events"]) // 2):]
-            trimmed.add("events")
+            trimmed.add("oldest events")
         elif result.get("turns"):
             result["turns"] = result["turns"][max(1, len(result["turns"]) // 2):]
-            trimmed.add("turns")
+            trimmed.add("oldest turns")
+        elif any(result.get("unverified", {}).get(q) for q in ("single-q", "pair-q")):
+            queue = max(("single-q", "pair-q"), key=lambda q: len(result["unverified"].get(q) or []))
+            rows = result["unverified"][queue]
+            result["unverified"][queue] = rows[:len(rows) // 2]
+            trimmed.add("unverified tickets")
+        elif any((result.get("queues") or {}).get(q) for q in ("single-q", "pair-q")):
+            queue = max(("single-q", "pair-q"), key=lambda q: len(result["queues"].get(q) or []))
+            rows = result["queues"][queue]
+            result["queues"][queue] = rows[:len(rows) // 2]
+            trimmed.add("the queues' last tickets")
         else:
             break
     if trimmed:
-        result["why"]["trimmed"] = "oldest " + " and ".join(sorted(trimmed)) + " dropped to fit the output limit"
+        result["why"]["trimmed"] = "cut to fit the output limit: " + ", ".join(sorted(trimmed))
 
 
 def run(verb, payload):
