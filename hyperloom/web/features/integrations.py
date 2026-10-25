@@ -336,8 +336,7 @@ def machine_statuses(api, store):
     age = metrics_export.fresh_age(descriptor.get("interval_s"))
     latest = {row["labels"].get("machine"): row["value"] for row in store.latest("node_up", max_age=age)}
     result = {}
-    for machine in machines:
-        mid = getattr(machine, "id", None)
+    for mid in machines:                # Cluster.machines maps machine id -> Machine
         if isinstance(mid, str) and TOPIC_PART.fullmatch(mid):
             value = latest.get(mid)
             result[mid] = None if value is None else "1" if value >= 1 else "0"

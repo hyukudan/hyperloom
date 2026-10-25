@@ -11,7 +11,7 @@ import time
 import unittest
 from unittest import mock
 
-from hyperloom import cli, mqtt, secrets, telemetry
+from hyperloom import cli, config, mqtt, secrets, telemetry
 from hyperloom.telemetry.store import Store
 from hyperloom.web import features
 from hyperloom.web.api import API, redact
@@ -53,7 +53,9 @@ class FakeAPI:
         codes = {"online": 1, "offline": 0}
         self.telemetry.record([("node_up", {"machine": m["id"]}, codes[m["health"]]) for m in self.machines
                                if m["health"] in codes], ts=self.clock())
-        return types.SimpleNamespace(machines=[types.SimpleNamespace(id=m["id"]) for m in self.machines])
+        # The real contract: Cluster.machines maps machine id -> Machine.
+        return config.Cluster(machines={m["id"]: types.SimpleNamespace(id=m["id"]) for m in self.machines},
+                              assets={}, profiles={}, router={}, pc={}, raw={})
 
     def document(self, name, **fields):
         return {"schema": f"hyperloom/ui-{name}-v1", **fields}
@@ -263,6 +265,23 @@ class PublishingTests(Base):
         publisher.messages[1]["done"]("sent")
         self.collect()
         self.assertEqual(self.store.get(integrations.RETAINED_NAMESPACE, "topics"), ["lab/status/halo-1"])
+
+    def test_fresh_publications_then_machine_removal(self):
+        self.enable()
+        self.store.describe("node_load1", "gauge", interval=5)
+        self.store.record([("node_load1", {"machine": "halo-1"}, 1.0)], ts=NOW)
+        self.collect()
+        publisher = self.publishers[0]
+        sent = {m["topic"]: m["payload"] for m in publisher.messages}
+        self.assertEqual(sent["lab/status/halo-1"], b"1")
+        self.assertTrue(sent["lab/metrics/halo-1"])
+        publisher.messages.clear()
+        self.api.machines = [{"id": "halo-2", "health": "offline"}]       # halo-1 left the configuration
+        self.clock.now += 5
+        self.store.record([("node_load1", {"machine": "halo-1"}, 1.0)], ts=self.clock.now)   # still fresh
+        self.collect()
+        cleared = sorted(m["topic"] for m in publisher.messages if m["payload"] == b"")
+        self.assertEqual(cleared, ["lab/metrics/halo-1", "lab/status/halo-1"])
 
     def test_a_new_publisher_clears_what_an_earlier_one_left(self):
         self.store.put(integrations.RETAINED_NAMESPACE, "topics", ["old/status/halo-9", "lab/metrics/halo-2"])
