@@ -242,6 +242,40 @@ class APIDispatchTests(unittest.TestCase):
         self.api.mutate("cancel", {"job": bench["id"]})
         self.wait(bench["id"])
 
+    def test_a_profile_cancel_is_a_stop(self):
+        bench = self.api.mutate("demo/bench", {"on": ["halo-1"]})
+        gate = threading.Event()
+        self.api.orchestrate.down.side_effect = lambda *a, **kw: (gate.wait(5), {"stopped": True})[1]
+        stop = self.api.mutate("cancel", {"profile": "qwen"})
+        self.assertEqual(self.wait(bench["id"])["state"], "cancelled")     # overlapping benchmarks are cancelled
+        with self.assertRaises(APIError) as caught:
+            self.api.mutate("demo/bench", {"on": ["halo-1"]})               # and kept out while it runs
+        self.assertIn("stop", str(caught.exception))
+        gate.set()
+        self.wait(stop["id"])
+        self.assertEqual(self.api._holds, {})
+
+    def test_an_unaudited_acceptance_starts_nothing_and_holds_nothing(self):
+        for action, arguments in (("demo/bench", {"on": ["halo-1"]}), ("demo/exclusive", {}),
+                                  ("down", {"profile": "qwen"})):
+            with self.subTest(action=action):
+                with mock.patch.object(self.api, "_audit", side_effect=OSError("disk full")):
+                    with self.assertRaises(APIError) as caught:
+                        self.api.mutate(action, arguments)
+                self.assertEqual(caught.exception.status, 503)
+                self.assertIn("not started", str(caught.exception))
+                self.assertEqual((self.api._holds, self.api._active, self.api._features_running), ({}, None, {}))
+                self.assertEqual(self.api.admission_db.holds(), [])
+                self.assertFalse([j for j in self.api._jobs.values() if j["state"] == "running"])
+
+    def test_a_finished_feature_job_cancel_is_409(self):
+        job = self.api.mutate("demo/job", {"n": 1})
+        self.wait(job["id"])
+        with self.assertRaises(APIError) as caught:
+            self.api.mutate("cancel", {"job": job["id"]})
+        self.assertEqual(caught.exception.status, 409)
+        self.assertEqual(str(caught.exception), f"job {job['id']} has already succeeded")
+
     def test_abandoned_portal_jobs_are_cancelled(self):
         from hyperloom.web import api as api_module
         with mock.patch.object(api_module, "OWNER_LEASE_S", 0.3):

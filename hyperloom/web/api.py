@@ -1223,15 +1223,18 @@ class API:
                    "result": None, "error": None, "progress": "starting",
                    "resources": sorted(resources) if hold else None,
                    "renew": "POST jobs/renew while the page is open" if spec.admission else None}
-            self._audit(action, arguments, {"job": jid, "state": "accepted"})
-            self._jobs[jid] = job
-            self._features_running[jid] = context
+            accepted = self._accepted(action, arguments, jid)
+            if accepted is None:
+                self._jobs[jid] = job
+                self._features_running[jid] = context
             for old in list(self._jobs):
                 if len(self._jobs) <= 100:
                     break
                 if self._jobs[old]["state"] != "running":
                     del self._jobs[old]
             response = dict(job)
+        if accepted is not None:
+            self._unaccept(jid, accepted)
 
         def progress(text):
             with self._job_lock:
@@ -1330,10 +1333,13 @@ class API:
                 job = self._jobs.get(arguments["job"])
                 job = dict(job) if job else None
                 feature = arguments["job"] in self._features_running     # a running feature job: its context
-            if not job or (job["action"] not in ("up", "recipes/deploy") and not feature):
+            launch = bool(job) and job["action"] in ("up", "recipes/deploy")
+            if job and job["state"] != "running" and (launch or job["action"] in feature_registry.registry().jobs):
+                # A known job that finished (a launch, or a feature job whose context is gone): 409 at once.
+                raise APIError(f"job {job['job']} has already {job['state']}" +
+                               (": use down with a profile" if launch else ""), 409)
+            if not job or (not launch and not feature):
                 raise APIError("only an up or a recipes/deploy job can be cancelled; use down with a profile")
-            if job["state"] != "running":
-                raise APIError(f"job {job['job']} has already {job['state']}: use down with a profile", 409)
         if action == "up" and (arguments.get("recipe") or arguments.get("recipe_inputs")):
             # A recipe launch runs on the portal's own configuration: its recipe directories, snapshots and layers
             # derive from it, and a configuration file is never named by the client here.
@@ -1635,6 +1641,22 @@ class API:
                 "stopped_by_deploy": progress.get("stopped") or [], "stopping": progress.get("stopping"),
                 "down": down, "summary": service.cancel_summary(progress, down=down)}
 
+    def _accepted(self, action, arguments, jid):
+        """Write a job's "accepted" audit entry (under the job lock); the error when it could not be written: the job
+        does not start, and the caller releases what it reserved (``_unaccept``) once the lock is released."""
+        try:
+            self._audit(action, arguments, {"job": jid, "state": "accepted"})
+            return None
+        except Exception as exc:  # noqa: BLE001 - re-raised by _unaccept after the cleanup
+            if self._active == jid:
+                self._active = None
+            return exc
+
+    def _unaccept(self, jid, error):
+        """A job whose acceptance could not be audited: its admission hold is released, nothing runs."""
+        self._unhold(jid)
+        raise APIError("audit write failed: " + str(error) + " (the job was not started)", 503) from error
+
     def mutate(self, action, arguments):
         if action not in MUTATIONS and action in feature_registry.registry().jobs:
             return self._feature_job(action, arguments)
@@ -1645,9 +1667,18 @@ class API:
             raise
         priority = action in ("down", "cancel")
         occupying = action in ("up", "install", "recipes/deploy", "recipes/probe")
+        # A stop: down, and every cancel that is not a feature job's (a profile's cancel and an up's or a deploy's
+        # cancel stop a profile, or may).
+        stopping, profile = action == "down", arguments.get("profile")
+        if action == "cancel":
+            with self._job_lock:
+                feature = arguments.get("job") in self._features_running
+                job = self._jobs.get(arguments.get("job")) if arguments.get("job") else None
+                if job is not None and not profile:
+                    profile = job["arguments"].get("profile")
+            stopping = not feature
         resources = set()
-        if occupying or action == "down":
-            profile = arguments.get("profile")
+        if occupying or stopping:
             resources = self._resources_of_profile(profile) if isinstance(profile, str) and profile else {"*"}
         jid = uuid.uuid4().hex
         with self._job_lock:
@@ -1656,19 +1687,18 @@ class API:
                 raise APIError("another mutating job is running", 409)
             if not priority:
                 self._active = jid      # reserved while the shared admission decides
-        if occupying or action == "down":
+        if occupying or stopping:
             # A stop is never refused: registering it cancels overlapping benchmarks (in every process) and its
             # hold keeps new ones out until it finishes. A deploy is refused while a benchmark holds its resources.
             try:
-                self._hold(jid, "stop" if action == "down" else "core", resources,
-                           action + " " + str(arguments.get("profile") or ""))
+                self._hold(jid, "stop" if stopping else "core", resources, action + " " + str(profile or ""))
             except APIError as exc:
                 with self._job_lock:
                     if self._active == jid:
                         self._active = None
                 self._audit(action, arguments, {"state": "refused", "error": str(exc)})
                 raise
-            if action == "down":
+            if stopping:
                 with self._job_lock:
                     contexts = [self._features_running[j] for j in self._holds if j in self._features_running]
                 for context in contexts:
@@ -1677,8 +1707,9 @@ class API:
             job = {"job": jid, "id": jid, "action": action, "arguments": redact(arguments),
                    "state": "running", "started_at": self.clock(), "finished_at": None,
                    "result": None, "error": None, "progress": "calling CLI service"}
-            self._audit(action, arguments, {"job": jid, "state": "accepted"})
-            self._jobs[jid] = job
+            accepted = self._accepted(action, arguments, jid)
+            if accepted is None:
+                self._jobs[jid] = job
             # Keep completed jobs bounded; never evict an operation still running.
             for old in list(self._jobs):
                 if len(self._jobs) <= 100:
@@ -1686,6 +1717,8 @@ class API:
                 if self._jobs[old]["state"] != "running":
                     del self._jobs[old]
             response = dict(job)
+        if accepted is not None:
+            self._unaccept(jid, accepted)
         if action == "recipes/deploy" or (action == "up" and (arguments.get("recipe") or arguments.get("recipe_inputs"))):
             arguments = dict(arguments, _job=jid)    # the launch's cancel marker is named by its job
         def run():
