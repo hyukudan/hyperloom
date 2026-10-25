@@ -1,0 +1,17 @@
+/* Machine detail (machine.js). */
+.mc-pick{display:flex;align-items:center;gap:8px}
+.mc-heroes{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px}
+.mc-hero{display:flex;gap:14px;align-items:flex-start;border:1px solid var(--border);border-radius:8px;padding:12px;background:var(--surface-2)}
+.mc-hero-kv{display:grid;gap:6px;flex:1;min-width:0;font-size:13px}
+.mc-ring{width:84px;height:84px;display:block}
+.mc-ring-t{font-size:16px;font-weight:650;fill:var(--text)}
+.mc-seg{margin-bottom:10px}
+.mc-charts{display:grid;gap:16px}
+.mc-h3{font-size:13px;margin:14px 0 6px}
+.mc-stack{display:flex;height:12px;border-radius:6px;overflow:hidden;background:var(--surface-2)}
+.mc-stack i,.mc-legend i{display:inline-block;height:100%}
+.mc-legend{list-style:none;padding:0;margin:6px 0 0;display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--text-2)}
+.mc-legend i{width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:middle}
+.mc-seg-0{background:var(--s1)} .mc-seg-1{background:var(--s2)} .mc-seg-2{background:var(--s3)} .mc-seg-3{background:var(--s4)} .mc-seg-4{background:var(--s5)}
+.mc-seg-un{background:repeating-linear-gradient(45deg,var(--border-strong) 0 4px,var(--surface-2) 4px 8px)}
+@media (max-width:760px){.mc-hero{flex-direction:column}.mc-heroes{grid-template-columns:1fr}.mc-pick{flex-wrap:wrap}}

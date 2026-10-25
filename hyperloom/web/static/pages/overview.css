@@ -1,0 +1,24 @@
+/* Fleet overview (overview.js). */
+.fl-kpis{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}
+.fl-kpi .val small{font-size:13px;color:var(--text-3);font-weight:500;margin-left:4px}
+.fl-kpi .dl{overflow-wrap:anywhere}
+.fl-kpi-head{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
+.fl-wide{grid-column:span 2}
+.fl-wide .val{display:grid;gap:4px;margin-top:6px}
+.fl-mem{display:flex;justify-content:space-between;gap:8px;font-size:12.5px;font-weight:500;letter-spacing:0}
+.fl-mem b{font-variant-numeric:tabular-nums;white-space:nowrap}
+.fl-grid{grid-template-columns:repeat(auto-fill,minmax(340px,1fr))}
+.fl-card h2 a{color:inherit}
+.fl-card h2{margin:0;flex-wrap:wrap}
+.fl-card>.row{margin:6px 0}
+.fl-off{opacity:.85}
+.fl-dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--text-3);border:2px solid var(--surface)}
+.fl-online{background:var(--ok)} .fl-stale{background:var(--warn)} .fl-offline{background:var(--err)}
+.fl-head{margin:10px 0;display:grid;gap:4px}
+.fl-head .lbl{font-size:12px;color:var(--text-2)}
+.fl-gpus,.fl-engines{display:grid;gap:6px;margin:8px 0}
+.fl-gpu,.fl-engine{border:1px solid var(--border);border-radius:8px;padding:8px 10px;background:var(--surface-2);font-size:12.5px;display:flex;flex-wrap:wrap;gap:4px 12px;align-items:center}
+.fl-engine{display:block}
+.fl-hide{min-height:28px;white-space:nowrap;flex-shrink:0}
+@media (max-width:760px){.fl-grid{grid-template-columns:1fr}.fl-kpis{grid-template-columns:1fr 1fr}.fl-hide{min-height:44px}}
+@media (max-width:420px){.fl-kpis{grid-template-columns:1fr}.fl-wide{grid-column:auto}}
