@@ -63,6 +63,16 @@ class APIError(ValueError):
         self.status = status
 
 
+class JobFailed(Exception):
+    """Raised by a feature job whose failure is definite (or whose outcome is unresolved): the job ends "failed"
+    even when a cancel was requested meanwhile, and `outcome` (e.g. "unresolved") is kept on the job and its audit
+    line, so the job, the audit log and the feature's own records agree."""
+
+    def __init__(self, message, outcome=None):
+        super().__init__(message)
+        self.outcome = outcome
+
+
 LOOPBACK_UNAVAILABLE = "unavailable: engine bound to loopback on its node"
 OWNER_LEASE_S = 120.0       # a portal-started benchmark is abandoned when its page stops renewing it this long
 HOLD_RENEW_S = 30.0
@@ -1219,6 +1229,10 @@ class API:
                 result = spec.run(self, arguments, context)
                 update = {"state": "cancelled" if context.cancelled() and result is None else "succeeded",
                           "result": redact(result), "error": redact(context.reason) if context.cancelled() else None}
+            except JobFailed as exc:
+                update = {"state": "failed", "result": None, "error": redact(str(exc))}
+                if exc.outcome is not None:
+                    update["outcome"] = redact(str(exc.outcome))[:40]
             except Exception as exc:
                 update = {"state": "cancelled" if context.cancelled() else "failed", "result": None,
                           "error": redact(str(exc))}

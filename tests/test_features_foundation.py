@@ -12,7 +12,7 @@ from unittest import mock
 from hyperloom import admission, cliext, telemetry
 from hyperloom.telemetry.store import Store
 from hyperloom.web import features, server
-from hyperloom.web.api import API, APIError
+from hyperloom.web.api import API, APIError, JobFailed
 
 
 class Clock:
@@ -110,6 +110,12 @@ class APIDispatchTests(unittest.TestCase):
                 admission="bench", resources=lambda api, a: {"x"}, deadline_s=1)
         reg.job("demo/leak", lambda api, a, ctx: (_ for _ in ()).throw(RuntimeError("password=hunter2 Bearer abc")))
         reg.job("demo/exclusive-on", lambda api, a, ctx: {}, exclusive=True, resources=lambda api, a: {"halo-1"})
+
+        def definite(api, a, ctx):
+            while not ctx.wait(0.01):
+                pass
+            raise JobFailed("node refused the change", outcome=a.get("outcome"))
+        reg.job("demo/definite", definite, admission="bench", resources=lambda api, a: {"halo-3"}, deadline_s=30)
         reg.capability("demo", False, "needs data")
         features.reset(reg)
         self.addCleanup(features.reset)
@@ -185,6 +191,20 @@ class APIDispatchTests(unittest.TestCase):
         # A stop of a profile cancels overlapping admitted jobs (priority: it never waits).
         self.api.mutate("down", {"profile": "qwen"})
         self.assertEqual(self.wait(second["id"])["state"], "cancelled")
+
+    def test_a_definite_failure_survives_a_cancel_request(self):
+        for outcome in (None, "unresolved"):
+            with self.subTest(outcome=outcome):
+                job = self.api.mutate("demo/definite", {"outcome": outcome})
+                self.wait(self.api.mutate("cancel", {"job": job["id"]})["id"])
+                done = self.wait(job["id"])
+                self.assertEqual((done["state"], done["error"], done.get("outcome")),
+                                 ("failed", "node refused the change", outcome))
+                audited = [json.loads(line) for line in (Path(self.dir.name) / "audit.jsonl").read_text().splitlines()]
+                line = [entry for entry in audited if entry.get("action") == "demo/definite"][-1]
+                self.assertIn('"failed"', json.dumps(line))
+                if outcome:
+                    self.assertIn('"unresolved"', json.dumps(line))
 
     def test_admission_is_shared_across_portal_processes(self):
         other = API(Path(self.dir.name) / "cluster.json", orchestrator=mock.Mock(), remote_module=mock.Mock(),
