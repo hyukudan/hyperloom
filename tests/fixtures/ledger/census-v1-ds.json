@@ -1,0 +1,18 @@
+{
+ "schema": "census-v1",
+ "engine": "DS",
+ "sha": "cab238d6",
+ "binsha": "bc7581678dbab954",
+ "cells": [
+  {"cell": "R1 decode ctx 1000", "wall_ms": 61.2, "wall_tag": "M (timed run)", "tok_s": 16.3, "bytes_gb": 3.21,
+   "floor_ms": 13.01, "pct_ceiling": 21.3, "ceiling_tok_s": 76.9, "ceiling_tag": "E bandwidth-only",
+   "dims": {"machines": ["halo-1", "halo-2"], "link_mode": "usb4gpu", "context_tokens": 1000, "batch_rows": 1,
+            "spec_mode": "off", "precision": "q4"}},
+  {"cell": "R1 decode (serving)", "wall_ms": 60.0, "wall_tag": "M", "tok_s": 16.6, "bytes_gb": 3.2,
+   "floor_ms": 12.97, "pct_ceiling": 21.6, "ceiling_tok_s": 77.1, "ceiling_tag": "E bandwidth-only",
+   "dims": {"machines": ["halo-1", "halo-2"]}},
+  {"cell": "verify window R4", "wall_ms": 80.5, "wall_tag": "M", "tok_s": null, "bytes_gb": 4.4, "floor_ms": 17.8,
+   "pct_ceiling": null, "ceiling_tok_s": null, "ceiling_tag": "ND union not counted"}
+ ],
+ "notes": ["fixture artifact in the census-v1 shape"]
+}
