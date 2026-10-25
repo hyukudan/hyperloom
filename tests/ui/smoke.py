@@ -210,7 +210,10 @@ def fixture_server(args):
 
     def up(*a, **kw):
         cancelled.clear()
-        record("up", arguments=kw)
+        if kw.get("cancelled") and kw["cancelled"]():    # the job's hand-over, checked as orchestrate.up does
+            record("up-cancelled")
+            raise RuntimeError("profile stop requested")
+        record("up", arguments={k: v for k, v in kw.items() if k != "cancelled"})
         if args.blocked:
             eventually(lambda: (directory / "release").exists(), timeout=60)
         running["value"] = not cancelled.is_set()

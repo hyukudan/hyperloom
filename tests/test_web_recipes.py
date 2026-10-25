@@ -268,10 +268,10 @@ class ContractTests(unittest.TestCase):
                           "password_tokens_min": "[redacted]", "secret_tokens": "[redacted]",
                           "private_key_tokens": "[redacted]"})
         # The token-count exemption holds for numbers only: a string (or any structure) under such a key is redacted.
-        self.assertEqual(redact({"github_tokens": "ghp_abc", "prompt_tokens": 7, "max_tokens": None,
-                                 "access_tokens": ["ghp_abc"], "refresh_tokens": {"a": "ghp_abc"},
+        self.assertEqual(redact({"service_tokens": "fixture-secret", "prompt_tokens": 7, "max_tokens": None,
+                                 "access_tokens": ["fixture-secret"], "refresh_tokens": {"a": "fixture-secret"},
                                  "flag_tokens": True}),
-                         {"github_tokens": "[redacted]", "prompt_tokens": 7, "max_tokens": None,
+                         {"service_tokens": "[redacted]", "prompt_tokens": 7, "max_tokens": None,
                           "access_tokens": "[redacted]", "refresh_tokens": "[redacted]", "flag_tokens": "[redacted]"})
         self.assertSameAsCli(document)
         with mock.patch.object(recipe_web, "COMMAND", [sys.executable, "-c", (
