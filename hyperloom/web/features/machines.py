@@ -981,9 +981,13 @@ def control_machine(cluster):
     return next((m for m in cluster.machines.values() if m.access == "local"), None)
 
 
+def _windows():
+    return os.name == "nt"
+
+
 def _control_host(state):
     """The control machine's own answer (patched by the browser fixtures)."""
-    if os.name == "nt":
+    if _windows():
         system = state.windows.get("system")
         if system is None:
             system = state.windows["system"] = Windows()

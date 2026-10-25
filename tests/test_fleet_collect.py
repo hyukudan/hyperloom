@@ -306,7 +306,7 @@ class ControlTests(unittest.TestCase):
         state = machines._state(self.api)
         state.windows["system"] = system
         gpus, apps = nvidia_csv()
-        with mock.patch.object(machines.os, "name", "nt"), \
+        with mock.patch.object(machines, "_windows", lambda: True), \
                 mock.patch.object(machines, "_control_nvidia", lambda: {"status": "ok", "value": machines.parse_nvidia(gpus, apps)}):
             system.now = 1_800_000_000.0
             first = machines.sample_control(self.api, system.now)
