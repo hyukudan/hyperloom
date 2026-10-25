@@ -368,69 +368,31 @@ def rates(store, machine, now, max_age):
 
 
 
-def start_window(status, timing, wall):
-    """[earliest, latest] start of the engine process on the node's own clock: its uptime was captured between
-    sending the status request (wall + start_s) and receiving the answer (wall + end_s). None when unknown."""
-    uptime = (status or {}).get("uptime_seconds")
-    try:
-        a, b, wall = float(timing["start_s"]), float(timing["end_s"]), float(wall)
-    except (TypeError, KeyError, ValueError):
-        return None
-    if not all(_finite(v) for v in (uptime, a, b, wall)) or uptime < 0 or b < a:
-        return None
-    slack = BRACKET_SLACK_S + (1.0 if float(uptime).is_integer() else 0.0)
-    return [wall + a - uptime - slack, wall + b - uptime + slack]
-
-
-def _instance(status, previous, launch, window):
-    """(instance, window). The engine's own instance id when it reports one. Otherwise an instance is a launch (the
-    launch record's start, unique per launch) plus the engine process's start, known as a window on the node's own
-    clock (start_window). A sample continues the previous instance only when it belongs to the same launch and both
-    start windows overlap. A replacement process starts after the previous sample's capture, i.e. at least the
-    previous uptime later, and an accepted sample's uptime always exceeds its window's width (see bracketed), so a
-    replacement's window can never overlap. Missing identity -> (None, None): the counter is not accounted."""
+def engine_identity(status):
+    """The engine's own identity of its process lifetime: its reported instance id, else its reported start time.
+    Nothing is inferred from an uptime (an inferred start cannot tell a replacement from the same process)."""
     if not isinstance(status, dict):
-        return None, None
+        return None
     if isinstance(status.get("instance_id"), str) and status["instance_id"]:
-        return "id:" + status["instance_id"][:64], None
-    if window is None or launch is None:
-        return None, None
-    b = previous or {}
-    old = b.get("window")
-    if (isinstance(b.get("instance"), str) and b["instance"].startswith("start:") and b.get("launch") == launch
-            and isinstance(old, list) and len(old) == 2 and all(_finite(v) for v in old)
-            and old[0] <= window[1] and window[0] <= old[1]):
-        return b["instance"], [max(old[0], window[0]), min(old[1], window[1])]
-    return f"start:{launch}:{(window[0] + window[1]) / 2:.3f}", window
+        return "id:" + status["instance_id"][:64]
+    for key in ("start_time", "started_at"):
+        if _finite(status.get(key)):
+            return f"start:{float(status[key]):.6f}"
+    return None
 
 
-BRACKET_SLACK_S = 0.05
+def _instance(status, launch):
+    """The counter instance (C3): the launch plus the engine's own identity; None when the engine reports neither an
+    instance id nor its start time (its counter is then not accounted)."""
+    identity = engine_identity(status)
+    return None if identity is None or launch is None else f"{launch}/{identity}"
 
 
-def bracketed(before, after, first_timing, second_timing):
-    """True only when the status reads before and after the metrics read provably come from one engine process.
-
-    Equal instance ids, when the engine reports one, settle it. Otherwise the uptimes are checked against the node's
-    own timing of the two requests: each uptime was captured somewhere between sending its request (a) and
-    receiving the complete answer (b). For one process, u2 - u1 lies within [a2 - b1, b2 - a1]. A process started
-    after the first capture reports a shorter uptime (outside that window) as long as the first uptime exceeds the
-    two requests' durations together; a sample whose first uptime does not exceed them is ambiguous and rejected.
-    Uptimes in whole seconds widen the window by one second. Any missing value rejects the sample."""
-    if not isinstance(before, dict) or not isinstance(after, dict):
-        return False
-    if before.get("instance_id") or after.get("instance_id"):
-        return before.get("instance_id") == after.get("instance_id")
-    u1, u2 = before.get("uptime_seconds"), after.get("uptime_seconds")
-    try:
-        a1, b1 = float(first_timing["start_s"]), float(first_timing["end_s"])
-        a2, b2 = float(second_timing["start_s"]), float(second_timing["end_s"])
-    except (TypeError, KeyError, ValueError):
-        return False
-    if not all(_finite(v) for v in (u1, u2, a1, b1, a2, b2)) or not a1 <= b1 <= a2 <= b2:
-        return False
-    slack = BRACKET_SLACK_S + (1.0 if float(u1).is_integer() and float(u2).is_integer() else 0.0)
-    durations = (b1 - a1) + (b2 - a2)
-    return u1 > durations + 2 * slack and (a2 - b1) - slack <= u2 - u1 <= (b2 - a1) + slack
+def bracketed(before, after):
+    """True when the status reads before and after the metrics read report the same engine identity, so the
+    counter between them belongs to that process."""
+    first, second = engine_identity(before), engine_identity(after)
+    return first is not None and first == second
 
 
 def engine_entry(previous, machine, target, answer, now):
@@ -468,23 +430,21 @@ def engine_entry(previous, machine, target, answer, now):
     else:
         row["why"]["metrics"] = row["outcomes"]["/metrics"]
     row["launch"] = target.get("launch")
-    first_status = paths.get("/api/status?detail=1") or {}
-    window = start_window(row["status"], first_status.get("timing"), (answer or {}).get("wall_s"))
-    row["instance"], row["window"] = _instance(row["status"], previous, row["launch"], window)
+    row["instance"] = _instance(row["status"], row["launch"])
     second = paths.get("/api/status") or {}
     try:
         after = json.loads(second["value"]["body"]) if second.get("status") == "ok" else None
     except (ValueError, KeyError, TypeError):
         after = None
-    first = paths.get("/api/status?detail=1") or {}
-    if row["instance"] is not None and not bracketed(row["status"], after, first.get("timing"), second.get("timing")):
+    if row["instance"] is not None and not bracketed(row["status"], after):
         row["instance"] = None
-        row["why"]["instance_bracket"] = ("the status read after the metrics did not confirm the same engine; this "
-                                         "sample's counter is not accounted")
+        row["why"]["instance_bracket"] = ("the status read after the metrics did not report the same engine identity; "
+                                         "this sample's counter is not accounted")
     row["uptime_seconds"] = (row["status"] or {}).get("uptime_seconds")
     row["generated_tokens"] = (row["metrics"] or {}).get("generated_tokens")
-    if row["instance"] is None:
-        row["why"]["instance"] = "no reliable engine identity (instance id, or uptime within a known launch); its counter is not accounted"
+    if row["instance"] is None and "instance_bracket" not in row["why"]:
+        row["why"]["instance"] = ("the engine reports neither an instance id nor its start time; its counter is not "
+                                  "accounted and its throughput is unavailable")
     row["why"]["throughput"] = "requires two counter samples of the same engine instance"
     return row
 

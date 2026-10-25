@@ -164,17 +164,18 @@ class CollectorTests(unittest.TestCase):
         targets = machines.loopback_engines(self.records)
         self.assertEqual(list(targets), ["halo-1"])                 # LAN replicas are not this package's to read
         self.assertEqual(targets["halo-1"][0]["port"], 18441)
-        bodies = {"uptime": 100.0, "tokens": 1000}
+        bodies = {"uptime": 100.0, "tokens": 1000, "start": 1_799_999_900.0}
 
         def answer(payload):
             self.assertEqual(payload["engine_status"], [{"port": 18441, "paths": machines.ENGINE_PATHS}])
             result = host("halo-1")
             status = json.dumps({"model": "mm-model", "context_tokens": 65536, "uptime_seconds": bodies["uptime"],
+                                 "start_time": bodies["start"],
                                  "queue": {"queued": 1, "running": 2}})
             metrics = f"strix_generated_tokens_total {bodies['tokens']}\nstrix_queue_waiting 1\n"
             ok = lambda body, a, b: {"status": "ok", "value": {"http_status": 200, "content_type": "", "body": body},
                                      "timing": {"start_s": a, "end_s": b}}
-            after = json.dumps({"uptime_seconds": bodies.get("after", bodies["uptime"] + 0.03)})
+            after = json.dumps({"start_time": bodies.get("after", bodies["start"])})
             result["checks"]["engine_status"] = {"status": "ok", "value": [{"port": 18441, "wall_s": self.api.clock.now + 0.5, "paths": {
                 "/health": ok("ok", 0.08, 0.10), "/api/status?detail=1": ok(status, 0.10, 0.12),
                 "/metrics": ok(metrics, 0.12, 0.14), "/api/status": ok(after, 0.14, 0.16)}}]}
@@ -189,7 +190,7 @@ class CollectorTests(unittest.TestCase):
         key = machines.engine_key("halo-1", "mm", 18441)
         doc = self.store.get(machines.ENGINES, key)
         self.assertEqual((doc["replica"], doc["profile"], doc["health"]), ("halo-1", "mm", "ok"))
-        self.assertTrue(doc["instance"].startswith("start:"))
+        self.assertTrue(doc["instance"].endswith("/start:1799999900.000000"))
         rows = machines.engine_rows(self.store, "halo-1", self.records, "workstation", 1_800_000_005.0)
         self.assertEqual(rows[0]["throughput"], 100.0)              # 500 tokens over 5 s
         self.assertEqual((rows[0]["model"], rows[0]["context_length"], rows[0]["running"], rows[0]["queued"]),
@@ -198,13 +199,13 @@ class CollectorTests(unittest.TestCase):
         rank1 = next(r for r in follower if r["profile"] == "mm")
         self.assertEqual((rank1["role"], rank1["follower_of"], rank1["throughput"]), ("rank 1", "halo-1", None))
         # A replacement between the status read and the metrics read: the bracket read shows a fresh process.
-        bodies.update(uptime=110.0, tokens=99000, after=0.3)
+        bodies.update(uptime=110.0, tokens=99000, after=1_800_000_006.5)
         self.round(1_800_000_007.0)
         self.assertIsNone(self.store.get(machines.ENGINES, key)["instance"])
         self.assertIsNone(machines.engine_rows(self.store, "halo-1", self.records, "workstation", 1_800_000_007.0)[0]["throughput"])
         bodies.pop("after")
-        # A replacement engine on the same port a second after a young start: a new instance, no false delta.
-        bodies.update(uptime=4.0, tokens=9000)
+        # A replacement engine on the same port (a new start time): a new instance, no false delta.
+        bodies.update(uptime=4.0, tokens=9000, start=1_800_000_006.0)
         self.round(1_800_000_010.0)
         rows = machines.engine_rows(self.store, "halo-1", self.records, "workstation", 1_800_000_010.0)
         self.assertIsNone(rows[0]["throughput"])
@@ -216,41 +217,15 @@ class CollectorTests(unittest.TestCase):
 
 
 class EngineIdentityTests(unittest.TestCase):
-    def test_bracket_proves_one_process_around_the_counter(self):
-        quick = ({"start_s": 0.10, "end_s": 0.12}, {"start_s": 0.14, "end_s": 0.16})
-        self.assertTrue(machines.bracketed({"uptime_seconds": 50.0}, {"uptime_seconds": 50.03}, *quick))
-        self.assertFalse(machines.bracketed({"uptime_seconds": 50.0}, {"uptime_seconds": 0.2}, *quick))     # replaced
-        self.assertFalse(machines.bracketed({"uptime_seconds": 50.5}, {"uptime_seconds": 51.5}, *quick))    # outside the window
-        self.assertFalse(machines.bracketed({"uptime_seconds": 0.03}, {"uptime_seconds": 0.07}, *quick))    # too young: ambiguous
-        # Slow reads (the first answer took 2 s, the second 2 s): an engine at 4.2 s cannot be told from a replacement.
-        slow = ({"start_s": 0.0, "end_s": 2.0}, {"start_s": 2.6, "end_s": 4.6})
-        self.assertFalse(machines.bracketed({"uptime_seconds": 4.2}, {"uptime_seconds": 4.4}, *slow))
-        self.assertTrue(machines.bracketed({"uptime_seconds": 400.0}, {"uptime_seconds": 403.0}, *slow))
-        self.assertFalse(machines.bracketed({"uptime_seconds": 400.0}, {"uptime_seconds": 403.0}, None, slow[1]))
-        self.assertTrue(machines.bracketed({"uptime_seconds": 400}, {"uptime_seconds": 401}, *quick))          # whole seconds
-        self.assertTrue(machines.bracketed({"instance_id": "a"}, {"instance_id": "a"}, None, None))
-        self.assertFalse(machines.bracketed({"instance_id": "a"}, {"instance_id": "b"}, *quick))
-
-    def sample(self, uptime, wall, a, b, previous=None, launch="L1"):
-        status = {"uptime_seconds": uptime}
-        window = machines.start_window(status, {"start_s": a, "end_s": b}, wall)
-        instance, window = machines._instance(status, previous, launch, window)
-        return {"instance": instance, "window": window, "launch": launch}
-
-    def test_continuity_uses_the_start_window_on_the_node_clock(self):
-        first = self.sample(100.0, 1000.0, 0.10, 0.12)
-        self.assertEqual(self.sample(105.03, 1005.0, 0.10, 0.12, first)["instance"], first["instance"])    # same process
-        self.assertNotEqual(self.sample(105.0, 1005.0, 0.10, 0.12, first, launch="L2")["instance"], first["instance"])
-        self.assertNotEqual(self.sample(2.0, 1005.0, 0.10, 0.12, first)["instance"], first["instance"])     # restarted
-        # The case of a replacement right after a sample whose answers came late in its round: captures at
-        # 100.21 (uptime 3.25) and, after a replacement started at 100.30, at 103.61 (uptime 3.31).
-        old = self.sample(3.25, 100.0, 0.20, 0.22)
-        new = self.sample(3.31, 103.4, 0.20, 0.22, old)
-        self.assertNotEqual(new["instance"], old["instance"])
-        self.assertEqual(machines._instance({"instance_id": "abc"}, None, "L1", None)[0], "id:abc")
-        self.assertEqual(machines._instance({"model": "x"}, None, "L1", None), (None, None))
-        self.assertEqual(self.sample(1.0, 1.0, 0, 0.1, launch=None)["instance"], None)
-        self.assertIsNone(machines.start_window({"uptime_seconds": 1.0}, None, 1.0))
+    def test_identity_is_reported_by_the_engine_never_inferred(self):
+        self.assertEqual(machines._instance({"instance_id": "abc", "uptime_seconds": 5}, "L1"), "L1/id:abc")
+        self.assertEqual(machines._instance({"start_time": 1700.5}, "L1"), "L1/start:1700.500000")
+        self.assertIsNone(machines._instance({"uptime_seconds": 500.0}, "L1"))     # an uptime alone is not an identity
+        self.assertIsNone(machines._instance({"instance_id": "abc"}, None))
+        self.assertTrue(machines.bracketed({"start_time": 10.0}, {"start_time": 10.0}))
+        self.assertFalse(machines.bracketed({"start_time": 10.0}, {"start_time": 11.0}))     # replaced in between
+        self.assertFalse(machines.bracketed({"instance_id": "a"}, None))
+        self.assertFalse(machines.bracketed({"uptime_seconds": 1.0}, {"uptime_seconds": 1.1}))
 
 
 class ControlTests(unittest.TestCase):

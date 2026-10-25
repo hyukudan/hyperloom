@@ -189,9 +189,9 @@ class DocumentTests(unittest.TestCase):
                                   "timing": {"start_s": a, "end_s": a + 0.02}}
             result["checks"]["engine_status"] = {"status": "ok", "value": [{"port": 18441, "wall_s": self.api.clock.now, "paths": {
                 "/health": ok("ok", 0.0),
-                "/api/status?detail=1": ok(json.dumps({"model": "mm-model", "context_tokens": 65536, "uptime_seconds": tokens["uptime"]}), 0.02),
+                "/api/status?detail=1": ok(json.dumps({"model": "mm-model", "context_tokens": 65536, "uptime_seconds": tokens["uptime"], "start_time": 5.0}), 0.02),
                 "/metrics": ok(f"strix_generated_tokens_total {tokens['n']}\n", 0.04),
-                "/api/status": ok(json.dumps({"uptime_seconds": tokens["uptime"] + 0.05}), 0.06)}}]}
+                "/api/status": ok(json.dumps({"uptime_seconds": tokens["uptime"] + 0.05, "start_time": 5.0}), 0.06)}}]}
             return result
 
         self.api.answers = {"halo-1": answer, "halo-2": host("halo-2")}
