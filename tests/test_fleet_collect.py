@@ -145,8 +145,9 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(entry["skip_why"], "previous node call still in flight")
         release.set()
         for _ in range(100):
-            if machines._state(self.api).machine_locks["halo-1"].acquire(blocking=False):
-                machines._state(self.api).machine_locks["halo-1"].release()
+            free = machines.node_gate(self.api, "halo-1")
+            if free:
+                free()
                 break
             time.sleep(0.02)
         # Another process holding the machine's gate also keeps this collector away.

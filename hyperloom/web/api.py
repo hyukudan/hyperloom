@@ -30,7 +30,7 @@ import time
 import uuid
 from urllib.request import ProxyHandler, Request, build_opener
 
-from hyperloom import __version__, admission, cli, config, engines, orchestrate, remote, render, secrets
+from hyperloom import __version__, admission, cli, config, engines, nodegate, orchestrate, remote, render, secrets
 from hyperloom.adapters import engine, router
 from hyperloom.paths import repo_root
 from hyperloom.stats import Window
@@ -455,7 +455,9 @@ class API:
     def _node(self, machine, verb, payload=None):
         payload = payload or {}
         if machine.access == "ssh":
-            return self.remote.Remote(machine, self.orchestrate._known_hosts()).call(verb, payload, timeout=10)
+            # One node call per machine at a time across portal processes and the CLI (reentrant for a holder).
+            with nodegate.hold(self.config_path, machine.id, wait=15.0):
+                return self.remote.Remote(machine, self.orchestrate._known_hosts()).call(verb, payload, timeout=10)
         if machine.access != "local":
             raise ValueError("later phase · TensorMeld agent")
         result = subprocess.run([str(Path(sys.executable).absolute()),

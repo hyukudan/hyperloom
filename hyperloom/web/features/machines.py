@@ -33,7 +33,7 @@ import sys
 import threading
 import time
 
-from hyperloom import procs, secrets, telemetry
+from hyperloom import nodegate, procs, secrets, telemetry
 from hyperloom.adapters import engine as engine_adapter
 from hyperloom.paths import repo_root
 from hyperloom.telemetry.store import BASELINES as BASELINE_NAMESPACE
@@ -491,8 +491,8 @@ def engine_key(machine, profile, port):
 
 # -- one ssh call per machine, across threads and processes -------------------------------------------------------
 def gate_path(api, machine_id):
-    """The machine's node-call gate: an OS file lock any caller (this package, the CLI, other packages) can take."""
-    return Path(api.config_path).parent / "node-locks" / (machine_id + ".lock")
+    """The machine's node-call gate (hyperloom.nodegate): an OS file lock shared with the CLI and every package."""
+    return nodegate.gate_path(api.config_path, machine_id)
 
 
 def node_gate(api, machine_id):
@@ -501,24 +501,9 @@ def node_gate(api, machine_id):
 
 
 def _try_lock(api, state, machine_id):
-    """Both the in-process lock and the machine's OS file lock (shared with the CLI): a release function, or None
-    when either is held (that machine is skipped, never called twice)."""
-    with state.lock:
-        local = state.machine_locks.setdefault(machine_id, threading.Lock())
-    if not local.acquire(blocking=False):
-        return None
-    try:
-        handle = procs.InstanceLock(gate_path(api, machine_id)).acquire()
-    except (procs.ProcessError, OSError):
-        local.release()
-        return None
-
-    def release():
-        try:
-            handle.close()
-        finally:
-            local.release()
-    return release
+    """The shared node gate taken now or not at all (that machine is skipped this round, never called twice). The
+    thread that then makes the call adopts the gate, so the api.node call it makes does not wait for itself."""
+    return nodegate.try_hold(api.config_path, machine_id)
 
 
 def _call_node(api, machine, payload):
@@ -581,6 +566,7 @@ def collect_nodes(api, now):
 
     def work(machine, release, payload):
         try:
+            nodegate.adopt(api.config_path, machine.id)     # this thread makes the call: API.node re-enters
             answers[machine.id] = _node_answer(api, machine, payload)
         finally:
             release()
