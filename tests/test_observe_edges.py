@@ -323,16 +323,22 @@ class MixedReachabilityTests(Base):
         return self.env.store.get("observe/engine", "qwen/halo-1"), [p[6] for line in up for p in line["points"]]
 
     def test_failed_health_then_the_deadline(self):
-        snapshot, up = self.answer(OSError("HTTP 500"), TimeoutError("deadline"), TimeoutError("deadline"))
+        snapshot, up = self.answer(OSError("connection reset"), TimeoutError("deadline"), TimeoutError("deadline"))
         self.assertEqual((snapshot["state"], up), ("not read", []))
 
     def test_refused_status_and_unread_metrics(self):
-        snapshot, up = self.answer(OSError("HTTP 500"), OSError("refused"), TimeoutError("deadline"))
+        snapshot, up = self.answer(OSError("connection reset"), OSError("refused"), TimeoutError("deadline"))
         self.assertEqual((snapshot["state"], up), ("not read", []))
 
     def test_every_path_failed(self):
-        snapshot, up = self.answer(OSError("HTTP 500"), OSError("refused"), OSError("refused"))
+        snapshot, up = self.answer(OSError("connection refused"), OSError("refused"), OSError("refused"))
         self.assertEqual((snapshot["state"], up), ("unreachable", [0]))
+
+    def test_unsupported_endpoints_are_an_answer(self):
+        snapshot, up = self.answer(OSError("HTTP 500"), observe.Unavailable("HTTP 404"), observe.Unavailable("HTTP 404"))
+        self.assertEqual((snapshot["state"], up), ("up · no status or metrics", [1]))
+        self.assertIn("answers HTTP", snapshot["why"]["reachability"])
+        self.assertEqual(self.env.collect(), [])                   # the collector does not report a failed round
 
 
 class FleetReachabilityTests(FleetBase):
@@ -347,13 +353,13 @@ class FleetReachabilityTests(FleetBase):
         return self.env.store.get("observe/engine", "lb/halo-1"), [p[6] for line in up for p in line["points"]]
 
     def test_mixed_failures_and_deadlines(self):
-        snapshot, up = self.outcome({"/health": "HTTP 500", "/api/status?detail=1": "timed out",
+        snapshot, up = self.outcome({"/health": "connection reset", "/api/status?detail=1": "timed out",
                                      "/metrics": "node deadline reached"})
         self.assertEqual((snapshot["state"], up), ("not read", []))
         self.assertIn("not read", snapshot["why"]["reachability"])
 
     def test_unattempted_paths(self):
-        snapshot, up = self.outcome({"/health": "HTTP 500"})
+        snapshot, up = self.outcome({"/health": "connection reset"})
         self.assertEqual((snapshot["state"], up), ("not read", []))
 
     def test_every_path_failed(self):
@@ -361,6 +367,11 @@ class FleetReachabilityTests(FleetBase):
                                      "/metrics": "connection refused"})
         self.assertEqual(up, [0])
         self.assertEqual(snapshot["state"], "unreachable")
+
+    def test_unsupported_endpoints_are_an_answer(self):
+        snapshot, up = self.outcome({"/health": "HTTP 500", "/api/status?detail=1": "HTTP 404", "/metrics": "HTTP 404"})
+        self.assertEqual((snapshot["state"], up), ("up · no status or metrics", [1]))
+        self.assertIn("answers HTTP", snapshot["why"]["reachability"])
 
 
 class ExactIdentityTests(FleetBase):

@@ -652,7 +652,8 @@ def _read_direct(replica, now, deadline, clock=time.time):
     the larger answers; a read that was not attempted stays unknown (with why). The observation time is taken when
     the counter-bearing answers arrived."""
     base = f"http://{_host(replica['address'])}:{replica['port']}"
-    reading = {"status": None, "metrics_text": None, "health": None, "why": {}, "observed_at": now, "via": "direct"}
+    reading = {"status": None, "metrics_text": None, "health": None, "why": {}, "observed_at": now, "via": "direct",
+               "answered": []}
     try:
         _http(base + "/health", deadline=deadline)
         reading["health"] = True
@@ -663,6 +664,8 @@ def _read_direct(replica, now, deadline, clock=time.time):
     except (OSError, ValueError) as exc:
         reading["health"] = False                # advisory: status and metrics still get their own bounded reads
         reading["why"]["health"] = "health check failed: " + str(exc)
+        if HTTP_ANSWER.match(str(exc)):
+            reading["answered"].append("health")
     for part, path, text in (("status", "/api/status?detail=1", False), ("metrics", "/metrics", True)):
         try:
             reading["status" if part == "status" else "metrics_text"] = _http(base + path, text=text, deadline=deadline)
@@ -670,28 +673,38 @@ def _read_direct(replica, now, deadline, clock=time.time):
         except Unavailable as exc:
             reading["why"][part] = f"engine serves no {part} ({exc})"
             reading[part + "_at"] = clock()
+            reading["answered"].append(part)
         except TimeoutError as exc:
             reading["why"][part] = f"not read: {exc}"
         except (OSError, ValueError) as exc:
             reading["why"][part] = f"engine {part} unreadable: {exc}"
             reading[part + "_failed"] = True
+            if HTTP_ANSWER.match(str(exc)):
+                reading["answered"].append(part)
     reading["observed_at"] = reading.get("status_at") or reading.get("metrics_at") or now
     # Down is known only when no path answered and every one of them definitely failed; a path the deadline cut
     # (not read) leaves reachability unknown, however the others failed.
-    answered = bool(reading["health"]) or reading["status"] is not None or reading["metrics_text"] is not None \
-        or "status_at" in reading or "metrics_at" in reading
+    answered = _reachable(reading) or "status_at" in reading or "metrics_at" in reading
     cut = any(str(reading["why"].get(part, "")).startswith("not read") for part in ("health", "status", "metrics"))
     reading["unknown"] = not answered and cut
     return reading
 
 
 NOT_READ = re.compile(r"deadline|timed? ?out|not answered|not read|not attempted|skipped", re.I)
+HTTP_ANSWER = re.compile(r"^(?:.*: )?HTTP [1-5][0-9][0-9]\b")
+
+
+def _reachable(reading):
+    """The engine answered: a payload, a successful health check, or an HTTP answer on any path (an unsupported or
+    failing endpoint is still an answer of the process; it is not "unreachable")."""
+    return (reading["status"] is not None or reading["metrics_text"] is not None or bool(reading["health"])
+            or bool(reading.get("answered")))
 
 
 def _fleet_unknown(outcomes, reading):
     """True when the node sample establishes nothing about reachability: no path answered and at least one path
     was not read (cut by the node's deadline or never attempted); only reads that all definitely failed say down."""
-    if reading["status"] is not None or reading["metrics_text"] is not None or reading["health"]:
+    if _reachable(reading):
         return False
     paths = ("/health", "/api/status?detail=1", "/metrics")
     if not outcomes:
@@ -706,7 +719,7 @@ def _read_via_fleet(store, profile, replica, now, stale=STALE_S):
     key = f"{replica['node']}:{profile}:{replica['port']}"
     found = store.get("fleet/engine", key)
     reading = {"status": None, "metrics_text": None, "health": None, "why": {}, "observed_at": None,
-               "via": "node (fleet sampler)", "source_key": key}
+               "via": "node (fleet sampler)", "source_key": key, "answered": []}
     if not isinstance(found, dict):
         reading["why"]["status"] = NEEDS_NODE + " · no node sample for this engine yet"
         return reading
@@ -735,6 +748,8 @@ def _read_via_fleet(store, profile, replica, now, stale=STALE_S):
     if reading["metrics_text"] is None:
         reading["why"]["metrics"] = "engine metrics not in the node sample" + (
             f" ({outcomes.get('/metrics')})" if outcomes.get("/metrics") else "")
+    reading["answered"] = [path for path in ("/health", "/api/status?detail=1", "/metrics")
+                           if HTTP_ANSWER.match(str(outcomes.get(path) or ""))]
     health = found.get("health")
     reading["health"] = health is True or (isinstance(health, dict) and health.get("status") in ("ok", 200)) or (
         outcomes.get("/health") == "ok") if health is not None or "/health" in outcomes else None
@@ -872,7 +887,7 @@ def collect_engines(api, now, store=None):
         reading = (_read_via_fleet(store, launch["profile"], replica, now, stale_after(api, "fleet-nodes"))
                    if replica["loopback"]
                    else _read_direct(replica, now, deadline, api.clock))
-        if reading["status"] is not None or reading["metrics_text"] is not None or reading["health"]:
+        if _reachable(reading):
             succeeded += 1
         points += _engine_sample(store, launch, replica, reading, now, interval)
     return points, attempted, succeeded
@@ -932,9 +947,12 @@ def _engine_sample(store, launch, replica, reading, now, interval=INTERVAL):
                 extra = engine.parse_metrics_extra(reading["metrics_text"])
         except AdapterError as exc:
             snapshot["why"]["metrics"] = "engine metrics: " + str(exc)
-    up = parsed_status is not None or metrics is not None or bool(reading["health"])
+    up = parsed_status is not None or metrics is not None or _reachable(reading)
     points = [("engine_up", labels, 1 if up else 0, "state")]
     if parsed_status is None and metrics is None:
+        if up and reading.get("answered") and not reading["health"]:
+            snapshot["why"]["reachability"] = "the engine answers HTTP on " + ", ".join(reading["answered"]) + \
+                " but serves no readable status or metrics"
         snapshot.update(state="up · no status or metrics" if up else "unreachable",
                         last_served=previous.get("last_served"), last_served_basis=previous.get("last_served_basis"),
                         instance=previous.get("instance"), started_at=previous.get("started_at"), model=previous.get("model"))
