@@ -374,6 +374,14 @@ def _version():
 
 def up_command(args, *, orchestrate=None, load_cluster=None):
     """`hyperloom up PROFILE ...` from its parsed arguments; the portal's in-process path calls this too."""
+    if args.recipe is None and args.recipe_inputs is None:
+        return _up_command(args, orchestrate, load_cluster)
+    # The recipe directories derive from --config for this call only (the portal runs requests on other threads).
+    with _module("hyperloom.recipes.service").configured(args.config):
+        return _up_command(args, orchestrate, load_cluster)
+
+
+def _up_command(args, orchestrate, load_cluster):
     orchestrate = orchestrate or _module("hyperloom.orchestrate")
     supplied = [args.approval_ref is not None, args.approval_lease is not None, args.approval_end is not None]
     approval = None
@@ -393,7 +401,6 @@ def up_command(args, *, orchestrate=None, load_cluster=None):
             raise ValueError("--recipe-inputs launches a planned snapshot as it is: no --recipe*, --node, --device, "
                              "--diagnostic, --vram-cap-gib or --router")
         service = _module("hyperloom.recipes.service")
-        service.use_config(args.config)
         pin = service.acquire_pin(args.recipe_inputs)         # before the snapshot is read
         try:
             cluster, intent, recipe = service.options_from_inputs(args.recipe_inputs, args.profile)
@@ -409,7 +416,6 @@ def up_command(args, *, orchestrate=None, load_cluster=None):
             sets=[reader.parse_set(s) for s in args.recipe_set or []],
             workload=args.recipe_workload or "default")
         service = _module("hyperloom.recipes.service")
-        service.use_config(args.config)
         cluster, intent, recipe = service.up_options(
             cluster, args.recipe, args.profile, layers=layers, dirs=list(args.recipe_dir or []),
             intent={"router": args.router, "deadline_s": args.deadline, "queue_timeout_s": args.queue_timeout})

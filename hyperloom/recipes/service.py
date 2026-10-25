@@ -9,6 +9,7 @@ read-only; ``pending/`` ones wait for something and never launch), the operator'
 from __future__ import annotations
 
 from contextlib import contextmanager
+import contextvars
 from copy import deepcopy
 import hashlib
 import json
@@ -59,18 +60,34 @@ class Conflict(RecipeError):
 
 # --- places ------------------------------------------------------------------------------------------------------
 
-_config = None
+# The cluster configuration in use (`--config`), per call: a context variable, so a portal request (or an in-process
+# job with its own configuration) never changes the directories another thread is using.
+_config = contextvars.ContextVar("hyperloom_recipe_config", default=None)
 
 
 def use_config(path):
-    """Every recipe directory derives from the cluster configuration in use (`--config`), not the default one."""
-    global _config
-    _config = Path(path).absolute() if path else None
+    """Every recipe directory derives from the cluster configuration in use (`--config`), not the default one. Sets it
+    for the current thread's context only (the CLI's main thread; tests)."""
+    _config.set(Path(path).absolute() if path else None)
+
+
+@contextmanager
+def configured(path):
+    """The configuration in use for the duration of a block (this thread only), restored afterwards."""
+    token = _config.set(Path(path).absolute() if path else None)
+    try:
+        yield
+    finally:
+        _config.reset(token)
+
+
+def config_file():
+    from ..cli import config_path
+    return Path(_config.get() or config_path())
 
 
 def config_dir():
-    from ..cli import config_path
-    return (_config or config_path()).parent
+    return config_file().parent
 
 
 def user_dir():
@@ -379,8 +396,7 @@ MAX_SNAPSHOTS = 200
 
 
 def config_path_in_use():
-    from ..cli import config_path
-    return Path(_config or config_path())
+    return config_file()
 
 
 def launch_inputs(cluster, recipe_path, layers, candidates=(), *, intent, pin=False):
@@ -722,9 +738,8 @@ UP_CONDITIONS = ("conditional preflight: the profile, node and router checks and
 
 def config_sha256():
     """The sha256 of the cluster configuration file in use (a deploy refuses when it changed since the plan)."""
-    from ..cli import config_path
     try:
-        return _sha256(Path(_config or config_path()).read_bytes())
+        return _sha256(config_file().read_bytes())
     except OSError:
         return None
 

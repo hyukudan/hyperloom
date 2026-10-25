@@ -328,19 +328,20 @@ class API:
         if endpoint in recipe_web.POSTS or endpoint in recipe_web.JOBS:
             raise APIError(endpoint + " requires POST", 405)
         from hyperloom.recipes import service
-        service.use_config(self.config_path)
-        try:
-            operation, argv = recipe_web.read_request(endpoint, query, config=self.config_path)
-        except ValueError as exc:
-            raise APIError(str(exc)) from exc
-        return recipe_web.document(operation, argv, recipe_web.in_process(argv, self._recipe_loader), now=self.clock())
+        with service.configured(self.config_path):
+            try:
+                operation, argv = recipe_web.read_request(endpoint, query, config=self.config_path)
+            except ValueError as exc:
+                raise APIError(str(exc)) from exc
+            return recipe_web.document(operation, argv, recipe_web.in_process(argv, self._recipe_loader),
+                                       now=self.clock())
 
     def recipe_post(self, action, arguments, cancelled=lambda: False):
         """POST recipes/<query or write>: (status, document) of the CLI child; writes are audited."""
         from hyperloom.recipes import service
-        service.use_config(self.config_path)
         try:
-            request = recipe_web.Request(action, arguments, config=self.config_path)
+            with service.configured(self.config_path):
+                request = recipe_web.Request(action, arguments, config=self.config_path)
         except ValueError as exc:
             if action in recipe_web.WRITES:
                 self._audit(action, recipe_web.audit_arguments(arguments), {"state": "refused", "error": str(exc)})
@@ -996,14 +997,14 @@ class API:
 
     def _recipe_job_arguments(self, action, arguments):
         from hyperloom.recipes import service
-        service.use_config(self.config_path)
         try:
-            if action == "recipes/probe":
-                service.argv("probe", arguments, config=self.config_path)
-            elif "_job" in arguments:
-                raise ValueError("unknown arguments: _job")
-            else:
-                self._deploy_argv(arguments)
+            with service.configured(self.config_path):
+                if action == "recipes/probe":
+                    service.argv("probe", arguments, config=self.config_path)
+                elif "_job" in arguments:
+                    raise ValueError("unknown arguments: _job")
+                else:
+                    self._deploy_argv(arguments)
         except ValueError as exc:
             raise APIError(str(exc)) from exc
         return dict(arguments)
@@ -1028,7 +1029,10 @@ class API:
     def _recipe_up_argv(self, args):
         """The `hyperloom up` argv of an API up with a recipe (layer files are names in the user layers directory)."""
         from hyperloom.recipes import service
-        service.use_config(self.config_path)
+        with service.configured(Path(args.get("config", self.config_path))):    # the layers of the config up uses
+            return self._recipe_up_argv_in(args, service)
+
+    def _recipe_up_argv_in(self, args, service):
         argv = ["up"] + ([args["profile"]] if args.get("profile") else [])
         argv += ["--config", str(Path(args.get("config", self.config_path))), "--router", args.get("router", "local"),
                  "--deadline", str(args.get("deadline", 1140))]
@@ -1134,9 +1138,9 @@ class API:
             if action == "up":
                 return cli.up_command(parsed, orchestrate=self.orchestrate, load_cluster=self._recipe_loader)
             from hyperloom.recipes import commands, service
-            service.use_config(parsed.config)
-            return service.deploy(parsed.inputs, parsed.stop, orchestrate=self.orchestrate,
-                                  approval=commands._approval(parsed), job=parsed.job)
+            with service.configured(parsed.config):
+                return service.deploy(parsed.inputs, parsed.stop, orchestrate=self.orchestrate,
+                                      approval=commands._approval(parsed), job=parsed.job)
         if self.detached and action in ("up", "down", "install"):
             if action in ("up", "install"):
                 cluster = self.orchestrate.load_cluster(Path(args.get("config", self.config_path)), config)
@@ -1204,14 +1208,14 @@ class API:
         """Cancel a switch at any step: its marker stops it before the next stop or the launch hand-over; the target
         profile's own stop marker stops a launch already under way."""
         from hyperloom.recipes import service
-        service.use_config(self.config_path)
-        marker = service.cancel_marker(job["job"])
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.touch()
-        try:
-            profile = service.load_inputs(job["arguments"]["inputs"])[1]["intent"]["profile"]
-        except service.RecipeError:
-            return {"cancelled": job["job"], "stopped": None}
+        with service.configured(self.config_path):
+            marker = service.cancel_marker(job["job"])
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch()
+            try:
+                profile = service.load_inputs(job["arguments"]["inputs"])[1]["intent"]["profile"]
+            except service.RecipeError:
+                return {"cancelled": job["job"], "stopped": None}
         return {"cancelled": job["job"], "stopped": self.orchestrate.down(profile)}
 
     def mutate(self, action, arguments):

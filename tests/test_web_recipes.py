@@ -20,7 +20,7 @@ from hyperloom.web import recipes as recipe_web
 from hyperloom.web.api import API, APIError
 from hyperloom.web.server import create_server
 from tests.recipe_fixtures import builtin_text, copy_of, isolated
-from tests.test_recipes_service import DS_FIXTURE, QWEN, run_cli, user_ds
+from tests.test_recipes_service import DS, DS_FIXTURE, QWEN, run_cli, user_ds
 
 MM_TEXT = (Path(__file__).parent / "fixtures" / "recipes" / "minimax-lab.toml").read_text(encoding="utf-8").replace(
     'name = "minimax-m3.1-flash-lab"', 'name = "mm-base"', 1)
@@ -300,6 +300,32 @@ class JobTests(unittest.TestCase):
         self.assertIn("later phase", plain["error"])                         # the replica gate stays for plain up
         with self.assertRaises(APIError):
             self.api.mutate("up", {"recipe": "ds-user", "recipe_overrides": ["../x.json"]})
+
+    def test_config_in_use_is_per_call(self):
+        # An in-process up with its own "config" does not move the recipe directories of concurrent requests.
+        other = self.env.root / "other" / "cluster.json"
+        other.parent.mkdir()
+        other.write_text(self.env.config.read_text(), encoding="utf-8")
+        inside, release = threading.Event(), threading.Event()
+        seen = {}
+
+        def blocking_up(*a, **kw):
+            seen["user_dir"] = service.user_dir()
+            inside.set()
+            release.wait(30)
+            return {"state": "running"}
+        self.orch.up.side_effect = blocking_up
+        with mock.patch.object(commands, "live_source", return_value=self.source):
+            job = self.api.mutate("up", {"recipe": DS, "profile": "ds41-rtx", "config": str(other)})
+            try:
+                self.assertTrue(inside.wait(30))
+                self.assertEqual(service.user_dir(), self.env.config.parent.absolute() / "recipes")
+                status, listing = self.api.recipe_get("recipes", {})
+                self.assertEqual(Path(listing["result"]["user_dir"]), self.env.config.parent.absolute() / "recipes")
+            finally:
+                release.set()
+            self.assertEqual(self.wait(job)["state"], "succeeded")
+        self.assertEqual(seen["user_dir"], other.parent.absolute() / "recipes")
 
     def test_detached_stop_cancels_a_running_switch(self):
         # The portal runs detached: `down` goes to its own CLI process, and still cancels the switch first.
