@@ -200,7 +200,8 @@ class TurnsNodeTests(TreeMixin, unittest.TestCase):
             except OSError:
                 self.skipTest("symlinks unavailable")
             result = self.collect()
-            self.assertIsNone(result["holder"])
+            self.assertTrue(result["holder"]["unreadable"])
+            self.assertIn("unreadable", result["why"]["holder"])
 
     def test_unreadable_holder_is_not_a_free_gpu(self):
         os.unlink(self.state / "holder")
@@ -229,6 +230,16 @@ class TurnsNodeTests(TreeMixin, unittest.TestCase):
         examined = len(result["queues"]["single-q"]) + len(result["queues"]["pair-q"])
         self.assertLessEqual(examined, node.MAX_TICKETS)
         self.assertIn("enumeration_truncated", result["why"])
+
+    def test_long_ok_is_validated_and_bounded(self):
+        lines = "".join(f"job-{'x' * 100}{i}\x7f 600\n" for i in range(400)) + "job-ok 900\n"
+        (self.state / "long-ok").write_text(lines, encoding="utf-8")
+        result = self.collect()
+        self.assertEqual(result["long_ok"], {"job-ok": 900})
+        (self.state / "long-ok").write_text("".join(f"job-{'y' * 120}{i} 600\n" for i in range(400)), encoding="utf-8")
+        result = self.collect()
+        self.assertLessEqual(len(result["long_ok"]), node.MAX_LONG_OK)
+        self.assertLessEqual(len(json.dumps(result)), node.OUTPUT_BUDGET)
 
     def test_output_is_bounded(self):
         lines = "".join(f"00:{i // 60 % 60:02d}:{i % 60:02d} wait  job-{i} pid {i + 10} {'x' * 300}\n" for i in range(4000))
@@ -337,7 +348,7 @@ class TurnsPortalTests(APIFixture, TreeMixin, unittest.TestCase):
         now = 10_000.0
         c = [self.turn("job-p", "pair", "local", 5000, 10), self.turn("job-p", "pair", "local", 5030, 10)]
         s = [self.turn("job-p", "pair", "remote", 4990, 60)]
-        replies = {"halo-1": {"reply": self.reply(None, c, True, now, pair_q=[]), "fetched_at": now, "error": None,
+        replies = {"halo-1": {"reply": self.reply(None, c, True, now, pair_q=[], first_ts=3000), "fetched_at": now, "error": None,
                               "offset_s": 0.0, "offset_uncertainty_s": 0.0},
                    "halo-2": {"reply": self.reply(None, s, False, now), "fetched_at": now, "error": None,
                               "offset_s": 0.0, "offset_uncertainty_s": 0.0}}
@@ -356,12 +367,22 @@ class TurnsPortalTests(APIFixture, TreeMixin, unittest.TestCase):
                    "pid": 7}
         attempt = {**self.turn("job-p", "pair", "remote", 9898, 0), "end": None, "duration_s": None,
                    "outcome": "running", "start_clock": "01:59:58"}
-        replies = {"halo-1": {"reply": self.reply(main, [running], True, now, pair_q=[]), "fetched_at": now,
+        replies = {"halo-1": {"reply": self.reply(main, [running], True, now, pair_q=[], first_ts=9000), "fetched_at": now,
                               "error": None, "offset_s": 0.0, "offset_uncertainty_s": 0.0},
                    "halo-2": {"reply": self.reply(remote_holder, [attempt], False, now), "fetched_at": now,
                               "error": None, "offset_s": 0.0, "offset_uncertainty_s": 0.0}}
         second = next(n for n in turns.compose(self.api, replies, now=now)["nodes"] if n["machine"] == "halo-2")
         self.assertTrue(second["holder"]["pair_state"].startswith("running"))
+        # a first-node log that starts inside the confirmation window does not cover it: unconfirmed
+        replies["halo-1"]["reply"]["log"]["first_ts"] = 9850
+        second = next(n for n in turns.compose(self.api, replies, now=now)["nodes"] if n["machine"] == "halo-2")
+        self.assertIn("unconfirmed", second["holder"]["pair_state"])
+        replies["halo-1"]["reply"]["log"]["first_ts"] = 9000
+        # two attempts with the same time are ambiguous: nothing is confirmed
+        replies["halo-2"]["reply"]["turns"] = [attempt, dict(attempt)]
+        second = next(n for n in turns.compose(self.api, replies, now=now)["nodes"] if n["machine"] == "halo-2")
+        self.assertIn("unconfirmed", second["holder"]["pair_state"])
+        replies["halo-2"]["reply"]["turns"] = [attempt]
         # without the coordinator's run (e.g. its holder belongs to another label) the remote holder is unconfirmed
         replies["halo-1"]["reply"]["holder"] = {**main, "label": "job-other"}
         second = next(n for n in turns.compose(self.api, replies, now=now)["nodes"] if n["machine"] == "halo-2")

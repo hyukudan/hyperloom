@@ -28,6 +28,7 @@ MAX_LOG = 256 * 1024
 MAX_SMALL = 64 * 1024
 MAX_LINE = 1024
 MAX_TICKETS = 512
+MAX_LONG_OK = 128
 MAX_ENUMERATE = 1024
 MAX_EVENTS = 200
 MAX_TURNS = 60
@@ -537,8 +538,13 @@ def long_ok(reader):
     result = {}
     for line in found[0].decode("utf-8", "replace").splitlines()[:512]:
         parts = line.split()
-        if len(parts) >= 2 and parts[1].isdigit() and 1 <= int(parts[1]) <= LONG_OK_MAX_S and len(parts[0]) <= 128:
-            result[parts[0]] = int(parts[1])
+        if len(parts) < 2 or not parts[1].isdigit() or not 1 <= int(parts[1]) <= LONG_OK_MAX_S:
+            continue
+        label = parts[0]
+        if not (not label or len(label) > 128 or any(ord(c) < 33 or ord(c) == 127 for c in label)):
+            result[label] = int(parts[1])
+        if len(result) >= MAX_LONG_OK:
+            break
     return result
 
 
@@ -651,7 +657,15 @@ def fit(result):
             rows = result["queues"][queue]
             result["queues"][queue] = rows[:len(rows) // 2]
             trimmed.add("the queues' last tickets")
+        elif result.get("long_ok"):
+            items = list(result["long_ok"].items())
+            result["long_ok"] = dict(items[:len(items) // 2])
+            trimmed.add("long-ok entries")
         else:
+            # nothing large is left: keep only the envelope and say so
+            for key in ("holder", "flags", "events", "turns", "queues", "unverified", "long_ok", "log"):
+                result[key] = None
+            result["why"] = {"trimmed": "the reply did not fit the output limit"}
             break
     if trimmed:
         result["why"]["trimmed"] = "cut to fit the output limit: " + ", ".join(sorted(trimmed))

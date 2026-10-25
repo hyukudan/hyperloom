@@ -145,6 +145,35 @@ class NodeSearchTests(unittest.TestCase):
         self.assertLessEqual(result["report"]["bytes"], 1)
         self.assertTrue(set(result["report"]["truncated"]) & {"files", "bytes"})
 
+    def test_probe_bytes_are_charged_once_and_still_matched(self):
+        small = self.tree.base / "small"
+        small.mkdir()
+        (small / "a.log").write_bytes(b"needle\n")
+        for limit, truncated in ((6, ["bytes"]), (7, []), (8, [])):
+            result = node.run("logs-search", {"text": "needle", "roots": [str(small)], "max_bytes": limit})
+            self.assertEqual((len(result["results"]), result["report"]["truncated"]), (1, truncated), limit)
+            self.assertLessEqual(result["report"]["bytes"], limit)
+
+    def test_the_whole_reply_fits_the_output_limit(self):
+        deep = self.tree.base / ("d" * 200) / ("e" * 200) / ("f" * 200)
+        deep.mkdir(parents=True)
+        (deep / "big.log").write_text("".join(f"match {'z' * 380} {i}\n" for i in range(500)))
+        roots = [str(deep)] * 3 + [str(self.tree.base / ("missing" + "q" * 900) / str(i)) for i in range(12)]
+        result = node.run("logs-search", {"text": "match", "roots": roots, "max_results": 500, "context": 2})
+        self.assertLessEqual(len(json.dumps(result)), node.OUTPUT_BUDGET + 1024)
+        self.assertIn("output", result["report"]["truncated"])
+
+    def test_windows_files_reached_through_a_junction_are_refused(self):
+        if os.name != "nt":
+            self.skipTest("Windows junctions")
+        import _winapi
+        (self.tree.root / "Secrets").mkdir(exist_ok=True)
+        (self.tree.root / "Secrets" / "z.log").write_text("ERROR behind a junction\n")
+        _winapi.CreateJunction(str(self.tree.root / "Secrets"), str(self.tree.root / "plain"))
+        self.assertEqual(self.run_search(text="junction")["results"], [])
+        with self.assertRaises(OSError):
+            node.open_file(self.tree.root, ("plain", "z.log"))
+
     def test_credential_names_are_pruned_whatever_their_case(self):
         (self.tree.root / "Secrets").mkdir()
         (self.tree.root / "Secrets" / "x.log").write_text("ERROR mixed case\n")

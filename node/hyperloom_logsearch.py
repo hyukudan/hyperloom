@@ -385,12 +385,13 @@ def open_file(root, parts):
             raise
     if os.name == "nt":
         import msvcrt
-        top_final = windows_root(root)
-        handle, final, attributes = _windows_handle(Path(root).joinpath(*parts))
-        if attributes & (REPARSE | 0x10) or not os.path.normcase(str(final)).startswith(
-                os.path.normcase(str(top_final)).rstrip("\\") + "\\"):
+        expected = Path(root).joinpath(*parts)
+        handle, final, attributes = _windows_handle(expected)
+        # The opened file's own final path must be exactly the walked one: a junction or link swapped in anywhere
+        # (inside the root too) makes them differ, so a redirected open never reaches a pruned directory.
+        if attributes & (REPARSE | 0x10) or os.path.normcase(str(final)) != os.path.normcase(str(expected)):
             _windows_close(handle)
-            raise OSError("not a regular file inside the root")
+            raise OSError("not the walked regular file")
         return os.fdopen(msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY), "rb")
     raise OSError("no safe way to open files on this platform")
 
@@ -399,19 +400,16 @@ def candidates(opts, report, budget):
     found = []
     for label, value in opts["roots"]:
         try:
-            root = checked_root(install_log(value["install_root"]) if isinstance(value, dict) else value)
-        except ValueError as exc:
-            report["roots"].append({"root": label, "error": str(exc)})
+            configured = install_log(value["install_root"]) if isinstance(value, dict) else value
+            root = checked_root(configured)
+            if os.name == "nt":
+                # The configured path is the authority: the opened root must be it, and the walk uses that path.
+                root = windows_root(configured)
+            if not root.is_dir():
+                raise ValueError("not a directory")
+        except (ValueError, OSError) as exc:
+            report["roots"].append({"root": label, "error": str(exc)[:200]})
             continue
-        if not root.is_dir():
-            report["roots"].append({"root": label, "error": "not a directory"})
-            continue
-        if os.name == "nt":
-            try:
-                windows_root(root)
-            except OSError as exc:
-                report["roots"].append({"root": label, "error": str(exc)})
-                continue
         report["roots"].append({"root": label, "error": None})
         walk(label, root, opts, budget, report, found)
         if report["truncated"]:
@@ -431,24 +429,54 @@ def matcher(opts):
     return lambda line: needle in line
 
 
-def lines_of(stream, room, budget):
-    """Yield (text, consumed_bytes) per line, capped at LINE_CAP and at the remaining byte allowance; the rest of a
-    longer line is consumed (bounded by the remaining byte budget and the deadline) and not matched."""
+class Replay:
+    """readline() over an already read (and charged) head, then the rest of the file."""
+
+    def __init__(self, head, stream):
+        self.head, self.pos, self.stream = head, 0, stream
+
+    def pending(self):
+        return len(self.head) - self.pos
+
+    def readline(self, limit):
+        out = b""
+        if self.pos < len(self.head):
+            stop = self.head.find(b"\n", self.pos, self.pos + limit)
+            take = (stop + 1 - self.pos) if stop != -1 else min(limit, len(self.head) - self.pos)
+            out = self.head[self.pos:self.pos + take]
+            self.pos += take
+            if out.endswith(b"\n") or len(out) >= limit or self.pos < len(self.head):
+                return out
+        return out + self.stream.readline(limit - len(out)) if limit > len(out) else out
+
+
+def more(source, stream):
+    """Whether unread bytes remain in the file (without reading them)."""
+    try:
+        return source.pending() > 0 or os.fstat(stream.fileno()).st_size > stream.tell()
+    except OSError:
+        return True
+
+
+def lines_of(source, room, budget):
+    """Yield (text, bytes read from disk) per line, capped at LINE_CAP and at the remaining allowance (replayed head
+    bytes cost nothing); the rest of a longer line is consumed (bounded by the budget and the deadline), not matched."""
     while True:
-        allowance = room()
+        allowance = room() + source.pending()
         if allowance <= 0:
             return
-        raw = stream.readline(min(LINE_CAP, allowance))
+        before = source.pending()
+        raw = source.readline(min(LINE_CAP, allowance))
         if not raw:
             return
-        consumed = len(raw)
+        fresh = max(0, len(raw) - before)
         if not raw.endswith(b"\n"):
-            while consumed < room() and not budget.expired():
-                rest = stream.readline(min(65536, max(1, room() - consumed)))
-                consumed += len(rest)
+            while fresh < room() and not budget.expired():
+                rest = source.readline(min(65536, max(1, room() - fresh)))
+                fresh += len(rest)
                 if not rest or rest.endswith(b"\n"):
                     break
-        yield raw.rstrip(b"\r\n").decode("utf-8", "replace"), consumed
+        yield raw.rstrip(b"\r\n").decode("utf-8", "replace"), fresh
 
 
 def search(opts, emit, deadline):
@@ -472,17 +500,18 @@ def search(opts, emit, deadline):
             continue
         with stream:
             head = stream.read(min(4096, room()))
-            report["bytes"] += len(head)
+            report["bytes"] += len(head)          # every byte read from disk is charged once
             if b"\0" in head:
                 report["skipped_binary"] += 1
+                if room() <= 0:
+                    report["truncated"].append("bytes")
+                    break
                 continue
-            stream.seek(0)
-            credit = len(head)                # the probe's bytes are read again below: charged once
+            source = Replay(head, stream)
             before, pending, number = deque(maxlen=context), [], 0
-            for text, consumed in lines_of(stream, room, budget):
+            for text, fresh in lines_of(source, room, budget):
                 number += 1
-                report["bytes"] += max(0, consumed - credit)
-                credit = max(0, credit - consumed)
+                report["bytes"] += fresh
                 for item in pending:
                     item["after"].append(show(text))
                 for item in [i for i in pending if len(i["after"]) >= context]:
@@ -498,12 +527,12 @@ def search(opts, emit, deadline):
                                 "before": [show(b) for b in before], "after": []}
                         (pending.append if context else emit)(item)
                 before.append(text)
-                stop = stop or ("deadline" if budget.expired() else "bytes" if room() <= 0 else None)
+                stop = stop or ("deadline" if budget.expired() else "bytes" if room() <= 0 and more(source, stream) else None)
                 if stop:
                     break
             for item in pending:
                 emit(item)
-            if stop is None and room() <= 0:
+            if stop is None and room() <= 0 and more(source, stream):
                 stop = "bytes"
         if stop:
             report["truncated"].append(stop)
@@ -590,14 +619,21 @@ def worker_main():
 
 
 def fit(results, report):
-    """Keep the serialized reply under the output budget (newest files come first, so the tail goes)."""
-    size = 0
-    for index, item in enumerate(results):
-        size += len(json.dumps(item, ensure_ascii=True)) + 2
-        if size > OUTPUT_BUDGET:
+    """Keep the whole serialized reply under the output budget (the report first, then results in order: newest
+    files were scanned first, so the tail goes)."""
+    for row in report.get("roots", []):
+        row["root"] = str(row["root"])[:1024]
+        if row.get("error"):
+            row["error"] = str(row["error"])[:200]
+    room = OUTPUT_BUDGET - len(json.dumps(report, ensure_ascii=True)) - 512
+    kept = []
+    for item in results:
+        room -= len(json.dumps(item, ensure_ascii=True)) + 2
+        if room < 0:
             report["truncated"] = sorted(set(report["truncated"]) | {"output"})
-            return results[:index]
-    return results
+            break
+        kept.append(item)
+    return kept
 
 
 def run(verb, payload):

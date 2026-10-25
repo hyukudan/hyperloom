@@ -179,6 +179,21 @@ class PowerTests(Base, unittest.TestCase):
         self.assertEqual(done["state"], "succeeded", done)
         self.assertEqual(ran, [[str(helper), "halo-2"]])
 
+    def test_agent_access_is_unknown_state(self):
+        raw = json.loads(self.config.read_text())
+        raw["machines"].append({"id": "halo-9", "os": "linux", "access": "agent", "http_address": "192.0.2.19",
+                                "install_root": "/opt/hl"})
+        self.config.write_text(json.dumps(raw))
+        helper = Path(self.dir.name) / "helper.cmd"
+        helper.write_text("x")
+        ops.settings(self.api, {"shutdown_helper": str(helper)})
+        with self.assertRaises(Exception):
+            self.api.mutate("ops/shutdown", {"machine": "halo-9", "confirm": "halo-9"})
+        doc = self.api.read("ops/power", {})
+        self.assertIn("agent access", next(m for m in doc["machines"] if m["machine"] == "halo-9")["shutdown"]["blocked"])
+        reason, unknown = ops.occupancy(self.api, self.api.cluster(), "halo-9")
+        self.assertTrue(unknown and reason)
+
     def test_bounded_helper_run(self):
         code, out, err, stopped = ops._bounded_run([sys.executable, "-c", "import sys; sys.stdout.write('x' * 200000)"], 20)
         self.assertEqual((code, len(out), stopped), (0, ops.HELPER_OUTPUT, None))

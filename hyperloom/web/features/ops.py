@@ -305,6 +305,8 @@ def occupancy(api, cluster, mid, inside_job=False):
             pass
         except Exception as exc:
             return f"saved launch of {profile} unreadable: {exc}", True
+    if machine is not None and machine.access not in ("ssh", "local"):
+        return f"{mid} uses {machine.access} access: its lease records cannot be read", True
     if machine is not None and machine.access == "ssh":
         try:
             reply = _node_call(api, machine, "status", {"root": machine.install_root})
@@ -617,6 +619,8 @@ def shutdown_blocker(api, machine):
         return why
     if machine.access == "local":
         return "this machine runs the portal"
+    if machine.access != "ssh":
+        return f"{machine.access} access: the machine's lease state cannot be read"
     reason = snapshot_occupancy(api, machine.id)
     if reason:
         return reason + "; stop it first"
@@ -636,6 +640,8 @@ def validate_shutdown(api, arguments):
         raise ValueError("type the machine id to confirm")
     if machine.access == "local":
         raise PermissionError("this machine runs the portal")
+    if machine.access != "ssh":
+        raise PermissionError(f"{machine.access} access: the machine's lease state cannot be read")
     _, why = shutdown_helper(api)
     if why:
         raise PermissionError(why)

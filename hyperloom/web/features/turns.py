@@ -131,12 +131,18 @@ def confirm_pairs(coordinator, second, used=None):
     starts = [t for t in coordinator["turns"] if t["kind"] == "pair" and t["side"] == "local"]
     shift = (coordinator["offset"] or 0.0) - (second["offset"] or 0.0)
     slack = (coordinator["uncertainty"] or 0.0) + (second["uncertainty"] or 0.0) + 1.0
+    earliest = coordinator["first_ts"]
     candidates = {}
     for index, start in enumerate(starts):
+        if earliest is None or earliest > start["start"] - CONFIRM_BEFORE_S - slack:
+            continue            # the first node's log does not cover the whole window before this start
         options = [a for a in attempts if a["label"] == start["label"]
                    and start["start"] - CONFIRM_BEFORE_S - slack <= a["start"] + shift <= start["start"] + CONFIRM_AFTER_S + slack]
-        if options:
-            candidates[index] = max(options, key=lambda a: a["start"])
+        if not options:
+            continue
+        latest = max(a["start"] for a in options)
+        if sum(1 for a in options if a["start"] == latest) == 1:      # a tie is ambiguous: nothing is confirmed
+            candidates[index] = next(a for a in options if a["start"] == latest)
     claimed = {}
     for index, attempt in candidates.items():
         claimed.setdefault(id(attempt), []).append(index)
@@ -147,7 +153,6 @@ def confirm_pairs(coordinator, second, used=None):
         if len(claimed[id(attempt)]) == 1 and not same_label:
             confirmed.append((attempt, starts[index]))
             taken.add(id(attempt))
-    earliest = coordinator["first_ts"]
     unconfirmed = []
     for attempt in attempts:
         if id(attempt) in taken:

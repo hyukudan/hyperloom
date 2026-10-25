@@ -123,19 +123,20 @@
     return entry;
   }
 
-  async function saveEdit(edit) {
+  // Saves send the version the dialog was opened from, so a change made meanwhile is refused, never overwritten.
+  async function saveEdit(edit, version) {
     const check = await UI().post("ops/config/validate", edit);
     if (!check.valid) throw new Error(check.error);
-    await UI().post("ops/config/save", {...edit, version: doc().version});
+    await UI().post("ops/config/save", {...edit, version});
     tell("Configuration saved.");
   }
 
   function openMachine(id) {
-    const current = (doc().machines || []).find(m => m.id === id);
+    const current = (doc().machines || []).find(m => m.id === id), version = doc().version;
     UI().open({
       title: current ? `Edit ${id}` : "Add a machine", confirm: current ? "Save" : "Add",
       body: machineForm(current?.entry || {os: "linux", access: "ssh", ssh_port: 22, lab_mode: true}, current?.frozen),
-      submit: () => saveEdit(current ? {op: "edit", id, machine: readMachine()} : {op: "add", machine: readMachine()}),
+      submit: () => saveEdit(current ? {op: "edit", id, machine: readMachine()} : {op: "add", machine: readMachine()}, version),
     });
   }
 
@@ -204,9 +205,10 @@
         await UI().post("ops/config/save", {op: "move", id: data.id, index: Number(data.index), version: doc().version});
         H().refresh();
       } else if (action === "ops-remove") {
+        const version = doc().version;
         UI().open({title: `Remove ${data.id}`, confirm: "Remove", danger: true, expect: data.id,
           body: `<p>Removes <b>${esc(data.id)}</b> from the configuration (validated first; refused while it is in use or its state cannot be read).</p>`,
-          submit: () => saveEdit({op: "remove", id: data.id})});
+          submit: () => saveEdit({op: "remove", id: data.id}, version)});
       } else if (action === "ops-scan") {
         await openScan(data.id);
       } else if (action === "ops-test") {
