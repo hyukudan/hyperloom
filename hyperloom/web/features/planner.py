@@ -71,12 +71,17 @@ def _facts_rows(cli_planner):
 
 
 def page(api, query):
-    from hyperloom.cliext import planner as cli_planner
     from hyperloom.recipes import service
     if query:
         raise ValueError("planner takes no query arguments")
+    with service.configured(api.config_path):     # the portal's configuration, for this request only
+        return _page(api)
+
+
+def _page(api):
+    from hyperloom.cliext import planner as cli_planner
+    from hyperloom.recipes import service
     why = {}
-    service.use_config(api.config_path)
     try:
         cluster = api.cluster()
     except Exception as exc:  # an unreadable configuration is shown, not raised
@@ -143,7 +148,11 @@ def whatif_argv(api, arguments):
     unknown = set(arguments) - WHATIF_KEYS
     if unknown:
         raise ValueError("unknown arguments: " + ", ".join(sorted(unknown)))
-    argv = ["whatif", _name(arguments, "recipe", required=True), "--catalog-only"]
+    from hyperloom.recipes import service
+    if arguments.get("recipe") is None:
+        raise ValueError("recipe is required")
+    # A catalog id only, as every recipe reference of the portal: no path, drive, stream or file suffix.
+    argv = ["whatif", service.recipe_ref("recipe", arguments["recipe"]), "--catalog-only"]
     for key, flag in (("profile", "--profile"), ("facts", "--facts")):
         if _name(arguments, key) is not None:
             argv += [flag, arguments[key]]

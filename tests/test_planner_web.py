@@ -47,7 +47,9 @@ class ArgvTests(unittest.TestCase):
         self.assertEqual(json.loads(stdin), {"variants": [{"name": "x", "set": {FLOOR: 4}}]})
 
     def test_whatif_refusals(self):
-        for arguments, message in (({}, "recipe is required"), ({"recipe": "../x"}, "must be an id"),
+        for arguments, message in (({}, "recipe is required"), ({"recipe": "../x"}, "not a path"),
+                                   ({"recipe": "ds-user.toml"}, "not a path"), ({"recipe": "C:x"}, "not a path"),
+                                   ({"recipe": "-x"}, "not starting with"),
                                    ({"recipe": "a", "facts": "C:/x.json"}, "facts must be an id"),
                                    ({"recipe": "a", "bogus": 1}, "unknown arguments"),
                                    ({"recipe": "a", "vary": {"a b": [1]}}, "not a settable path"),

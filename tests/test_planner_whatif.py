@@ -232,6 +232,36 @@ class WhatifRunTests(unittest.TestCase):
         with self.assertRaises(service.NotFound):
             planner.resolve_recipe(str(path), cluster, catalog_only=True)
         self.assertEqual(planner.resolve_recipe(str(path), cluster)[1], "ds-user")
+        with self.assertRaises(service.NotFound):
+            planner.resolve_recipe("ds-user.toml", cluster, catalog_only=True)
+
+    def test_an_id_is_never_a_file_of_the_working_directory(self):
+        cluster = cli._cluster(self.env.config)
+        source = Path(service.find("ds-user", cluster)["path"])
+        here = os.getcwd()
+        directory = source.parent.parent / "cwd"
+        directory.mkdir()
+        (directory / "copied-recipe").write_bytes(source.read_bytes())    # a recipe file named like an id
+        os.chdir(directory)
+        self.addCleanup(os.chdir, here)
+        with self.assertRaises(service.NotFound):
+            planner.resolve_recipe("copied-recipe", cluster)
+
+    def test_recipe_command_lines_name_the_catalog_id(self):
+        argv = planner._argv("plan", {"recipe": "ds-user", "profile": "ds41-rtx"}, "cfg.json", ["--facts", "f.json"])
+        self.assertEqual(argv[:4], ["recipe", "plan", "ds-user", "ds41-rtx"])
+        # A FILE reference (`hyperloom whatif FILE`, command line only) takes the recipe positional's place.
+        argv = planner._argv("show", {"recipe": str(Path("x", "r.toml"))}, "cfg.json")
+        self.assertEqual(argv[:3], ["recipe", "show", str(Path("x", "r.toml"))])
+
+    def test_whatif_of_a_recipe_file(self):
+        path = service.find("ds-user", cli._cluster(self.env.config))["path"]
+        with mock.patch.object(render, "router_policies", return_value=("nodes", "routes")):
+            code, out, err = run_cli("whatif", str(path), "--profile", "ds41-rtx", "--vary", f"{FLOOR}=8",
+                                     "--config", str(self.env.config))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out["recipe"], "ds-user")
+        self.assertTrue(all(v["explain"]["ok"] for v in out["variants"]), out["variants"])
 
     def test_budget_stops_starting_variants(self):
         with mock.patch.object(planner.Budget, "left", side_effect=[1.0, 1.0, 0.0, 0.0, 0.0, 0.0]):

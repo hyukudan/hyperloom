@@ -396,11 +396,25 @@ def recipe_line(argv):
             "error": "\n".join(line.removeprefix("hyperloom: ") for line in error.splitlines() if line.strip()) or None}
 
 
+FILE_PLACEHOLDER = "whatif-recipe-file"
+
+
 def _argv(operation, arguments, config, extra=()):
     """service.argv (the recipe API's own validator) plus files that live outside the API's name-only directories,
-    inserted before --config as the portal's field edits are."""
+    inserted before --config as the portal's field edits are. The recipe is its catalog id; a FILE reference (only
+    `hyperloom whatif FILE` on the command line, never the portal's --catalog-only) is validated as a placeholder id
+    and then takes the placeholder's place, the recipe positional."""
     from hyperloom.recipes import service
+    arguments = dict(arguments)
+    ref = str(arguments["recipe"])
+    file_ref = not service.is_recipe_id(ref)
+    if file_ref:
+        arguments["recipe"] = FILE_PLACEHOLDER
     argv = service.argv(operation, arguments, config=config)
+    if file_ref:
+        if argv[2] != FILE_PLACEHOLDER:
+            raise Refused(f"recipe {operation}: the recipe is not its first positional")
+        argv[2] = ref
     position = argv.index("--config")
     argv[position:position] = list(extra)
     return argv
@@ -412,18 +426,15 @@ def _command_line(argv, names):
 
 
 def resolve_recipe(ref, cluster, catalog_only=False):
-    """(path, catalog id or None): an id-shaped reference is looked up in the catalog first (it never names a file in
-    the working directory); only a non-catalog reference that is an existing file is read as a file (CLI only)."""
+    """(path, catalog id or None): a recipe id is looked up in the catalog only (it never names a file in the working
+    directory); a FILE reference (a .toml/.json name or a directory part, `service.is_file_ref`) is read as a file on
+    the command line only, never with --catalog-only (the portal)."""
     from hyperloom.recipes import service
     ref = str(ref)
-    if service.ID.fullmatch(ref) and "/" not in ref and "\\" not in ref:
-        try:
-            row = service.find(ref, cluster)
-            return Path(row["path"]), row["id"]
-        except service.NotFound:
-            if catalog_only or not Path(ref).is_file():
-                raise
-    elif catalog_only:
+    if service.is_recipe_id(ref):
+        row = service.find(ref, cluster)
+        return Path(row["path"]), row["id"]
+    if catalog_only:
         raise service.NotFound(f"{ref}: not a recipe id")
     path = service.locate(ref, cluster)
     return path, service.identify(path, cluster)
@@ -440,10 +451,15 @@ class Budget:
 
 
 def whatif(args):
+    from hyperloom.recipes import service
+    with service.configured(args.config):        # the recipe directories of --config, for this call only
+        return _whatif(args)
+
+
+def _whatif(args):
     from hyperloom.recipes import reader, service, session
     started = time.monotonic()
     budget = Budget(args.deadline_s)
-    service.use_config(args.config)
     cluster = _loader(args.config)
     path, recipe_id = resolve_recipe(args.recipe, cluster, args.catalog_only)
     text = session.read_text(path)
@@ -461,10 +477,11 @@ def whatif(args):
     facts_name, facts_path, record = resolve_facts(args.facts, [profile], names_only=args.catalog_only)
     recipe_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
     prune_layers()
-    context = {"path": str(path), "shown": recipe_id or str(path), "profile": profile, "facts": facts_path,
+    context = {"path": str(path), "ref": recipe_id or str(path), "shown": recipe_id or str(path), "profile": profile,
+               "facts": facts_path,
                "recipe": recipe, "sha256": recipe_sha, "config": args.config, "prompt_tokens": args.prompt_tokens,
                "budget": budget, "paths": list(dict.fromkeys(p for v in variants for p in v["set"]))}
-    shown = recipe_line(_argv("show", {"recipe": str(path)}, args.config))
+    shown = recipe_line(_argv("show", {"recipe": context["ref"]}, args.config))
     row = shown["result"] if shown["ok"] and isinstance(shown["result"], dict) else {}
     derived = bool(row.get("derived_from"))
     context.update(predictions=row.get("tradeoffs") or [], derived=derived,
@@ -514,11 +531,11 @@ def evaluate_variant(variant, context):
         row["layer"] = {"text": text, "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
                         "save_cli": "hyperloom recipe save-layer NAME --recipe " + _quote(context["shown"]) + "".join(
                             " --set " + _quote(f"{p}={_toml(v)}") for p, v in variant["set"].items())}
-    explain_args = {"recipe": path, "profile": context["profile"], "all": True}
+    explain_args = {"recipe": context["ref"], "profile": context["profile"], "all": True}
     if context["prompt_tokens"] is not None:
         explain_args["prompt_tokens"] = context["prompt_tokens"]
     explain_argv = _argv("explain", explain_args, context["config"], extra)
-    plan_argv = _argv("plan", {"recipe": path, "profile": context["profile"]}, context["config"], extra)
+    plan_argv = _argv("plan", {"recipe": context["ref"], "profile": context["profile"]}, context["config"], extra)
     row["cli"] = {"explain": _command_line(explain_argv, names), "plan": _command_line(plan_argv, names)}
     explained = recipe_line(explain_argv)
     if context["budget"].left() > 0:
@@ -1066,10 +1083,15 @@ def shape_plan(result):
 
 
 def placement(args):
+    from hyperloom.recipes import service
+    with service.configured(args.config):        # the facts directory of --config, for this call only
+        return _placement(args)
+
+
+def _placement(args):
     from hyperloom.recipes import facts as recipe_facts, service
     started = time.monotonic()
     budget = Budget(args.deadline_s)
-    service.use_config(args.config)
     cluster = _loader(args.config)
     model = args.model
     if model not in recipe_facts.FAMILY_MODELS_BY_ID:
