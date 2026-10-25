@@ -1797,7 +1797,12 @@ FILES_DEADLINE = 10.0
 # ---------------------------------------------------------------------------------------------------------------------
 # F13 RTX prefill service + batch runs
 
-STATS_MARK = b"mm-rtx-prefill: ss stats "
+# The library's stats line and status key under both names (legacy first): a run or service may use either spelling,
+# and every stats record is normalized to the legacy schema id.
+STATS_MARKS = (b"mm-rtx-prefill: ss stats ", b"mm-rtx-prefill: ts stats ")
+STATS_SCHEMA = "strix-stream/stats-v1"
+STATS_SCHEMAS = (STATS_SCHEMA, "tierstream/stats-v1")
+STREAM_KEYS = ("tierstream", "strix_stream")         # service status: the new key first, then the legacy one
 LOG_SUFFIXES = (".log", ".txt", ".out")
 LOG_TAIL, LINE_MAX, RUNS = 8 * 1024 * 1024, 1024 * 1024, 200
 SS_TOTAL = ("routed", "hits", "admitted", "transient", "evicted", "prefetched", "spec_issued", "spec_used", "spec_dropped",
@@ -1823,9 +1828,10 @@ def _ss_layer(raw):
 
 
 def parse_stats(obj):
-    """strix-stream/stats-v1 -> panel values (counters as reported; shares only where both sides exist)."""
-    if not isinstance(obj, dict) or obj.get("schema") != "strix-stream/stats-v1":
-        raise ValueError("stats line is not strix-stream/stats-v1")
+    """strix-stream/stats-v1 (or tierstream/stats-v1) -> panel values (counters as reported; shares only where both
+    sides exist). The schema is reported as the legacy id whichever spelling the line used."""
+    if not isinstance(obj, dict) or obj.get("schema") not in STATS_SCHEMAS:
+        raise ValueError("stats line is not strix-stream/stats-v1 (or tierstream/stats-v1)")
     total = _ss_layer(obj.get("total"))
     if total is None:
         raise ValueError("stats line has no total")
@@ -1833,7 +1839,7 @@ def parse_stats(obj):
 
     def share(a, b):
         return a / b if _count(a) and _count(b) and b else None
-    out = {"schema": obj["schema"], "backend": obj["backend"][:40] if isinstance(obj.get("backend"), str) else None,
+    out = {"schema": STATS_SCHEMA, "backend": obj["backend"][:40] if isinstance(obj.get("backend"), str) else None,
            "forwards": obj.get("forwards") if _count(obj.get("forwards")) else None, "total": total,
            "hit_rate": share(total["hits"], total["routed"]),
            "spec_used_share": share(total["spec_used"], total["spec_issued"]),
@@ -1859,17 +1865,18 @@ def parse_stats(obj):
 
 
 def last_stats(handle):
-    """The last `ss stats` line of an open run log (reads at most the last 8 MiB)."""
+    """The last `ss stats` (or `ts stats`) line of an open run log (reads at most the last 8 MiB)."""
     size = os.fstat(handle.fileno()).st_size
     handle.seek(max(0, size - LOG_TAIL))
     tail = handle.read(LOG_TAIL)
     found = None
     for line in tail.split(b"\n"):
-        at = line.find(STATS_MARK)
-        if at >= 0:
-            found = line[at + len(STATS_MARK):]
+        hits = [(at, mark) for mark in STATS_MARKS for at in (line.find(mark),) if at >= 0]
+        if hits:
+            at, mark = min(hits)                       # the first marker on the line, whichever spelling
+            found = line[at + len(mark):]
     if found is None:
-        raise LookupError("no `ss stats` line in the last 8 MiB of this run log")
+        raise LookupError("no `ss stats` or `ts stats` line in the last 8 MiB of this run log")
     if len(found) > LINE_MAX:
         raise ValueError("stats line exceeds 1 MiB")
     try:
@@ -1931,7 +1938,8 @@ def service_panel(health, status):
                            "counters": counters}
     else:
         out["why"]["provider"] = SERVICE_NEEDS
-    stream = (status or {}).get("strix_stream")
+    # The service's stats under the new key, else the legacy one; the panel keeps the legacy key.
+    stream = next((status[key] for key in STREAM_KEYS if (status or {}).get(key) is not None), None)
     if isinstance(stream, dict):
         try:
             out["strix_stream"] = parse_stats(stream)
