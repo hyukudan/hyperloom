@@ -1,0 +1,12 @@
+/* Health and alert channel pages (health.js, alerts.js). */
+.hl-tabs{display:flex;gap:4px;flex-wrap:wrap;border-bottom:1px solid var(--border);margin:0 0 14px}
+.hl-tab{background:none;border:0;border-bottom:2px solid transparent;color:var(--text-2);font:inherit;font-weight:600;padding:8px 12px;cursor:pointer;margin-bottom:-1px}
+.hl-tab[aria-selected="true"]{color:var(--text);border-bottom-color:var(--s1)}
+.hl-tab:focus-visible{outline:2px solid var(--s1);outline-offset:2px;border-radius:4px}
+.hl-kpis{margin-bottom:14px}
+.hl-small{font-size:18px}
+.hl-ok{display:flex;gap:8px;align-items:center;margin:4px 0}
+.hl-filters .field{min-width:160px;flex:1}
+.hl-edit{border-color:var(--s1)}
+.hl-form .field{min-width:200px}
+@media (max-width:760px){.hl-filters .field{min-width:100%}.hl-tab{padding:8px 8px}}
