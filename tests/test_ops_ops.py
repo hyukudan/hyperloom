@@ -604,3 +604,11 @@ class CLITests(Base, unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FleetHostMacTests(unittest.TestCase):
+    def test_macs_from_the_fleet_host_reply_shape(self):
+        from hyperloom.web.features import ops
+        reply = {"schema": "hyperloom/node-v1", "verb": "host", "checks": {"nics": {"status": "ok", "value": [
+            {"iface": "eth0", "mac": "02:00:00:00:00:0A"}, {"iface": "wl0", "mac": "01:00:5e:00:00:01"}]}}}
+        self.assertEqual(ops.macs_in(reply), ["02:00:00:00:00:0a"])     # multicast dropped, lower-cased

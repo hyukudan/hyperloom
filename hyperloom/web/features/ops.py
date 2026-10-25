@@ -376,15 +376,18 @@ def _tool_of(reply):
 
 
 def macs_in(reply):
-    """Unicast MACs of a `host` reply: only the agreed keys `interfaces[].mac` and `macs`."""
+    """Unicast MACs of a `host` reply: `interfaces[].mac`, `macs`, and the fleet node verb's `checks.nics[].mac`."""
     found = []
     if not isinstance(reply, dict):
         return found
     values = list(reply.get("macs") or []) if isinstance(reply.get("macs"), list) else []
-    interfaces = reply.get("interfaces")
-    if isinstance(interfaces, dict) and interfaces.get("status") == "ok":
-        interfaces = interfaces.get("value")
-    for row in interfaces if isinstance(interfaces, list) else []:
+    rows = []
+    for interfaces in (reply.get("interfaces"), (reply.get("checks") or {}).get("nics")
+                       if isinstance(reply.get("checks"), dict) else None):
+        if isinstance(interfaces, dict) and interfaces.get("status") == "ok":
+            interfaces = interfaces.get("value")
+        rows.extend(interfaces if isinstance(interfaces, list) else [])
+    for row in rows:
         if isinstance(row, dict):
             values.append(row.get("mac"))
     for value in values[:64]:
