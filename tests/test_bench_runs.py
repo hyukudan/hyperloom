@@ -180,6 +180,14 @@ class KindsTests(unittest.TestCase):
         weather = next(r for r in run["detail"]["results"] if r["scenario"] == "parallel-weather")
         self.assertFalse(weather["passed"])
         self.assertIn("is not one of celsius, fahrenheit", weather["reason"])
+        from hyperloom.bench import tools as bench_tools
+        offered = {"lookup_order": bench_tools.catalogue()["tools"]["lookup_order"]["parameters"],
+                   "send_payment": bench_tools.catalogue()["tools"]["send_payment"]["parameters"]}
+        passed, reason = bench_tools.check_calls({"no_call": ["send_payment"]}, [{"name": "lookup_order", "arguments": {}}], offered)
+        self.assertFalse(passed)
+        self.assertIn("lacks order_id", reason)
+        passed, reason = bench_tools.check_calls({"no_call": ["send_payment"]}, [{"name": "invented", "arguments": {}}], offered)
+        self.assertIn("not offered", reason)
 
     def test_stored_errors_are_redacted(self):
         self.bench.server.config.update(status=500)

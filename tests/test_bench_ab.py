@@ -149,7 +149,8 @@ class ReceiptTests(unittest.TestCase):
                 self.assertTrue(result["problems"])
         self.assertFalse(ab.verify({"schema": "something else"})["ok"])
         for broken in ({"schema": ab.SCHEMA, "arms": [], "corpus": {"cases": []}, "trial_order": ab.ORDER, "trials": []},
-                       {**built, "trials": [None]}, {**built, "corpus": None}):
+                       {**built, "trials": [None]}, {**built, "corpus": None},
+                       {**built, "trials": [{**built["trials"][0], "token_ids": "gz:b64:" + "QUJD" * 4}] + built["trials"][1:]}):
             self.assertFalse(ab.verify(broken)["ok"])
 
 

@@ -68,7 +68,8 @@ def validate(api, arguments):
     limit = row.get("context_tokens") or max_context
     args["sizes"] = sorted(set(sizes)) if sizes else None
     # The reported context is only known once the run starts: plan for the largest sweep it could allow.
-    planned_sizes = args["sizes"] or default_sizes((limit or 4_194_304) - (args["max_tokens"] + 64))
+    # (A declared max_context does not cap it: the endpoint's own report wins at run start.)
+    planned_sizes = args["sizes"] or default_sizes(4_194_304 - (args["max_tokens"] + 64))
     planned = 1 + len(planned_sizes) * args["trials"] * args["max_tokens"]     # calibration + every trial
     return runs.check_plan(args, planned)
 

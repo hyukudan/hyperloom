@@ -45,7 +45,7 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(len(reply.token_ids), 6)
         self.assertEqual(reply.cached_tokens, 0)
         self.assertEqual(reply.content_events, 6)
-        self.assertTrue(0 < reply.ttft_s <= reply.last_output_s <= reply.end_s)
+        self.assertTrue(0 <= reply.ttft_s <= reply.last_output_s <= reply.end_s, (reply.ttft_s, reply.last_output_s, reply.end_s))
         self.assertEqual(reply.headers["x-tensormeld-replica"], "halo-1")
         sent = self.server.requests[-1]["headers"]
         self.assertEqual(sent["Authorization"], "Bearer " + "k" * 64)

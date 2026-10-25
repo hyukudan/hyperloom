@@ -28,6 +28,7 @@ The receipt ``hyperloom/ab-receipt-v1`` is self-contained and verifiable offline
 """
 
 import base64
+import binascii
 import gzip
 import hashlib
 import json
@@ -35,6 +36,7 @@ import random
 import statistics
 import time
 import uuid
+import zlib
 
 from hyperloom.bench import data, runs, store as bench_store, targets
 from hyperloom.web.api import redact
@@ -104,7 +106,10 @@ def decode_ids(value):
             return value
         raise ValueError("token ids must be non-negative integers")
     if isinstance(value, str) and value.startswith("gz:b64:"):
-        ids = json.loads(gzip.decompress(base64.b64decode(value[7:], validate=True)))
+        try:
+            ids = json.loads(gzip.decompress(base64.b64decode(value[7:], validate=True)))
+        except (binascii.Error, zlib.error, OSError, EOFError, UnicodeDecodeError) as exc:
+            raise ValueError(f"compressed token ids do not decode: {exc}") from None
         return decode_ids(ids)
     raise ValueError("token ids must be a list or gz:b64 text")
 

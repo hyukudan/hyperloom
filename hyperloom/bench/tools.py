@@ -130,10 +130,8 @@ def schema_problem(schema, value, path="arguments"):
 
 
 def check_calls(expect, calls, offered=None):
-    """(passed, reason) for the first turn; ``offered`` maps the scenario's tool names to their schemas."""
-    if "no_call" in expect:
-        made = sorted({c["name"] for c in calls if c["name"] in expect["no_call"]})
-        return (not made, "called " + ", ".join(made) if made else "declined")
+    """(passed, reason) for the first turn; ``offered`` maps the scenario's tool names to their schemas. Every
+    call is checked against its schema first, declining scenarios included."""
     if any(c["arguments"] is None for c in calls):
         return False, "a call's arguments are not a JSON object"
     for call in calls if offered is not None else []:
@@ -142,6 +140,9 @@ def check_calls(expect, calls, offered=None):
         found = schema_problem(offered[call["name"]], call["arguments"])
         if found:
             return False, f"{call['name']}: {found}"
+    if "no_call" in expect:
+        made = sorted({c["name"] for c in calls if c["name"] in expect["no_call"]})
+        return (not made, "called " + ", ".join(made) if made else "declined")
     remaining = list(calls)
     for wanted in expect["calls"]:
         hit = next((c for c in remaining if c["name"] == wanted["name"] and match_arguments(wanted["arguments"], c["arguments"])), None)
