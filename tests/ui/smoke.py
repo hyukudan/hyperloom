@@ -772,6 +772,14 @@ def shell_walkthrough(client, server, output):
                              + client.evaluate("document.getElementById('connection').textContent"))
     if client.evaluate("document.getElementById('heartbeat').textContent") != "Live · 2 s":
         raise AssertionError("shell: heartbeat pill missing")
+    # Leaving a page: its documents no longer age the view (page A -> page B, more than the stale limit later).
+    go("#/history")
+    go("#/devices")
+    client.evaluate("new Promise(resolve => setTimeout(resolve, 7000))")
+    left = client.evaluate("({hidden: document.getElementById('connection').hidden, blocker: window.Hyperloom.mutationReason(), "
+                           "kept: Object.keys(window.Hyperloom.state.fetched).filter(k => k.startsWith('history'))})")
+    if not left["hidden"] or left["blocker"] or left["kept"]:
+        raise AssertionError("shell: a page left behind still ages the view: " + json.dumps(left))
     # Palette: Ctrl+K from a focused control, type, Enter navigates; Escape returns focus.
     client.evaluate("document.getElementById('palette-open').focus()")
     chord(client, "k")

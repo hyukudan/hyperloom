@@ -434,6 +434,10 @@
       clearTimeout(timeout);
       if (generation !== state.generation || document.hidden) return;
       state.current = names;
+      // Only the documents of the current page (core + its endpoints + jobs) keep a fetch time or an error: those of
+      // pages left behind, or of a page's previous query, must not age the view.
+      for (const key of Object.keys(state.fetched)) if (!names.includes(key)) delete state.fetched[key];
+      for (const key of Object.keys(state.errors)) if (!names.includes(key)) delete state.errors[key];
       for (let i = 0; i < results.length; i++) {
         const name = names[i], result = results[i];
         if (OPTIONAL.includes(name) && !optionalResult(name, result, prefsEpoch, arrived[name], seq[name])) continue;
