@@ -155,3 +155,39 @@ class FreshnessAndBoundsTests(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CadenceAndAgeTests(Base):
+    def test_counted_series_follow_the_configured_interval(self):
+        env = self.env
+        env.router()
+        env.engine(NODE1, 18501)
+        env.api.sampler = type("S", (), {"collectors": {"observe-engines": (None, 20.0), "observe-router": (None, 10.0)}})()
+        try:
+            env.collect()
+            self.assertEqual(env.store.descriptor("engine_generated_tokens")["interval_s"], 20.0)
+            self.assertEqual(env.store.descriptor("router_requests")["interval_s"], 10.0)
+        finally:
+            del env.api.sampler
+
+    def test_retained_histograms_carry_their_age(self):
+        env = self.env
+        env.router()
+        env.engine(NODE1, 18501)
+        env.collect()
+        env.http.routes[ROUTER + "/metrics"] = OSError("down")
+        env.clock.now += 600
+        env.collect()
+        router = [h for h in observe.latency_document(env.api, {})["histograms"] if h["observer"] == "router"]
+        self.assertTrue(router and all(h["stale"] and h["age_s"] >= 600 for h in router))
+        engine = [h for h in observe.latency_document(env.api, {})["histograms"] if h["observer"] == "engine"]
+        self.assertTrue(engine and not any(h["stale"] for h in engine))
+
+    def test_inventory_and_session_cuts_reach_the_documents(self):
+        env = self.env
+        for i in range(10):
+            env.launch(f"p{i}", QWEN)
+        env.router()
+        env.collect()
+        self.assertEqual(observe.requests_document(env.api, {})["inventory"]["omitted"]["profiles"], 3)
+        self.assertEqual(observe.engines_document(env.api, {})["inventory"]["omitted"]["profiles"], 3)

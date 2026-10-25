@@ -53,11 +53,12 @@
     if (!items.length) return "";
     const unit = family => family.includes("tokens_per_second") ? "tok/s" : "s";
     const show = (v, family) => v == null ? "—" : unit(family) === "s" ? (v >= 10 ? `${v.toFixed(1)} s` : `${(v * 1000).toFixed(v >= 0.1 ? 0 : 1)} ms`) : `${v.toFixed(1)} tok/s`;
-    const rows = items.map(h => cells([esc(h.observer), esc(h.replica ? `${h.profile}/${h.replica}` : h.profile), esc(h.family.replaceAll("_", " ")),
+    const when = h => h.as_of == null ? H().unavailable("no reading yet") : (h.stale ? `<span class="pill p-warn">stale</span> ` : "") + esc(new Date(h.as_of * 1000).toLocaleTimeString());
+    const rows = items.map(h => cells([esc(h.observer), esc(h.replica ? `${h.profile}/${h.replica}` : h.profile) + (h.instance ? `<br><span class="muted mono">${esc(String(h.instance).slice(0, 16))}</span>` : ""), when(h), esc(h.family.replaceAll("_", " ")),
       esc(Object.entries(h.labels || {}).map(([k, v]) => `${k}=${v}`).join(" ") || "—"), esc(h.count ?? "—"),
       esc(`${show(h.p50, h.family)} · ${show(h.p95, h.family)} · ${show(h.p99, h.family)}`)])).join("");
     const notes = [...new Set(items.map(h => h.label).filter(Boolean))].map(n => `<p class="hint">${esc(n)}</p>`).join("");
-    return H().card("Component histograms", table(["Observer", "Component", "Family", "Labels", "Count", "p50 · p95 · p99 (estimated)"], rows, "Component histograms")
+    return H().card("Component histograms", table(["Observer", "Component", "As of", "Family", "Labels", "Count", "p50 · p95 · p99 (estimated)"], rows, "Component histograms")
       + `<p class="hint">${esc(items[0].basis)}</p>` + notes + cuts.map(c => `<p class="hint">${esc(c.observer)} ${esc(c.replica ? `${c.profile}/${c.replica}` : c.profile)}: ${esc(c.basis)}</p>`).join(""));
   }
 

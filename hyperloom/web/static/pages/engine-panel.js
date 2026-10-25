@@ -70,9 +70,11 @@
     ready: () => !!H().state.docs[docName],
     render() {
       const d = H().state.docs[docName] || {};
+      const omitted = d.inventory?.omitted || {};
+      const note = omitted.profiles || omitted.replicas ? `<p class="hint">Not observed: ${H().esc(omitted.profiles || 0)} profiles and ${H().esc(omitted.replicas || 0)} replicas beyond the limits (8 profiles x 8 replicas).</p>` : "";
       if (d.engines == null) return H().empty("Engine panel unavailable", d.why?.engines || "metrics store not open");
-      if (!d.engines.length) return H().empty("No engine observed", d.why?.engines || "no running profile");
-      return `<div class="grid">${d.engines.map(card).join("")}${retention()}</div>`;
+      if (!d.engines.length) return H().empty("No engine observed", (d.why?.engines || "no running profile") + (note ? " · some profiles were not observed (limits)" : ""));
+      return `<div class="grid">${note}${d.engines.map(card).join("")}${retention()}</div>`;
     },
     after(main) { window.HyperloomTS.bind(main); },
   };

@@ -112,7 +112,8 @@
     const reason = !H().csrf() || H().csrf() === "__HYPERLOOM_CSRF__" ? "Launch the portal through hyperloom ui to change settings" : settings.why?.settings ? settings.why.settings : "";
     const idle = settings.settings?.affinity_idle_s ?? doc.idle_expiry_s;
     const form = `<div class="row"><label class="field" for="tl-idle">Forget a conversation after (s) <input class="inp" id="tl-idle" type="number" min="60" max="86400" step="60" value="${esc(idle ?? 1800)}" ${reason ? "disabled" : ""}></label>${H().button("Save expiry", "", {extra: 'data-page-action="tl-save-idle"', disabled: reason})}</div>${view.message ? `<p class="hint" role="status">${esc(view.message)}</p>` : ""}`;
-    return card("Observed affinity", `<p class="t2">${esc(doc.label)}</p>${coverage ? `<ul class="hint">${coverage}</ul>` : ""}` + (rows ? table(["Session", "Profile", "Endpoint", "Turns", "Replica", "Prefix tokens reused per turn", "Last seen", "Expires"], rows, "Conversations") : `<p>${H().unavailable(doc.why?.sessions)}</p>`) + form,
+    const cut = doc.why?.sessions_cut ? `<p class="hint">${esc(doc.why.sessions_cut)}</p>` : "";
+    return card("Observed affinity", `<p class="t2">${esc(doc.label)}</p>${coverage ? `<ul class="hint">${coverage}</ul>` : ""}${cut}` + (rows ? table(["Session", "Profile", "Endpoint", "Turns", "Replica", "Prefix tokens reused per turn", "Last seen", "Expires"], rows, "Conversations") : `<p>${H().unavailable(doc.why?.sessions)}</p>`) + form,
       "pseudonymous keys from the router; not confirmed cache residency");
   }
 

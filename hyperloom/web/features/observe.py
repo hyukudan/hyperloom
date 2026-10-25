@@ -221,6 +221,28 @@ def _prepare(store):
     return store
 
 
+ROUTER_COUNTED = ("router_requests",)
+ENGINE_COUNTED = ("engine_generated_tokens", "engine_prompt_tokens", "engine_cached_tokens", "engine_imported_tokens",
+                  "engine_completed_requests")
+
+
+def collector_interval(api, name):
+    """The interval this portal's sampler runs a collector with (the default when samplers are not running)."""
+    sampler = getattr(api, "sampler", None)
+    spec = (getattr(sampler, "collectors", None) or {}).get(name) if sampler else None
+    return float(spec[1]) if spec else INTERVAL
+
+
+def _cadence(store, names, interval):
+    """Counter deltas are written inside counter_delta's transaction, where the coverage of a point comes from its
+    series descriptor: keep the descriptors of the counted series at the collector's configured interval."""
+    for name in names:
+        current = store.descriptor(name) or {}
+        if current.get("interval_s") != interval:
+            kind, unit, legend = SERIES[name]
+            store.describe(name, kind, unit=unit, interval=interval, legend=legend)
+
+
 def _host(address):
     return f"[{address}]" if ":" in address else address
 
@@ -556,6 +578,7 @@ def collect_router(api, now, store=None):
     """One collection of every running profile's router: request log, histograms and sessions as separate tasks,
     rotated across runs. Returns (gauge points, attempted, succeeded)."""
     store = _prepare(store) if store is not None else _store(api)
+    _cadence(store, ROUTER_COUNTED, collector_interval(api, "observe-router"))
     points, attempted, succeeded = [], 0, 0
     deadline = time.monotonic() + RUN_BUDGET_S
     retention = settings(store)["retention_days"] * 86400
@@ -766,6 +789,8 @@ def collect_engines(api, now, store=None):
     separate tasks rotated across runs. Returns (gauge points to record now, attempted, succeeded); readings taken
     from the fleet sampler are recorded at their own observation time by ``_engine_sample``."""
     store = _prepare(store) if store is not None else _store(api)
+    interval = collector_interval(api, "observe-engines")
+    _cadence(store, ENGINE_COUNTED, interval)
     points, attempted, succeeded = [], 0, 0
     deadline = time.monotonic() + RUN_BUDGET_S
     found, omitted = launches(api)
@@ -794,11 +819,11 @@ def collect_engines(api, now, store=None):
                    else _read_direct(replica, now, deadline, api.clock))
         if reading["status"] is not None or reading["metrics_text"] is not None or reading["health"]:
             succeeded += 1
-        points += _engine_sample(store, launch, replica, reading, now)
+        points += _engine_sample(store, launch, replica, reading, now, interval)
     return points, attempted, succeeded
 
 
-def _engine_sample(store, launch, replica, reading, now):
+def _engine_sample(store, launch, replica, reading, now, interval=INTERVAL):
     profile, rid, family = launch["profile"], replica["id"], launch["family"]
     key = f"{profile}/{rid}"
     machine = replica["node"]
@@ -859,7 +884,7 @@ def _engine_sample(store, launch, replica, reading, now):
                         last_served=previous.get("last_served"), last_served_basis=previous.get("last_served_basis"),
                         instance=previous.get("instance"), started_at=previous.get("started_at"), model=previous.get("model"))
         store.put("observe/engine", key, snapshot)
-        return _at(store, points, observed_at, now)
+        return _at(store, points, observed_at, now, interval)
     observed = observed or {"instance": None, "started_at": None, "armed": None, "armed_since": None, "observed": None,
                             "totals": {}, "speculative": None, "prefix_cache": None, "histograms": None, "requests": [],
                             "why": {}}
@@ -967,24 +992,25 @@ def _engine_sample(store, launch, replica, reading, now):
         interval = [previous.get("observed_at"), observed_at]
         if last is None or observed_at > last:
             last, last_basis = observed_at, f"completed counter moved between samples ({interval[0]:.0f}..{observed_at:.0f})"
-    histograms = dict((extra or {}).get("histograms") or {})
-    for name, lines in (observed.get("histograms") or {}).items():
-        histograms.setdefault(name, lines)
+    status_histograms = {name: lines for name, lines in (observed.get("histograms") or {}).items()
+                         if name not in ((extra or {}).get("histograms") or {})}
+    snapshot["histograms_at"] = {"metrics": reading.get("metrics_at", observed_at), "status": reading.get("status_at", observed_at)}
     snapshot.update(status=_bounded_status(parsed_status), metrics=asdict(metrics) if metrics else None,
                     observed={k: v for k, v in observed.items() if k not in ("requests", "histograms")},
-                    extra=_bounded_extra({**(extra or {}), "histograms": histograms}),
+                    extra=_bounded_extra(extra), status_histograms=_bound_families(status_histograms),
                     model=model, instance=instance, instance_basis=basis, started_at=started,
                     last_served=last, last_served_basis=last_basis, completed=completed,
                     state=(parsed_status.state if parsed_status else None) or "up")
     store.put("observe/engine", key, snapshot)
-    return _at(store, points, observed_at, now)
+    return _at(store, points, observed_at, now, interval)
 
 
-def _at(store, points, observed_at, now):
-    """Points observed now go back to the sampler; points of an earlier node sample are recorded at its own time."""
+def _at(store, points, observed_at, now, interval=INTERVAL):
+    """Points observed now go back to the sampler; points of an earlier answer are recorded at their own time, with
+    the collector's configured interval as their coverage."""
     if observed_at is None or abs(observed_at - now) < 1e-6:
         return points
-    store.record(points, ts=observed_at, interval=INTERVAL)
+    store.record(points, ts=observed_at, interval=interval)
     return []
 
 
@@ -1543,8 +1569,15 @@ def latency_document(api, query, store=None):
             histograms += _estimated(value, "router", profile, None, value.get("instance"))
     for _, _, value in store.items("observe/engine"):
         if "profile" not in query or value.get("profile") == query["profile"]:
-            histograms += _estimated({"ts": value.get("observed_at"), "families": (value.get("extra") or {}).get("histograms") or {}},
-                                     "engine", value.get("profile"), value.get("replica"), value.get("instance"))
+            times = value.get("histograms_at") or {}
+            for kind, families in (("metrics", (value.get("extra") or {}).get("histograms")),
+                                   ("status", value.get("status_histograms"))):
+                histograms += _estimated({"ts": times.get(kind, value.get("observed_at")), "families": families or {}},
+                                         "engine", value.get("profile"), value.get("replica"), value.get("instance"))
+    for item in histograms:
+        limit = stale_after(api, "observe-router" if item["observer"] == "router" else "observe-engines")
+        item["age_s"] = None if item.get("as_of") is None else now - item["as_of"]
+        item["stale"] = item["age_s"] is None or item["age_s"] > limit
     sources = _sources(store, query.get("profile"))
     why = {}
     if not result:
