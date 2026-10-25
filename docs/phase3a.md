@@ -1,6 +1,6 @@
 # Phase 3a: the RTX prefill service
 
-Status: implemented on `hl/phase3a`, 2026-10-23 (lead review fixes included). The hardware acceptance (below) has not run yet.
+Status (2026-10-25 evening): implemented on the default branch. CUDA build and standalone exactness passed on hardware; capped placement is also validated. Full pair + RTX placement and the pair-overlay identity comparison remain pending. See [acceptance evidence](acceptance-3a.md) and [placement validation](vramplan.md).
 
 ## What it does
 

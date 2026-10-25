@@ -5,7 +5,7 @@
 hyperloom is the integration and control layer that turns three separate projects into one installable system: [TensorMeld](https://github.com/hyukudan/tensormeld) (router, planner, benchmarks), the [Strix Halo engine](https://github.com/hyukudan/strix-halo-engine-lab) (HIP serving apps and a CUDA prefill service) and [strix-trellis](https://github.com/hyukudan/strix-trellis) (trellis-quantized dense kernels). Each component is pinned by commit and driven only through the interfaces it already has: command-line flags, config files, stdout events and its HTTP endpoints. hyperloom adds what was missing between them: pinned builds, one config file, safe start and stop on every machine, a router you can place anywhere, and one view of devices, links, statistics and logs.
 
 > [!IMPORTANT]
-> **Status: Phase 0 done; Phase 1a code written, hardware acceptance pending.** Nothing has been served through hyperloom yet. See [Status and roadmap](#status-and-roadmap). This repository is **private**.
+> **Status (2026-10-25 evening):** Phases 1a and 2 accepted on hardware; portal start/stop smoke-tested, with crash-cleanup acceptance open. RTX build, standalone exactness and capped placement validated; pair + RTX placement remains pending. See the [current overview](../README.md#current-status) and [acceptance records](acceptance-2.md).
 
 <p align="center">
   <img src="img/devices-desktop.png" alt="Mockup of the Devices screen: a workstation with an RTX PRO 6000 and two Strix Halo nodes, each with memory and usage meters, roles and driver state. Sample data." width="900">
@@ -76,7 +76,7 @@ Everything in the boxes comes from pinned components. hyperloom itself contains 
 ## Quick start
 
 > [!NOTE]
-> The Phase 1a CLI is written and unit-tested but **not yet accepted on real hardware**: no GPU acceptance run has happened yet. Plan files (`--plan`) and `--allow-partial` are specified but not implemented. `hloom` is a short alias for `hyperloom` everywhere.
+> The Phase 1a CLI and Phase 2 pair have [passed hardware acceptance](acceptance-2.md). Optional RTX placement through the full deployment remains pending. Plan files (`--plan`) and `--allow-partial` are specified but not implemented. `hloom` is a short alias for `hyperloom` everywhere.
 
 **1. Install on the control machine** (Windows, Python ≥ 3.11, git, OpenSSH client). The full from-scratch guide, including release archives, Linux, node prerequisites, upgrades and rollback, is [docs/install.md](../docs/install.md):
 
@@ -147,7 +147,7 @@ hloom down qwen-replicas
 
 ### A request through the cluster
 
-The DeepSeek V4.1 Flash profile with the RTX prefill service (Phase 3a). A short prompt skips the dashed branch and is prefilled on the pair itself.
+Intended full request path for DeepSeek V4.1 Flash with the RTX prefill service (Phase 3a; end-to-end Hyperloom acceptance pending). A short prompt skips the dashed branch and is prefilled on the pair itself.
 
 ```mermaid
 sequenceDiagram
@@ -248,7 +248,7 @@ stateDiagram-v2
 
 ## The portal (mockups)
 
-A thin local web UI over the same functions as the CLI (Phase 1b): stdlib `http.server` on `127.0.0.1`, vanilla JS, no CDN and no build step. **Every image below is a design mockup with sample data, not a screenshot of a running system.**
+The implemented thin local web UI uses the same functions as the CLI (Phase 1b; [hardware smoke test and remaining checks](acceptance-1a.md#phase-1b-portal-on-real-hardware)): stdlib `http.server` on loopback, vanilla JS, no CDN and no build step. **Every image below is a design mockup with sample data, not a screenshot of a running system.**
 
 <table>
   <tr>
@@ -279,7 +279,7 @@ Not managed by hyperloom, only checked read-only: the kernel and USB4 stream dri
 
 hyperloom adds no inference code, so its target is to **reproduce** these numbers, not to beat them: Phase 1a and Phase 2 each gate on token-identical output against the same binary launched without hyperloom, plus interleaved throughput rounds.
 
-All values below were **measured** with the components above, launched by their own tooling (not yet through hyperloom). Each row gives its date, conditions and source. Only arms that pass their quality gate are listed; estimates are not.
+The historical component results below were **measured** using their own tooling. They are not current Hyperloom deployment benchmarks. For the newer measured integration results, see [the overview](../README.md#measured-integration-results), [Phase 2 acceptance](acceptance-2.md) and [the updated DeepSeek adapter check](adapters.md#hardware-check-ds41-pair-w5-2026-10-24). Each historical row gives its date, conditions and source.
 
 **Hardware.** Two Strix Halo nodes (Ryzen AI Max+ 395, Radeon 8060S `gfx1151`, 128 GB unified memory each) joined by two direct USB4 cables (40 Gb/s and 20 Gb/s); one workstation with an RTX PRO 6000 (96 GB) reaching the nodes over 1 GbE.
 
@@ -303,7 +303,7 @@ Experts from the published Q2 GGUF; dense layers trellis mix-B over a 6.5-bit ov
 | Greedy decode, 1 stream | **28.48 tok/s** | 2026-10-22 | engine P17.3 build, eager sends on (27.78 off) | engine pair gate P17.3 |
 | Batch decode, 8 streams, aggregate | **95.9 tok/s** | 2026-10-23 | publish build, production defaults; batch arm without DSpark; 8 prompts × 48 tokens | engine publish gate G1 |
 | Device prefill, 8K prompt | **734 tok/s** | 2026-10-23 | same publish build; logits equal the reference | engine publish gate G1 |
-| Device prefill, 1K / 4K / 16K | 458.3 / 639.5 / 758.2 tok/s | 2026-10-22 | P17.1 build (before fused staging and final-KV prefill); latest measured at these lengths | engine P17.1 campaign |
+| Device prefill, 1K / 4K / 16K | 458.3 / 639.5 / 758.2 tok/s | 2026-10-22 | P17.1 build (before fused staging and final-KV prefill); historical measurement at these lengths | engine P17.1 campaign |
 | Serve, 8-category short set, aggregate C1 / C2 / C4 / C8 | 38.4 / 52.7 / 59.3 / 66.8 tok/s | 2026-10-22 | P17.4 build; token ids 64/64 equal the reference | engine pair gate P17.4 |
 | Serve, 8K prompt, time to first token after 40 s idle | **15.78 s** | 2026-10-22 | P17.5 build; 27.91 s with 4 streams decoding | engine pair gate P17.5 |
 | DSpark speculative decode, 1 stream, 24 prompts × 256 tokens | 46.4 tok/s (EN 37.5 / ES 39.3 / code 62.3) | 2026-10-22 | P17.1 build, DSpark on | engine heterogeneous decode report |
@@ -321,13 +321,13 @@ Experts from the published Q2 GGUF; dense layers trellis mix-B over a 6.5-bit ov
 | Phase | Scope | Status |
 |---|---|---|
 | **0** | Skeleton, no GPU: submodules and `versions.lock`, `cluster-v1` config, renders validated by TensorMeld's parser, router/engine adapters with fixtures from real outputs, ssh transport with host-key pinning, `hyperloom-node doctor` / `gpu`, Windows install and router child in a Job Object | **done** (read-only doctor run on real nodes) |
-| **1a** | Qwen two replicas + router, CLI: node builds, transactional install, leases and `supervise`, `up` / `status` / `down` / `logs`, failure matrix, token regression gate, router placement measured both ways | **code done**, unit-tested; acceptance on hardware pending |
-| **1b** | Thin local portal over 1a: Devices, Engines, Live stats, Logs, Settings (security negative tests first) | planned |
-| **2** | DeepSeek pair: trellis build, production preset, pair leases with the layout check, topology view with link-probe | planned |
+| **1a** | Qwen replicas, deployment, leases, router placement and token regression | [Accepted on hardware](acceptance-1a.md) |
+| **1b** | Thin local portal: Devices, Engines, Live stats, Logs, Settings | Implemented; hardware start/stop smoke test passed, portal-exit cleanup check open |
+| **2** | DeepSeek pair, builds, asset/layout checks and launch equivalence | [Accepted on hardware](acceptance-2.md); [updated adapter checked](adapters.md#hardware-check-ds41-pair-w5-2026-10-24) |
 | **2.5** | Placement proposals from `plan-hetero`, filtered to qualified profiles | planned |
-| **3a** | RTX prefill service on the workstation: offload long prompts, KV handoff to rank 0, no local-prefill fallback | planned; needs engine requests (key files, metrics) and a fidelity gate |
+| **3a** | RTX prefill service and KV handoff | [Build and standalone gates passed](acceptance-3a.md); [capped placement validated](vramplan.md); full pair + RTX placement pending |
 | **3b** | Split decode across the RTX and the pair | deferred until the engine ships that front end as an HTTP server |
-| **4** | Discover and pair through the TensorMeld agent, Windows workers, non-lab `systemd --user` mode, release tarball, Prometheus re-export | later |
+| **4** | Operational extensions | Install/release tooling, diagnostics, qualified knobs, [Prometheus](prometheus.md) and [non-lab service mode](non-lab-mode.md) implemented; discovery/pairing and Windows workers later |
 
 Every phase ends with unit and hygiene tests green and its acceptance tests passed. GPU acceptance runs are short, bounded leases; performance thresholds are compared in interleaved rounds against the same binary, not against historical numbers. The full plan, acceptance tests and component requests are in [docs/SPEC.md](../docs/SPEC.md).
 
@@ -346,6 +346,6 @@ Please report security issues privately to the repository owner; do not open pub
 
 ## License
 
-Copyright (c) 2026 hyukudan. All rights reserved. This repository is **private and proprietary**; no license is granted (see [LICENSE](../LICENSE)).
+Copyright (c) 2026 hyukudan. All rights reserved. This repository is **proprietary**; no license is granted (see [LICENSE](../LICENSE)).
 
 The components are pulled as pinned submodules and keep their own licenses (see [NOTICE](../NOTICE)): TensorMeld (MIT), the Strix Halo engine (Apache-2.0) and strix-trellis (Apache-2.0).
