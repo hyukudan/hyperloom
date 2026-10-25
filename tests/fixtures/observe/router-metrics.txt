@@ -1,0 +1,20 @@
+# TYPE tensormeld_router_waiting gauge
+tensormeld_router_waiting 0
+# TYPE tensormeld_router_ttft_seconds histogram
+tensormeld_router_ttft_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="0.1"} 0
+tensormeld_router_ttft_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="0.5"} 0
+tensormeld_router_ttft_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="1"} 1
+tensormeld_router_ttft_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="+Inf"} 1
+tensormeld_router_ttft_seconds_sum{model="qwen3.8-flash-next",route="rtx-long",caller="default"} 0.8452
+tensormeld_router_ttft_seconds_count{model="qwen3.8-flash-next",route="rtx-long",caller="default"} 1
+# TYPE tensormeld_router_delivery_gap_seconds histogram
+tensormeld_router_delivery_gap_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="0.01"} 10
+tensormeld_router_delivery_gap_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="0.05"} 90
+tensormeld_router_delivery_gap_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="0.1"} 100
+tensormeld_router_delivery_gap_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="+Inf"} 100
+tensormeld_router_delivery_gap_seconds_sum{model="qwen3.8-flash-next",route="rtx-long",caller="default"} 3.1
+tensormeld_router_delivery_gap_seconds_count{model="qwen3.8-flash-next",route="rtx-long",caller="default"} 100
+# TYPE tensormeld_router_requests_total counter
+tensormeld_router_requests_total{model="qwen3.8-flash-next",route="rtx-long",caller="default",outcome="served"} 1
+# TYPE tensormeld_router_instance_info gauge
+tensormeld_router_instance_info{instance="9f1c0a5b2d3e4f60"} 1

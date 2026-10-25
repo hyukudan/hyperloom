@@ -1,0 +1,75 @@
+{
+ "schema": "strix-serve-status-v1",
+ "engine": "strix-minimax-serve",
+ "model": "minimax-m3",
+ "context_tokens": 65536,
+ "uptime_seconds": 1200.5,
+ "instance": {
+  "id": "c0ffee00c0ffee00",
+  "start_time": 1799998800
+ },
+ "armed": true,
+ "capabilities": {
+  "prefix_cache": false,
+  "state_import": false,
+  "draft": false,
+  "return_token_ids": true,
+  "request_ids": true
+ },
+ "state": "generating",
+ "queue": {
+  "queued": 0,
+  "running": 1,
+  "completed": 12,
+  "failed": 0,
+  "cancelled": 0
+ },
+ "totals": {
+  "requests": 13,
+  "prompt_tokens": 4096,
+  "cached_tokens": 0,
+  "imported_tokens": 0,
+  "computed_tokens": 4096,
+  "generated_tokens": 2048,
+  "busy_seconds": 101.25
+ },
+ "slots": {
+  "total": 1,
+  "busy": 1,
+  "free": 0,
+  "context_tokens": 65536
+ },
+ "group": {
+  "rank": 0,
+  "world": 2,
+  "transport": "usb4"
+ },
+ "requests": [
+  {
+   "id": "00112233445566aa.1",
+   "request_id": "00112233445566aa.1",
+   "completion_id": "chatcmpl-12",
+   "route": "completions",
+   "time": 1800000004,
+   "status": "done",
+   "stop_reason": "length",
+   "stream": true,
+   "prompt_tokens": 512,
+   "cached_tokens": 0,
+   "imported_tokens": 0,
+   "computed_tokens": 512,
+   "reused_tokens": 0,
+   "output_tokens": 128,
+   "queue_ms": 0.2,
+   "prefill_ms": 410.0,
+   "decode_ms": 6400.0,
+   "duration_ms": 6810.2,
+   "prefill_tok_s": 1248.8,
+   "decode_tok_s": 20.0,
+   "first_token_ms": 411.0,
+   "mtp_cycles": 0,
+   "mtp_accepted": 0,
+   "mtp_proposed": 0
+  }
+ ]
+}
