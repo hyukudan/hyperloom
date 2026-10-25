@@ -105,6 +105,8 @@ ${view.error ? `<p class="lg-error" role="alert">${esc(view.error)}</p>` : ""}${
     if (d.useDefault) for (const k of ["input", "cached", "output"]) if (!Number.isFinite(body.default[k]) || body.default[k] < 0) view.errors[`value-d-${k}`] = "A price per million tokens (0 or more).";
     d.models.forEach((m, i) => {
       if (!m.name.trim() && (m.input || m.cached || m.output)) view.errors[`value-m${i}-name`] = "Name the model or remove the row.";
+      if (m.name.trim().length > 128) view.errors[`value-m${i}-name`] = "Model names are at most 128 characters.";
+      if (m.name.trim() && d.models.findIndex(o => o.name.trim() === m.name.trim()) !== i) view.errors[`value-m${i}-name`] = "This model is already priced above.";
       if (m.name.trim()) for (const k of ["input", "cached", "output"]) { const v = number(m[k]); if (!Number.isFinite(v) || v < 0) view.errors[`value-m${i}-${k}`] = "A price per million tokens (0 or more)."; }
     });
     if (Object.keys(view.errors).length) { view.error = "Some prices are not valid: see the marked fields."; view.message = ""; H().render(); focusError(); return; }
@@ -119,6 +121,9 @@ ${view.error ? `<p class="lg-error" role="alert">${esc(view.error)}</p>` : ""}${
         const index = where[3] ? view.draft.models.findIndex(m => m.name.trim() === where[3]) : -1;
         const id = where[1] === "currency" ? "value-currency" : where[2] ? `value-d-${where[2]}` : index >= 0 ? `value-m${index}-${where[4]}` : "";
         if (id) view.errors[id] = error.message;
+      } else if (/^model names/.test(error.message)) {
+        const index = view.draft.models.findIndex(m => !m.name.trim() || m.name.trim().length > 128);
+        if (index >= 0) view.errors[`value-m${index}-name`] = error.message;
       }
     }
     H().announce(view.error || view.message); await H().refresh(); focusError();

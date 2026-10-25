@@ -77,7 +77,9 @@
       return `<text x="${x(t).toFixed(1)}" y="${Hh - 6}" text-anchor="${i === 0 ? "start" : i === count ? "end" : "middle"}" class="lg-ax">${esc(text)}</text>`;
     }).join("");
     const legend = keys.map(key => `<span><i style="background:var(${colorOf(doc, key)})"></i>${esc(kindNames[key] || key)}</span>`).join("") + `<span><i style="background:var(--text-3);height:3px"></i>coverage</span><span><i class="lg-hatch-key"></i>listed, not observed</span>`;
-    const cell = (b, key) => (b.unavailable || []).includes(key) ? H().unavailable(key === "computed" ? "input not reported for a whole record" : "not reported in this " + doc.bucket) : esc(num(b.values[key] || 0));
+    const cell = (b, key) => (b.unavailable || []).includes(key) || !(key in b.values)
+      ? H().unavailable(key === "computed" ? "no record with input for the whole record" : doc.by === "kind" ? "not reported in this " + doc.bucket : "no record of it in this " + doc.bucket)
+      : esc(num(b.values[key])) + ((b.partial_series || []).includes(key) ? `<span class="lg-tag e">partial</span>` : "");
     const rows = buckets.map(b => `<tr><td>${esc(b.label)}</td>${keys.map(key => `<td class="lg-num">${cell(b, key)}</td>`).join("")}<td>${esc(b.state)}${b.partial ? " · partly reported" : ""}</td><td class="lg-num">${b.coverage == null ? H().unavailable("nothing expected") : esc(Math.round(b.coverage * 100) + " %")}</td><td class="lg-num">${esc(num(b.uncertain))}</td></tr>`).join("");
     return `<figure class="lg-bars" style="margin:0"><figcaption class="muted">Tokens per ${esc(doc.bucket)} (${esc(doc.timezone)}) by ${esc(doc.by)} · hatched: an engine was listed but not observed · thin line: observed, 0 tokens · empty space: no engine listed</figcaption>
 <div class="lg-legend">${legend}</div>

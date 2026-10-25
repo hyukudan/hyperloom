@@ -688,7 +688,8 @@ def _range(query, now, store, allowed=("range", "by")):
         first = None
         if store is not None and _tables_exist(store):
             first = store.execute("SELECT MIN(m) FROM (SELECT MIN(hour) AS m FROM ledger UNION ALL SELECT MIN(start) FROM "
-                                  "ledger_intervals UNION ALL SELECT MIN(since) FROM ledger_unreachable)")[0][0]
+                                  "ledger_intervals UNION ALL SELECT MIN(since) FROM ledger_unreachable UNION ALL SELECT MIN(start) FROM "
+                                  "ledger_listed)")[0][0]
         start = int(first // 3600) * 3600 if first is not None else int(now // 3600) * 3600
     else:
         start = int((now - span) // 3600) * 3600
@@ -838,6 +839,7 @@ def ledger(api, query):
 
 
 SPAN_ROWS = 100_000
+AGGREGATE_BUDGET = 3.0
 
 
 def _merge(items):
@@ -915,61 +917,93 @@ def summarize(store, records, zone, by, start, end, now, truncated=False):
     cached = total("cached", cached_known)
     grand = inputs + generated
     label_of = lambda ts: _local(ts, zone).strftime("%Y-%m-%d %H:00" if hourly else "%Y-%m-%d")
-    buckets, days = {}, {}
-    drawn_from = start if hourly else max(start, end - MAX_DAY_BUCKETS * 86400)
-
-    def bucket_for(hour):
+    days = {}
+    # Bucket boundaries, built once from the range alone (hours, or local days made of the UTC hours that start in
+    # them): at most 49 hours or 400 days, whatever the number of engines.
+    drawn_from = int((start if hourly else max(start, end - MAX_DAY_BUCKETS * 86400)) // 3600) * 3600
+    bounds, hour = [], drawn_from
+    while hour < end:
         label = label_of(hour)
-        bucket = buckets.setdefault(label, {"label": label, "start": hour, "end": hour + 3600, "values": {},
-                                            "unavailable": [], "partial": False, "tokens": 0.0, "observed_s": 0.0,
-                                            "expected_s": 0.0, "estimated": 0.0, "unavailable_input": 0.0,
-                                            "uncertain": 0.0, "records": 0, "_has": set()})
-        bucket["start"], bucket["end"] = min(bucket["start"], hour), max(bucket["end"], hour + 3600)
-        return bucket
+        if bounds and bounds[-1][2] == label:
+            bounds[-1][1] = hour + 3600
+        else:
+            bounds.append([hour, hour + 3600, label])
+        hour += 3600
+    position = {b[2]: i for i, b in enumerate(bounds)}
+    buckets = [{"label": label, "start": lo, "end": hi, "values": {}, "unavailable": [], "partial_series": [],
+                "partial": False, "tokens": 0.0, "observed_s": 0.0, "expected_s": 0.0, "estimated": 0.0,
+                "unavailable_input": 0.0, "uncertain": 0.0, "records": 0, "_has": set(), "_partial": set()}
+               for lo, hi, label in bounds]
+    keys_seen = set()
     for r in records:
         day = _local(r["hour"], zone).strftime("%Y-%m-%d")
         days[day] = days.get(day, 0.0) + r["prompt"] + r["generated"]
-        if r["hour"] + 3600 <= drawn_from:
+        at = position.get(label_of(r["hour"])) if r["hour"] >= drawn_from else None
+        if at is None:
             continue
-        bucket = bucket_for(r["hour"])
+        bucket = buckets[at]
         bucket["records"] += 1
+        complete_io = r["full"]["prompt"] and r["full"]["generated"]
         if by == "kind":
             values = [("generated", r["generated"]), ("computed", r["computed"] or 0.0), ("cached", r["cached"]),
                       ("imported", r["imported"])]
-            for kind, present in (("generated", r["has_generated"]), ("computed", r["computed"] is not None),
-                                  ("cached", r["has_cached"]), ("imported", r["has_imported"])):
+            for kind, present, partial in (("generated", r["has_generated"], not r["full"]["generated"]),
+                                           ("computed", r["computed"] is not None, r["computed_tag"] != "measured"),
+                                           ("cached", r["has_cached"], not r["full"]["cached"]),
+                                           ("imported", r["has_imported"], not r["full"]["imported"])):
                 if present:
                     bucket["_has"].add(kind)
+                if partial:
+                    bucket["_partial"].add(kind)
         else:
             values = [(r[by], r["prompt"] + r["generated"])]
+            bucket["_has"].add(r[by])
+            if not complete_io:
+                bucket["_partial"].add(r[by])
         for name, amount in values:
+            keys_seen.add(name)
             bucket["values"][name] = bucket["values"].get(name, 0.0) + amount
-        bucket["partial"] = bucket["partial"] or not (r["full"]["prompt"] and r["full"]["generated"])
+        bucket["partial"] = bucket["partial"] or not complete_io
         bucket["tokens"] += r["prompt"] + r["generated"]
         bucket["uncertain"] += r["uncertain"]
         bucket["unavailable_input"] += r["computed_unavailable_input"]
         if r["computed_tag"] == "estimated":
             bucket["estimated"] += r["computed"]
-    # Expected time counts against coverage, also in hours without any record (those buckets exist without values).
+    # Coverage: each engine's merged intervals swept once across the sorted boundaries (linear in buckets plus
+    # intervals), within a processing budget; an exhausted budget is disclosed and marks the document incomplete.
     spans, spans_truncated = _spans(store, start, end, now)
-    for expected, _ in spans.values():
-        for lo, hi in expected:
-            hour = int(max(lo, drawn_from) // 3600) * 3600
-            while hour < hi:
-                bucket_for(hour)
-                hour += 3600
-    ordered = sorted(buckets.values(), key=lambda b: b["start"])
-    for bucket in ordered:
-        if by == "kind":
-            bucket["unavailable"] = [k for k in ("generated", "computed", "cached", "imported") if k not in bucket["_has"]]
-        del bucket["_has"]
-        # Per engine, the union of its expected and observed intervals inside this bucket (hours split exactly).
-        bucket["expected_s"] = sum(_overlap(exp, bucket["start"], bucket["end"]) for exp, _ in spans.values())
-        bucket["observed_s"] = sum(_overlap(obs, bucket["start"], bucket["end"]) for _, obs in spans.values())
+    budget_end, swept = time.monotonic() + AGGREGATE_BUDGET, 0
+
+    def sweep(intervals, field):
+        j = 0
+        for lo, hi in intervals:
+            while j < len(bounds) and bounds[j][1] <= lo:
+                j += 1
+            k = j
+            while k < len(bounds) and bounds[k][0] < hi:
+                buckets[k][field] += min(hi, bounds[k][1]) - max(lo, bounds[k][0])
+                k += 1
+    for expected, observed in spans.values():
+        if time.monotonic() > budget_end:
+            break
+        sweep(expected, "expected_s")
+        sweep(observed, "observed_s")
+        swept += 1
+    if swept < len(spans):
+        spans_truncated = [*spans_truncated, f"engines (coverage computed for {swept} of {len(spans)} within "
+                                              f"{AGGREGATE_BUDGET:.0f} s)"]
+    all_keys = ("generated", "computed", "cached", "imported") if by == "kind" else sorted(keys_seen)
+    ordered = []
+    for bucket in buckets:
+        if not bucket["records"] and not bucket["expected_s"]:
+            continue                                  # nothing listed and nothing counted: not expected, left empty
+        bucket["unavailable"] = [k for k in all_keys if k not in bucket["_has"]]
+        bucket["partial_series"] = sorted(bucket["_partial"])
+        del bucket["_has"], bucket["_partial"]
         bucket["coverage"] = min(1.0, bucket["observed_s"] / bucket["expected_s"]) if bucket["expected_s"] else None
-        bucket["state"] = ("not expected" if not bucket["expected_s"] and not bucket["records"] else
-                           "expected, not observed" if not bucket["observed_s"] and not bucket["tokens"] else "observed")
-    dropped = sum(1 for d in days if d < label_of(drawn_from)[:10]) if not hourly else 0
+        bucket["state"] = ("expected, not observed" if not bucket["observed_s"] and not bucket["tokens"] else "observed")
+        ordered.append(bucket)
+    dropped = sum(1 for d in days if d < _local(drawn_from, zone).strftime("%Y-%m-%d")) if not hourly else 0
     busiest = max(days.items(), key=lambda item: item[1]) if days else None
     partial_cached = any(not r["full"]["cached"] for r in records if r["has_prompt"] or r["has_cached"])
     complete_input, complete_output = total("prompt", complete), total("generated", complete)
@@ -1700,6 +1734,9 @@ def _snapshot(api, name, fields, query):
     snap = store.get(SNAPSHOT, name) if store is not None else None
     if not isinstance(snap, dict):
         why = NO_STORE if store is None else SNAPSHOT_NEEDS
+        if store is not None and isinstance(store.get(SNAPSHOT, "stalled"), dict):
+            why = (f"not built yet: the first build has not finished within {FILES_DEADLINE:.0f} s (a directory or "
+                   "service is blocking)")
         return api.document("ledger-" + name, **dict.fromkeys(fields), snapshot_ts=None, why={f: why for f in fields})
     fields_ = dict(snap["fields"])
     stalled = store.get(SNAPSHOT, "stalled")
@@ -2061,8 +2098,9 @@ def _qualifiers(model):
         out.append("output not reported for part of the range (output tokens are a lower bound)")
     if model["estimated"]:
         out.append("input partly an upper bound (cache-restored or imported tokens not reported)")
-    if model["unavailable_input"]:
-        out.append("some input not priced (its computed share is unavailable)")
+    if model["unavailable_input"] or model["computed_missing"]:
+        out.append("computed prefill unavailable for some records (missing or inconsistent counters); that input is "
+                   "not priced as computed")
     if model["cached"] is None:
         out.append("cache-restored tokens not reported (no cached cost or savings)")
     elif model["cached_tag"] == "partial":

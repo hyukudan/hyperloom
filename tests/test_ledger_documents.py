@@ -139,6 +139,45 @@ class LedgerDocumentTests(unittest.TestCase):
         states = {b["start"]: b["state"] for b in doc["buckets"]}
         self.assertEqual(states, {HOUR - 7200: "expected, not observed", HOUR: "observed"})
 
+    def test_all_time_starts_at_the_first_listed_second(self):
+        full_record(self.store, HOUR, 10, 100, 0, span=10.0, record=10.0, observed=10.0)
+        self.store.execute("INSERT INTO ledger_listed(source, start, end) VALUES ('qwen/halo-1', ?, ?)", (HOUR - 3600 + 3540, HOUR + 10))
+        self.store.execute("INSERT INTO ledger_intervals(source, start, end, observed) VALUES ('qwen/halo-1', ?, ?, 1)", (HOUR, HOUR + 10))
+        self.clock.now = HOUR + 10
+        for text in ("86400", "all"):
+            doc = ledger.ledger(self.api, {"range": text})
+            self.assertAlmostEqual(doc["coverage"]["observed_s"] / doc["coverage"]["expected_s"], 10 / 70, msg=text)
+
+    def test_an_unavailable_computed_share_is_never_exact(self):
+        self.store.put(ledger.PREFS, "prices", {"currency": "EUR", "default": {"input": 1.0, "cached": 0.1, "output": 1.0}, "models": {}})
+        full_record(self.store, HOUR, 10, 0, 100)                # cached exceeds input: computed is unavailable
+        row = ledger.value(self.api, {"range": "3600"})["models"][0]
+        self.assertFalse(row["exact"])
+        self.assertTrue(any(q.startswith("computed prefill unavailable") for q in row["qualifiers"]))
+
+    def test_aggregation_stays_bounded_for_many_engines_over_a_long_range(self):
+        import time as _time
+        start = HOUR - 400 * 86400
+        self.store.put("prefs/ui", "timezone", "UTC")
+        ledger._prepared(self.store)
+        self.store.transaction([("INSERT INTO ledger_listed(source, start, end) VALUES (?, ?, ?)", (f"p/{i}", start, HOUR))
+                                for i in range(2048)])
+        full_record(self.store, HOUR - 3600, 10, 100, 0)
+        self.clock.now = HOUR
+        began = _time.monotonic()
+        doc = ledger.ledger(self.api, {"range": "all"})
+        self.assertLess(_time.monotonic() - began, ledger.AGGREGATE_BUDGET + 5)
+        self.assertLessEqual(len(doc["buckets"]), ledger.MAX_DAY_BUCKETS + 1)
+        self.assertEqual(doc["complete"], not any("engines (coverage computed" in n for n in doc["notes"]))
+
+    def test_grouped_buckets_name_series_without_a_record(self):
+        full_record(self.store, HOUR - 3600, 10, 100, 0, model="a")
+        full_record(self.store, HOUR, 10, 100, 0, model="b")
+        doc = ledger.ledger(self.api, {"range": "86400", "by": "model"})
+        by_start = {b["start"]: b for b in doc["buckets"]}
+        self.assertEqual(by_start[HOUR]["unavailable"], ["a"])
+        self.assertEqual(by_start[HOUR - 3600]["unavailable"], ["b"])
+
     def test_empty_and_missing_store(self):
         doc = ledger.ledger(self.api, {})
         self.assertIsNone(doc["kpis"])
