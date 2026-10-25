@@ -1,0 +1,43 @@
+{
+  "schema": "hyperloom/bench-quality-data-v1",
+  "note": "Fixed items of the quality suite, written for this project. Arithmetic chains, state tracking and long-context recall items are generated from the suite seed in hyperloom/bench/quality.py.",
+  "qa": [
+    {"id": "qa-01", "question": "What is the chemical symbol for gold?", "answers": ["Au"]},
+    {"id": "qa-02", "question": "How many sides does a hexagon have?", "answers": ["6", "six"]},
+    {"id": "qa-03", "question": "What is the capital city of Australia?", "answers": ["Canberra"]},
+    {"id": "qa-04", "question": "Which planet in our solar system is known as the Red Planet?", "answers": ["Mars"]},
+    {"id": "qa-05", "question": "At sea level, at what temperature in degrees Celsius does pure water boil?", "answers": ["100", "100 C", "100 degrees", "100 degrees Celsius"]},
+    {"id": "qa-06", "question": "How many minutes are there in three hours?", "answers": ["180", "180 minutes"]},
+    {"id": "qa-07", "question": "What is the largest ocean on Earth?", "answers": ["Pacific", "Pacific Ocean", "the Pacific", "the Pacific Ocean"]},
+    {"id": "qa-08", "question": "On which continent is Kenya?", "answers": ["Africa"]},
+    {"id": "qa-09", "question": "Which gas do plants take in from the air for photosynthesis?", "answers": ["carbon dioxide", "CO2"]},
+    {"id": "qa-10", "question": "How many days are there in a leap year?", "answers": ["366", "366 days"]},
+    {"id": "qa-11", "question": "What is the freezing point of water in degrees Fahrenheit?", "answers": ["32", "32 F", "32 degrees", "32 degrees Fahrenheit"]},
+    {"id": "qa-12", "question": "What is the square root of 144?", "answers": ["12", "twelve"]},
+    {"id": "qa-13", "question": "Which chemical element has atomic number 1?", "answers": ["hydrogen", "H"]},
+    {"id": "qa-14", "question": "What is the smallest prime number?", "answers": ["2", "two"]},
+    {"id": "qa-15", "question": "Which language has the most native speakers in Brazil?", "answers": ["Portuguese"]},
+    {"id": "qa-16", "question": "What is the longest bone in the human body?", "answers": ["femur", "the femur", "thigh bone", "the thigh bone"]},
+    {"id": "qa-17", "question": "How many legs does a spider have?", "answers": ["8", "eight"]},
+    {"id": "qa-18", "question": "What is the capital city of Canada?", "answers": ["Ottawa"]},
+    {"id": "qa-19", "question": "Which keyboard instrument usually has 88 keys?", "answers": ["piano", "the piano"]},
+    {"id": "qa-20", "question": "What is 15 percent of 200?", "answers": ["30"]}
+  ],
+  "instructions": [
+    {"id": "inst-01", "prompt": "Write one sentence about rain using only uppercase letters.", "check": "uppercase"},
+    {"id": "inst-02", "prompt": "Write exactly three lines, each starting with \"- \", each naming one fruit. Write nothing else.", "check": "prefixed_lines", "count": 3, "prefix": "- "},
+    {"id": "inst-03", "prompt": "Describe the moon in exactly five words. Write nothing else.", "check": "word_count", "count": 5},
+    {"id": "inst-04", "prompt": "Reply with a JSON object that has exactly the keys \"name\" and \"age\" for a fictional person, and nothing else.", "check": "json_keys", "keys": ["age", "name"]},
+    {"id": "inst-05", "prompt": "Write one sentence about trains that ends with the word DONE.", "check": "ends_with", "word": "DONE"},
+    {"id": "inst-06", "prompt": "Write one sentence of at least six words that does not contain the letter e.", "check": "no_letter", "letter": "e", "min_words": 6},
+    {"id": "inst-07", "prompt": "Start your reply with the word Certainly, then name one colour in the same sentence.", "check": "starts_with", "word": "Certainly"},
+    {"id": "inst-08", "prompt": "List four animals as a numbered list from 1 to 4, one per line, in the form \"1. name\". Write nothing else.", "check": "numbered", "count": 4},
+    {"id": "inst-09", "prompt": "Write one sentence about the forest using only lowercase letters.", "check": "lowercase"},
+    {"id": "inst-10", "prompt": "Write two sentences about winter without using any commas.", "check": "no_char", "char": ",", "min_sentences": 2},
+    {"id": "inst-11", "prompt": "Reply with a single word in double quotes naming a vegetable, and nothing else.", "check": "quoted_word"},
+    {"id": "inst-12", "prompt": "Describe the ocean in at most 40 characters. Write nothing else.", "check": "max_chars", "max": 40, "min": 5},
+    {"id": "inst-13", "prompt": "Give exactly two bullet points about exercise, each line starting with \"* \". Write nothing else.", "check": "prefixed_lines", "count": 2, "prefix": "* "},
+    {"id": "inst-14", "prompt": "Reply with a JSON array of exactly three integers, each greater than 10, and nothing else.", "check": "json_int_array", "count": 3, "greater_than": 10},
+    {"id": "inst-15", "prompt": "Repeat the word blue exactly four times separated by single spaces, and write nothing else.", "check": "exact", "text": "blue blue blue blue"}
+  ]
+}

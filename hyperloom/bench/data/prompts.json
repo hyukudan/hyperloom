@@ -1,0 +1,46 @@
+{
+  "schema": "hyperloom/bench-prompts-v1",
+  "note": "Prompt sets for decode, A/B and demo runs. Written for this project; replies are measured, never scored.",
+  "sets": {
+    "structured": [
+      "List the steps to replace a worn bicycle chain, as a numbered list with one short sentence per step.",
+      "Make a table with three columns (planet, average distance from the sun in AU, number of known moons) for the four inner planets.",
+      "Write a packing checklist for a three-day hiking trip, grouped under the headings Shelter, Food, Clothing and Safety.",
+      "Outline a one-hour team meeting about a delayed software release: give each agenda item a time slot and an owner role.",
+      "Describe how to brew pour-over coffee as a numbered procedure, including water temperature and ratio.",
+      "Give a weekly study plan for learning basic statistics, one bullet per day with a single goal each.",
+      "Summarise the trade-offs between renting and buying a home as two bullet lists, one for each option.",
+      "Write a troubleshooting guide for a laptop that will not connect to a wireless network, as a decision list."
+    ],
+    "prose": [
+      "Write a short story about a lighthouse keeper who discovers that the light has started blinking in a pattern nobody programmed.",
+      "Describe a busy morning market in a coastal town, focusing on sounds and smells.",
+      "Explain to a curious twelve-year-old why the sky looks blue during the day and red at sunset.",
+      "Write a letter from a retired train conductor to the young person who now drives the same route.",
+      "Tell the history of a fictional mountain village over three centuries, in a calm narrative voice.",
+      "Describe what it feels like to learn to swim as an adult, from the first lesson to the first lap.",
+      "Write an essay about why people enjoy maintaining small gardens in crowded cities.",
+      "Narrate a long night shift at a weather station during the first storm of the winter."
+    ],
+    "code": [
+      "Write a Python function that merges two sorted lists into one sorted list without using sort(), with a short docstring.",
+      "Implement a small stack-based calculator in Python that evaluates expressions in reverse Polish notation.",
+      "Write a JavaScript function that debounces another function, and show a usage example.",
+      "Write a C function that reverses a singly linked list in place and explain its complexity in a comment.",
+      "Write a Python class for a fixed-size ring buffer with push, pop and len, and include a few assertions as tests.",
+      "Write a shell script that counts the lines of every .txt file in a directory and prints the total.",
+      "Write a SQL query that returns, for each customer, the date of their most recent order and the order total.",
+      "Write a Python generator that yields the prime numbers below a given limit using a sieve."
+    ],
+    "json": [
+      "Return a JSON object describing a fictional book: title, author, year, genres (array) and a short summary.",
+      "Return a JSON array of five fictional employees, each with id, name, department and start_date (YYYY-MM-DD).",
+      "Return a JSON object for a weather report: city, date, hourly (array of 6 objects with hour, temperature_c, condition).",
+      "Return a JSON object describing a recipe with name, servings, ingredients (array of objects with item and amount) and steps.",
+      "Return a JSON object for a small online order: order_id, items (array with sku, quantity, unit_price), subtotal, tax and total.",
+      "Return a JSON object that lists three train connections between two fictional cities with departure, arrival and changes.",
+      "Return a JSON object for a user profile with nested address and preferences objects and a list of recent logins.",
+      "Return a JSON object describing a playlist: name, owner, tracks (array of 6 with title, artist, seconds) and total_seconds."
+    ]
+  }
+}
