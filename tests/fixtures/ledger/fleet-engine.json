@@ -1,0 +1,17 @@
+{
+ "ts": 0,
+ "machine": "halo-1",
+ "profile": "mm",
+ "port": 18090,
+ "replica": "halo-1",
+ "outcomes": {"/health": "ok", "/api/status?detail=1": "unavailable: HTTP 404", "/metrics": "ok", "/api/status": "unavailable: HTTP 404"},
+ "health": {"status": "ok"},
+ "status": null,
+ "metrics": {"mm_queued": 0, "mm_running": 1, "mm_completed": 12, "mm_failed": 0, "mm_prompt_tokens": 5120, "mm_generated_tokens": 1536, "mm_busy_seconds": 42.125},
+ "metrics_text": "mm_queued 0\nmm_running 1\nmm_completed 12\nmm_failed 0\nmm_prompt_tokens 5120\nmm_generated_tokens 1536\nmm_busy_seconds 42.125\n",
+ "instance": null,
+ "start": null,
+ "uptime_seconds": null,
+ "generated_tokens": 1536,
+ "why": {"instance": "engine reports neither an instance id nor its uptime"}
+}
