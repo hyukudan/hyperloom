@@ -136,6 +136,12 @@ class APIDispatchTests(unittest.TestCase):
                                                                "x": "token=[redacted]"},
                                                 refresh_tokens="[redacted]", github_tokens="[redacted]",
                                                 access_tokens="[redacted]"))
+        for text in (True, False):
+            for name in ("why", "series"):
+                self.assertEqual(redact({name: {"api_key": "opaque", "password_tokens": "x y", "access_token": "z",
+                                                "ok": "fine"}}, text),
+                                 {name: {"api_key": "[redacted]", "password_tokens": "[redacted]",
+                                         "access_token": "[redacted]", "ok": "fine"}})
 
     def test_get_documents_are_redacted_and_errors_mapped(self):
         document = self.api.read("demo", {"x": "1"})

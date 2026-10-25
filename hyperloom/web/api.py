@@ -192,11 +192,12 @@ def redact(value, text=True):
         result = {}
         for key, item in value.items():
             if key in ("why", "series") and isinstance(item, dict):
-                # A map keyed by field or series names (why a field has no value; a series' history link): its
-                # strings go through the text rules (a credential in them is still redacted); a field name such as
-                # "computed_tokens" is not a secret. Other values are redacted as usual.
-                result[key] = {k: redact(v, text) if isinstance(v, str) else redact({k: v}, text)[k]
-                               for k, v in item.items()}
+                # A map keyed by field or series names (why a field has no value; a series' history link): a string
+                # under a token-data name such as "computed_tokens" goes through the text rules (a credential in it
+                # is still redacted); every other entry, a credential-named key above all, is redacted as usual.
+                result[key] = {k: redact(v, text) if isinstance(v, str) and DATA_TOKEN_KEY.fullmatch(k) and not
+                               re.search(r"password|secret|authorization|api[_-]?key|private|bearer|csrf", k, re.I)
+                               else redact({k: v}, text)[k] for k, v in item.items()}
                 continue
             metadata = key == "secrets" and isinstance(item, dict) and item in (
                 {"storage": "DPAPI", "values": "never shown"},
