@@ -991,9 +991,27 @@ class API:
         if action == "up" and (arguments.get("recipe") or arguments.get("recipe_inputs")):
             try:
                 self._recipe_up_argv(arguments)
-            except ValueError as exc:
+                if not arguments.get("profile"):
+                    # Bound now, so the job names the profile it launches (its cancel stops that profile).
+                    profile = self._recipe_up_profile(arguments)
+                    if profile:
+                        arguments["profile"] = profile
+            except (ValueError, OSError) as exc:
                 raise APIError(str(exc)) from exc
         return arguments
+
+    def _recipe_up_profile(self, args):
+        """The profile an up with a recipe and no profile launches: the snapshot's, or the only profile serving the
+        recipe's model (as `hyperloom up --recipe ID` decides it); None for auto (the CLI asks for a profile)."""
+        from hyperloom.recipes import service
+        path = Path(args.get("config", self.config_path))
+        with service.configured(path):
+            if args.get("recipe_inputs"):
+                return service.load_inputs(args["recipe_inputs"])[1]["intent"]["profile"]
+            if args.get("recipe") == "auto":
+                return None
+            cluster = self.orchestrate.load_cluster(path, config)
+            return service.deployment_profile(cluster, service.locate(args["recipe"], cluster, for_up=True))
 
     def _recipe_job_arguments(self, action, arguments):
         from hyperloom.recipes import service
@@ -1168,7 +1186,9 @@ class API:
                     raise APIError(f"job {job['job']} has already {job['state']}: use down with a profile", 409)
                 if job["action"] == "recipes/deploy":
                     return self._cancel_deploy(job)
-                profile = job["arguments"]["profile"]
+                profile = job["arguments"].get("profile")
+                if not profile:
+                    raise APIError("this up job names no profile: use down with a profile")
             return self.orchestrate.down(profile)
         if action == "down":
             return self.orchestrate.down(args["profile"], force=args.get("force", False))

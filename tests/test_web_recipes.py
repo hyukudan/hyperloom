@@ -399,6 +399,30 @@ class JobTests(unittest.TestCase):
             self.assertEqual(self.wait(job)["state"], "succeeded")
         self.assertEqual(seen["user_dir"], other.parent.absolute() / "recipes")
 
+    def test_cancel_an_up_with_a_recipe_and_no_profile(self):
+        # The job names the profile it launches (bound when it is accepted), so its cancel stops that profile.
+        with mock.patch.object(render, "router_policies", return_value=("routes",)):
+            digest = service.plan(orchestrate.load_cluster(self.env.config), "ds-user", "ds41-rtx",
+                                  source=self.source)["inputs"]
+        for body, profile in (({"recipe": QWEN}, "qwen-replicas"), ({"recipe_inputs": digest}, "ds41-rtx")):
+            with self.subTest(body=body):
+                inside, release = threading.Event(), threading.Event()
+                self.orch.up.side_effect = lambda *a, **kw: (inside.set(), release.wait(30), {"state": "running"})[2]
+                self.orch.down.reset_mock()
+                with mock.patch.object(commands, "live_source", return_value=self.source):
+                    job = self.api.mutate("up", body)
+                    self.assertEqual(job["arguments"]["profile"], profile)
+                    try:
+                        self.assertTrue(inside.wait(30))
+                        cancelled = self.wait(self.api.mutate("cancel", {"job": job["job"]}))
+                    finally:
+                        release.set()
+                    self.wait(job)
+                self.assertEqual(cancelled["state"], "succeeded", cancelled["error"])
+                self.orch.down.assert_called_once_with(profile)
+        with self.assertRaises(APIError):
+            self.api.mutate("up", {"recipe": DS})                       # two profiles serve it: name one
+
     def test_detached_stop_cancels_a_running_switch(self):
         # The portal runs detached: `down` goes to its own CLI process, and still cancels the switch first.
         self.api.detached = True
