@@ -126,6 +126,23 @@ class ReadHoldsTests(unittest.TestCase):
 
 
 class GuardAndWorkerTests(unittest.TestCase):
+    def test_a_profile_occupies_its_prefill_service_machine(self):
+        from types import SimpleNamespace
+        cluster = SimpleNamespace(profiles={"rtx": {"prefill_service": {"machine": "workstation", "port": 1}},
+                                            "plain": {}})
+        orchestrate = SimpleNamespace(_profile=lambda c, p: (None, None, ["halo-1", "halo-2"]))
+        self.assertEqual(admission.profile_resources(cluster, "rtx", orchestrate),
+                         {"halo-1", "halo-2", "workstation", "router"})
+        self.assertEqual(admission.profile_resources(cluster, "plain", orchestrate), {"halo-1", "halo-2", "router"})
+
+    def test_the_ops_preview_counts_a_cancelled_benchmark(self):
+        from hyperloom.web.features import ops
+        db = admission.Admission(":memory:")
+        db.acquire("bench", {"m1"}, label="bench m1")
+        db.release(db.acquire("stop", {"m1"}, label="down p"))
+        api = mock.Mock(config_path="cfg.json", admission_db=db)
+        self.assertEqual(ops.bench_holds(api, {"m1"}), ["bench m1"])
+
     def test_the_preview_counts_a_cancelled_benchmark_until_it_is_released(self):
         from hyperloom.bench import guard
         holds = [{"id": "b1", "kind": "bench", "resources": ["m1"], "label": "bench m1", "cancelled": "stopped"}]

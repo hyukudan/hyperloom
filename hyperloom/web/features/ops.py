@@ -257,7 +257,8 @@ def bench_holds(api, resources):
     except Exception:
         return []
     resources = set(resources)
-    return [h.get("label") or h["id"] for h in holds if h["kind"] == "bench" and not h.get("cancelled")
+    # A cancelled benchmark keeps its resources until its cleanup releases them (as the admission decides).
+    return [h.get("label") or h["id"] for h in holds if h["kind"] == "bench"
             and (resources & set(h["resources"]) or "*" in h["resources"] or "*" in resources)]
 
 
@@ -734,24 +735,32 @@ def _bounded_run(argv, timeout, cancelled=lambda: False):
             pass
     readers = [threading.Thread(target=drain, args=(child.stdout, buffers[0]), daemon=True),
                threading.Thread(target=drain, args=(child.stderr, buffers[1]), daemon=True)]
-    for reader in readers:
-        reader.start()
-    end = time.monotonic() + timeout
+    started = []
     stopped = None
-    while child.poll() is None:
-        if time.monotonic() >= end:
-            stopped = "timed out"
-        elif cancelled():
-            stopped = "cancelled"
-        if stopped:
-            child.kill()
-            break
-        time.sleep(0.05)
-    child.wait()
-    for reader in readers:
-        reader.join(2)
-    for stream in (child.stdout, child.stderr):
-        stream.close()
+    try:
+        for reader in readers:
+            reader.start()
+            started.append(reader)
+        end = time.monotonic() + timeout
+        while child.poll() is None:
+            if time.monotonic() >= end:
+                stopped = "timed out"
+            elif cancelled():
+                stopped = "cancelled"
+            if stopped:
+                child.kill()
+                break
+            time.sleep(0.05)
+    except BaseException:
+        # Never leave the helper running once this call (and the job's admission hold) ends.
+        child.kill()
+        raise
+    finally:
+        child.wait()
+        for reader in started:
+            reader.join(2)
+        for stream in (child.stdout, child.stderr):
+            stream.close()
     return child.returncode, bytes(buffers[0]), bytes(buffers[1]), stopped
 
 

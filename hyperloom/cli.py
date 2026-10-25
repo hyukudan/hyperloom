@@ -731,7 +731,7 @@ def _admission_hold(args):
     if getattr(args, "profile", None):
         try:
             cluster = _cluster(getattr(args, "config", None) or config_path())
-            resources = {*(str(m) for m in _module("hyperloom.orchestrate")._profile(cluster, args.profile)[2]), "router"}
+            resources = admission.profile_resources(cluster, args.profile, _module("hyperloom.orchestrate"))
         except Exception:
             resources = {"*"}
     # The hold lives next to the configuration this command executes with (the portal's jobs pass the same one).

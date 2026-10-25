@@ -1119,11 +1119,10 @@ class API:
         return self.admission_db
 
     def _resources_of_profile(self, profile):
-        """Resource ids a profile occupies (its machines and its router); everything ("*") when unknown."""
+        """Resource ids a profile occupies (its nodes, its prefill service's machine and its router); everything
+        ("*") when unknown."""
         try:
-            cluster = self._cluster()
-            machines = self.orchestrate._profile(cluster, profile)[2]
-            return {*(str(m) for m in machines), "router"}
+            return admission.profile_resources(self._cluster(), profile, self.orchestrate)
         except Exception:
             return {"*"}
 

@@ -197,6 +197,16 @@ def for_config(config_path, clock=time.time):
         return _opened[path]
 
 
+def profile_resources(cluster, profile, orchestrate):
+    """The resource ids a profile occupies: its nodes, the machine of its prefill service (when it has one) and the
+    router. Raises when the profile is unknown (callers then hold everything)."""
+    machines = [str(m) for m in orchestrate._profile(cluster, profile)[2]]
+    service = (cluster.profiles.get(profile) or {}).get("prefill_service")
+    if isinstance(service, dict) and service.get("machine"):
+        machines.append(str(service["machine"]))
+    return {*machines, "router"}
+
+
 def read_holds(config_path, database=None, clock=time.time):
     """The live holds, read without writing anything (for GET documents): expired or ownerless records are skipped,
     never purged; no database file or directory is created. ``database``: an Admission this process already opened

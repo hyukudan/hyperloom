@@ -305,6 +305,25 @@ class PowerTests(Base, unittest.TestCase):
         code, out, err, stopped = ops._bounded_run([sys.executable, "-c", "import time; time.sleep(30)"], 0.5)
         self.assertEqual(stopped, "timed out")
 
+    def test_a_failing_helper_run_never_leaves_the_helper_running(self):
+        import subprocess
+        children = []
+        real_popen = subprocess.Popen
+
+        def popen(*args, **kwargs):
+            children.append(real_popen(*args, **kwargs))
+            return children[-1]
+        for failure in ("reader", "check"):
+            with self.subTest(failure=failure):
+                children.clear()
+                cancelled = mock.Mock(side_effect=RuntimeError("database locked"))
+                with mock.patch.object(ops.subprocess, "Popen", popen), \
+                        mock.patch.object(threading.Thread, "start", side_effect=RuntimeError("no thread")) \
+                        if failure == "reader" else mock.patch.object(ops, "HELPER_OUTPUT", ops.HELPER_OUTPUT):
+                    with self.assertRaises(RuntimeError):
+                        ops._bounded_run([sys.executable, "-c", "import time; time.sleep(30)"], 20, cancelled)
+                self.assertIsNotNone(children[0].poll())        # killed and reaped before the error propagated
+
 
 class ConfigTests(Base, unittest.TestCase):
     def version(self):
