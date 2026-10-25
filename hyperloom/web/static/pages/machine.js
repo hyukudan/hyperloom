@@ -80,20 +80,20 @@
     if (!busy || !power || !limit || !temp) return card("History", `<p class="hint">loading history…</p>`);
     const name = labels => (d.gpus || []).find(g => g.device === labels.device)?.name || labels.device || "";
     const util = [];
-    for (const line of busy.lines || []) util.push({label: `${name(line.labels)} · busy`, color: color(line.labels), points: line.points.map(p => [p[0], p[1], p[7] ?? null])});
+    for (const line of busy.lines || []) util.push({label: `${name(line.labels)} · busy`, color: color(line.labels), points: line.points.map(p => [p[0], p[1], p[7] ?? null, p[8] ?? null])});
     const limits = new Map((limit.lines || []).map(line => [line.labels.device, new Map(line.points.map(p => [p[0], p[1]]))]));
     const noLimit = [];
     for (const line of power.lines || []) {
       const lim = limits.get(line.labels.device);
       if (!lim || !lim.size) { noLimit.push(line); continue; }
       util.push({label: `${name(line.labels)} · power % of limit`, color: colors[(devices.indexOf(line.labels.device) + 2) % colors.length],
-        points: line.points.filter(p => num(lim.get(p[0])) && lim.get(p[0]) > 0).map(p => [p[0], p[1] / lim.get(p[0]) * 100, p[7] ?? null])});
+        points: line.points.filter(p => num(lim.get(p[0])) && lim.get(p[0]) > 0).map(p => [p[0], p[1] / lim.get(p[0]) * 100, p[7] ?? null, p[8] ?? null])});
     }
     const common = {step: busy.step || 2, cadence: busy.tier === "raw" ? busy.interval_s || 0 : 0, start: busy.start, end: busy.end, group: "machine"};
     const ranger = `<div class="row" role="group" aria-label="History range">${ranges.map(([l, s]) => `<button type="button" class="btn sm ${s === view.range ? "pri" : ""}" data-page-action="mc-range" data-range="${s}" aria-pressed="${s === view.range}">${esc(l)}</button>`).join("")}</div>`;
     const parts = [TS().chart({...common, title: "GPU busy and power as % of limit (%)", unit: "%", lines: util, max: 100})];
-    parts.push(TS().chart({...common, title: "GPU temperature (°C)", unit: "°C", lines: (temp.lines || []).map(line => ({label: `${name(line.labels)} · ${line.labels.sensor || ""}`, color: color(line.labels), points: line.points.map(p => [p[0], p[1], p[7] ?? null])}))}));
-    if (noLimit.length) parts.push(TS().chart({...common, title: "GPU power (W) · no readable power limit", unit: "W", lines: noLimit.map(line => ({label: `${name(line.labels)} · ${line.labels.sensor || "power"}`, color: color(line.labels), points: line.points.map(p => [p[0], p[1], p[7] ?? null])}))}));
+    parts.push(TS().chart({...common, title: "GPU temperature (°C)", unit: "°C", lines: (temp.lines || []).map(line => ({label: `${name(line.labels)} · ${line.labels.sensor || ""}`, color: color(line.labels), points: line.points.map(p => [p[0], p[1], p[7] ?? null, p[8] ?? null])}))}));
+    if (noLimit.length) parts.push(TS().chart({...common, title: "GPU power (W) · no readable power limit", unit: "W", lines: noLimit.map(line => ({label: `${name(line.labels)} · ${line.labels.sensor || "power"}`, color: color(line.labels), points: line.points.map(p => [p[0], p[1], p[7] ?? null, p[8] ?? null])}))}));
     return card("History", ranger + `<div class="mc-charts">${parts.join("")}</div><p class="hint">Gaps are periods without samples (never zeros). Stored in UTC; shown in this browser's time zone.</p>`);
   }
   function memory(d) {
