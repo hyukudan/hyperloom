@@ -702,11 +702,49 @@ def build_parser(parser_class=argparse.ArgumentParser):
     return parser
 
 
+def _admission_hold(args):
+    """Contract C11 for direct CLI use: a deploy/start/install takes a "core" hold (refused while a benchmark
+    holds its resources), a stop a "stop" hold (cancels overlapping benchmarks). Returns a release function."""
+    kind = {"up": "core", "install": "core", "down": "stop"}.get(args.command)
+    if args.command == "recipe" and getattr(args, "operation", None) == "deploy":
+        kind = "core"
+    if kind is None or (args.command in ("up", "down") and args.profile is None
+                        and not (getattr(args, "recipe", None) or getattr(args, "recipe_inputs", None))):
+        return lambda: None
+    admission = _module("hyperloom.admission")
+    resources = {"*"}
+    if getattr(args, "profile", None):
+        try:
+            cluster = _cluster(getattr(args, "config", None) or config_path())
+            resources = {*(str(m) for m in _module("hyperloom.orchestrate")._profile(cluster, args.profile)[2]), "router"}
+        except Exception:
+            resources = {"*"}
+    database = admission.for_config(config_path())
+    try:
+        hold = database.acquire(kind, resources, label=f"cli {args.command} {getattr(args, 'profile', '') or ''}".strip())
+    except admission.Refused as exc:
+        raise RuntimeError(str(exc)) from exc
+    import threading
+    stop = threading.Event()
+
+    def renew():
+        while not stop.wait(30):
+            database.renew(hold)
+    threading.Thread(target=renew, name="hyperloom-cli-admission", daemon=True).start()
+
+    def release():
+        stop.set()
+        database.release(hold)
+    return release
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    release = lambda: None
     try:
         if getattr(args, "ext_run", None) is not None:
             return args.ext_run(args)
+        release = _admission_hold(args)
         if args.command == "ui":
             if not 0 <= args.port <= 65535:
                 raise ValueError("ui port must be in 0..65535")
@@ -829,3 +867,5 @@ def main(argv=None):
     except (OSError, ValueError, RuntimeError, KeyError, subprocess.SubprocessError) as exc:
         print(f"hyperloom: {exc}", file=sys.stderr)
         return 1
+    finally:
+        release()
