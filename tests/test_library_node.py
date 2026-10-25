@@ -321,6 +321,15 @@ class InventoryTests(LibraryCase):
             node.verify_unit(str(self.models), "alpha", stop)
         self.assertLess(time.monotonic() - started, 1.2)                 # stopped between the manifest reads
 
+    def test_every_reply_is_capped_errors_included(self):
+        for verb, payload in (("models", {"roots": ["/" + "\u00e9" * 50000]}), ("x" * 100000, {}),
+                              ("copy-job", {"root": "/" + "r" * 300000, "job": "j"})):
+            with self.subTest(verb=verb[:10]):
+                reply = node.run(verb, payload)
+                self.assertIn("error", reply)
+                self.assertLessEqual(len(json.dumps(reply, ensure_ascii=True)), node.MAX_REPLY)
+                self.assertLessEqual(len(reply["error"]), node.ERROR_TEXT_MAX + 20)
+
     def test_roots_are_checked(self):
         for bad in (["relative"], [str(self.models / "missing")], [], ["/"] if POSIX else ["C:\\"]):
             with self.subTest(bad):
@@ -497,6 +506,20 @@ class StartupDeadlineTests(LibraryCase):
         self.assertEqual(list((self.root / "run").glob("job-*.spec.json")), [])
 
 
+class ForeignRecordTests(LibraryCase):
+    def test_a_foreign_record_is_never_settled_or_cancelled(self):
+        path = self.root / "run" / "job-j2.json"
+        install.atomic_json(path, {"job": "j2", "kind": "install", "state": "running", "pid": 2 ** 22 + 12345,
+                                   "start_time": 1, "boot_id": "another boot", "created": time.time() - 3600})
+        before = path.read_bytes()
+        for verb in ("copy-job", "copy-cancel"):
+            with self.subTest(verb):
+                reply = node.run(verb, {"root": str(self.root), "job": "j2"})
+                self.assertIn("not a model library job", reply["error"])
+                self.assertEqual(path.read_bytes(), before)              # unchanged
+        self.assertFalse((self.root / "run" / "job-j2.stop").exists())
+
+
 class VerifyTests(LibraryCase):
     def test_counts_and_failures(self):
         result = node.verify_unit(str(self.models), "alpha")
@@ -539,6 +562,16 @@ class VerifyTests(LibraryCase):
         result = node.verify_unit(str(self.models), "empty", lambda: calls.append(True))
         self.assertEqual((result["counts"]["ok"], result["counts"]["missing"]), (1, 1))
         self.assertGreaterEqual(len(calls), 1 + 2 + 1)                   # entry, both entries, the empty file's hash
+
+    def test_a_guard_pause_during_preparation_does_not_use_up_the_scan_budget(self):
+        calls = []
+
+        def check():
+            calls.append(True)
+            if len(calls) == 3:                                         # inside the scan (the first is before it)
+                time.sleep(0.4)                                         # a guard pause while the scan runs
+        result = node.verify_unit(str(self.models), "alpha", check, budget_s=0.3)
+        self.assertTrue(result["ok"], result)
 
     @unittest.skipUnless(POSIX, "node jobs")
     def test_verify_job_pauses_for_a_turn_and_aborts_after_the_limit(self):

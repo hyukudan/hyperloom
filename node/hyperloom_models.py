@@ -277,7 +277,9 @@ class Budget:
 
     def check(self):
         if self.tick is not None:
+            started = time.monotonic()
             self.tick()
+            self.deadline += time.monotonic() - started   # a guard pause does not use up the scan budget
         if time.monotonic() >= self.deadline:
             raise Bound("deadline")
 
@@ -1342,9 +1344,12 @@ def job_state(payload):
     keys(payload, ("root", "job"), ("root", "job"))
     root, _ = marked_root(payload["root"])
     job = install.identifier(payload["job"])
-    record = settle(root, job)
-    if record.get("kind") != "model-verify":
+    path, _, _ = job_paths(root, job)
+    if not path.exists():
+        raise LookupError("no such job")
+    if install.read_json(path).get("kind") != "model-verify":      # before anything may change it
         raise ValueError("not a model library job")
+    record = settle(root, job)
     shown = {key: value for key, value in record.items() if key not in ("boot_id", "start_time")}
     if "error" in shown:
         shown["reason"] = shown.pop("error")
@@ -1362,10 +1367,12 @@ def cancel(payload):
     keys(payload, ("root", "job"), ("root", "job"))
     root, _ = marked_root(payload["root"])
     job = install.identifier(payload["job"])
-    _, _, stop = job_paths(root, job)
-    record = settle(root, job)
-    if record.get("kind") != "model-verify":
+    path, _, stop = job_paths(root, job)
+    if not path.exists():
+        raise LookupError("no such job")
+    if install.read_json(path).get("kind") != "model-verify":      # before anything may change it
         raise ValueError("not a model library job")
+    record = settle(root, job)
     if record["state"] in TERMINAL:
         return {"job": job, "state": record["state"]}
     stop.touch()
@@ -1401,8 +1408,11 @@ def bounded(result):
     return result
 
 
+ERROR_TEXT_MAX = 2048
+
+
 def run(verb, payload):
-    result = {"schema": SCHEMA, "verb": verb}
+    result = {"schema": SCHEMA, "verb": verb if verb in VERBS else "unsupported"}
     _request.deadline = time.monotonic() + DEADLINE_S   # C5: every synchronous verb, lock waits included
     try:
         if verb not in VERBS or not isinstance(payload, dict):
@@ -1422,10 +1432,14 @@ def run(verb, payload):
             request_check()
     except (OSError, ValueError, LookupError, TypeError, KeyError, UnicodeError, subprocess.SubprocessError,
             Stopped) as exc:
-        result = {"schema": SCHEMA, "verb": verb,
-                  "error": str(exc).strip("'\"") if isinstance(exc, LookupError) else str(exc)}
+        text = str(exc).strip("'\"") if isinstance(exc, LookupError) else str(exc)
+        if len(text) > ERROR_TEXT_MAX:
+            text = text[:ERROR_TEXT_MAX] + " (truncated)"
+        result = {"schema": SCHEMA, "verb": verb if verb in VERBS else "unsupported", "error": text}
     finally:
         _request.deadline = None
+    if len(json.dumps(result, ensure_ascii=True, allow_nan=False)) > MAX_REPLY:     # the last line of defence
+        result = {"schema": SCHEMA, "verb": result["verb"], "error": "the reply exceeds the size limit"}
     return result
 
 
