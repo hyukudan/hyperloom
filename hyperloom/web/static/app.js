@@ -896,7 +896,10 @@
     if (result.status === "fulfilled") {
       delete state.absent[name]; delete state.optional[name + ":error"];
       state.optional[name] = result.value; state.optional[name + ":at"] = at;
-      if (Object.hasOwn(state.docs, name)) { state.docs[name] = result.value; state.fetched[name] = state.optional[name + ":at"]; }
+      if (Object.hasOwn(state.docs, name)) {
+        state.docs[name] = result.value;
+        if (currentSet().includes(name)) state.fetched[name] = state.optional[name + ":at"];   // the open page's own copy only
+      }
       if (name === "prefs") serverPrefs(result.value, epoch);
       if (name === "health/summary") summaryArrived(result.value);
     } else if (result.reason?.status === 404) {
