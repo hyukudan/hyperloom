@@ -338,6 +338,58 @@ class WriteTests(unittest.TestCase):
                 service.save_receipt(orchestrate.load_cluster(env.config), "x", json.dumps(receipt))
 
 
+class SharingTests(unittest.TestCase):
+    """Windows: a reader holding a file makes os.replace/unlink fail for a moment (PermissionError); the recipe writes
+    retry like the other state writers, and a failed snapshot publish says why instead of "no snapshot"."""
+
+    def flaky(self, fail_first, code=13):
+        real, calls = os.replace, []
+
+        def replace(source, target):
+            calls.append(str(target))
+            if len(calls) <= fail_first:
+                raise OSError(code, "the process cannot access the file" if code == 13 else "no space left")
+            return real(source, target)
+        return mock.patch.object(os, "replace", side_effect=replace), calls
+
+    def test_publish_and_unlink_retry_a_sharing_violation(self):
+        with isolated():
+            patch, calls = self.flaky(3)
+            with patch:
+                saved = service.save(None, "mine", text=copy_of(QWEN, "mine"))
+            self.assertEqual(len(calls), 4)
+            self.assertEqual(Path(saved["path"]).read_text(encoding="utf-8"), copy_of(QWEN, "mine"))
+            self.assertEqual([p.name for p in service.user_dir().iterdir() if p.name.endswith(".part")], [])
+            real, attempts = Path.unlink, []
+
+            def unlink(path, *a, **kw):
+                attempts.append(path.name)
+                if path.name == "mine.toml" and len(attempts) <= 2:
+                    raise PermissionError(13, "in use")
+                return real(path, *a, **kw)
+            with mock.patch.object(Path, "unlink", unlink):
+                service.delete(None, "mine", saved["sha256"])
+            self.assertFalse(Path(saved["path"]).exists())
+
+    def test_snapshot_publish_retries_and_reports_its_error(self):
+        with isolated():
+            patch, calls = self.flaky(2)
+            with patch:
+                digest = service.launch_inputs(None, service.locate(QWEN), session.Layers(),
+                                               intent={"profile": "qwen-replicas"})
+            self.assertEqual(len(calls), 3)
+            service.load_inputs(digest)
+            patch, calls = self.flaky(100, 28)                                  # not a sharing violation
+            with patch, self.assertRaises(OSError) as raised:
+                service.launch_inputs(None, service.locate(QWEN), session.Layers(),
+                                      intent={"profile": "qwen-w5"})
+            self.assertEqual((len(calls), raised.exception.errno), (1, 28))     # told at once, not retried
+            self.assertNotIsInstance(raised.exception, service.NotFound)       # not "no snapshot"
+            self.assertNotIn("no snapshot", str(raised.exception))
+            leftovers = [p.name for p in (service.runtime_dir() / "recipe-inputs").iterdir() if p.name.startswith(".")]
+            self.assertEqual(leftovers, [])
+
+
 class SnapshotTests(unittest.TestCase):
     def test_layout_digest_and_immutability(self):
         with isolated() as env:

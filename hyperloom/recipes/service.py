@@ -24,6 +24,7 @@ import threading
 import time
 import uuid
 
+from ..winproc import retry_sharing
 from .reader import RecipeError
 
 BUILTIN_DIR = Path(__file__).with_name("examples")
@@ -445,10 +446,19 @@ def launch_inputs(cluster, recipe_path, layers, candidates=(), *, intent, pin=Fa
                 (staging / entry["name"]).parent.mkdir(parents=True, exist_ok=True)
                 (staging / entry["name"]).write_bytes(data)
             (staging / "manifest.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
+
+            def publish():
+                try:
+                    os.replace(staging, root)
+                except OSError:
+                    if not root.is_dir():
+                        raise                                # a sharing violation is retried; anything else is told
+                    shutil.rmtree(staging, ignore_errors=True)   # the same inputs were published first: verified below
             try:
-                os.replace(staging, root)
-            except OSError:
-                shutil.rmtree(staging, ignore_errors=True)   # the same inputs were published first: verified below
+                retry_sharing(publish)
+            except BaseException:
+                shutil.rmtree(staging, ignore_errors=True)
+                raise
         else:
             os.utime(root)                                   # recently planned again: kept by the retention rule
         held = _new_pin(digest) if pin else None             # pinned before anything can prune it
@@ -536,7 +546,6 @@ KEEP_PROGRESS_S = 24 * 3600
 
 def read_progress(job):
     """The progress a deploy recorded, or None when it has recorded none yet."""
-    from ..winproc import retry_sharing
     try:
         value = retry_sharing(lambda: json.loads(deploy_progress(job).read_text(encoding="utf-8")))
     except (OSError, ValueError):
@@ -545,7 +554,6 @@ def read_progress(job):
 
 
 def _write_progress(path, state):
-    from ..winproc import retry_sharing
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.part")
     temporary.write_text(json.dumps(state), encoding="utf-8")
@@ -1195,12 +1203,12 @@ def _publish(root, name, data, current):
             stream.flush()
             os.fsync(stream.fileno())
         target = root / name
-        os.replace(temporary, target)
+        retry_sharing(lambda: os.replace(temporary, target))     # Windows: a reader holding the file for a moment
     except BaseException:
         Path(temporary).unlink(missing_ok=True)
         raise
     if current is not None and current.name != name and current.exists() and not os.path.samefile(current, target):
-        current.unlink()
+        retry_sharing(current.unlink)
     if _key(target.parent) != _key(root):
         raise RecipeError(f"{target}: written outside {root}")
     return target
@@ -1339,7 +1347,7 @@ def delete(cluster, recipe_id, sha256):
                 raise RecipeError(f"recipe {recipe_id} is {row['source']} ({row['path']}): only user recipes are deleted")
             raise NotFound(f"no user recipe {recipe_id}")
         _check_replace(current, sha256, f"user recipe {recipe_id}")
-        current.unlink()
+        retry_sharing(current.unlink)
     return {"id": recipe_id, "deleted": str(current)}
 
 
@@ -1431,7 +1439,7 @@ def delete_layer(cluster, layer_name, sha256):
         if current is None:
             raise NotFound(f"no layer {layer_name} in {root}")
         _check_replace(current, sha256, f"layer {layer_name}")
-        current.unlink()
+        retry_sharing(current.unlink)
     return {"name": current.name, "deleted": str(current)}
 
 
