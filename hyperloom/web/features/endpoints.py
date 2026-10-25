@@ -62,6 +62,7 @@ INTERVAL_S = 15
 EXPOSURE_INTERVAL_S = 60
 STALE_EXPOSURE_S = 3 * EXPOSURE_INTERVAL_S
 LISTENER_FRESH_S = 30
+CLAIM_KEEP_S = 86400
 CONTINUITY_SLACK_S = 4.0
 UI_DEFAULT_PORT = 18700
 ROUTER_DEFAULT_PORT = 18600
@@ -673,11 +674,12 @@ def _publish(store, tid, result, now):
 
 def _claim(store, tid, src, now):
     """Claim this endpoint's accounting slot: at most one accounting per sampling interval for a source, decided in
-    one statement across every portal process, so each delta stands for (at least) one interval."""
+    one statement across every portal process, so each delta spans at least the interval its points are recorded
+    with (coverage is never overstated)."""
     return bool(store.execute(
         "INSERT INTO docs(namespace, key, ts, value) VALUES (?, ?, ?, '{}') ON CONFLICT(namespace, key) "
         "DO UPDATE SET ts=excluded.ts WHERE excluded.ts - docs.ts >= ? RETURNING 1",
-        (NAMESPACE, f"account/{tid}/{src}", now, INTERVAL_S - 1.0)))
+        (NAMESPACE, f"account/{tid}/{src}", now, float(INTERVAL_S))))
 
 
 def _drop(store, tid, rev):
@@ -753,10 +755,12 @@ def run_round(api, now, *, identify=False, session_factory=None, key_lookup=None
             if result.get("counters") or result["why"].get("counters"):
                 _publish(store, tid, result, now + 1e-6)         # the same observation with its accounting
             published[tid] = result
-        live = {f"account/{tid}/{src}" for tid, src in sources.items() if src}
-        for key, _, value in store.items(NAMESPACE):
-            if key.startswith("account/") and key not in live:
-                store.execute("DELETE FROM docs WHERE namespace=? AND key=?", (NAMESPACE, key))
+        for key, ts, value in store.items(NAMESPACE):
+            if key.startswith("account/"):
+                # A claim is dropped only with its target, or once far older than any interval: a configuration
+                # that fails to load for a moment must never reopen an accounting slot early.
+                if key.split("/")[1] not in current or ts < now - CLAIM_KEEP_S:
+                    store.execute("DELETE FROM docs WHERE namespace=? AND key=? AND ts=?", (NAMESPACE, key, ts))
                 continue
             if not key.startswith("probe/") or not isinstance(value, dict):
                 continue

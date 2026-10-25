@@ -565,6 +565,28 @@ class CollectorTests(Base):
         endpoints.collect(self.api, self.clock())
         self.assertEqual(self.generated(), [30.0, 40.0])         # the skipped sample's tokens are not lost
 
+    def test_claims_survive_a_configuration_that_fails_to_load(self):
+        state = {"uptime": 100.0, "count": 100}
+        server = self.engine(state)
+        self.cluster.machines["halo-9"] = config.Machine("halo-9", "linux", "ssh", "127.0.0.1", "halo-9", 22, "/opt", True, [])
+        self.api.feature_post("endpoints/save", {"label": "box", "host": "halo-9", "port": server.port})
+        endpoints.collect(self.api, self.clock())
+        self.clock.now += 15
+        state.update(uptime=115.0, count=120)
+        endpoints.collect(self.api, self.clock())
+        self.clock.now += 1
+        self.api.orchestrate.load_cluster.side_effect = ValueError("configuration unreadable")
+        endpoints.collect(self.api, self.clock())
+        self.api.orchestrate.load_cluster.side_effect = None
+        self.clock.now += 1
+        state.update(uptime=117.0, count=140)
+        endpoints.collect(self.api, self.clock())
+        self.assertEqual(self.generated(), [20.0])           # no early accounting after the failure
+        self.clock.now += 13
+        state.update(uptime=130.0, count=160)
+        endpoints.collect(self.api, self.clock())
+        self.assertEqual(self.generated(), [20.0, 40.0])
+
     def test_a_rejected_publication_returns_no_points(self):
         server = self.serve({"/v1/models": MODELS})
         self.add(server.port)
