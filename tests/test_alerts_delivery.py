@@ -203,6 +203,9 @@ class PlanTests(Base):
         self.assertEqual(sorted(self.outbox()[1:]), sorted([(warn["id"], [("escalated", a["id"])]), (crit["id"], [("firing", a["id"])])]))
         self.plan([("cleared", b)], {})
         self.assertEqual(sorted(self.outbox()[3:]), sorted([(warn["id"], [("resolved", a["id"])]), (crit["id"], [("resolved", a["id"])])]))
+        self.assertTrue(all(mark["resolving"] for _, _, mark in self.store.items(alerts.TRACK)))   # kept until delivered
+        for _ in range(4):
+            self.deliver()
         self.assertEqual(self.store.items(alerts.TRACK), [])
 
     def test_refire_while_outstanding_keeps_every_transition_in_order(self):
@@ -275,11 +278,31 @@ class PlanTests(Base):
         victim = busy["id"] if rows[0][0] != busy["id"] else quiet["id"]
         remaining = [items for channel, items in rows if channel == victim]
         self.assertEqual(remaining, [])                              # no orphan resolve without its firing
-        self.assertEqual([k for k, _, _ in self.store.items(alerts.TRACK) if k.startswith(victim)], [])
         self.assertIn("dropped the undelivered backlog of channel " + victim, self.store.events(category="alerts")[0]["message"])
-        self.plan([], {b["id"]: b})                                  # the resync tells it what is active now
-        self.assertEqual([items for channel, items in self.outbox() if channel == victim], [[("firing", b["id"])]])
+        self.plan([], {b["id"]: b})                                  # the resync reconciles from the bookkeeping
+        self.assertEqual([sorted(items) for channel, items in self.outbox() if channel == victim],
+                         [sorted([("firing", b["id"]), ("resolved", a["id"])])])
         self.assertEqual(self.store.items(alerts.RESYNC), [])
+
+    def test_a_resolve_dropped_while_its_firing_is_in_flight_is_sent_after_it(self):
+        channel = self.channel()
+        a = self.finding()
+        self.plan([("appeared", a)], {a["id"]: a})
+        health.acquire(self.store, health.owner_of(self.api), self.clock.now)
+        claimed = {}
+
+        def sender(*args, **kwargs):                  # while the firing is on the wire, the finding clears and the
+            self.plan([("cleared", a)], {})           # outbox overflows: the unclaimed resolve is dropped
+            filler = [("INSERT INTO alerts_outbox(message_id, channel, created, next_at, attempts, items) VALUES "
+                       "(?, ?, ?, ?, 0, '[]')", (f"f{i}", "ch-ffffffff", T0 + 1, T0 + 1)) for i in range(alerts.MAX_OUTBOX)]
+            health.commit(self.store, filler + alerts.bound(self.clock.now))
+            claimed["left"] = [items for c, items in self.outbox() if c == channel["id"]]
+            return {"ok": True, "status": 200}
+        alerts.deliver(self.api, self.clock.now, self.store, sender=sender)
+        self.assertEqual(claimed["left"], [[("firing", a["id"])]])     # only the claimed firing survived
+        self.store.execute("DELETE FROM alerts_outbox WHERE channel='ch-ffffffff'")
+        self.plan([], {})                                      # resync: the delivered occurrence gets its resolve
+        self.assertEqual([items for c, items in self.outbox() if c == channel["id"]], [[("resolved", a["id"])]])
 
     def test_overflow_with_many_channels_restores_the_bound(self):
         made = [self.channel(path=f"/c{i}") for i in range(alerts.MAX_CHANNELS)]
@@ -327,9 +350,9 @@ class PlanTests(Base):
     def test_a_dropped_reminder_is_re_armed(self):
         channel = self.channel(reminders="1h")
         a = self.finding()
-        key = channel["id"] + "|" + a["id"]
+        key = alerts.track_key(channel["id"], a["id"], a["occurrence"])
         self.store.put(alerts.TRACK, key, {"occurrence": a["occurrence"], "severity": "critical", "delivered_at": T0 - 7200,
-                                           "reminded_at": None, "reminder_queued": "gone-message"})
+                                           "reminded_at": None, "reminder_queued": "gone-message", "message": "m"})
         self.plan([], {a["id"]: a})
         self.assertEqual([items for _, items in self.outbox()], [[("reminder", a["id"])]])
 
@@ -353,7 +376,7 @@ class DeliveryTests(Base):
         self.assertIn("next in 5 s", messages)
         rows = dict(self.store.execute("SELECT channel, attempts FROM alerts_outbox"))
         self.assertEqual(rows, {moved["id"]: 1, failing["id"]: 1})
-        mark = self.store.get(alerts.TRACK, ok["id"] + "|" + a["id"])
+        mark = self.store.get(alerts.TRACK, alerts.track_key(ok["id"], a["id"], a["occurrence"]))
         self.assertEqual(mark["delivered_at"], self.clock.now)
         self.receiver.received.clear()
         self.deliver()                                     # not due yet

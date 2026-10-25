@@ -290,21 +290,33 @@ def _queue(cid, items, now, message=None):
 RESYNC = "alerts/resync"
 
 
+def track_key(cid, finding_id, occurrence):
+    """Delivery bookkeeping is kept per occurrence of a finding, so every occurrence a channel was told about keeps
+    its own record until its resolve is delivered."""
+    return f"{cid}|{finding_id}|{occurrence}"
+
+
+def _mark(finding, now, message="pending"):
+    summary = {key: finding.get(key) for key in ("id", "rule", "title", "severity", "machine", "since", "occurrence")}
+    return {"occurrence": finding.get("occurrence"), "severity": finding.get("severity"), "finding": summary,
+            "queued_at": now, "message": message, "delivered_at": None, "reminded_at": None, "reminder_queued": None,
+            "resolving": None}
+
+
 def bound(now):
     """Statements, run last in the committing transaction, that keep the outbox at MAX_OUTBOX rows. They count the
     table inside the transaction, so writers on different connections can never exceed the bound. When it is
-    exceeded, the channel owning the oldest unclaimed message loses its WHOLE undelivered backlog together with its
-    bookkeeping (so no later message of it can refer to a dropped one, e.g. a resolve without its firing) and is
-    marked for a resync: the next evaluation tells it the findings active then. One event per dropped backlog."""
+    exceeded, the channel owning the oldest unclaimed message loses its whole unclaimed backlog (a later message can
+    then never arrive without an earlier one) and is marked for a resync; its bookkeeping is kept, so the next
+    evaluation reconciles it: every occurrence it was told about that is no longer active gets its resolve, every
+    active one whose firing was dropped is sent again. One event per dropped backlog."""
     over = f"(SELECT COUNT(*) FROM alerts_outbox) > {MAX_OUTBOX}"
     victim = "(SELECT channel FROM alerts_outbox WHERE claimed_until IS NULL OR claimed_until < ? ORDER BY id LIMIT 1)"
     once = [("INSERT INTO events(ts, category, severity, machine, message, data) SELECT ?, 'alerts', 'warning', NULL, "
              "'alert outbox full: dropped the undelivered backlog of channel ' || " + victim + " || "
-             "'; it is told the active findings again', NULL WHERE " + over, (now, now)),
+             "'; it is brought up to date at the next evaluation', NULL WHERE " + over, (now, now)),
             ("INSERT INTO docs(namespace, key, ts, value) SELECT ?, " + victim + ", ?, '{}' WHERE " + over +
              " AND " + victim + " IS NOT NULL ON CONFLICT(namespace, key) DO NOTHING", (RESYNC, now, now, now)),
-            ("DELETE FROM docs WHERE namespace=? AND " + over + " AND substr(key, 1, length(" + victim + ") + 1) = "
-             + victim + " || '|'", (TRACK, now, now)),
             ("DELETE FROM alerts_outbox WHERE " + over + " AND channel = " + victim +
              " AND (claimed_until IS NULL OR claimed_until < ?)", (now, now))]
     # One pass drops one channel's backlog; claimed rows (at most one per channel) are never dropped, so passes
@@ -314,8 +326,9 @@ def bound(now):
 
 def plan(store, transitions, states, now):
     """Statements queuing this evaluation's deliveries: per channel ONE message with this evaluation's transitions
-    (in order) and due reminders. The caller commits them with the finding states while holding BOOK_LOCK; the
-    statements abort the commit if the channels changed meanwhile (the evaluation is then simply redone)."""
+    (in order), a reconciliation after a dropped backlog, and due reminders. The caller commits them with the finding
+    states while holding BOOK_LOCK; the statements abort the commit if the channels or the bookkeeping changed
+    meanwhile (the evaluation is then simply redone)."""
     prepare(store)
     with BOOK_LOCK:
         statements = [channels_unchanged(channels_version(store))]     # captured before the reads it protects
@@ -337,56 +350,66 @@ def plan(store, transitions, states, now):
             cid, floor = channel["id"], health.RANK.get(channel.get("min_severity"), 1)
             period = REMINDERS.get(channel.get("reminders"))
             items, touched = [], {}
+            current = lambda key: touched.get(key, track.get(key))
             if cid in resync:
-                # Its backlog was dropped (outbox full): tell it the findings active now, before this round's changes.
+                # Its backlog was dropped (outbox full): reconcile from the bookkeeping, before this round's changes.
                 statements.append(health.unchanged(RESYNC, cid, resync[cid]))
                 statements.append(health.delete_doc(RESYNC, cid))
+                for key, mark in sorted(track.items()):
+                    if not key.startswith(cid + "|") or not isinstance(mark, dict):
+                        continue
+                    fid = key.split("|")[1]
+                    finding = active.get(fid)
+                    if mark.get("resolving"):
+                        if mark["resolving"] not in queued:                    # its resolve was dropped: again
+                            items.append({**(mark.get("finding") or {"id": fid}), "state": "resolved"})
+                            touched[key] = {**mark, "resolving": "pending"}
+                    elif finding is None or finding.get("occurrence") != mark.get("occurrence"):
+                        items.append({**(mark.get("finding") or {"id": fid}), "state": "resolved"})
+                        touched[key] = {**mark, "resolving": "pending"}
+                    elif not mark.get("delivered_at") and mark.get("message") not in queued:
+                        items.append(_item(finding, "firing"))                 # its firing was dropped: again
+                        touched[key] = {**mark, "message": "pending"}
                 for fid, finding in sorted(active.items()):
-                    key = cid + "|" + fid
-                    mark = track.get(key)
-                    if health.RANK.get(finding.get("severity"), 1) >= floor and not (
-                            isinstance(mark, dict) and mark.get("occurrence") == finding.get("occurrence")):
+                    key = track_key(cid, fid, finding.get("occurrence"))
+                    if current(key) is None and health.RANK.get(finding.get("severity"), 1) >= floor:
                         items.append(_item(finding, "firing"))
-                        touched[key] = {"occurrence": finding.get("occurrence"), "severity": finding.get("severity"),
-                                        "queued_at": now, "delivered_at": None, "reminded_at": None,
-                                        "reminder_queued": None}
+                        touched[key] = _mark(finding, now)
             for change, finding in transitions:
-                key = cid + "|" + finding["id"]
-                mark = touched.get(key, track.get(key))
+                key = track_key(cid, finding["id"], finding.get("occurrence"))
+                mark = current(key)
+                live = isinstance(mark, dict) and not mark.get("resolving")
                 rank = health.RANK.get(finding.get("severity"), 1)
-                same = isinstance(mark, dict) and mark.get("occurrence") == finding.get("occurrence")
                 if change == "cleared":
-                    if same:
+                    if live:
                         items.append(_item(finding, "resolved"))
-                        touched[key] = None
-                elif change == "escalated" and same:
+                        touched[key] = {**mark, "resolving": "pending"}
+                elif change == "escalated" and live:
                     if rank > health.RANK.get(mark.get("severity"), 0):
                         items.append(_item(finding, "escalated"))
                         touched[key] = {**mark, "severity": finding.get("severity")}
-                elif change in ("appeared", "escalated") and not same and rank >= floor:
+                elif change in ("appeared", "escalated") and mark is None and rank >= floor:
                     items.append(_item(finding, "firing"))
-                    touched[key] = {"occurrence": finding.get("occurrence"), "severity": finding.get("severity"),
-                                    "queued_at": now, "delivered_at": None, "reminded_at": None, "reminder_queued": None}
+                    touched[key] = _mark(finding, now)
             if period:
                 for fid, finding in sorted(active.items()):
-                    key = cid + "|" + fid
-                    mark = touched.get(key, track.get(key))
-                    pending = isinstance(mark, dict) and mark.get("reminder_queued") in queued   # a dropped one re-arms
-                    if (isinstance(mark, dict) and mark.get("occurrence") == finding.get("occurrence")
-                            and mark.get("delivered_at") and not pending
-                            and now - max(mark["delivered_at"], mark.get("reminded_at") or 0) >= period):
+                    key = track_key(cid, fid, finding.get("occurrence"))
+                    mark = current(key)
+                    if not isinstance(mark, dict) or mark.get("resolving"):
+                        continue
+                    pending = mark.get("reminder_queued") in queued or mark.get("reminder_queued") == "pending"
+                    if mark.get("delivered_at") and not pending and \
+                            now - max(mark["delivered_at"], mark.get("reminded_at") or 0) >= period:
                         items.append(_item(finding, "reminder"))
                         touched[key] = {**mark, "reminder_queued": "pending"}
             message = uuid.uuid4().hex if items else None
             for key, mark in touched.items():
-                if isinstance(mark, dict) and mark.get("reminder_queued") == "pending":
-                    mark["reminder_queued"] = message
+                for field in ("message", "resolving", "reminder_queued"):
+                    if mark.get(field) == "pending":
+                        mark[field] = message
                 statements.append(health.unchanged(TRACK, key, texts.get(key)))     # bookkeeping read = committed
-                statements.append(health.delete_doc(TRACK, key) if mark is None else health.upsert_doc(TRACK, key, mark, now))
-                if mark is None:
-                    track.pop(key, None)
-                else:
-                    track[key] = mark
+                statements.append(health.upsert_doc(TRACK, key, mark, now))
+                track[key] = mark
             if items:
                 _, row = _queue(cid, items, now, message)
                 statements.append(row)
@@ -398,24 +421,20 @@ def catch_up(store, channel, states, now):
     """Statements telling a new channel (or one with a lower minimum severity) about the findings already firing at
     or above its minimum; committed with the channel record by ``save_channel``."""
     cid, floor = channel["id"], health.RANK.get(channel.get("min_severity"), 1)
-    items, statements = [], []
+    items, statements, message = [], [], uuid.uuid4().hex
     for fid, finding in sorted(states.items()):
-        key = cid + "|" + fid
+        key = track_key(cid, fid, finding.get("occurrence"))
         if finding.get("state") not in ("firing", "clearing") or health.RANK.get(finding.get("severity"), 1) < floor:
             continue
         text = health.stored_text(store, TRACK, key)
-        mark = json.loads(text) if text else None
-        if isinstance(mark, dict) and mark.get("occurrence") == finding.get("occurrence"):
+        if text is not None:
             continue
         items.append(_item(finding, "firing"))
         statements.append(health.unchanged(TRACK, key, text))
-        statements.append(health.upsert_doc(TRACK, key, {"occurrence": finding.get("occurrence"),
-                                                         "severity": finding.get("severity"), "queued_at": now,
-                                                         "delivered_at": None, "reminded_at": None,
-                                                         "reminder_queued": None}, now))
+        statements.append(health.upsert_doc(TRACK, key, _mark(finding, now, message), now))
     if not items:
         return []
-    _, row = _queue(cid, items, now)
+    _, row = _queue(cid, items, now, message)
     return statements + [row] + bound(now)
 
 
@@ -618,21 +637,25 @@ def _ack(store, owner, generation, row, channel, outcome, now):
         if outcome["ok"]:
             marks = {}
             for item in items:
-                key = cid + "|" + item["id"]
+                key = track_key(cid, item["id"], item.get("occurrence"))
                 if key not in marks:
                     text = health.stored_text(store, TRACK, key)
                     marks[key] = (text, json.loads(text) if text else None)
                 text, mark = marks[key]
-                if not isinstance(mark, dict) or mark.get("occurrence") != item.get("occurrence") or item["state"] == "resolved":
+                if not isinstance(mark, dict):
                     continue
-                mark = {**mark, "delivered_at": mark.get("delivered_at") or now}
-                if item["state"] == "reminder":
-                    mark.update(reminded_at=now, reminder_queued=None)
+                if item["state"] == "resolved":
+                    mark = None if mark.get("resolving") == message else mark      # delivered: the record is done
+                else:
+                    mark = {**mark, "delivered_at": mark.get("delivered_at") or now}
+                    if item["state"] == "reminder":
+                        mark.update(reminded_at=now, reminder_queued=None)
                 marks[key] = (text, mark)
             for key, (text, mark) in marks.items():
-                if isinstance(mark, dict):
-                    statements.append(health.unchanged(TRACK, key, text))
-                    statements.append(health.upsert_doc(TRACK, key, mark, now))
+                if text is None:
+                    continue
+                statements.append(health.unchanged(TRACK, key, text))
+                statements.append(health.delete_doc(TRACK, key) if mark is None else health.upsert_doc(TRACK, key, mark, now))
             statements.append(health.insert_event(now, "alerts", "info", f"alert sent to {name}: {summary}",
                                                   data={**data, "status": outcome.get("status")}))
         elif channel is not None:

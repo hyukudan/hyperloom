@@ -207,7 +207,7 @@ def add(commands):
         child.set_defaults(ext_run=closing_store(run))
         return child
 
-    command("rules", rules, "rules, parameters and availability").add_argument("--json", action="store_true")
+    command("rules", rules, "rules, parameters and availability").add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     change = command("set-rule", set_rule, "enable/disable a rule or change its holds and parameters")
     change.add_argument("rule")
     toggle = change.add_mutually_exclusive_group()
@@ -223,7 +223,7 @@ def add(commands):
     log.add_argument("--severity", choices=("info", "warning", "critical"))
     log.add_argument("--before", type=int)
     log.add_argument("--limit", type=int)
-    log.add_argument("--json", action="store_true")
+    log.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     wipe = command("clear-events", clear_events, "clear the activity log")
     wipe.add_argument("--older-than", required=True, choices=("24h", "7d", "all"))
     wipe.add_argument("--yes", action="store_true", help="confirm the clear")

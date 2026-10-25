@@ -104,7 +104,7 @@ def add(commands):
         child.set_defaults(ext_run=closing_store(run))
         return child
 
-    command("list", listing, "the channels (URLs masked)").add_argument("--json", action="store_true")
+    command("list", listing, "the channels (URLs masked)").add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     for name, creating in (("add", True), ("edit", False)):
         child = command(name, lambda args, creating=creating: save(args, creating),
                         "add a channel" if creating else "change a channel")

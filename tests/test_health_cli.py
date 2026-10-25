@@ -81,6 +81,14 @@ class CLITests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(cli.main(["alerts", "--config", str(other), "list"]), 0)
 
+    def test_json_is_honoured_in_either_position(self):
+        self.store().event("health", "info", "x", ts=1.0)
+        for argv in (("health", "--json", "events"), ("health", "events", "--json"), ("health", "--json", "rules"),
+                     ("alerts", "--json", "list"), ("alerts", "list", "--json")):
+            code, out, _ = self.run_cli(*argv)
+            self.assertEqual(code, 0, argv)
+            self.assertIsInstance(json.loads(out), dict, argv)
+
     def test_events_and_clear(self):
         store = self.store()
         store.event("health", "warning", "GPU hot", machine="halo-1", ts=100.0)
