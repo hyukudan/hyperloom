@@ -249,10 +249,17 @@ def _placed_on(placement, mid, cluster):
     return placement == mid
 
 
+def shared_snapshot(api):
+    """The core snapshot the portal already holds (no node calls); built only when none exists yet (CLI, first poll)."""
+    cached = getattr(api, "cached_snapshot", None)
+    snap = cached() if callable(cached) else None
+    return snap if snap is not None else api.snapshot()
+
+
 def snapshot_occupancy(api, mid):
     """Why a machine looks in use from the shared 2 s snapshot (GET documents), or None."""
     try:
-        rows = api.snapshot()["profiles"].get("profiles") or []
+        rows = shared_snapshot(api)["profiles"].get("profiles") or []
         cluster = api.cluster()
     except Exception:
         return "profile state unavailable"
@@ -741,7 +748,7 @@ def shutdown(api, arguments, ctx=None, runner=None):
 def power_document(api, query):
     cluster = api.cluster()
     try:
-        profile_rows = {row["id"]: row for row in api.snapshot()["profiles"].get("profiles") or []}
+        profile_rows = {row["id"]: row for row in shared_snapshot(api)["profiles"].get("profiles") or []}
     except Exception:
         profile_rows = {}
     helper, helper_why = shutdown_helper(api)

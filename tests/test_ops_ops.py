@@ -73,6 +73,24 @@ class NodeToolTests(Base, unittest.TestCase):
         self.assertIn("not part of any profile", rows["halo-2"]["why"]["actions"])
         self.assertEqual(self.api.telemetry.get("ops", "macs")["halo-1"]["macs"], ["02:00:5e:10:00:01"])
 
+    def test_documents_read_the_held_snapshot_and_build_one_only_when_none_exists(self):
+        held = {"profiles": {"profiles": [{"id": "p", "state": "running", "nodes": ["halo-1"], "leases": []}]}}
+        built = []
+
+        class Api:
+            def cached_snapshot(self):
+                return held
+
+            def snapshot(self):
+                built.append(1)
+                return {"profiles": {"profiles": []}}
+        api = Api()
+        self.assertIs(ops.shared_snapshot(api), held)
+        self.assertEqual(built, [])
+        api.cached_snapshot = lambda: None
+        self.assertEqual(ops.shared_snapshot(api), {"profiles": {"profiles": []}})
+        self.assertEqual(built, [1])
+
     def test_node_checks_never_overlap_and_late_results_are_kept(self):
         gate, started = threading.Event(), threading.Event()
         calls = []
