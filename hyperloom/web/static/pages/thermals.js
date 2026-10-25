@@ -76,8 +76,8 @@
     const {esc, button} = H();
     const blocker = d.machines === null && d.why?.machines?.includes("not open") ? "metrics store not open in this portal process" : view.busy ? "Saving…" : H().mutationReason();
     const value = (k, which) => view.draft[`${k}.${which}`] ?? (d.thresholds?.[k] ? String(d.thresholds[k][which]) : "");
-    const inputs = kinds.map(([k, label]) => `<fieldset class="th-set"><legend>${esc(label)}</legend>${["warn", "crit"].map(w => `<label class="field" for="th-${k}-${w}">${w === "warn" ? "Warn" : "Critical"} (°C) <input class="inp th-inp" id="th-${k}-${w}" inputmode="decimal" data-th="${k}.${w}" value="${esc(value(k, w))}" ${blocker ? "disabled" : ""}></label>`).join("")}</fieldset>`).join("");
-    return `<div class="row th-form">${inputs}</div><div class="row">${button("Save thresholds", "", {style: "pri", disabled: blocker, extra: 'data-page-action="thermals-save"'})}</div><p class="field-error" role="alert">${esc(view.error)}</p><p class="hint">GPU thresholds are required (default 85 / 90 °C); leave CPU or other sensors empty for no threshold. Changes are audited.</p>`;
+    const inputs = kinds.map(([k, label]) => `<fieldset class="th-set"><legend>${esc(label)}</legend>${["warn", "crit"].map(w => `<label class="field" for="th-${k}-${w}">${w === "warn" ? "Warn" : "Critical"} (°C) <input class="inp th-inp" id="th-${k}-${w}" inputmode="decimal" data-th="${k}.${w}" value="${esc(value(k, w))}" ${view.error ? 'aria-invalid="true" aria-describedby="th-error"' : ""} ${blocker ? "disabled" : ""}></label>`).join("")}</fieldset>`).join("");
+    return `<div class="row th-form">${inputs}</div><div class="row">${button("Save thresholds", "", {style: "pri", disabled: blocker, extra: 'data-page-action="thermals-save"'})}</div><p class="field-error" id="th-error" role="alert">${esc(view.error)}</p><p class="hint">GPU thresholds are required (default 85 / 90 °C); leave CPU or other sensors empty for no threshold. Changes are audited.</p>`;
   }
 
   (window.HyperloomPages ||= {}).thermals = {
@@ -121,7 +121,11 @@
       await H().request("energy/thresholds", {method: "POST", headers: {"Content-Type": "application/json", "X-Hyperloom-CSRF": token}, body: JSON.stringify(body), signal: AbortSignal.timeout(30000)});
       view.draft = {}; H().announce("Thermal thresholds saved");
     } catch (error) { view.error = error.message; H().announce(error.message); }
-    finally { try { await H().refresh(); } finally { view.busy = false; H().state.busy = false; H().render(); } }
+    finally {
+      // The first refresh may be a poll that started before the write; the second one surely reads after it.
+      try { H().state.fresh = false; await H().refresh(); await H().refresh(); }
+      finally { view.busy = false; H().state.busy = false; H().render(); }
+    }
   });
   document.addEventListener("input", event => { if (event.target.dataset?.th) view.draft[event.target.dataset.th] = event.target.value; });
 })();

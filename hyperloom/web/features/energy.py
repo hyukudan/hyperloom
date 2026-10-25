@@ -61,6 +61,9 @@ MAX_THROTTLE = 200                  # throttle periods per machine
 MAX_THERMAL_LINES = 96              # temperature and throttle lines read for one thermals document
 MAX_LABELS = 512                    # characters of one line's label set
 COMPUTE_BUDGET_S = 20.0             # wall time of one computation before it gives up (nothing written)
+MAX_ROWS = 20000                    # quarter rows written by one run (a backlog is worked off over several runs)
+MAX_DOCUMENT_BYTES = 2 * 1024 * 1024  # serialized size of one energy or thermals document
+WATCH_INTERVAL_S = 1.0              # the cadence watch: how often the samplers' intervals are looked at
 ARCHIVE_MONTHS = 24
 READ_ATTEMPTS = 3
 BANNER = "Estimated from sensors, not metered"
@@ -139,7 +142,9 @@ def _state(store):
 class Zone:
     def __init__(self, zone=None, name=None, source="control machine", why=None):
         self.zone, self.source, self.why = zone, source, why
-        self.name = name or "local time of the control machine"
+        # The default zone is named by the control machine's own standard-time name, so a change of the machine's
+        # zone shows up in the archive as a different (or "mixed") zone.
+        self.name = name or "control machine local time (" + (time.tzname[0] or "unnamed") + ")"
 
     def local(self, ts):
         return datetime.fromtimestamp(ts, self.zone) if self.zone is not None else datetime.fromtimestamp(ts).astimezone()
@@ -205,6 +210,31 @@ def cadence_of(api):
     if status is None:
         return None
     return {name: float(state.get("interval_s") or 0) for name, state in status.items()}
+
+
+_watch = {}
+_watch_lock = threading.Lock()
+
+
+def watch(api, now):
+    """Collector ``energy-cadence`` (every second, no I/O, records nothing): notes the time of every change of the
+    samplers' intervals, so a change and its undo between two energy runs still breaks verification."""
+    cadence = cadence_of(api)
+    if cadence is None:
+        return []
+    fingerprint = _fingerprint(cadence)
+    with _watch_lock:
+        state = _watch.setdefault(id(api), {"fingerprint": fingerprint, "changes": []})
+        if state["fingerprint"] != fingerprint:
+            state["fingerprint"] = fingerprint
+            state["changes"] = [t for t in state["changes"] if t > now - DAY] + [now]
+    return []
+
+
+def _changed_between(api, since, now):
+    with _watch_lock:
+        state = _watch.get(id(api))
+        return bool(state) and any(since <= t <= now for t in state["changes"])
 
 
 def _fingerprint(cadence):
@@ -276,6 +306,10 @@ def _line_count(store, series):
     return store.execute("SELECT COUNT(*) FROM series WHERE name=?", (series,))[0][0]
 
 
+def _longest_labels(store, series):
+    return store.execute("SELECT COALESCE(MAX(LENGTH(labels)), 0) FROM series WHERE name=?", (series,))[0][0]
+
+
 def _read(store, series, start, end, now, cutoff, verified, integrate=True):
     """Lines of one series as [{labels, units: {unit: (avg, observed, max, count, step)}}]: minute units for quarters
     starting within FINE_S of now, quarter units before (the boundary is quarter-aligned, so a quarter never mixes
@@ -286,6 +320,8 @@ def _read(store, series, start, end, now, cutoff, verified, integrate=True):
     computation."""
     if _line_count(store, series) > MAX_LINES:
         raise ValueError(f"{series} has more than {MAX_LINES} lines; energy was not computed")
+    if _longest_labels(store, series) > MAX_LABELS:
+        raise ValueError(f"{series}: a label set longer than {MAX_LABELS} characters; energy was not computed")
     fine_from = _floor(now - FINE_S, QUARTER) + QUARTER
     lines = {}
     spans = []
@@ -342,7 +378,7 @@ def _power(store, start, end, now, cutoff, verified):
             domains[(machine, domain)] = {"labels": labels, "units": units, "seen": line["seen"],
                                           "duplicate": duplicate}
     # GPU presence also comes from the series index (all time), so the overlap rule never depends on the window.
-    for line in store.query(GPU_POWER, now, now, tier="m15")["lines"]:
+    for line in store.query(GPU_POWER, now, now, tier="m15")["lines"]:         # bounded: _read checked GPU_POWER
         if line["labels"].get("machine"):
             gpu_machines.add(line["labels"]["machine"])
     for (machine, domain), info in domains.items():
@@ -388,9 +424,11 @@ def _reported_within(quarters, low, high):
 
 
 # -- the computation -----------------------------------------------------------------------------------------------
-def plan(store, now, cadence=None, finalize_all=False):
+def plan(store, now, cadence=None, finalize_all=False, stable=True, deadline=None):
     """The guarded statements of one computation (not executed) and a summary. ``cadence`` is this process's
-    sampler intervals (None: no sampler here, so this run cannot extend verified time)."""
+    sampler intervals (None: no sampler here, so this run cannot extend verified time); ``stable`` False when the
+    cadence watch saw a change since the previous run."""
+    deadline = deadline or time.monotonic() + COMPUTE_BUDGET_S
     _ensure(store)
     state = _state(store)
     revision = state.get("revision", 0)
@@ -403,7 +441,7 @@ def plan(store, now, cadence=None, finalize_all=False):
         previous, since = state.get("cadence"), state.get("cadence_ts")
         text = _intervals_text(cadence)
         intervals = tuple(json.loads(text))
-        if previous == fingerprint and since is not None and now > since:
+        if stable and previous == fingerprint and since is not None and now > since:
             if spans and spans[-1][1] == since and spans[-1][2] == intervals:
                 statements.append((f"UPDATE energy_verified SET end=? WHERE start=? AND {GUARD}", (now, spans[-1][0], *g)))
                 spans[-1] = (spans[-1][0], now, intervals)
@@ -432,10 +470,15 @@ def plan(store, now, cadence=None, finalize_all=False):
     token_reported = {key: sorted(quarters) for key, quarters in token_seen.items()}
 
     rows, pairs = [], []
-    deadline = time.monotonic() + COMPUTE_BUDGET_S
     for q in range(first, current + 1, QUARTER):
         if time.monotonic() > deadline:
             raise ValueError(f"energy computation exceeded {COMPUTE_BUDGET_S:g} s; nothing was written")
+        if len(rows) >= MAX_ROWS:
+            # A backlog: stop before this quarter; the next runs continue from where this one archived to.
+            if finalize_all:
+                raise PermissionError("energy is still catching up on older samples; retry the reset in a few minutes")
+            current = q - QUARTER
+            break
         for key, info in domains.items():
             present = [info["units"][u] for u in by_quarter[key].get(q, ())]
             if present:
@@ -463,7 +506,9 @@ def plan(store, now, cadence=None, finalize_all=False):
         if both_s:
             pairs.append((q, wh_both, tokens_both, both_s))
 
-    limit = None if verified.until is None else min(now, verified.until)
+    if time.monotonic() > deadline:
+        raise ValueError(f"energy computation exceeded {COMPUTE_BUDGET_S:g} s; nothing was written")
+    limit = None if verified.until is None else min(now, verified.until, current + QUARTER)
     if finalize_all:
         final_through = current + QUARTER
     elif limit is None:
@@ -484,8 +529,8 @@ def plan(store, now, cadence=None, finalize_all=False):
             entry[2] += both_s
 
     statements += [
-        (f"DELETE FROM energy_quarters WHERE q >= ? AND {GUARD}", (first, *g)),
-        (f"DELETE FROM energy_pairs WHERE q >= ? AND {GUARD}", (first, *g)),
+        (f"DELETE FROM energy_quarters WHERE q >= ? AND q <= ? AND {GUARD}", (first, current, *g)),
+        (f"DELETE FROM energy_pairs WHERE q >= ? AND q <= ? AND {GUARD}", (first, current, *g)),
         (f"DELETE FROM energy_quarters WHERE q < ? AND {GUARD}", (now - KEEP_ROWS_S, *g)),
         (f"DELETE FROM energy_pairs WHERE q < ? AND {GUARD}", (now - KEEP_ROWS_S, *g)),
     ]
@@ -555,10 +600,13 @@ def _applied(store, token):
     return found
 
 
-def compute(store, now, cadence=None):
+def compute(store, now, cadence=None, stable=True):
     """One computation: recompute the quarters not yet archived and archive the final ones. A run that lost a race
     with another process changes nothing (``applied`` false); the next run redoes it."""
-    statements, summary = plan(store, now, cadence)
+    deadline = time.monotonic() + COMPUTE_BUDGET_S
+    statements, summary = plan(store, now, cadence, stable=stable, deadline=deadline)
+    if time.monotonic() > deadline:
+        raise ValueError(f"energy computation exceeded {COMPUTE_BUDGET_S:g} s; nothing was written")
     new, token = _new_revision(), secrets.token_hex(16)
     store.transaction(statements + [_receipt(token, summary["revision"], now), _bump(summary["revision"], new)])
     summary["applied"] = _applied(store, token)
@@ -569,14 +617,17 @@ def compute(store, now, cadence=None):
 
 
 def collect(api, now):
-    compute(telemetry.open_store(api), now, cadence_of(api))
+    store = telemetry.open_store(api)
+    since = _state(store).get("cadence_ts") if _has_tables(store) else None
+    stable = since is None or not _changed_between(api, since, now)
+    compute(store, now, cadence_of(api), stable=stable)
     return []
 
 
 def reset_store(store, now, cadence=None):
     """Archive every quarter not yet archived (the current partial one too), then clear the quarter rows; only units
     starting after the minute that held the reset are integrated afterwards, so nothing is counted twice."""
-    statements, summary = plan(store, now, cadence, finalize_all=True)
+    statements, summary = plan(store, now, cadence, finalize_all=True, stable=False)
     revision, new, token = summary["revision"], _new_revision(), secrets.token_hex(16)
     g = (revision,)
     statements += [(f"DELETE FROM energy_quarters WHERE {GUARD}", g), (f"DELETE FROM energy_pairs WHERE {GUARD}", g),
@@ -609,6 +660,18 @@ def thresholds_of(store):
     return out
 
 
+def _scrub(value):
+    """Replace non-finite floats (an overflowing JSON literal such as 1e400 parses to infinity) by text in place,
+    so the refusal that follows can be written to the audit log."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if type(item) is float and not math.isfinite(item):
+                value[key] = "non-finite number"
+            else:
+                _scrub(item)
+    return value
+
+
 def _only(arguments, allowed):
     if not isinstance(arguments, dict):
         raise ValueError("JSON object required")
@@ -626,6 +689,7 @@ def _number(value, name, low, high, low_open=False):
 
 
 def set_price(api, arguments):
+    _scrub(arguments)
     _only(arguments, ("price_per_kwh", "currency", "clear"))
     if "clear" in arguments:
         if arguments["clear"] is not True or set(arguments) != {"clear"}:
@@ -644,6 +708,7 @@ def set_price(api, arguments):
 
 
 def set_thresholds(api, arguments):
+    _scrub(arguments)
     _only(arguments, ("gpu", "cpu", "sensor"))
     if arguments.get("gpu") is None:
         raise ValueError("gpu thresholds are required")
@@ -665,6 +730,7 @@ def set_thresholds(api, arguments):
 
 
 def reset(api, arguments):
+    _scrub(arguments)
     _only(arguments, ("confirm",))
     if arguments.get("confirm") != "reset":
         raise ValueError('reset needs exactly {"confirm": "reset"}')
@@ -727,7 +793,7 @@ def _windows(zone, now, name):
 def _latest(store):
     out = {}
     for series in (GPU_POWER, CPU_POWER):
-        if _line_count(store, series) > MAX_LINES:
+        if _line_count(store, series) > MAX_LINES or _longest_labels(store, series) > MAX_LABELS:
             continue                    # the computation refuses such a series too; the page says so
         descriptor = store.descriptor(series) or {}
         max_age = 3 * float(descriptor.get("interval_s") or 10)
@@ -765,7 +831,12 @@ def energy_document(api, query):
         if status and status.get("last_ok"):
             fields["labels"]["collector_ok"] = zone.label(status["last_ok"])
         if _state(store).get("revision") == before:
-            return api.document("energy", **base, store=True, collector=status, **fields)
+            document = api.document("energy", **base, store=True, collector=status, **fields)
+            size = len(json.dumps(document, separators=(",", ":"), default=str))
+            if size > MAX_DOCUMENT_BYTES:
+                return api.document("energy", **base, store=True, **empty, price=price_of(store), collector=status,
+                                    why={"machines": f"the document would be {size // 1024} KiB, over the limit"})
+            return document
     return api.document("energy", **base, store=True, timezone=zone.describe(api.clock()), **empty,
                         price=price_of(store), collector=status,
                         why={"machines": "the energy rows changed while being read; the next poll retries"})
@@ -913,7 +984,7 @@ def _energy_fields(api, store, zone, name):
                              if not both_s else "no tokens generated while power and tokens were both observed")
     archive, more = _archive(store, zone, final_through, price)
     labels = {"collector_ok": None, "reset_at": zone.label(reset_at) if reset_at is not None else None}
-    return dict(timezone=zone.describe(now), offsets=zone.offsets(start, now), labels=labels,
+    return dict(timezone=zone.describe(now), offsets=zone.offsets(_floor(start, QUARTER) - HOUR, now), labels=labels,
                 bucket="hour" if name == "24h" else "day", machines=machines_out,
                 machine_order=order, buckets=by_bucket, totals=totals, cost=cost, efficiency=efficiency,
                 archive=archive, archive_more=more, price=price, reset_at=reset_at,
@@ -1098,6 +1169,9 @@ def thermals_document(api, query):
         if count > MAX_LINES or total + count > MAX_THERMAL_LINES:
             why[series] = f"{count} lines exceed the limit of this page ({MAX_LINES} per series); not read"
             continue
+        if _longest_labels(store, series) > MAX_LABELS:
+            why[series] = f"a label set longer than {MAX_LABELS} characters; not read"
+            continue
         total += count
         result = store.query(series, start, now, tier=tier)
         if result["truncated"]:
@@ -1158,11 +1232,17 @@ def thermals_document(api, query):
     throttle_read = THROTTLE not in why
     document = api.document(
         "thermals", range=name, step=step, start=start, end=now, machines=out, thresholds=thresholds,
-        throttle_read=throttle_read, timezone=zone.describe(now), offsets=zone.offsets(start, now), observer="node and control-machine temperature sensors (measured)",
+        throttle_read=throttle_read, timezone=zone.describe(now), offsets=zone.offsets(_floor(start, step) - HOUR, now),
+        observer="node and control-machine temperature sensors (measured)",
         notes={"warn": f"{step // 60}-minute buckets whose recorded maximum reached the warn threshold, out of the "
                        "buckets that had samples; time between samples is unknown",
                "throttle": f"sampled periods at {native // 60}-minute resolution; a bucket without samples ends a period"},
         why=why)
+    size = len(json.dumps(document, separators=(",", ":"), default=str))
+    if size > MAX_DOCUMENT_BYTES:
+        document = api.document("thermals", range=name, machines=None, thresholds=thresholds,
+                                why={"machines": f"the history would be {size // 1024} KiB, over the page limit of "
+                                                 f"{MAX_DOCUMENT_BYTES // 1024} KiB; use the CLI or the week view"})
     _thermal_cache[key] = (now, document)
     return document
 
@@ -1175,3 +1255,4 @@ def register(reg):
     reg.post("energy/thresholds", set_thresholds, audited=True)
     reg.post("energy/reset", reset, audited=True)
     reg.collector("energy", collect, interval=60)
+    reg.collector("energy-cadence", watch, interval=WATCH_INTERVAL_S)

@@ -200,6 +200,10 @@ def _thermals(args):
     if not machines:
         print("No temperature samples recorded in this range.")
     limits = document["thresholds"]
+    for reason in (f"{k}: {v}" for k, v in (document.get("why") or {}).items() if k != "machines"):
+        print("unavailable · " + reason)
+    if document.get("throttle_read") is False:
+        print("Throttle history unavailable (see above); an empty list below is not an observed absence.")
     for machine in machines:
         print(f"{machine['id']}:")
         for line in machine["lines"]:
@@ -207,6 +211,8 @@ def _thermals(args):
                 f", {line['warn_buckets']} of {line['sampled_buckets']} sampled {document['step'] // 60}-minute buckets "
                 "reached warn")
             print(f"  {line['label']}: last {line['last']:.1f} C, max {line['max']:.1f} C{above}")
+        if machine.get("throttle_more"):
+            print(f"  {machine['throttle_more']} earlier throttle periods not listed")
         for period in machine["throttle"]:
             print(f"  throttled{' (device ' + period['device'] + ')' if period.get('device') else ''}: "
                   f"{_when(period['start'])} - {_when(period['end'])}")

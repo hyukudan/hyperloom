@@ -96,10 +96,10 @@
     const blocker = gate(d, "Saving…");
     const price = view.draft.price ?? (d.price ? String(d.price.price_per_kwh) : "");
     const currency = view.draft.currency ?? (d.price?.currency || "EUR");
-    return `<div class="row en-form"><label class="field" for="energy-price">Price per kWh <input class="inp" id="energy-price" inputmode="decimal" value="${esc(price)}" ${blocker ? "disabled" : ""}></label>
-<label class="field" for="energy-currency">Currency <input class="inp en-cur" id="energy-currency" maxlength="3" value="${esc(currency)}" ${blocker ? "disabled" : ""}></label>
+    return `<div class="row en-form"><label class="field" for="energy-price">Price per kWh <input class="inp" id="energy-price" inputmode="decimal" value="${esc(price)}" ${view.error ? 'aria-invalid="true" aria-describedby="energy-price-error"' : ""} ${blocker ? "disabled" : ""}></label>
+<label class="field" for="energy-currency">Currency <input class="inp en-cur" id="energy-currency" maxlength="3" value="${esc(currency)}" ${view.error ? 'aria-invalid="true" aria-describedby="energy-price-error"' : ""} ${blocker ? "disabled" : ""}></label>
 ${button("Save price", "", {style: "pri", disabled: blocker, extra: 'data-page-action="energy-price-save"'})}${d.price ? button("Clear price", "", {disabled: blocker, extra: 'data-page-action="energy-price-clear"'}) : ""}</div>
-<p class="field-error" role="alert">${esc(view.error)}</p><p class="hint">${d.price ? `Current: ${esc(money(d.price.price_per_kwh, d.price.currency))} per kWh. ` : "No price configured: costs are unavailable. "}Changes are audited; archived months keep the price they were archived at.</p>`;
+<p class="field-error" id="energy-price-error" role="alert">${esc(view.error)}</p><p class="hint">${d.price ? `Current: ${esc(money(d.price.price_per_kwh, d.price.currency))} per kWh. ` : "No price configured: costs are unavailable. "}Changes are audited; archived months keep the price they were archived at.</p>`;
   }
 
   function gate(d, working) {
@@ -163,7 +163,11 @@ ${card("Monthly archive", archive(d) + older(d))}
     view.busy = true; H().state.busy = true; view.error = ""; H().render();
     try { await post(action, body); done(); H().announce(`${action.replace("energy/", "Energy ")} saved`); }
     catch (error) { view.error = error.message; H().announce(error.message); }
-    finally { try { await H().refresh(); } finally { view.busy = false; H().state.busy = false; H().render(); } }
+    finally {
+      // The first refresh may be a poll that started before the write; the second one surely reads after it.
+      try { H().state.fresh = false; await H().refresh(); await H().refresh(); }
+      finally { view.busy = false; H().state.busy = false; H().render(); }
+    }
   }
 
   document.addEventListener("click", event => {

@@ -3,7 +3,7 @@ survive polls, a reset needs Space or a click (never Enter) and focus lands on t
 blocker, sensor colours follow the sensor identity."""
 
 import importlib.util
-import ipaddress
+from urllib.parse import urlsplit
 import json
 from pathlib import Path
 import subprocess
@@ -14,7 +14,6 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-LOOPBACK = str(ipaddress.ip_address(0x7F000001))           # the loopback address, as everywhere in this suite
 
 
 def _smoke():
@@ -32,13 +31,14 @@ class EnergyPagesInBrowser(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.server = smoke.FixtureServer()
+        cls.host = urlsplit(cls.server.origin).hostname        # the fixture's own loopback address
         cls.profile = tempfile.TemporaryDirectory(prefix="hyperloom-browser-", ignore_cleanup_errors=True)
         port = smoke.free_port()
         command = [smoke.find_chrome(), "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
                    "--disable-background-networking", "--disable-component-update", "--disable-sync",
                    "--disable-extensions", "--proxy-server=direct://",
-                   f"--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE {LOOPBACK}",
-                   f"--remote-debugging-address={LOOPBACK}", f"--remote-debugging-port={port}",
+                   f"--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE {cls.host}",
+                   f"--remote-debugging-address={cls.host}", f"--remote-debugging-port={port}",
                    f"--user-data-dir={cls.profile.name}", "about:blank"]
         if sys.platform.startswith("linux") and hasattr(__import__("os"), "geteuid") and __import__("os").geteuid() == 0:
             command.append("--no-sandbox")
@@ -91,7 +91,7 @@ class EnergyPagesInBrowser(unittest.TestCase):
         self.js("new Promise(resolve => setTimeout(resolve, 2600))")
 
     def api(self, path):
-        status, _, body = self.server.request("GET", "/hyperloom/api/" + path, headers={"Host": f"{LOOPBACK}:{self.server.port}"})
+        status, _, body = self.server.request("GET", "/hyperloom/api/" + path, headers={"Host": f"{self.host}:{self.server.port}"})
         self.assertEqual(status, 200)
         return json.loads(body)
 
@@ -125,6 +125,32 @@ class EnergyPagesInBrowser(unittest.TestCase):
                                  "document.querySelector('[data-page-action=\"energy-price-save\"]').title"),
                          "Another action is running")
         self.js("window.Hyperloom.state.busy = false; window.Hyperloom.render();")
+        self.assertEqual(self.client.errors, [])
+
+    def test_a_slow_poll_started_before_a_save_never_shows_stale_data_after_it(self):
+        self.open("energy")
+        smoke.eventually(lambda: self.js("document.querySelector('[data-page-action=\"energy-price-save\"]')?.disabled === false"))
+        state = self.js("""new Promise(resolve => {
+          const real = window.fetch;
+          // Polls of the energy document issued from now on answer late, the write itself is not delayed.
+          window.fetch = (url, options) => String(url).includes('/api/energy?') && !(options && options.method === 'POST')
+            ? new Promise(r => setTimeout(r, 1500)).then(() => real(url, options)) : real(url, options);
+          window.Hyperloom.refresh();                       // a poll in flight before the save
+          const input = document.getElementById('energy-price');
+          input.value = '0.42'; input.dispatchEvent(new Event('input', {bubbles: true}));
+          document.querySelector('[data-page-action="energy-price-save"]').click();
+          const started = Date.now();
+          const check = () => {
+            const button = document.querySelector('[data-page-action="energy-price-save"]');
+            if (button && !button.disabled && !window.Hyperloom.state.busy) {
+              window.fetch = real;
+              resolve(window.Hyperloom.state.docs['energy?range=24h'].price);
+            } else if (Date.now() - started > 15000) { window.fetch = real; resolve('timeout'); }
+            else setTimeout(check, 50);
+          };
+          setTimeout(check, 50);
+        })""")
+        self.assertEqual(state, {"price_per_kwh": 0.42, "currency": "EUR"})
         self.assertEqual(self.client.errors, [])
 
     def test_thermal_threshold_drafts_survive_polls(self):

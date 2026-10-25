@@ -17,7 +17,7 @@ from hyperloom.web.api import API, APIError, redact
 from hyperloom.web.features import energy
 
 
-HOUR, QUARTER = 3600, 900
+HOUR, QUARTER, DAY = 3600, 900, 86400
 GPU = "node_gpu_power_watts"
 CPU = "node_cpu_power_watts"
 TOKENS = "engine_generated_tokens"
@@ -100,6 +100,15 @@ class IntegrationTests(Base):
         self.assertAlmostEqual(hours[NOW - 2 * HOUR]["coverage"], 0.5)
         self.assertEqual(hours[NOW - 5 * HOUR]["machines"], {})                        # no samples: no value, not 0
 
+    def test_a_backlog_is_worked_off_over_several_runs(self):
+        feed(self.store, lambda t: [(GPU, {"machine": "halo-1", "device": "0"}, 100.0)], NOW - 3 * HOUR, NOW)
+        with mock.patch.object(energy, "MAX_ROWS", 4):
+            first = energy.compute(self.store, NOW)
+            self.assertEqual(first["rows"], 4)
+            for _ in range(5):
+                energy.compute(self.store, NOW)
+        self.assertAlmostEqual(sum(r[3] for r in energy_rows(self.store)), 300.0)
+
     def test_samples_never_stand_for_more_than_their_interval(self):
         # One sample every 5 minutes taken at a 60 s interval: each covers one minute only.
         feed(self.store, lambda t: [(GPU, {"machine": "halo-1", "device": "0"}, 120.0)], NOW - HOUR, NOW,
@@ -161,6 +170,21 @@ class CadenceTests(Base):
         # Only minutes sampled entirely at 2 s count: the 10 s minutes and the mixed one are unobserved.
         self.assertAlmostEqual(machine["observed_s"], HOUR - 11 * 60)
         self.assertAlmostEqual(machine["wh"], 100.0 * (HOUR - 11 * 60) / HOUR)
+
+    def test_the_cadence_watch_breaks_verification_on_a_change_and_its_undo(self):
+        gpu = {"machine": "halo-1", "device": "0"}
+        feed(self.store, lambda t: [(GPU, gpu, 100.0)], NOW - HOUR, NOW)
+        intervals = {"fleet": 60.0}
+        self.api.sampler = types.SimpleNamespace(snapshot=lambda: {k: {"interval_s": v} for k, v in intervals.items()})
+        energy.collect(self.api, NOW - HOUR)
+        energy.watch(self.api, NOW - HOUR + 1)
+        intervals["fleet"] = 10.0
+        energy.watch(self.api, NOW - 30 * 60)                               # changed ...
+        intervals["fleet"] = 60.0
+        energy.watch(self.api, NOW - 30 * 60 + 1)                           # ... and restored before the next run
+        energy.collect(self.api, NOW)
+        self.assertEqual(self.store.execute("SELECT COUNT(*) FROM energy_verified")[0][0], 0)
+        self.assertEqual(energy_rows(self.store), [])                               # nothing integrated
 
     def test_history_before_the_first_run_and_runs_without_a_sampler_are_not_integrated(self):
         gpu = {"machine": "halo-1", "device": "0"}
@@ -258,7 +282,7 @@ class ArchiveTests(Base):
                 self.assertEqual((archived(first), energy_rows(first), energy._state(first)), before)
                 self.assertAlmostEqual(archived(first), 175.0)
                 # A stale reset is refused and changes nothing either.
-                with mock.patch.object(energy, "plan", lambda store, now, cadence=None, finalize_all=False: (stale, summary)):
+                with mock.patch.object(energy, "plan", lambda store, now, cadence=None, finalize_all=False, **kw: (stale, summary)):
                     with self.assertRaises(PermissionError):
                         energy.reset_store(first, NOW)
                 self.assertEqual((archived(first), energy_rows(first), energy._state(first)), before)
@@ -614,6 +638,17 @@ class DocumentTests(Base):
         self.assertEqual(len(after), 4)
         self.assertTrue(all(after[k] == before[k] for k in after))
 
+    def test_long_label_sets_are_refused_and_offsets_cover_every_point(self):
+        self.store.put("prefs/ui", "timezone", "Europe/Madrid")
+        self.store.record([("node_gpu_temp_celsius", {"machine": "halo-1", "sensor": "x" * 600}, 50.0),
+                           ("node_cpu_temp_celsius", {"machine": "halo-1", "sensor": "package"}, 50.0)],
+                          ts=NOW - DAY + 30, interval=60)
+        doc = energy.thermals_document(self.api, {"range": "day"})
+        self.assertIn("label set longer", doc["why"]["node_gpu_temp_celsius"])
+        first_point = doc["machines"][0]["lines"][0]["points"][0][0]
+        self.assertLessEqual(doc["offsets"][0][0], first_point)
+        self.assertEqual(doc["offsets"][0][1], 3600)                               # winter time in that zone
+
     def test_throttle_periods_never_bridge_missing_buckets(self):
         gpu = {"machine": "halo-1", "device": "0"}
         for t in (NOW - 600, NOW - 540, NOW - 360, NOW - 300):        # a missing stretch between
@@ -660,6 +695,16 @@ class WriteTests(unittest.TestCase):
         self.assertEqual(len(entries), 2 + len(bad))
         self.assertEqual([e["result"]["state"] for e in entries].count("refused"), len(bad))
         self.assertTrue(all(e["action"] == "energy/price" for e in entries))
+
+    def test_non_finite_numbers_are_refused_and_still_audited(self):
+        for arguments in ({"price_per_kwh": float("inf"), "currency": "EUR"},
+                          {"gpu": {"warn": float("nan"), "crit": 90}}):
+            action = "energy/price" if "currency" in arguments else "energy/thresholds"
+            with self.assertRaises(APIError):
+                self.api.feature_post(action, arguments)
+        entries = self.entries()
+        self.assertEqual([e["result"]["state"] for e in entries], ["refused", "refused"])
+        self.assertEqual(entries[0]["arguments"]["price_per_kwh"], "non-finite number")
 
     def test_thresholds_are_validated_exactly(self):
         self.api.feature_post("energy/thresholds", {"gpu": {"warn": 80, "crit": 95}, "cpu": {"warn": 85, "crit": 100},
@@ -719,6 +764,17 @@ class HttpTests(unittest.TestCase):
         connection.request(method, path, body=data, headers=headers)
         response = connection.getresponse()
         return response.status, response.read()
+
+    def test_an_overflowing_literal_is_refused_and_audited(self):
+        host = self.server.server_address[0]
+        data = b'{"price_per_kwh": 1e400, "currency": "EUR"}'
+        connection = http.client.HTTPConnection(host, self.port, timeout=5)
+        connection.request("POST", "/hyperloom/api/energy/price", body=data, headers={
+            "Host": f"{host}:{self.port}", "Origin": f"http://{host}:{self.port}", "X-Hyperloom-CSRF": self.server.csrf_token,
+            "Content-Type": "application/json", "Content-Length": str(len(data))})
+        self.assertEqual(connection.getresponse().status, 400)
+        audit = Path(self.dir.name) / "audit.jsonl"
+        self.assertEqual(json.loads(audit.read_text().splitlines()[-1])["result"]["state"], "refused")
 
     def test_post_checks_and_documents(self):
         body = {"price_per_kwh": 0.2, "currency": "EUR"}
