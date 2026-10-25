@@ -104,7 +104,7 @@
   function empty(title, detail, action = "") {
     return `<section class="card empty"><h2>${esc(title)}</h2><p class="t2">${esc(detail)}</p>${action}</section>`;
   }
-  const mutationReason = () => !state.fresh ? "Waiting for authoritative state" : state.busy || state.switching || activeJob() ? "Another action is running" : "";
+  const mutationReason = () => !state.fresh || documentsAged() ? "Waiting for authoritative state" : state.busy || state.switching || activeJob() ? "Another action is running" : "";
   const activeJob = () => state.job && !["done", "completed", "succeeded", "failed", "error", "cancelled", "canceled", "stopped"].includes(state.job.state || state.job.status);
   function meter(label, value, total, unit, why, offline = false, about = "") {
     value = unwrap(value); total = unwrap(total);
@@ -429,14 +429,14 @@
       pollAbort = new AbortController();
       const timeout = setTimeout(() => pollAbort?.abort(), 30000);
       // Each answer is stamped when it arrives (freshness is the age of what was received, not of the batch).
-      const arrived = {};
+      const arrived = {}, seq = sequence(names);
       const results = await Promise.allSettled(names.map(name => fetchDocument(name, pollAbort.signal).finally(() => { arrived[name] = Date.now(); })));
       clearTimeout(timeout);
       if (generation !== state.generation || document.hidden) return;
       state.current = names;
       for (let i = 0; i < results.length; i++) {
         const name = names[i], result = results[i];
-        if (OPTIONAL.includes(name)) optionalResult(name, result, prefsEpoch, arrived[name]);
+        if (OPTIONAL.includes(name) && !optionalResult(name, result, prefsEpoch, arrived[name], seq[name])) continue;
         if (result.status === "fulfilled") {
           if (name === "jobs") {
             state.lastJobs = result.value.jobs;
@@ -447,7 +447,7 @@
           delete state.errors[name];
         } else state.errors[name] = `${name}: ${result.reason.message}`;
       }
-      state.fresh = results.every(r => r.status === "fulfilled");
+      state.fresh = results.every(r => r.status === "fulfilled") && !documentsAged();
       const warningMessages = machines().flatMap(m => rows(m.warnings).map(w => `${m.id}: ${typeof w === "string" ? w : w.message || w.value || JSON.stringify(w)}`));
       for (const warning of warningMessages) if (!state.warnings.has(warning)) { state.warnings.add(warning); announce(`New warning · ${warning}`); }
       render();
@@ -468,10 +468,10 @@
     if (!extra.length) return;
     const abort = new AbortController(), timer = setTimeout(() => abort.abort(), 15000);
     optionalInFlight = (async () => {
-      const arrived = {};
+      const arrived = {}, seq = sequence(extra);
       const results = await Promise.allSettled(extra.map(name => fetchDocument(name, abort.signal).finally(() => { arrived[name] = Date.now(); })));
       if (generation !== state.generation || document.hidden) return;
-      extra.forEach((name, i) => optionalResult(name, results[i], prefsEpoch, arrived[name]));
+      extra.forEach((name, i) => optionalResult(name, results[i], prefsEpoch, arrived[name], seq[name]));
       render();
     })().finally(() => { clearTimeout(timer); optionalInFlight = null; });
   }
@@ -877,7 +877,18 @@
   // Optional shell documents: 404 = that feature is not installed (probed again every 60 s, not every poll).
   const OPTIONAL = ["prefs", "health/summary", "overview"];
   function optionalDue() { return OPTIONAL.filter(name => !state.absent[name] || Date.now() - state.absent[name] > 60000); }
-  function optionalResult(name, result, epoch, at = Date.now()) {
+  // Requests are numbered when sent; for one document, an answer older than one already applied (success, error
+  // or 404) is dropped before it touches any snapshot or notification.
+  let requestSeq = 0;
+  const appliedSeq = {};
+  function sequence(names) { return Object.fromEntries(names.map(name => [name, ++requestSeq])); }
+  function documentsAged() {
+    const now = Date.now();
+    return currentSet().some(name => name !== "jobs" && state.fetched[name] && now - state.fetched[name] > staleAfter());
+  }
+  function optionalResult(name, result, epoch, at = Date.now(), seq = ++requestSeq) {
+    if (seq <= (appliedSeq[name] || 0)) return false;
+    appliedSeq[name] = seq;
     if (result.status === "fulfilled") {
       delete state.absent[name]; delete state.optional[name + ":error"];
       state.optional[name] = result.value; state.optional[name + ":at"] = at;
@@ -891,6 +902,7 @@
       delete state.docs[name]; delete state.fetched[name];
     }
     else state.optional[name + ":error"] = result.reason?.message || "request failed";
+    return true;
   }
 
   // F53: info tooltips and problem states.
