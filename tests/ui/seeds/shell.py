@@ -2,7 +2,7 @@
 
 - Shell scenarios: while ``<fixture dir>/shell-scenario.json`` exists, the documents named in it (``health/summary``,
   ``overview``) answer its content (the string ``"fail"`` makes that request fail, ``"missing"`` answers 404 as when no feature
-  registers it); otherwise they answer what the registered feature answers, or 404 when no
+  registers it, a ``delay_s`` field delays the answer); otherwise they answer what the registered feature answers, or 404 when no
   feature registers them. The walkthrough writes and removes the file, so its assertions do not depend on which
   other features are installed.
 - While ``<fixture dir>/no-sw`` exists, the static assets manifest omits ``sw.js`` (the portal then answers 404 for
@@ -45,7 +45,11 @@ def patches(directory, now):
                         raise RuntimeError("fixture: " + name + " is failing")
                     if current[name] == "missing":
                         raise LookupError("unknown endpoint")      # as if no feature registered it
-                    return api.document(name.replace("/", "-"), **current[name])
+                    answer = dict(current[name])
+                    delay = answer.pop("delay_s", 0)
+                    if delay:
+                        time.sleep(min(float(delay), 20))     # a slow producer
+                    return api.document(name.replace("/", "-"), **answer)
                 if real is not None:
                     return real(api, query)
                 raise LookupError("unknown endpoint")

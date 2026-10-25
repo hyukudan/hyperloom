@@ -189,7 +189,10 @@ class ShellScriptContractTests(unittest.TestCase):
 
     def test_optional_documents_never_block_controls(self):
         self.assertIn('const OPTIONAL = ["prefs", "health/summary", "overview"];', self.script)
-        self.assertIn('r.status === "fulfilled" || extra.includes(names[i])', self.script)
+        poll = self.script[self.script.index("async function refresh()"):self.script.index("function fetchDocument(")]
+        self.assertIn('state.fresh = results.every(r => r.status === "fulfilled");', poll)
+        self.assertIn("refreshOptional(generation, prefsEpoch, own);", poll)
+        self.assertNotIn("optionalDue()", poll, "the screen's own poll never waits for the optional documents")
 
 
 class ShellSeedTests(unittest.TestCase):

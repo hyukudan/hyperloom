@@ -411,6 +411,7 @@ class DevTools:
     """Minimal RFC 6455 transport for CDP; no websocket package is needed."""
 
     def __init__(self, url):
+        self.url = url
         parsed = urlsplit(url)
         if parsed.scheme != "ws" or parsed.hostname != "127.0.0.1":
             raise AssertionError("DevTools must use loopback")
@@ -438,6 +439,17 @@ class DevTools:
     def close(self):
         self.stream.close()
         self.socket.close()
+
+    def reconnect(self):
+        """A fresh session on the same page target (an answer can be lost while the page moves between renderer
+        processes, e.g. back from the browser's own error page); session settings and start-up scripts are not
+        carried over."""
+        errors = self.errors
+        self.close()
+        self.__init__(self.url)
+        self.errors = errors
+        self.call("Runtime.enable")
+        self.call("Page.enable")
 
     def send(self, payload, opcode=1):
         mask = os.urandom(4)
@@ -572,7 +584,10 @@ def keyboard_walkthrough(client, server):
         key(client, "Escape")
         eventually(lambda: client.evaluate("!document.querySelector('dialog[open]')"))
         if not client.evaluate(f"document.activeElement.matches({json.dumps(selector)})"):
-            raise AssertionError("Dialog failed to return focus: " + action)
+            raise AssertionError("Dialog failed to return focus: " + action + " -- " + json.dumps(client.evaluate(
+                f"(() => {{ const b = document.querySelector({json.dumps(selector)}); return {{active: document.activeElement.outerHTML.slice(0, 200), "
+                "opener: b && b.outerHTML.slice(0, 200), connection: document.getElementById('connection').textContent, "
+                "fresh: window.Hyperloom.state.fresh}}; }})()")))
         if client.errors:
             raise AssertionError(json.dumps(client.errors))
         print("PASS keyboard " + action + " (Tab, reverse Tab, Space, Escape)", flush=True)
@@ -973,6 +988,40 @@ def shell_walkthrough(client, server, output):
         wait("document.getElementById('probe-owner')?.textContent === 'critical 1' && !document.getElementById('exceptions').hidden")
     finally:
         client.call("Page.removeScriptToEvaluateOnNewDocument", identifier=owner)
+    # A slow optional document never holds back the screen's own documents nor makes the view stale.
+    scenario({"health/summary": dict(base, evaluated_at=time.time(), delay_s=9), "overview": overview})
+    go("#/devices")
+    for _ in range(3):
+        client.evaluate("new Promise(resolve => setTimeout(resolve, 3000))")
+        age = client.evaluate("Date.now() - window.Hyperloom.state.fetched.devices")
+        if age > 4500 or not client.evaluate("document.getElementById('connection').hidden && !document.getElementById('add-machine').disabled"):
+            raise AssertionError(f"shell: a slow optional document delayed the screen ({age} ms since the last devices answer)")
+    scenario({"health/summary": dict(base, evaluated_at=time.time()), "overview": overview})
+    # Info tooltips: shown on focus, dismissed by Escape and kept dismissed across a poll; the pointer can move
+    # from the button into the tooltip.
+    go("#/stats", "!!document.querySelector('main .info-btn')")
+    tip_id = client.evaluate("(() => { const b = document.querySelector('main .info-btn'); b.focus(); return b.getAttribute('aria-describedby'); })()")
+    shown = f"getComputedStyle(document.getElementById({json.dumps(tip_id)})).display === 'block'"
+    wait(shown)
+    key(client, "Escape")
+    wait("!(" + shown + ")")
+    client.evaluate("new Promise(resolve => setTimeout(resolve, 2600))")
+    if client.evaluate(shown) or client.evaluate("document.activeElement.getAttribute('aria-describedby')") != tip_id:
+        raise AssertionError("shell: a poll reopened a dismissed tooltip or lost its focus")
+    client.evaluate("document.activeElement.blur()")
+    box = client.evaluate(f"(() => {{ const b = document.querySelector('[aria-describedby={json.dumps(tip_id)}]').getBoundingClientRect(); return [b.x + b.width / 2, b.y + b.height / 2, b.bottom]; }})()")
+    for x, y in ((box[0], box[1]), (box[0], box[2] + 3)):
+        client.call("Input.dispatchMouseEvent", type="mouseMoved", x=x, y=y)
+        if not client.evaluate(shown):
+            raise AssertionError(f"shell: the tooltip closed while the pointer moved from its button towards it ({x}, {y})")
+    tip_box = client.evaluate(f"(() => {{ const b = document.getElementById({json.dumps(tip_id)}).getBoundingClientRect(); return [b.x + b.width / 2, b.y + b.height / 2]; }})()")
+    client.call("Input.dispatchMouseEvent", type="mouseMoved", x=tip_box[0], y=tip_box[1])
+    if not client.evaluate(shown):
+        raise AssertionError("shell: the tooltip closed under the pointer")
+    client.evaluate("new Promise(resolve => setTimeout(resolve, 2600))")        # a poll re-renders the page
+    if not client.evaluate(shown):
+        raise AssertionError("shell: a poll closed the tooltip under the pointer")
+    client.call("Input.dispatchMouseEvent", type="mouseMoved", x=5, y=995)
     # Narrow: the bottom tab bar, the strip and no horizontal overflow; nothing hidden under the bar.
     viewport(390, "light")
     go("#/devices", "document.querySelectorAll('#tabbar a').length === 4")
@@ -1010,13 +1059,8 @@ def shell_service_worker(client, server):
     portal stops serving /sw.js the page removes the worker, and the worker removes itself on a navigation the
     page script does not see. Returns the fixture server now serving (the walkthrough restarts it)."""
     def wait(expression, timeout=30):
-        def check():
-            try:
-                return client.evaluate(expression)
-            except TimeoutError:          # an answer lost while the page swapped renderer (error page -> portal)
-                return False
         try:
-            return eventually(check, timeout=timeout)
+            return eventually(lambda: client.evaluate(expression), timeout=timeout)
         except AssertionError:
             raise AssertionError("service worker: timed out waiting for " + expression) from None
 
@@ -1053,9 +1097,11 @@ def shell_service_worker(client, server):
                             if not e.get("params", {}).get("exceptionDetails", {}).get("url", "").startswith("chrome-error://")]
     finally:
         client.call("Network.emulateNetworkConditions", offline=False, latency=0, downloadThroughput=-1, uploadThroughput=-1)
-    # Restart the portal on the same origin: the reloaded page carries the new process's CSRF token.
+    # Back from the browser's error page on a fresh session.
     client.call("Page.navigate", url=server.url + "#/devices")
     time.sleep(2)
+    client.reconnect()
+    client.call("Page.reload")
     wait("document.readyState === 'complete' && !!document.querySelector('meta[name=hyperloom-csrf]')")
     before = client.evaluate("document.querySelector('meta[name=hyperloom-csrf]').content")
     server.process.terminate()
@@ -1084,9 +1130,11 @@ def shell_service_worker(client, server):
             # A stopped worker starts again for the next navigation with no recent self-check. The stop command can
             # take long on a loaded machine; a later attempt repeats it.
             try:
+                client.socket.settimeout(45)
                 client.call("ServiceWorker.stopAllWorkers")
-            except TimeoutError:
-                pass
+                client.socket.settimeout(10)
+            except OSError:                  # no answer in time: continue on a fresh session
+                client.reconnect()
             time.sleep(1.5)
             client.call("Page.navigate", url=server.url + f"not-a-page-{attempt}")
             wait("document.readyState === 'complete' && !document.querySelector('meta[name=hyperloom-csrf]')")
