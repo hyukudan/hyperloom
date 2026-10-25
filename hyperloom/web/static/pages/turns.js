@@ -95,8 +95,8 @@
   function waitingTable(rows, label) {
     const {table, cells, esc} = H();
     if (!rows?.length) return `<p class="ops-note">No verified waiting ticket.</p>`;
-    return table(["#", "Label", "Kind", "Waited", "Estimated start"], rows.map(t => cells([
-      esc(t.position), t.label ? esc(t.label) : H().unavailable(t.label_why), esc(t.kind), UI.show(UI.dur(t.waited_s), "unknown"),
+    return table(["#", "Label", ["Kind", "hide-n"], "Waited", "Estimated start"], rows.map(t => cells([
+      esc(t.position), t.label ? esc(t.label) : H().unavailable(t.label_why), `<span class="hide-n">${esc(t.kind)}</span>`, UI.show(UI.dur(t.waited_s), "unknown"),
       t.estimated_start_s == null ? H().unavailable("not enough recent turns") : `in ${esc(UI.dur(t.estimated_start_s))} <span class="ops-note">estimate</span>`])).join(""), label);
   }
 
@@ -104,9 +104,9 @@
     const {table, cells, esc} = H();
     if (!rows?.length) return `<p class="ops-note">No turn in the log tail.</p>`;
     const reap = r => !r ? H().unavailable("no reap line") : r.local ? `${esc(r.local.reaped)} reaped · vram ${esc(r.local.vram_mib.join("→"))} MiB${r.warnings ? " · " + esc(r.warnings) + " warning(s)" : ""}` : esc(r.warnings ? "warning" : "—");
-    return table(["Start", "Label", "Kind", "Duration", "Outcome", "Reap"], rows.slice(0, 12).map(t => cells([
+    return table(["Start", "Label", "Kind", "Duration", "Outcome", ["Reap", "hide-n"]], rows.slice(0, 12).map(t => cells([
       esc(t.start_clock || ""), esc(t.label), esc(t.side === "both nodes" ? "pair (both nodes)" : t.kind),
-      UI.show(UI.dur(t.duration_s), t.outcome === "running" ? "running" : "no end line"), esc(t.outcome), reap(t.reap)])).join(""), `Recent turns on ${machine}`);
+      UI.show(UI.dur(t.duration_s), t.outcome === "running" ? "running" : "no end line"), esc(t.outcome), `<span class="hide-n">${reap(t.reap)}</span>`])).join(""), `Recent turns on ${machine}`);
   }
 
   function nodeCard(node) {
