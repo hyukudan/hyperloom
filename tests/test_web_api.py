@@ -173,8 +173,12 @@ class APITests(unittest.TestCase):
                      "device": ["halo-1:gpu"], "deadline": 1140}
         result = wait_job(self.api, self.api.mutate("up", arguments))
         self.assertEqual(result["state"], "succeeded")
-        self.orch.up.assert_called_once_with(self.cluster, "qwen-replicas", router="halo-1",
-                                             nodes=["halo-1"], devices=["halo-1:gpu"], deadline_s=1140, approval=None)
+        self.orch.up.assert_called_once()
+        kwargs = dict(self.orch.up.call_args.kwargs)
+        cancelled = kwargs.pop("cancelled")                         # the job's hand-over check (its cancel marker)
+        self.assertEqual((self.orch.up.call_args.args, kwargs), ((self.cluster, "qwen-replicas"), dict(
+            router="halo-1", nodes=["halo-1"], devices=["halo-1:gpu"], deadline_s=1140, approval=None)))
+        self.assertFalse(cancelled())
         entries = [json.loads(line) for line in self.api.audit_path.read_text().splitlines()]
         self.assertEqual(len(entries), 2)
         self.assertEqual(entries[-1]["action"], "up")
@@ -229,6 +233,109 @@ class APITests(unittest.TestCase):
         self.assertEqual(wait_job(self.api, self.api.mutate("cancel", {"job": job["job"]}))["state"], "succeeded")
         release.set()
         wait_job(self.api, job)
+
+    def plain_up(self, up, stop):
+        """Run a plain up job whose orchestrate.up is ``up(cancelled, cue)``; ``stop()`` runs when up sets ``cue``.
+        Returns (the stop's finished job, the up's finished job)."""
+        cue, resume = threading.Event(), threading.Event()
+        self.addCleanup(resume.set)
+        self.orch.up.side_effect = lambda *a, **kw: up(kw["cancelled"], cue, resume)
+        job = self.api.mutate("up", {"profile": "qwen-replicas"})
+        self.assertTrue(cue.wait(3))
+        stopped = wait_job(self.api, stop(job))
+        resume.set()
+        return stopped, wait_job(self.api, job)
+
+    def test_cancel_of_a_plain_up_before_its_hand_over_starts_nothing_and_stops_nothing(self):
+        # Cancelled while up prepares (before it owns the profile): only the job's marker. The cancel never answers
+        # "stopped" while up goes on: up meets the marker at the hand-over and starts nothing.
+        def up(cancelled, cue, resume):
+            cue.set()
+            resume.wait(3)
+            if cancelled():
+                raise RuntimeError("profile stop requested")
+            return {"state": "running"}
+        cancel, finished = self.plain_up(up, lambda job: self.api.mutate("cancel", {"job": job["job"]}))
+        self.assertEqual(cancel["state"], "succeeded", cancel["error"])
+        self.assertIn(cancel["result"]["phase"], ("not started", "checks"))
+        self.assertIsNone(cancel["result"]["down"])
+        self.assertIn("nothing was started", cancel["result"]["summary"])
+        self.assertEqual((finished["state"], finished["error"]), ("failed", "profile stop requested"))
+        self.orch.down.assert_not_called()
+
+    def test_cancel_of_a_plain_up_never_stops_a_profile_that_was_already_running(self):
+        # The profile ran before this job: up refuses it (before the hand-over). A cancel meanwhile stops nothing.
+        def up(cancelled, cue, resume):
+            cue.set()
+            resume.wait(3)
+            raise RuntimeError("profile has saved running state; run down before up")
+        cancel, finished = self.plain_up(up, lambda job: self.api.mutate("cancel", {"job": job["job"]}))
+        self.assertEqual(cancel["state"], "succeeded", cancel["error"])
+        self.assertIsNone(cancel["result"]["down"])
+        self.assertEqual(finished["state"], "failed")
+        self.orch.down.assert_not_called()
+
+    def test_cancel_of_a_plain_up_after_its_hand_over_stops_the_profile(self):
+        def up(cancelled, cue, resume):
+            self.assertFalse(cancelled())                           # up owns the profile: the launch goes on
+            cue.set()
+            resume.wait(3)
+            return {"state": "running"}
+        cancel, finished = self.plain_up(up, lambda job: self.api.mutate("cancel", {"job": job["job"]}))
+        self.assertEqual(cancel["state"], "succeeded", cancel["error"])
+        self.assertEqual((cancel["result"]["phase"], cancel["result"]["down"]), ("launching", {"state": "stopped"}))
+        self.orch.down.assert_called_once_with("qwen-replicas")
+        self.assertEqual(finished["state"], "succeeded", finished["error"])
+
+    def test_a_stop_of_its_profile_cancels_a_preparing_plain_up(self):
+        # `down P` while a plain up prepares P: up would clear P's stop marker when it takes P and start; the job's
+        # marker is written too, so it starts nothing. A stop of another profile leaves it alone.
+        for profile, stops_it in (("qwen-replicas", True), ("other", False)):
+            with self.subTest(profile=profile):
+                self.orch.down.reset_mock()
+
+                def up(cancelled, cue, resume):
+                    cue.set()
+                    resume.wait(3)
+                    if cancelled():
+                        raise RuntimeError("profile stop requested")
+                    return {"state": "running"}
+                stopped, finished = self.plain_up(up, lambda job: self.api.mutate("down", {"profile": profile}))
+                self.assertEqual(stopped["state"], "succeeded", stopped["error"])
+                self.orch.down.assert_called_once_with(profile, force=False)
+                self.assertEqual(finished["state"], "failed" if stops_it else "succeeded")
+                self.assertEqual("cancelled_switches" in stopped["result"], stops_it)
+
+    def test_every_mutation_runs_on_the_portals_configuration(self):
+        # A configuration file named by the client is refused on every mutation that took one (nothing runs); the
+        # portal's own path is accepted and is what runs.
+        bodies = {"up": {"profile": "qwen-replicas"}, "install": {"profile": "qwen-replicas"},
+                  "doctor": {"machine": "halo-1"}, "hosts/pin": {"machine": "halo-1", "fingerprint": "SHA256:fixture"}}
+        for action, body in bodies.items():
+            for other in ("//pc/share/cluster.json", str(self.directory / "other" / "cluster.json"), "cluster.json"):
+                with self.subTest(action=action, config=other):
+                    with self.assertRaisesRegex(APIError, "portal's configuration: drop config"):
+                        self.api.mutate(action, dict(body, config=other))
+        self.orch.load_cluster.assert_not_called()
+        self.orch.up.assert_not_called()
+        self.orch.install.assert_not_called()
+        self.remote.keyscan.assert_not_called()
+        self.remote.keyscan.return_value = [SimpleNamespace(algorithm="ssh-ed25519", sha256_fingerprint="SHA256:fixture")]
+        for action, body in bodies.items():
+            with self.subTest(action=action, config="the portal's"):
+                job = wait_job(self.api, self.api.mutate(action, dict(body, config=str(self.directory / "cluster.json"))))
+                self.assertEqual(job["state"], "succeeded", job["error"])
+                self.assertNotIn("config", job["arguments"])
+        self.assertEqual({c.args[0] for c in self.orch.load_cluster.call_args_list}, {self.directory / "cluster.json"})
+        # The detached CLI is always given the portal's configuration.
+        for action in ("up", "install"):
+            argv = self.api._cli_argv(action, {"profile": "qwen-replicas"})
+            self.assertEqual(argv[argv.index("--config") + 1], str(self.directory / "cluster.json"))
+
+    def test_detached_plain_up_carries_its_job(self):
+        argv = self.api._cli_argv("up", {"profile": "qwen-replicas", "_job": "ab12cd34"})
+        self.assertEqual(argv[argv.index("--job") + 1], "ab12cd34")
+        self.assertNotIn("--job", self.api._cli_argv("up", {"profile": "qwen-replicas"}))
 
     def test_logs_query_is_read_only_cached_and_redacted(self):
         query = {"profile": "qwen-replicas", "process": "halo-1", "tail": "5"}

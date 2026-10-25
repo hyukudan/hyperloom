@@ -267,6 +267,12 @@ class ContractTests(unittest.TestCase):
                           "max_copies_per_token": 2, "api_key_per_token": "[redacted]",
                           "password_tokens_min": "[redacted]", "secret_tokens": "[redacted]",
                           "private_key_tokens": "[redacted]"})
+        # The token-count exemption holds for numbers only: a string (or any structure) under such a key is redacted.
+        self.assertEqual(redact({"github_tokens": "ghp_abc", "prompt_tokens": 7, "max_tokens": None,
+                                 "access_tokens": ["ghp_abc"], "refresh_tokens": {"a": "ghp_abc"},
+                                 "flag_tokens": True}),
+                         {"github_tokens": "[redacted]", "prompt_tokens": 7, "max_tokens": None,
+                          "access_tokens": "[redacted]", "refresh_tokens": "[redacted]", "flag_tokens": "[redacted]"})
         self.assertSameAsCli(document)
         with mock.patch.object(recipe_web, "COMMAND", [sys.executable, "-c", (
                 "import sys; sys.stderr.write('hyperloom: refused: Authorization: Bearer abc.def\\n'); sys.exit(1)")]):
@@ -586,6 +592,36 @@ class JobTests(unittest.TestCase):
                     self.assertNotIn("cancelled_switches", stopped["result"])
                     self.assertEqual(finished["state"], "succeeded", finished["error"])
 
+    def test_cli_plain_up_takes_a_job(self):
+        # `up PROFILE --job ID` (the portal's detached plain up): the job's marker is checked at the hand-over and
+        # its progress is recorded in the configuration's directory, as for an up with a recipe.
+        seen = []
+
+        def up(*a, **kw):
+            seen.append(kw["cancelled"]())
+            if seen[-1]:
+                raise orchestrate.OrchestrationError("profile stop requested")
+            return {"state": "running"}
+        self.orch.up.side_effect = up
+        argv = ["up", "qwen-replicas", "--config", str(self.env.config), "--job"]
+        self.assertEqual(cli.up_command(cli.build_parser().parse_args(argv + ["ab12cd34"]), orchestrate=self.orch),
+                         {"state": "running"})
+        with service.configured(self.env.config):
+            self.assertEqual(service.read_progress("ab12cd34")["phase"], "done")
+            self.assertEqual(service.read_progress("ab12cd34")["what"], "up")
+
+        def cancel_at_hand_over(*a, **kw):
+            with service.configured(self.env.config):
+                service.cancel_marker("cd34ab12").touch()
+            return up(*a, **kw)
+        self.orch.up.side_effect = cancel_at_hand_over
+        with self.assertRaisesRegex(orchestrate.OrchestrationError, "stop requested"):
+            cli.up_command(cli.build_parser().parse_args(argv + ["cd34ab12"]), orchestrate=self.orch)
+        self.assertEqual(seen, [False, True])
+        with service.configured(self.env.config):
+            self.assertEqual(service.read_progress("cd34ab12")["phase"], "failed")
+            self.assertFalse(service.cancel_marker("cd34ab12").exists())
+
     def test_detached_stop_marks_a_recipe_up_of_that_profile(self):
         self.api.detached = True
         self.api._jobs["u1"] = {"job": "cd34ab12", "action": "up", "state": "running",
@@ -762,6 +798,40 @@ class DeployCancelTests(unittest.TestCase):
                          ("stopping", "mm", [], None))
         self.assertIn("it was stopping mm", answer["summary"])
         self.assertIn("nothing was started; this deploy had stopped mm (stopped): they stay stopped", finished["error"])
+
+    def test_a_cancel_at_a_stop_never_answers_nothing_while_the_stop_runs(self):
+        # The cancel lands right next to the record of "stopping qwen-replicas", on either side of it. Before it: the
+        # cancel reads the checks and the deploy, meeting the marker, stops nothing. After it: the deploy still meets
+        # the marker (recorded first, checked next) and leaves qwen-replicas running; the cancel's answer had named
+        # that stop. Never "stopped nothing" while the deploy goes on to stop it.
+        real = service._write_progress
+        for before in (True, False):
+            with self.subTest(before=before):
+                self.orch.down.reset_mock()
+                self.answers.clear()
+
+                def write(path, state):
+                    landing = state["phase"] == "stopping" and state["stopping"] == "qwen-replicas" \
+                        and not self.answers
+                    if landing and before:
+                        self.cancel()
+                    real(path, state)
+                    if landing and not before:
+                        self.cancel()
+                with mock.patch.object(service, "_write_progress", side_effect=write):
+                    finished = self.deploy(["qwen-replicas"])
+                self.assertEqual(self.downs(), [])                       # nothing stopped, by the deploy or the cancel
+                self.orch.up.assert_not_called()
+                answer = self.answers[0]
+                self.assertEqual((answer["phase"], answer["stopping"], answer["down"]),
+                                 ("checks", None, None) if before else ("stopping", "qwen-replicas", None))
+                if not before:
+                    self.assertIn("it was stopping qwen-replicas (or, meeting this cancel first, left it running",
+                                  answer["summary"])
+                self.assertEqual(finished["state"], "failed")
+                self.assertIn("deploy cancelled: cancelled before the launch: nothing was started; this deploy had "
+                              "stopped nothing", finished["error"])
+                self.assertNotIn("it was stopping", finished["error"])
 
     def test_at_the_hand_over_up_starts_nothing(self):
         def up(*a, **kw):

@@ -669,7 +669,7 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
             raise OrchestrationError("profile has saved running state; run down before up")
         path.with_suffix(".stop").unlink(missing_ok=True)
         if cancelled is not None and cancelled():
-            # A switch (recipe deploy) cancelled while this launch was being handed over: start nothing.
+            # A portal job (an up or a recipe deploy) cancelled while this launch was being handed over: start nothing.
             raise OrchestrationError("profile stop requested")
         owned = True
         handlers.enter_context(_up_handlers(path))

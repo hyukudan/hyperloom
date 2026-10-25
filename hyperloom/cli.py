@@ -375,11 +375,10 @@ def _version():
 
 def up_command(args, *, orchestrate=None, load_cluster=None):
     """`hyperloom up PROFILE ...` from its parsed arguments; the portal's in-process path calls this too."""
-    if args.recipe is None and args.recipe_inputs is None:
-        if getattr(args, "job", None):
-            raise ValueError("--job goes with --recipe or --recipe-inputs")
+    if args.recipe is None and args.recipe_inputs is None and not getattr(args, "job", None):
         return _up_command(args, orchestrate, load_cluster)
-    # The recipe directories derive from --config for this call only (the portal runs requests on other threads).
+    # The recipe directories and a job's cancel files derive from --config for this call only (the portal runs
+    # requests on other threads).
     with _module("hyperloom.recipes.service").configured(args.config):
         return _up_command(args, orchestrate, load_cluster)
 
@@ -431,9 +430,10 @@ def _up_command(args, orchestrate, load_cluster):
         approval=approval, queue_timeout_s=args.queue_timeout, diagnostics=args.diagnostic,
         vram_cap_gib=args.vram_cap_gib, recipe=recipe, **({"cancelled": cancelled} if cancelled else {}))
     try:
-        if recipe is not None and getattr(args, "job", None):
-            # A portal job: its cancel marker is checked right after up owns the profile (the hand-over), and its
-            # progress tells the cancel whether the launch had begun (then the cancel stops the profile).
+        if getattr(args, "job", None):
+            # A portal job (with a recipe or without): its cancel marker is checked right after up owns the profile
+            # (the hand-over), and its progress tells the cancel whether the launch had begun (then the cancel stops
+            # the profile).
             with _module("hyperloom.recipes.service").launch_progress(args.job, "up", args.profile) as progress:
                 return launch(progress.handoff)
         return launch()
@@ -525,8 +525,8 @@ def build_parser(parser_class=argparse.ArgumentParser):
     up.add_argument("--recipe-workload", help="the workload class this run serves (default: default)")
     up.add_argument("--recipe-inputs", metavar="DIGEST",
                     help="launch exactly a recipe snapshot that `hyperloom recipe plan` made (its `inputs` digest)")
-    up.add_argument("--job", help="with --recipe/--recipe-inputs: a hex id; the file <config dir>/run/deploy-cancel/ID "
-                                  "cancels this launch at its hand-over (the portal's cancel writes it)")
+    up.add_argument("--job", help="a hex id; the file <config dir>/run/deploy-cancel/ID cancels this launch at its "
+                                  "hand-over (the portal's cancel writes it)")
     down = commands.add_parser("down")
     down.add_argument("profile", nargs="?")
     down.add_argument("--force", action="store_true")

@@ -452,9 +452,17 @@ hyperloom recipe routes ds41-rtx
 | `POST doctor {machine}` | `hyperloom doctor` |
 | `POST hosts/pin {machine, fingerprint}` | `hyperloom hosts pin` |
 | `POST keys/rotate {name}` | `hyperloom keys rotate NAME` |
-| `POST cancel {job | profile}` | stops a running `up`; cancels a `recipes/deploy` (above) |
+| `POST cancel {job | profile}` | `job`: cancels a running `up` (with a recipe or without) or `recipes/deploy`, as above; `profile`: `hyperloom down PROFILE` |
 | `GET jobs`, `GET jobs/<id>` | job progress and results |
 
 Mutations answer `202` with a job (`job`, `state`, `action`, `arguments`, `result`, `error`). One mutating job runs at a
 time; `down` and `cancel` never wait. `up`, `down`, `install` and `recipes/deploy` run as their own CLI process, which
 finishes even if the portal stops.
+
+Every mutation runs on the portal's own configuration: a `config` argument naming another file is refused (400),
+for `up`, `install`, `doctor` and `hosts/pin` alike.
+
+`cancel {job}` of a plain `up` works as for an `up` with a recipe (the job runs `up --job <id>`): before `up` owns the
+profile, only its marker (it starts nothing; a profile that was already running, which `up` refuses, is never
+stopped); once it owns it, the cancel stops it. A `down` (or a cancel by profile) of the profile an `up` job launches
+writes that job's marker too.

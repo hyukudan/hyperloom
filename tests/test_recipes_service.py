@@ -183,6 +183,23 @@ class CatalogTests(unittest.TestCase):
                 with self.subTest(ref=ref), self.assertRaises(ValueError):
                     service.argv("diff", {"a": QWEN, "b": ref}, config=env.config)
             self.assertIn("auto", service.argv("plan", {"recipe": "auto", "profile": "ds41-rtx"}, config=env.config))
+            # Layer, facts and out names are files of hyperloom's directories: never a Windows device name, in any
+            # case, with or without an extension.
+            devices = ("CON", "con", "Nul", "nul.json", "PRN.toml", "aux.txt", "COM1", "com9.json", "LPT1",
+                       "lpt9.toml", "con.x.json")
+            for name in devices:
+                for operation, arguments in (
+                        ("plan", {"recipe": QWEN, "profile": "qwen-replicas", "overrides": [name]}),
+                        ("plan", {"recipe": QWEN, "profile": "qwen-replicas", "tuning_profile": name}),
+                        ("plan", {"recipe": QWEN, "profile": "qwen-replicas", "facts": name}),
+                        ("probe", {"profile": "qwen-replicas", "out": name}),
+                        ("probe", {"profile": "qwen-replicas", "evidence": ["halo-1=" + name]})):
+                    with self.subTest(name=name, operation=operation, arguments=sorted(arguments)), \
+                            self.assertRaisesRegex(ValueError, "device name"):
+                        service.argv(operation, arguments, config=env.config)
+            for name in ("console", "com10", "lpt", "nullx.json", "auxiliary.toml"):
+                with self.subTest(name=name):
+                    service.argv("probe", {"profile": "qwen-replicas", "out": name}, config=env.config)
 
     def test_storage_follows_the_config_in_use(self):
         with isolated() as env:
@@ -394,6 +411,37 @@ class SharingTests(unittest.TestCase):
             with mock.patch.object(Path, "unlink", unlink):
                 service.delete(None, "mine", saved["sha256"])
             self.assertFalse(Path(saved["path"]).exists())
+
+    def test_a_jobs_cancel_marker_unlink_retries_and_never_replaces_the_result(self):
+        with isolated():
+            real, attempts = Path.unlink, []
+
+            def unlink(fail):
+                def call(path, *a, **kw):
+                    if path.parent.name == "deploy-cancel" and path.suffix != ".json":
+                        attempts.append(path.name)
+                        if len(attempts) <= fail:
+                            raise PermissionError(13, "in use")
+                    return real(path, *a, **kw)
+                return call
+            for fail, gone in ((2, True), (10 ** 6, False)):
+                with self.subTest(fail=fail):
+                    attempts.clear()
+                    marker = service.cancel_marker("ab12cd34")
+                    with mock.patch.object(Path, "unlink", unlink(fail)), mock.patch("time.sleep"):
+                        with service.launch_progress("ab12cd34", "up", "qwen-replicas") as progress:
+                            marker.touch()                               # a cancel that came after the launch
+                            result = "the launch's own answer"
+                    self.assertEqual(result, "the launch's own answer")
+                    self.assertEqual(progress.state["phase"], "done")
+                    self.assertGreater(len(attempts), 1)
+                    self.assertEqual(marker.exists(), not gone)
+            # The launch's own error is not replaced by the unlink's either.
+            with mock.patch.object(Path, "unlink", unlink(10 ** 6)), mock.patch("time.sleep"), \
+                    self.assertRaisesRegex(RecipeError, "the launch failed"):
+                with service.launch_progress("cd34ab12", "up", "qwen-replicas"):
+                    service.cancel_marker("cd34ab12").touch()
+                    raise RecipeError("the launch failed")
 
     def test_snapshot_publish_retries_and_reports_its_error(self):
         with isolated():
