@@ -219,8 +219,31 @@ class Handler(BaseHTTPRequestHandler):
         except (OSError, RuntimeError) as exc:
             self._error(503, str(exc))
 
+    def _drain(self):
+        """Before an early POST refusal, read and discard a declared body (bounded, short timeout), so the client
+        sees the error instead of a reset connection. The body is never parsed."""
+        if getattr(self, "_body_read", False):
+            return
+        self._body_read = True
+        lengths = self.headers.get_all("Content-Length", [])
+        if (len(lengths) != 1 or not lengths[0].isascii() or not lengths[0].isdigit()
+                or int(lengths[0]) > recipe_web.LARGE_BODY_BYTES or self.headers.get_all("Transfer-Encoding")):
+            return
+        try:
+            self.connection.settimeout(2)
+            left = int(lengths[0])
+            while left > 0:
+                chunk = self.rfile.read(min(left, 65536))
+                if not chunk:
+                    break
+                left -= len(chunk)
+        except (OSError, ValueError):
+            pass
+
     def do_POST(self):
+        self._body_read = False
         if not self._host():
+            self._drain()
             return
         try:
             host = self.headers["Host"]
@@ -253,6 +276,7 @@ class Handler(BaseHTTPRequestHandler):
             if (action not in MUTATIONS and action not in recipe_web.POSTS and action not in registry.posts
                     and action not in registry.jobs and action != "jobs/renew"):
                 raise APIError("unknown mutation", 404)
+            self._body_read = True
             raw = self.rfile.read(size)
             if len(raw) != size:
                 raise APIError("incomplete body")
@@ -275,10 +299,13 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send(202, self.server.api.mutate(action, arguments))
         except APIError as exc:
+            self._drain()
             self._error(exc.status, str(exc))
         except (ValueError, UnicodeError, RecursionError, OverflowError) as exc:
+            self._drain()
             self._error(400, "invalid JSON or arguments: " + str(exc))
         except (OSError, RuntimeError) as exc:
+            self._drain()
             self._error(503, str(exc))
 
     def _client_gone(self):

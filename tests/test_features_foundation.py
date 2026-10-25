@@ -416,7 +416,11 @@ class CLIExtensionTests(unittest.TestCase):
                 mock.patch.dict(sys.modules, {"hyperloom.cliext.one": module, "hyperloom.cliext.two": clash,
                                               "hyperloom.cliext.three": broken}), \
                 mock.patch("builtins.__import__", side_effect=lambda name, *a, **kw: sys.modules[name]):
-            cliext.add_all(commands)
+            import contextlib
+            import io
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                cliext.add_all(commands)
+        self.assertIn("command names already used: config", err.getvalue())
         self.assertEqual(sorted(commands.choices), ["config", "good-cmd"])
         self.assertEqual(len(calls), 1)                      # built once, then grafted
         self.assertEqual(parser.parse_args(["good-cmd"]).command, "good-cmd")
