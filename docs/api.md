@@ -285,10 +285,12 @@ and `up --recipe-inputs <inputs>` launches exactly the snapshot: its configurati
 deploy's cancel marker: the deploy stops before its next step and `up`, right after it takes the profile, starts
 nothing; profiles the deploy already stopped stay stopped (start them again with `up`). Once `up` owns the target
 profile, the cancel stops that profile (`down`), the one the deploy started. The answer says what happened: `phase`
-(`not started`, `checks`, `stopping`, `launching`, `done`), `profile`, `stopped_by_deploy`, `stopping`, `down` (the
-target's stop, or null) and `summary`; the cancelled deploy's `error` says the same. A `down` (or a cancel by
-profile) while a deploy runs cancels the deploy the same way but stops only the profile it names. A finished job is not
-cancelled (409).
+(`not started`, `checks`, `stopping`, `launching`, `done`, `failed`), `profile`, `stopped_by_deploy`, `stopping`,
+`down` (the target's stop as `down` answered it: `stopped`, or `stop-requested` while its launch is still winding down;
+null when nothing of the deploy runs) and `summary`; the cancelled deploy's `error` says the same, with how each
+profile it stopped answered. When the deploy's progress cannot be read, the cancel fails (500) and says so; its marker
+is written all the same. A `down` (or a cancel by profile) while a deploy runs cancels the deploy the same way but
+stops only the profile it names. A job that has finished is not cancelled (409, at once).
 
 #### POST up with a recipe (job)
 
@@ -307,7 +309,8 @@ POST up {"recipe_inputs": "055e5fe5...d8cbd"}
 Any model with a recipe can be started this way (the portal's plain `up` stays limited to Qwen replica profiles).
 Without `profile`, the recipe's model must be served by exactly one deployment profile (or the snapshot names it);
 the accepted job's `arguments.profile` is that profile, which `cancel {job}` stops. `recipe` is an id or
-`auto` (a file only on the command line). Refusals come back as the job's `error`, with the CLI's text. A pending recipe is
+`auto` (a file only on the command line). A recipe `up` runs on the portal's own configuration (a `config` naming
+another file is refused). Refusals come back as the job's `error`, with the CLI's text. A pending recipe is
 refused. Some profiles cannot run a recipe yet; the refusal says why (for example, a MiniMax pair binds loopback and
 needs its router on rank 0, while recipes need the local router).
 

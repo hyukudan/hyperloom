@@ -38,6 +38,7 @@ from hyperloom.winproc import no_window
 from hyperloom.web import recipes as recipe_web
 
 
+IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")      # profile and machine ids (orchestrate._identifier)
 SCREENS = frozenset(("devices", "topology", "models", "profiles", "stats", "logs", "settings"))
 MUTATIONS = frozenset(("up", "down", "install", "hosts/pin", "doctor", "keys/rotate", "cancel")) | recipe_web.JOBS
 POLL_INTERVAL = 2
@@ -986,13 +987,29 @@ class API:
             elif key in ("deadline", "approval_lease"):
                 if type(value) is not int or value <= 0:
                     raise APIError(key + " must be a positive integer")
-            elif not isinstance(value, str) or not value:
-                raise APIError(key + " must be a nonempty string")
+            elif not isinstance(value, str) or not value or value.startswith("-"):
+                # Every string becomes a CLI argument: one starting with '-' would be read as an option.
+                raise APIError(key + " must be a nonempty string not starting with '-'")
+            elif key in ("profile", "machine", "build_on", "router") and not IDENTIFIER.fullmatch(value):
+                raise APIError(f"{key} must be an id ([A-Za-z0-9][A-Za-z0-9_.-]{{0,63}})")
         if action == "hosts/pin" and not arguments.get("fingerprint"):
             raise APIError("fingerprint is required; compare on the machine")
         if action == "cancel" and not (arguments.get("job") or arguments.get("profile")):
             raise APIError("cancel requires job or profile")
+        if action == "cancel" and arguments.get("job"):
+            with self._job_lock:
+                job = self._jobs.get(arguments["job"])
+                job = dict(job) if job else None
+            if not job or job["action"] not in ("up", "recipes/deploy"):
+                raise APIError("only an up or a recipes/deploy job can be cancelled; use down with a profile")
+            if job["state"] != "running":
+                raise APIError(f"job {job['job']} has already {job['state']}: use down with a profile", 409)
         if action == "up" and (arguments.get("recipe") or arguments.get("recipe_inputs")):
+            # A recipe launch runs on the portal's own configuration: its recipe directories, snapshots and layers
+            # derive from it, and a configuration file is never named by the client here.
+            if "config" in arguments and Path(arguments["config"]).absolute() != Path(self.config_path).absolute():
+                raise APIError("an up with a recipe runs on the portal's configuration: drop config")
+            arguments.pop("config", None)
             try:
                 self._recipe_up_argv(arguments)
                 if not arguments.get("profile"):
@@ -1144,7 +1161,12 @@ class API:
             with self._job_lock:
                 switches = [dict(j) for j in self._jobs.values()
                             if j["action"] == "recipes/deploy" and j["state"] == "running"]
-            cancels = [self._cancel_deploy(switch, stop_target=False) for switch in switches]
+            cancels = []
+            for switch in switches:
+                try:
+                    cancels.append(self._cancel_deploy(switch, stop_target=False))
+                except APIError as exc:         # the stop itself still runs
+                    cancels.append({"cancelled": switch["job"], "error": str(exc)})
             result = self._execute_action(action, args)
             return dict(result, cancelled_switches=cancels) if cancels and isinstance(result, dict) else result
         return self._execute_action(action, args)
@@ -1153,7 +1175,8 @@ class API:
         recipe_up = action == "up" and bool(args.get("recipe") or args.get("recipe_inputs"))
         if action == "recipes/probe":
             from hyperloom.recipes import service
-            argv = service.argv("probe", args, config=self.config_path)
+            with service.configured(self.config_path):
+                argv = service.argv("probe", args, config=self.config_path)
             status, document = recipe_web.document("probe", argv, self.recipes.run(
                 argv, deadline_s=recipe_web.HARDWARE_DEADLINE_S), now=self.clock())
             if not document["ok"]:
@@ -1253,8 +1276,14 @@ class API:
             marker = service.cancel_marker(job["job"])
             marker.parent.mkdir(parents=True, exist_ok=True)
             marker.touch()
-            progress = service.read_progress(job["job"]) or {"phase": "not started", "profile": None, "stopped": [],
-                                                             "stopping": None}
+            try:
+                progress = service.read_progress(job["job"]) or {"phase": "not started", "profile": None,
+                                                                 "stopped": [], "stopping": None}
+            except service.RecipeError as exc:
+                # Unknown progress: never reported as "nothing to undo". The marker holds the deploy before its next
+                # step and up at the hand-over; a launch already under way is the caller's to stop.
+                raise APIError(f"{exc}. The cancel marker is written: the deploy stops before its next step and "
+                               f"starts nothing after it; if its launch had begun, stop that profile with down", 500)
         down = None
         if stop_target and progress.get("phase") in ("launching", "done") and progress.get("profile"):
             down = self.orchestrate.down(progress["profile"])

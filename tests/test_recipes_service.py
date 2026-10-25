@@ -161,6 +161,20 @@ class CatalogTests(unittest.TestCase):
             finally:
                 os.chdir(cwd)
             self.assertEqual(code, 3, err)
+            # Not an id and not a FILE reference (no .toml/.json name, no directory part, or a name Windows would
+            # shorten): refused without asking the file system.
+            asked.clear()
+            os.chdir(here)
+            try:
+                with mock.patch.object(Path, "is_file", lambda p: asked.append(str(p)) or real(p)):
+                    for ref in ("evil ", "evil.", "evil.toml.", "evil.toml ", "e" * 70, "evil\0"):
+                        with self.subTest(ref=ref), self.assertRaises(service.NotFound):
+                            service.locate(ref)
+                    self.assertEqual([p for p in asked if not Path(p).is_absolute() or Path(p).parent == here], [])
+                    self.assertEqual(service.locate("./evil"), Path("evil"))          # a path is a FILE
+                    self.assertEqual(service.locate("EVIL.TOML").name.casefold(), "evil.toml")
+            finally:
+                os.chdir(cwd)
             for ref in ("x.toml", "x.JSON", "a/b", "a\\b", "C:x", "x:y", "..", "-x", "auto", "con"):
                 with self.subTest(ref=ref), self.assertRaises(RecipeError):
                     service.check_id(ref)

@@ -310,18 +310,29 @@ def is_recipe_id(ref):
     return isinstance(ref, str) and bool(ID.fullmatch(ref)) and not ref.casefold().endswith(SUFFIXES)
 
 
+def is_file_ref(ref):
+    """True for a reference the CLI reads as a FILE: it has a directory part or a .toml/.json name (any case), and
+    its name does not end in '.' or ' ' (Windows would drop those and open another file)."""
+    ref = str(ref)
+    name = ref.replace("\\", "/").rsplit("/", 1)[-1]
+    if not name or name != name.rstrip(". ") or "\0" in ref:
+        return False
+    return "/" in ref or "\\" in ref or name.casefold().endswith(SUFFIXES)
+
+
 def locate(ref, cluster=None, *, for_up=False, extra=()):
     """A recipe reference -> its file. A recipe id is looked up in the catalog only: the file system is never asked
-    about it (a file of the working directory with that name is not read). Anything else is the CLI's FILE argument
-    (a path with a .toml/.json name or a directory part). The portal passes ids only (``argv`` refuses the rest).
-    ``for_up``: a pending built-in is refused, whether it is named by id or by path."""
+    about it (a file of the working directory with that name is not read). A FILE reference (``is_file_ref``: a path
+    or a .toml/.json name) is the CLI's FILE argument; anything else is refused without touching the file system. The
+    portal passes ids only (``argv`` refuses the rest). ``for_up``: a pending built-in is refused, whether it is named
+    by id or by path."""
     ref = str(ref)
     if is_recipe_id(ref):
         path = Path(find(ref, cluster, extra)["path"])
-    elif Path(ref).is_file():
+    elif is_file_ref(ref) and Path(ref).is_file():
         path = Path(ref)
     else:
-        raise NotFound(f"{ref}: no such recipe file or id")
+        raise NotFound(f"{ref}: no such recipe file or id (a file needs a .toml/.json name or a directory part)")
     if for_up and pending(path):
         raise RecipeError(f"recipe {path.stem} is pending, it does not launch: {_blocker(path)}")
     return path
@@ -545,12 +556,21 @@ KEEP_PROGRESS_S = 24 * 3600
 
 
 def read_progress(job):
-    """The progress a deploy recorded, or None when it has recorded none yet."""
+    """The progress a deploy recorded, or None when it has recorded none yet. A file that exists but cannot be read
+    or parsed raises (RecipeError): a cancel must not take it for "nothing recorded"."""
     try:
-        value = retry_sharing(lambda: json.loads(deploy_progress(job).read_text(encoding="utf-8")))
-    except (OSError, ValueError):
+        text = retry_sharing(lambda: deploy_progress(job).read_text(encoding="utf-8"))
+    except FileNotFoundError:
         return None
-    return value if isinstance(value, dict) else None
+    except OSError as exc:
+        raise RecipeError(f"deploy {job}: its progress cannot be read ({exc})") from exc
+    try:
+        value = json.loads(text)
+    except ValueError as exc:
+        raise RecipeError(f"deploy {job}: its progress is not valid JSON") from exc
+    if not isinstance(value, dict) or not isinstance(value.get("phase"), str):
+        raise RecipeError(f"deploy {job}: its progress has no phase")
+    return value
 
 
 def _write_progress(path, state):
@@ -575,10 +595,21 @@ def _prune_progress(directory):
             pass
 
 
+def stop_outcome(result):
+    """How a `down` answered: "stopped", or "stop requested" (its launch was still running and stops at its next
+    check), as orchestrate.down reports it."""
+    state = result.get("state") if isinstance(result, dict) else None
+    return "stop requested" if state == "stop-requested" else "stopped" if state in (None, "stopped") else str(state)
+
+
 def _had(progress):
     stopped = progress.get("stopped") or []
-    had = (f"this deploy had stopped {', '.join(stopped)} (they stay stopped: run up to start them again)"
-           if stopped else "this deploy had stopped nothing")
+    states = progress.get("stop_states") or {}
+    if stopped:
+        had = ("this deploy had stopped " + ", ".join(f"{p} ({states.get(p, 'stopped')})" for p in stopped)
+               + ": they stay stopped (run up to start them again)")
+    else:
+        had = "this deploy had stopped nothing"
     if progress.get("stopping"):
         had += f"; it was stopping {progress['stopping']}"
     return had
@@ -587,11 +618,15 @@ def _had(progress):
 def cancel_summary(progress, *, down=None):
     """One sentence: what a cancelled deploy had changed and what the cancel undid."""
     progress = progress or {}
-    had = _had(progress)
+    had, profile = _had(progress), progress.get("profile")
     if down is not None:
-        return f"the launch of {progress.get('profile')} had begun: {progress.get('profile')} was stopped; {had}"
+        return f"the launch of {profile} had begun: {profile}: {stop_outcome(down)}; {had}"
     if progress.get("phase") in ("launching", "done"):
-        return f"the launch of {progress.get('profile')} had begun and was not stopped by this request; {had}"
+        return f"the launch of {profile} had begun and was not stopped by this request; {had}"
+    if progress.get("phase") == "failed":
+        launched = (f"its launch of {profile} had begun and failed (a failed launch stops what it started)"
+                    if progress.get("launched") else "nothing was started")
+        return f"the deploy had already ended with an error: {launched}; {had}"
     return f"cancelled before the launch: nothing was started; {had}"
 
 
@@ -915,6 +950,12 @@ class _Progress:
         if self.path is not None:
             _write_progress(self.path, self.state)
 
+    def record_best_effort(self, **changes):
+        try:
+            self.record(**changes)
+        except OSError:
+            pass
+
     def cancelled(self):
         return self.marker is not None and self.marker.exists()
 
@@ -946,14 +987,14 @@ def deploy(digest, stop=(), *, source=None, orchestrate=None, approval=None, job
         progress.record()
         progress.check()
         result = _deploy(digest, stop, source, orchestrate, approval, progress)
-        progress.record(phase="done", stopping=None)
-        return result
     except BaseException:
-        if progress.path is not None and progress.state["phase"] != "launching":
-            progress.record(phase="failed", stopping=None)
-        elif progress.path is not None:
-            progress.record(phase="failed", stopping=None, launched=not progress.handoff_refused)
+        launched = progress.state["phase"] == "launching" and not progress.handoff_refused
+        progress.record_best_effort(phase="failed", stopping=None, launched=launched)
         raise
+    else:
+        # Best effort: "launching", already recorded, makes a later cancel stop the target all the same.
+        progress.record_best_effort(phase="done", stopping=None)
+        return result
     finally:
         if progress.marker is not None:
             progress.marker.unlink(missing_ok=True)
@@ -989,7 +1030,9 @@ def _deploy_pinned(digest, stop, source, orchestrate, approval, progress):
         check()
         progress.record(phase="stopping", stopping=name)
         stopped.append({"profile": name, "down": orchestrate.down(name)})
-        progress.record(stopping=None, stopped=progress.state["stopped"] + [name])
+        progress.record(stopping=None, stopped=progress.state["stopped"] + [name],
+                        stop_states=dict(progress.state.get("stop_states") or {},
+                                         **{name: stop_outcome(stopped[-1]["down"])}))
     check()
     # The hand-over is checked again by up right after it takes ownership of the profile (no gap: a later cancel
     # sees "launching" and stops the launching profile through its own stop marker).
