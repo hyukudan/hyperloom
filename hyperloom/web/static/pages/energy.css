@@ -1,0 +1,17 @@
+/* Energy (energy.js) and thermals (thermals.js) pages. */
+.en-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}
+@media (max-width:760px){.en-kpis{grid-template-columns:1fr 1fr}}
+.en-bars svg{max-width:100%;height:auto;display:block}
+.en-machines{grid-template-columns:repeat(auto-fit,minmax(min(100%,520px),1fr))}
+.en-mhead{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 12px;margin-bottom:8px}
+.en-mhead .ts-key i{width:12px;height:12px;border-radius:3px;margin:0}
+.en-form{align-items:flex-end}
+.en-form .field,.th-form .field{margin-bottom:0}
+.en-cur{width:6em}
+.th-form{align-items:flex-start;gap:12px}
+.th-set{border:1px solid var(--border);border-radius:var(--r-sm);padding:8px 12px 10px;margin:0;display:flex;gap:10px;flex-wrap:wrap;min-width:0}
+.th-set legend{font-size:12.5px;font-weight:600;color:var(--text-2);padding:0 4px}
+.th-inp{width:6.5em}
+.th-band{opacity:.85}
+.th-mark{fill:var(--text-2)}
+.th-key{background:var(--err-soft);border:1px solid var(--err);height:10px!important;width:12px!important}
