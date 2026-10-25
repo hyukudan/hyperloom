@@ -373,11 +373,14 @@ def engine_identity(status):
     Nothing is inferred from an uptime (an inferred start cannot tell a replacement from the same process)."""
     if not isinstance(status, dict):
         return None
-    if isinstance(status.get("instance_id"), str) and status["instance_id"]:
-        return "id:" + status["instance_id"][:64]
+    # Kept exactly: an identity is never truncated or rounded (that could join two processes); one that does not
+    # fit is refused instead.
+    value = status.get("instance_id")
+    if isinstance(value, str) and value:
+        return "id:" + value if len(value) <= 128 and value.isprintable() else None
     for key in ("start_time", "started_at"):
         if _finite(status.get(key)):
-            return f"start:{float(status[key]):.6f}"
+            return f"{key}:{status[key]!r}"
     return None
 
 

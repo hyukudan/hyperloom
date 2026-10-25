@@ -190,7 +190,7 @@ class CollectorTests(unittest.TestCase):
         key = machines.engine_key("halo-1", "mm", 18441)
         doc = self.store.get(machines.ENGINES, key)
         self.assertEqual((doc["replica"], doc["profile"], doc["health"]), ("halo-1", "mm", "ok"))
-        self.assertTrue(doc["instance"].endswith("/start:1799999900.000000"))
+        self.assertTrue(doc["instance"].endswith("/start_time:1799999900.0"))
         rows = machines.engine_rows(self.store, "halo-1", self.records, "workstation", 1_800_000_005.0)
         self.assertEqual(rows[0]["throughput"], 100.0)              # 500 tokens over 5 s
         self.assertEqual((rows[0]["model"], rows[0]["context_length"], rows[0]["running"], rows[0]["queued"]),
@@ -219,7 +219,12 @@ class CollectorTests(unittest.TestCase):
 class EngineIdentityTests(unittest.TestCase):
     def test_identity_is_reported_by_the_engine_never_inferred(self):
         self.assertEqual(machines._instance({"instance_id": "abc", "uptime_seconds": 5}, "L1"), "L1/id:abc")
-        self.assertEqual(machines._instance({"start_time": 1700.5}, "L1"), "L1/start:1700.500000")
+        self.assertEqual(machines._instance({"start_time": 1700.5}, "L1"), "L1/start_time:1700.5")
+        # Never truncated or rounded: distinct values stay distinct, oversized ones are refused.
+        self.assertNotEqual(machines.engine_identity({"start_time": 1700.0000001}), machines.engine_identity({"start_time": 1700.0000002}))
+        self.assertNotEqual(machines.engine_identity({"instance_id": "x" * 100 + "A"}), machines.engine_identity({"instance_id": "x" * 100 + "B"}))
+        self.assertIsNone(machines.engine_identity({"instance_id": "x" * 129}))
+        self.assertFalse(machines.bracketed({"start_time": 1700.0000001}, {"start_time": 1700.0000002}))
         self.assertIsNone(machines._instance({"uptime_seconds": 500.0}, "L1"))     # an uptime alone is not an identity
         self.assertIsNone(machines._instance({"instance_id": "abc"}, None))
         self.assertTrue(machines.bracketed({"start_time": 10.0}, {"start_time": 10.0}))
