@@ -10,7 +10,8 @@ cursor and continues only when the first entry returned is exactly that entry (t
 to a neighbour when the entry is gone); "initial" scans the newest entries of this boot (no cursor for it yet);
 "cursor_lost" is an initial scan made because the stored entry is no longer in the journal. The caller stores
 the returned cursor per boot. Totals of an initial scan are complete only when the scan reached the first
-entries of the boot (monotonic time under two minutes) and no entry was malformed.
+message of the boot (kernel time 0 or the kernel version banner), no entry was malformed and journalctl
+reported nothing.
 
 Reads are confined to fixed roots (thunderbolt sysfs and the devices it resolves to, the two module parameter
 directories, /proc, the published layout file and stat of /dev/tbstreamN) and to a byte budget; the whole
