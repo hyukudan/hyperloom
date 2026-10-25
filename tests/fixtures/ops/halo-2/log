@@ -349,7 +349,7 @@
 23:52:38 wait  job-52 pid 1177150
 23:52:38 REFUSE job-52 pid 1177150 (arrival: pair waiting 7280s)
 23:53:27 end   PAIR job-30 (remote)
-23:53:27 LAUNCHER install fair-alternation by agent-a (gpu-turn.sh a2adc209 )
+23:53:27 LAUNCHER install fair-alternation by job-a (gpu-turn.sh a2adc209 )
 23:53:27 start PAIR job-49 (remote)
 23:53:45 wait  job-97 pid 1179045
 23:54:09 wait  job-96 pid 1182647

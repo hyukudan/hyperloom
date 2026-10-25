@@ -143,7 +143,7 @@ class PowerTests(Base, unittest.TestCase):
         with self.assertRaises(Exception):
             self.api.feature_post("ops/wake", {"machine": "workstation"})
         with self.assertRaises(Exception):
-            self.api.feature_post("ops/machine-extras", {"machine": "halo-2", "wol_broadcast": "8.8.8.8"})
+            self.api.feature_post("ops/machine-extras", {"machine": "halo-2", "wol_broadcast": "100.64.0.1"})
 
     def test_shutdown_needs_a_cli_configured_helper_and_typed_id(self):
         doc = self.api.read("ops/power", {})
@@ -185,7 +185,7 @@ class ConfigTests(Base, unittest.TestCase):
     def test_add_edit_move_remove_with_validation_and_atomic_write(self):
         new = {"id": "halo-3", "os": "linux", "access": "ssh", "http_address": "192.0.2.12", "ssh_target": "halo-3",
                "install_root": "/opt/hl"}
-        _, check = self.api.feature_post("ops/config/validate", {"op": "add", "machine": {**new, "http_address": "8.8.8.8"}})
+        _, check = self.api.feature_post("ops/config/validate", {"op": "add", "machine": {**new, "http_address": "100.64.0.1"}})
         self.assertFalse(check["valid"])
         self.assertIn("private", check["error"])
         with self.assertRaises(Exception):

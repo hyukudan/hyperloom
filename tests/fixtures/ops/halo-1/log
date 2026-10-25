@@ -103,7 +103,7 @@
 21:51:18 wait  PAIR job-32 pid 3834246
 21:51:34 wait  job-03 pid 3835288
 21:51:34 REFUSE job-03 pid 3835288 (arrival: pair waiting 3996s)
-21:51:54 end   PAIR job-22 pid 3699830 (withdrawn by agent-a requeued with PAIR_PRIORITY per main 15:3x)
+21:51:54 end   PAIR job-22 pid 3699830 (withdrawn, requeued with priority)
 21:52:00 wait  PAIR job-22 pid 3837289
 21:54:42 reap  PAIR job-10 pid 3426891: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
 21:54:42 end   PAIR job-10 pid 3426891
@@ -201,7 +201,7 @@
 23:50:27 wait  PAIR job-24 pid 426207
 23:53:27 reap  PAIR job-30 pid 3803307: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
 23:53:27 end   PAIR job-30 pid 3803307
-23:53:27 LAUNCHER install fair-alternation by agent-a (gpu-turn.sh a2adc209 gpu-turn-pair.sh 7dbbc5f3 )
+23:53:27 LAUNCHER install fair-alternation by job-a (gpu-turn.sh a2adc209 gpu-turn-pair.sh 7dbbc5f3 )
 23:53:27 start PAIR job-49 pid 392563 (after 17 retries)
 23:54:38 wait  job-52 pid 455770
 23:56:18 wait  job-50 pid 474552

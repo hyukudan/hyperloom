@@ -216,9 +216,11 @@ class TurnsNodeTests(TreeMixin, unittest.TestCase):
                 continue
             text = path.read_text(encoding="utf-8")
             self.assertNotRegex(text, r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", path)
-            self.assertNotRegex(text, r"/home/|C:\\\\Users|cluster\d", path)
+            self.assertNotRegex(text, r"/home/|C:\\\\Users|@", path)
             for label in re.findall(r"(?:wait|start|end|reap|admit|CAP|REFUSE)\s+(?:PAIR )?(\S+)", text):
                 self.assertRegex(label, allowed_labels, path)
+            for node_name in re.findall(r"\| (\S+): reaped|0-0-single-(\S+)-\d+|LAUNCHER .* by (\S+)", text):
+                self.assertIn("".join(node_name), ("halo-1", "halo-2", "job-a"), path)
 
 
 class FakeOrchestrator:
