@@ -172,7 +172,8 @@ class CatalogTests(unittest.TestCase):
                             service.locate(ref)
                     self.assertEqual([p for p in asked if not Path(p).is_absolute() or Path(p).parent == here], [])
                     self.assertEqual(service.locate("./evil"), Path("evil"))          # a path is a FILE
-                    self.assertEqual(service.locate("EVIL.TOML").name.casefold(), "evil.toml")
+                    (here / "UPPER.TOML").write_text(copy_of(QWEN, "upper"), encoding="utf-8")
+                    self.assertEqual(service.locate("UPPER.TOML"), Path("UPPER.TOML"))   # any case of the suffix
             finally:
                 os.chdir(cwd)
             for ref in ("x.toml", "x.JSON", "a/b", "a\\b", "C:x", "x:y", "..", "-x", "auto", "con"):
