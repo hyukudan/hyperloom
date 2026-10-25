@@ -53,6 +53,10 @@ class ExportTests(unittest.TestCase):
         patcher = mock.patch.object(metrics_export.secrets, "runtime_dir", return_value=self.run_dir)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # ...and never the machine's real telemetry store either.
+        patcher = mock.patch.object(metrics_export, "telemetry_path", return_value=self.run_dir / "telemetry.sqlite3")
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_tests_never_read_the_real_state_directory(self):
         self.assertEqual(metrics_export.secrets.runtime_dir(), self.run_dir)
@@ -63,7 +67,7 @@ class ExportTests(unittest.TestCase):
         documents = healthy()
 
         def fetch(endpoint, suffix, text=False):
-            if suffix != "/api/status" or endpoint != ROUTER:
+            if suffix not in ("/api/status", "/metrics") or endpoint != ROUTER:     # the router's own documents
                 probed.append((endpoint["address"], suffix))
             return fake_fetch(documents)(endpoint, suffix, text)
         reason = "unavailable: engine bound to loopback on its node"
@@ -246,7 +250,8 @@ class ExportTests(unittest.TestCase):
         start = time.monotonic()
         samples = prom.parse(metrics_export.collect(routers, fetch))
         self.assertLess(time.monotonic() - start, 1.5)
-        self.assertEqual(sum(v == 0 for k, v in samples.items() if k[0] == "hyperloom_source_up"), 6)
+        self.assertEqual(sum(v == 0 for k, v in samples.items()
+                             if k[0] == "hyperloom_source_up" and dict(k[1])["source"] == "router"), 6)
 
     def test_slot_units_and_state_are_separate_families(self):
         samples = prom.parse(metrics_export.collect({"ds": ROUTER}, fake_fetch(healthy("deepseek-status.json"))))
