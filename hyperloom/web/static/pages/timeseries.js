@@ -49,10 +49,12 @@
     // Drawn at the container's real width so axis text keeps its size on any screen.
     const W = Math.round(Math.max(300, Math.min(1600, (document.querySelector("main")?.clientWidth || 700) - 64))), H = height, L = 52, R = 8, T = 8, B = 22;
     const x = t => L + (t - t0) / span * (W - L - R), y = v => T + (1 - (v - bottom) / ((top - bottom) || 1)) * (H - T - B);
-    // Per pair of points: the expected spacing is the bucket step, the cadence passed in, or the cadence recorded
-    // with either point (sampling-interval changes keep their own history).
+    // Per pair of points the expected spacing is the cadence recorded with them (sampling-interval changes keep
+    // their own history); the `cadence` passed in is only a fallback for points recorded without one; never less
+    // than the bucket step.
     const gap = Math.max(step || 2, cadence || 0) * 2.5;
-    const joined = (a, b) => b[0] - a[0] <= Math.max(gap, 2.5 * Math.max(a[3] || 0, b[3] || 0));
+    const expected = (a, b) => Math.max(step || 2, (a[3] || b[3]) ? Math.max(a[3] || 0, b[3] || 0) : cadence || 0);
+    const joined = (a, b) => b[0] - a[0] <= 2.5 * expected(a, b);
     const paths = series.map(s => {
       const valid = s.points.filter(p => Number.isFinite(p[1]));
       let d = "", dots = "";
@@ -69,7 +71,7 @@
     const xt = [0, .5, 1].map(f => t0 + f * span).map((t, i) => `<text x="${x(t)}" y="${H - 6}" text-anchor="${["start", "middle", "end"][i]}" class="ts-ax">${esc(clock(t, span))}</text>`).join("");
     const legend = series.map(s => { const lastPoint = s.points.filter(p => Number.isFinite(p[1])).at(-1); return `<span class="ts-key"><i style="background:var(${s.color})"></i>${esc(s.label)} <b>${esc(fmt(lastPoint?.[1], unit))}</b></span>`; }).join("");
     const rowsHtml = series.flatMap(s => s.points.slice(-200).map(p => `<tr><td>${esc(s.label)}</td><td>${esc(new Date(p[0] * 1000).toLocaleString())}</td><td>${esc(fmt(p[1], unit))}</td><td>${p[2] == null ? "unavailable" : esc(Math.round(p[2] * 100) + " %")}</td></tr>`)).join("");
-    const data = esc(JSON.stringify({t0, t1, L, R, W, unit, gap, series: series.map(s => ({label: s.label, color: s.color, points: s.points}))}));
+    const data = esc(JSON.stringify({t0, t1, L, R, W, unit, gap, step: step || 2, cadence: cadence || 0, series: series.map(s => ({label: s.label, color: s.color, points: s.points}))}));
     return `<figure class="ts" id="${id}"><figcaption>${esc(title)}</figcaption><div class="ts-legend">${legend}</div>
 <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(title)}: ${esc(series.length)} series" data-ts="${data}" data-ts-group="${esc(group)}" width="${W}" height="${H}">${grid}${paths}${xt}<line class="ts-cross" x1="0" x2="0" y1="${T}" y2="${H - B}" stroke="var(--text-3)" visibility="hidden"/></svg>
 <div class="ts-readout" aria-live="off"></div><details><summary>View as table</summary><table class="tbl"><thead><tr><th>Series</th><th>Time</th><th>Value</th><th>Coverage</th></tr></thead><tbody>${rowsHtml}</tbody></table></details></figure>`;
@@ -98,7 +100,8 @@
       let best = null;
       for (const p of s.points) if (best == null || Math.abs(p[0] - t) < Math.abs(best[0] - t)) best = p;
       // Inside a gap there is no sample: say so instead of borrowing a distant value.
-      if (!best || Math.abs(best[0] - t) > Math.max(meta.gap, 2.5 * (best[3] || 0)) / 2) return `${s.label}: no sample`;
+      const spacing = Math.max(meta.step || 2, best?.[3] || meta.cadence || 0) * 2.5;
+      if (!best || Math.abs(best[0] - t) > spacing / 2) return `${s.label}: no sample`;
       return `${s.label}: ${fmt(best[1], meta.unit)}`;
     });
     const readout = svg.parentElement.querySelector(".ts-readout");

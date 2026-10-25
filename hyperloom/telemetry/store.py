@@ -75,6 +75,7 @@ class Store:
             self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA synchronous=NORMAL")
         self._db.executescript(_SCHEMA)
+        self._migrate()
         self._series = {}       # (name, labels) -> id; only committed ids
         self._metrics = {}      # name -> descriptor; only committed descriptors
         self._last_prune = 0.0
@@ -82,6 +83,20 @@ class Store:
     def close(self):
         with self._lock:
             self._db.close()
+
+    # Columns added after the first schema: (table, column, declaration). Existing rows keep unknown values
+    # (no cadence, no observed seconds), which readers show as unavailable coverage, never as zero.
+    MIGRATIONS = (("raw", "interval", "REAL"),
+                  ("agg", "last", "REAL NOT NULL DEFAULT 0"),
+                  ("agg", "last_ts", "REAL NOT NULL DEFAULT 0"),
+                  ("agg", "observed", "REAL NOT NULL DEFAULT 0"))
+
+    def _migrate(self):
+        """Idempotently add columns that older stores lack."""
+        for table, column, declaration in self.MIGRATIONS:
+            columns = {row[1] for row in self._db.execute(f"PRAGMA table_info({table})")}
+            if column not in columns:
+                self._db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
     # -- transactions ---------------------------------------------------------------------------------------------
     def _atomic(self, work):

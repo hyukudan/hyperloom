@@ -119,6 +119,29 @@ class TypedSeriesTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.describe("tokens", "gauge")
 
+    def test_older_stores_are_upgraded_in_place(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "old.sqlite3"
+            db = sqlite3.connect(path)
+            db.executescript("""
+                CREATE TABLE series (id INTEGER PRIMARY KEY, name TEXT NOT NULL, labels TEXT NOT NULL, UNIQUE(name, labels));
+                CREATE TABLE raw (series INTEGER NOT NULL, ts REAL NOT NULL, value REAL NOT NULL);
+                CREATE TABLE agg (tier TEXT NOT NULL, series INTEGER NOT NULL, bucket INTEGER NOT NULL, sum REAL NOT NULL,
+                                  count INTEGER NOT NULL, min REAL NOT NULL, max REAL NOT NULL, PRIMARY KEY(tier, series, bucket));
+                INSERT INTO series VALUES (1, 'busy', '{}');
+                INSERT INTO raw VALUES (1, 1799999000.0, 5.0);""")
+            db.commit()
+            db.close()
+            store = Store(path, clock=self.clock)
+            try:
+                store.record([("busy", {}, 7)], ts=self.clock.now - 10, interval=2)
+                points = store.query("busy", self.clock.now - 3600, tier="raw")["lines"][0]["points"]
+                self.assertEqual([(p[1], p[8]) for p in points], [(5.0, None), (7.0, 2.0)])
+            finally:
+                store.close()
+            Store(path, clock=self.clock).close()           # idempotent
+
     def test_cadence_is_recorded_with_each_sample(self):
         base = int(self.clock.now // 60) * 60 - 600
         for i in range(10):
