@@ -344,16 +344,25 @@ def contrast_ratio(first, second):
     return (values[1] + 0.05) / (values[0] + 0.05)
 
 
-def check_contrast(path=None):
+THEME_SELECTORS = {"light": r":root\s*\{",
+                   "dark": r":root\[data-theme\s*=\s*[\"']?dark[\"']?\]\s*\{",
+                   # True black is a shade of the dark theme: its block overrides the dark tokens.
+                   "black": r":root\[data-theme\s*=\s*[\"']?dark[\"']?\]\[data-shade\s*=\s*[\"']?black[\"']?\]\s*\{"}
+
+
+def check_contrast(path=None, themes_checked=("light", "dark")):
     css = (path or ROOT / "hyperloom/web/static/app.css").read_text(encoding="utf-8")
     css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
     themes = {}
-    for theme, selector in (("light", r":root\s*\{"),
-                            ("dark", r":root\[data-theme\s*=\s*[\"']?dark[\"']?\]\s*\{")):
-        match = re.search(selector + r"([^{}]*)\}", css, re.S)
+    for theme in themes_checked:
+        match = re.search(THEME_SELECTORS[theme] + r"([^{}]*)\}", css, re.S)
         if not match:
             raise AssertionError("missing explicit " + theme + " colour tokens")
         themes[theme] = dict(re.findall(r"(--[\w-]+)\s*:\s*([^;]+);", match[1]))
+    if "black" in themes:
+        base = dict(themes.get("dark") or check_tokens(css, "dark"))
+        base.update(themes["black"])
+        themes["black"] = base
     pairs = [(text, surface) for text in ("--text", "--text-2", "--text-3")
              for surface in ("--bg", "--surface", "--surface-2")]
     pairs += [("--accent-text", "--accent-soft"), ("--on-accent", "--accent")]
@@ -369,6 +378,11 @@ def check_contrast(path=None):
     if failures:
         raise AssertionError("Text contrast below 4.5:1:\n" + "\n".join(failures))
     return len(pairs) * len(themes)
+
+
+def check_tokens(css, theme):
+    match = re.search(THEME_SELECTORS[theme] + r"([^{}]*)\}", css, re.S)
+    return dict(re.findall(r"(--[\w-]+)\s*:\s*([^;]+);", match[1])) if match else {}
 
 
 def find_chrome():
@@ -397,6 +411,7 @@ class DevTools:
     """Minimal RFC 6455 transport for CDP; no websocket package is needed."""
 
     def __init__(self, url):
+        self.url = url
         parsed = urlsplit(url)
         if parsed.scheme != "ws" or parsed.hostname != "127.0.0.1":
             raise AssertionError("DevTools must use loopback")
@@ -419,10 +434,22 @@ class DevTools:
         self.sequence = 0
         self.errors = []
         self.responses = {}
+        self.paused = []      # Fetch.requestPaused events (only while a test enables request interception)
 
     def close(self):
         self.stream.close()
         self.socket.close()
+
+    def reconnect(self):
+        """A fresh session on the same page target (an answer can be lost while the page moves between renderer
+        processes, e.g. back from the browser's own error page); session settings and start-up scripts are not
+        carried over."""
+        errors = self.errors
+        self.close()
+        self.__init__(self.url)
+        self.errors = errors
+        self.call("Runtime.enable")
+        self.call("Page.enable")
 
     def send(self, payload, opcode=1):
         mask = os.urandom(4)
@@ -478,10 +505,21 @@ class DevTools:
                 self.errors.append(message)
             elif message.get("method") == "Runtime.consoleAPICalled" and message.get("params", {}).get("type") in ("error", "assert"):
                 self.errors.append(message)
+            elif message.get("method") == "Fetch.requestPaused":
+                self.paused.append(message["params"])
         response = self.responses.pop(sequence)
         if "error" in response:
             raise AssertionError(f"{method}: {response['error']}")
         return response.get("result", {})
+
+    def paused_request(self, timeout=20):
+        """The next request paused by Fetch interception (events arrive while commands run)."""
+        deadline = time.monotonic() + timeout
+        while not self.paused:
+            if time.monotonic() > deadline:
+                raise AssertionError("no intercepted request arrived")
+            self.evaluate("new Promise(resolve => setTimeout(resolve, 50))")
+        return self.paused.pop(0)
 
     def evaluate(self, expression):
         result = self.call("Runtime.evaluate", expression=expression, returnByValue=True, awaitPromise=True)
@@ -546,7 +584,10 @@ def keyboard_walkthrough(client, server):
         key(client, "Escape")
         eventually(lambda: client.evaluate("!document.querySelector('dialog[open]')"))
         if not client.evaluate(f"document.activeElement.matches({json.dumps(selector)})"):
-            raise AssertionError("Dialog failed to return focus: " + action)
+            raise AssertionError("Dialog failed to return focus: " + action + " -- " + json.dumps(client.evaluate(
+                f"(() => {{ const b = document.querySelector({json.dumps(selector)}); return {{active: document.activeElement.outerHTML.slice(0, 200), "
+                "opener: b && b.outerHTML.slice(0, 200), connection: document.getElementById('connection').textContent, "
+                "fresh: window.Hyperloom.state.fresh}}; }})()")))
         if client.errors:
             raise AssertionError(json.dumps(client.errors))
         print("PASS keyboard " + action + " (Tab, reverse Tab, Space, Escape)", flush=True)
@@ -647,6 +688,505 @@ def feature_pages(client, server, output, width, theme):
         count += 1
         print(f"PASS page {page} {width}x1000 {theme}", flush=True)
     return count
+
+
+def chord(client, letter, *, ctrl=True):
+    """Ctrl+<letter> as real key events (the palette and sidebar shortcuts)."""
+    code = ord(letter.upper())
+    for event in ("keyDown", "keyUp"):
+        client.call("Input.dispatchKeyEvent", type=event, key=letter, code="Key" + letter.upper(),
+                    windowsVirtualKeyCode=code, nativeVirtualKeyCode=code, modifiers=2 if ctrl else 0)
+
+
+def shell_walkthrough(client, server, output):
+    """Portal shell (UI-SPEC section 12): heartbeat and freshness, palette, sidebar toggle, deep links, preferences
+    (true black, compact, Spanish, refresh interval) through the real prefs feature, the exceptions strip, banner,
+    tab badge, favicon and notifications from deterministic scenarios, the sidebar machine list from an overview
+    scenario, and the narrow tab bar. Screenshots: shell-<view>-<theme>-<width>.png."""
+    def wait(expression, timeout=30):
+        try:
+            return eventually(lambda: client.evaluate(expression), timeout=timeout)
+        except AssertionError:
+            raise AssertionError("shell walkthrough: timed out waiting for " + expression + " -- page: "
+                                 + str(client.evaluate("document.body.innerText"))[:3000]) from None
+
+    def shot(view, theme, width):
+        png = base64.b64decode(client.call("Page.captureScreenshot", format="png", captureBeyondViewport=False)["data"])
+        (output / f"shell-{view}-{theme}-{width}.png").write_bytes(png)
+
+    def viewport(width, theme):
+        client.call("Emulation.setDeviceMetricsOverride", width=width, height=1000, deviceScaleFactor=1, mobile=False)
+        client.call("Emulation.setEmulatedMedia", features=[{"name": "prefers-color-scheme", "value": theme},
+                                                          {"name": "prefers-reduced-motion", "value": "reduce"}])
+
+    loads = iter(range(1, 1000))
+
+    def go(hash_, ready="document.querySelector('main').getAttribute('aria-busy') === 'false'", reload=False):
+        client.call("Page.navigate", url=server.url + (f"?load={next(loads)}" if reload else "") + hash_)
+        wait("document.readyState === 'complete' && !!document.querySelector('main')")
+        wait(ready)
+
+    def select(element_id, value):
+        client.evaluate(f"(() => {{ const el = document.getElementById({json.dumps(element_id)}); el.value = {json.dumps(value)}; "
+                        "el.dispatchEvent(new Event('change', {bubbles: true})); })()")
+
+    def saved(field, value):
+        def check():
+            status, _, body = server.request("GET", API + "prefs")
+            return status == 200 and json.loads(body)["values"][field] == value
+        try:
+            eventually(check, timeout=30)
+        except AssertionError:
+            raise AssertionError(f"shell: preference {field}={value!r} not saved; page says: "
+                                 + str(client.evaluate("[document.querySelector('#main [role=status]')?.textContent, JSON.stringify(window.Hyperloom.prefs())]"))) from None
+
+    def scenario(content):
+        # The fixture process reads this file on every request; Windows refuses to replace or remove a file another
+        # process has open, so a refused attempt is repeated.
+        path = server.directory / "shell-scenario.json"
+        for _ in range(100):
+            try:
+                if content is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    staged = path.with_suffix(".tmp")
+                    staged.write_text(json.dumps(content), encoding="utf-8")
+                    os.replace(staged, path)
+                return
+            except PermissionError:
+                time.sleep(0.05)
+        raise AssertionError("shell: the scenario file stayed locked")
+
+    # A recording stand-in for the browser's notifications (headless Chrome shows none).
+    client.call("Page.addScriptToEvaluateOnNewDocument", source="""
+      window.__notes = [];
+      window.Notification = class { static get permission() { return "granted"; }
+        static requestPermission() { return Promise.resolve("granted"); }
+        constructor(title, options) { window.__notes.push(options && options.tag); } };""")
+    viewport(1440, "light")
+    go("#/devices")
+    # Freshness: optional documents that are absent (404) never make the view stale or block controls.
+    client.evaluate("new Promise(resolve => setTimeout(resolve, 6500))")
+    if not client.evaluate("document.getElementById('connection').hidden && !document.getElementById('add-machine').disabled"):
+        raise AssertionError("shell: the view went stale or blocked controls without optional documents: "
+                             + client.evaluate("document.getElementById('connection').textContent"))
+    if client.evaluate("document.getElementById('heartbeat').textContent") != "Live · 2 s":
+        raise AssertionError("shell: heartbeat pill missing")
+    # Leaving a page: its documents no longer age the view (page A -> page B, more than the stale limit later).
+    go("#/history")
+    go("#/devices")
+    client.evaluate("new Promise(resolve => setTimeout(resolve, 7000))")
+    left = client.evaluate("({hidden: document.getElementById('connection').hidden, blocker: window.Hyperloom.mutationReason(), "
+                           "kept: Object.keys(window.Hyperloom.state.fetched).filter(k => k.startsWith('history'))})")
+    if not left["hidden"] or left["blocker"] or left["kept"]:
+        raise AssertionError("shell: a page left behind still ages the view: " + json.dumps(left))
+    # Palette: Ctrl+K from a focused control, type, Enter navigates; Escape returns focus.
+    client.evaluate("document.getElementById('palette-open').focus()")
+    chord(client, "k")
+    wait("document.getElementById('palette').open && document.activeElement.id === 'palette-input'")
+    client.call("Input.insertText", text="metrics hist")
+    wait("document.querySelector('#palette-list li.on .pl')?.textContent === 'Metrics history'")
+    if client.evaluate("document.getElementById('palette-input').getAttribute('aria-activedescendant')") != "palette-option-0":
+        raise AssertionError("shell: palette active option not exposed")
+    key(client, "Enter")
+    wait("location.hash === '#/history' && !document.getElementById('palette').open && document.querySelector('h1').textContent === 'Metrics history'")
+    client.evaluate("document.getElementById('palette-open').focus()")
+    chord(client, "k")
+    wait("document.getElementById('palette').open")
+    client.call("Input.insertText", text="h")
+    wait("document.querySelectorAll('#palette-list li[role=option]').length > 3")
+    shot("palette", "light", 1440)
+    key(client, "Escape")
+    wait("!document.getElementById('palette').open && document.activeElement.id === 'palette-open'")
+    # A blocked action names its blocker and does not run.
+    client.evaluate("window.Hyperloom.state.busy = true")
+    chord(client, "k")
+    wait("document.getElementById('palette').open")
+    client.call("Input.insertText", text="run doctor")
+    wait("document.querySelector('#palette-list li.on')?.getAttribute('aria-disabled') === 'true'")
+    key(client, "Enter")
+    wait("/Another action is running/.test(document.getElementById('palette-status').textContent)")
+    if client.evaluate("document.getElementById('action-dialog').open"):
+        raise AssertionError("shell: a blocked palette action opened its dialog")
+    key(client, "Escape")
+    client.evaluate("window.Hyperloom.state.busy = false")
+    # Ctrl+B collapses and restores the sidebar.
+    client.evaluate("document.activeElement.blur()")
+    chord(client, "b")
+    wait("document.querySelector('.app').classList.contains('collapsed')")
+    shot("sidebar-collapsed", "light", 1440)
+    chord(client, "b")
+    wait("!document.querySelector('.app').classList.contains('collapsed')")
+    # Deep links: a query route of a registered page, a profile selection, a settings section.
+    go("#/history?probe=1")
+    if client.evaluate("document.querySelector('h1').textContent") != "Metrics history":
+        raise AssertionError("shell: a feature page route with a query did not render")
+    go("#/engines?profile=qwen-two", "document.getElementById('profile-select')?.value === 'qwen-two'")
+    go("#/settings?section=panels", "document.activeElement?.id === 'prefs-panels'")
+    shot("settings", "light", 1440)
+    # Preferences through the real feature: true black, compact density, Spanish, refresh interval.
+    select("pref-theme", "black")
+    wait("document.documentElement.dataset.shade === 'black' && getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() === '#000000'")
+    saved("theme", "black")
+    select("pref-density", "compact")
+    wait("document.documentElement.dataset.density === 'compact'")
+    saved("density", "compact")
+    go("#/devices")
+    shot("compact", "black", 1440)
+    go("#/settings")
+    select("pref-language", "es")
+    wait("document.querySelector('h1').textContent === 'Ajustes y emparejamiento' && document.documentElement.lang === 'es' && /Dispositivos/.test(document.getElementById('navigation').innerText)")
+    saved("language", "es")
+    shot("spanish", "black", 1440)
+    for element, value in (("pref-language", "en"), ("pref-theme", "system"), ("pref-density", "comfortable")):
+        select(element, value)
+    wait("document.querySelector('h1').textContent === 'Settings & pairing' && !document.documentElement.dataset.shade")
+    saved("density", "comfortable")
+    select("pref-refresh_s", "10")
+    saved("refresh_s", 10)
+    go("#/devices")
+    wait("document.getElementById('heartbeat').textContent === 'Live · 10 s'")
+    for _ in range(2):    # one evaluation stays under the DevTools socket timeout
+        client.evaluate("new Promise(resolve => setTimeout(resolve, 6300))")
+    if not client.evaluate("document.getElementById('connection').hidden && !document.getElementById('add-machine').disabled"):
+        raise AssertionError("shell: a 10 s refresh interval made the view stale between polls")
+    go("#/settings")
+    select("pref-refresh_s", "2")
+    saved("refresh_s", 2)
+    # Save ordering: two quick changes of one field; the first answer must not overwrite the newer choice, and a
+    # failed second save keeps it in this browser only (a later poll and a reload do not undo it).
+    go("#/settings")
+    client.call("Fetch.enable", patterns=[{"urlPattern": "*/hyperloom/api/prefs/save", "requestStage": "Request"}])
+    try:
+        client.evaluate("(window.Hyperloom.setPref({theme: 'dark'}), window.Hyperloom.setPref({theme: 'light'}), true)")
+        first = client.paused_request()
+        if json.loads(first["request"].get("postData") or "{}") != {"theme": "dark"}:
+            raise AssertionError("shell: first save body " + str(first["request"].get("postData")))
+        client.call("Fetch.continueRequest", requestId=first["requestId"])
+        second = client.paused_request()
+        if json.loads(second["request"].get("postData") or "{}") != {"theme": "light"}:
+            raise AssertionError("shell: second save body " + str(second["request"].get("postData")))
+        if client.evaluate("window.Hyperloom.prefs().theme") != "light":
+            raise AssertionError("shell: the first save's answer overwrote the newer choice")
+        client.call("Fetch.failRequest", requestId=second["requestId"], errorReason="Failed")
+        retry = client.paused_request()          # a refused connection is retried once
+        client.call("Fetch.failRequest", requestId=retry["requestId"], errorReason="Failed")
+    finally:
+        client.call("Fetch.disable")
+    wait("/browser only/.test(document.querySelector('#main [role=status]')?.textContent || '')")
+    saved("theme", "dark")
+    client.evaluate("new Promise(resolve => setTimeout(resolve, 4500))")
+    if client.evaluate("window.Hyperloom.prefs().theme + document.documentElement.dataset.theme") != "lightlight":
+        raise AssertionError("shell: a poll overrode a browser-only preference")
+    go("#/settings", reload=True)
+    client.evaluate("new Promise(resolve => setTimeout(resolve, 3000))")
+    if client.evaluate("window.Hyperloom.prefs().theme") != "light":
+        raise AssertionError("shell: a reload lost a browser-only preference")
+    select("pref-theme", "system")
+    saved("theme", "system")
+    wait("!/browser only/.test(document.querySelector('#main [role=status]')?.textContent || '')")
+    # Time zones: a chosen zone applies its own rules at each timestamp (winter and summer offsets differ).
+    select("pref-timezone", "Europe/Madrid")
+    saved("timezone", "Europe/Madrid")
+    times = client.evaluate("[1736935200, 1752573600].map(t => window.Hyperloom.time(t))")  # 10:00 UTC in January and July
+    if not (times[0].startswith("11:00") and times[1].startswith("12:00")):
+        raise AssertionError("shell: zone rules not applied per timestamp: " + json.dumps(times))
+    client.call("Emulation.setTimezoneOverride", timezoneId="Asia/Tokyo")
+    try:
+        if not client.evaluate("window.Hyperloom.time(1736935200)").startswith("11:00"):
+            raise AssertionError("shell: a browser in another zone did not use the chosen zone")
+    finally:
+        client.call("Emulation.setTimezoneOverride", timezoneId="")
+    if client.evaluate("document.getElementById('pref-timezone').options.length") < 3:
+        raise AssertionError("shell: the zone list from the portal is missing")
+    # A zone the portal accepts but this browser cannot format: this browser is made to refuse one accepted zone
+    # ("Factory"); it is not offered and, once saved, times show in UTC and the settings page says so.
+    client.call("Page.addScriptToEvaluateOnNewDocument", source="""(() => {
+      const Real = Intl.DateTimeFormat;
+      function Refusing(locale, options) {
+        if (options && options.timeZone === "Factory") throw new RangeError("Invalid time zone specified: Factory");
+        return new Real(locale, options);
+      }
+      Refusing.prototype = Real.prototype;
+      Refusing.supportedLocalesOf = Real.supportedLocalesOf.bind(Real);
+      Intl.DateTimeFormat = Refusing; })();""")
+    go("#/settings", "document.getElementById('pref-timezone')?.options.length > 3", reload=True)
+    if client.evaluate("[...document.getElementById('pref-timezone').options].some(o => o.value === 'Factory')"):
+        raise AssertionError("shell: a zone this browser cannot format is offered")
+    token = client.evaluate("document.querySelector('meta[name=hyperloom-csrf]').content")
+    status, _, body = server.request("POST", API + "prefs/save", json.dumps({"timezone": "Factory"}).encode(),
+                                     {"Origin": server.origin, "Content-Type": "application/json", "X-Hyperloom-CSRF": token})
+    if status != 200:
+        raise AssertionError("shell: the portal refused a zone it lists: " + body.decode("utf-8", "replace")[:300])
+    go("#/settings", "window.Hyperloom.prefs().timezone === 'Factory'", reload=True)
+    wait("/Factory cannot be shown by this browser; UTC used/.test(document.getElementById('prefs-data').innerText)")
+    if not (client.evaluate("window.Hyperloom.time(1736935200)").startswith("10:00") and client.evaluate("window.Hyperloom.zone().name") == "UTC"):
+        raise AssertionError("shell: an unsupported saved zone did not fall back to UTC")
+    select("pref-timezone", "local")
+    saved("timezone", "local")
+    # Recipe deep link: opens the recipe on load and again on reload.
+    for reload in (False, True):
+        go("#/recipes?recipe=qwen3.8-flash-next.lab", "!!document.querySelector('[data-path=\"routes.prefill_rtx.when.prompt_tokens_min\"]')", reload=reload)
+    # Exceptions strip, banner, tab badge, favicon dot and notifications from deterministic scenarios.
+    now = time.time()
+    finding = lambda ident, severity, title, machine, age: {"id": ident, "severity": severity, "title": title,
+                                                             "machine": machine, "since": now - age}
+    # The fleet overview's machine rows, as its document serializes them.
+    overview = {"machines": [{"id": "halo-1", "status": "online", "engines": [{"profile": "qwen", "role": "rank 0", "throughput": 41.5}]},
+                             {"id": "halo-2", "status": "stale", "engines": [{"profile": "qwen", "role": "rank 1", "throughput": None, "follower_of": "halo-1"},
+                                                                            {"profile": "small", "role": "replica", "throughput": 7}]}]}
+    base = {"counts": {"critical": 1, "warning": 1, "info": 0}, "banner": "GPU thermal slowdown on halo-1 gpu0", "evaluated_at": now, "stale": False,
+            "strip": [finding("hot", "critical", "GPU hot", "halo-1", 300), finding("disk", "warning", "Disk at 92 %", "halo-2", 4000)]}
+    scenario({"health/summary": base, "overview": overview})
+    client.evaluate("localStorage.setItem('hyperloom-notify', 'true')")
+    go("#/devices", "document.querySelectorAll('#exceptions li.exception').length === 2", reload=True)
+    wait("document.title.startsWith('(2) Hyperloom') && document.getElementById('favicon').href.includes('%23d32f2f')")
+    wait("document.getElementById('throttle-banner').textContent === 'GPU thermal slowdown on halo-1 gpu0' && !document.getElementById('throttle-banner').hidden")
+    wait("/41[.,]5 tok\\/s/.test(document.getElementById('nav-machines').innerText) && /7 tok.s · rank 1 of qwen · rank 0 on halo-1/.test(document.getElementById('nav-machines').innerText)")
+    if client.evaluate("document.querySelector('#exceptions .pill').textContent") != "critical":
+        raise AssertionError("shell: strip must list the critical finding first with its severity word")
+    if client.evaluate("window.__notes.length"):
+        raise AssertionError("shell: findings present at page load must not raise notifications")
+    shot("strip", "light", 1440)
+    viewport(1440, "dark")
+    client.evaluate("new Promise(resolve => setTimeout(resolve, 300))")
+    shot("strip", "dark", 1440)
+    viewport(1440, "light")
+    fresh = dict(base, counts={"critical": 1, "warning": 2}, strip=base["strip"] + [finding("w2", "warning", "Collector stale", "halo-2", 20)])
+    scenario({"health/summary": fresh, "overview": overview})
+    wait("window.__notes.length === 1 && window.__notes[0] === 'w2' && document.title.startsWith('(3) ')")
+    stale = dict(fresh, stale=True, evaluated_at=now - 600, counts={"critical": 1, "warning": 3},
+                 strip=fresh["strip"] + [finding("w3", "warning", "Engine down", "halo-1", 10)])
+    scenario({"health/summary": stale, "overview": overview})
+    wait("/evaluation stale/.test(document.getElementById('exceptions').innerText) && document.title.startsWith('(4?) ')")
+    wait("document.getElementById('throttle-banner').textContent.startsWith('Last known:')")
+    client.evaluate("new Promise(resolve => setTimeout(resolve, 2500))")
+    if client.evaluate("window.__notes.length") != 1:
+        raise AssertionError("shell: a stale evaluation raised a notification")
+    scenario({"health/summary": dict(stale, stale=False, evaluated_at=time.time()), "overview": overview})
+    wait("window.__notes.length === 2 && window.__notes[1] === 'w3'")
+    client.evaluate("new Promise(resolve => setTimeout(resolve, 2500))")
+    if client.evaluate("window.__notes.length") != 2:
+        raise AssertionError("shell: a finding was notified twice")
+    # An empty summary ages too: clear evaluation, failing requests (stale, "(?)"), then a fresh clear answer.
+    scenario({"health/summary": dict(base, counts={}, strip=[], banner=None, evaluated_at=time.time()), "overview": overview})
+    wait("document.getElementById('exceptions').hidden && !document.title.startsWith('(')")
+    scenario({"health/summary": "fail", "overview": overview})
+    wait("!document.getElementById('exceptions').hidden && /evaluation stale/.test(document.getElementById('exceptions').innerText) && document.title.startsWith('(?) ')", timeout=40)
+    scenario({"health/summary": dict(base, counts={}, strip=[], banner=None, evaluated_at=time.time()), "overview": overview})
+    wait("document.getElementById('exceptions').hidden && !document.title.startsWith('(')")
+    scenario({"health/summary": dict(stale, stale=False, evaluated_at=time.time()), "overview": overview})
+    wait("document.title.startsWith('(4) ')")
+    # Failing requests age the last known summary: marked stale, no notification; a fresh answer recovers.
+    scenario({"health/summary": "fail", "overview": overview})
+    wait("/evaluation stale/.test(document.getElementById('exceptions').innerText) && document.title.startsWith('(4?) ')", timeout=40)
+    scenario({"health/summary": dict(stale, stale=False, evaluated_at=time.time(), strip=stale["strip"] + [finding("w4", "warning", "Late", "halo-1", 5)]), "overview": overview})
+    wait("!/evaluation stale/.test(document.getElementById('exceptions').innerText) && window.__notes.length === 3 && window.__notes[2] === 'w4'")
+    # A page that lists a shell document itself shares the shell's snapshot: answer, 404 (the page shows its
+    # error state), then the same answer again (the page renders it again although its content is unchanged).
+    owner = client.call("Page.addScriptToEvaluateOnNewDocument", source="""(window.HyperloomPages ||= {})["probe-owner"] = {
+      title: "Probe owner", group: "Operations", order: 99, endpoints: () => ["health/summary"],
+      render: () => `<p id="probe-owner">critical ${window.Hyperloom.state.docs["health/summary"].counts.critical}</p>`};""")["identifier"]
+    try:
+        scenario({"health/summary": dict(base, evaluated_at=time.time()), "overview": overview})
+        go("#/probe-owner", "document.getElementById('probe-owner')?.textContent === 'critical 1'", reload=True)
+        scenario({"health/summary": "missing", "overview": overview})
+        wait("/Probe owner data unavailable/.test(document.querySelector('main').innerText) && document.getElementById('exceptions').hidden")
+        scenario({"health/summary": dict(base, evaluated_at=time.time()), "overview": overview})
+        wait("document.getElementById('probe-owner')?.textContent === 'critical 1' && !document.getElementById('exceptions').hidden")
+        # An answer older than one already applied is dropped: a slow optional request sent from another page
+        # arrives after the owning page's newer answer (content, then a 404) and changes nothing.
+        for late in (dict(base, evaluated_at=time.time(), counts={"critical": 1}, delay_s=6),
+                     dict(base, evaluated_at=time.time(), missing=True, delay_s=6)):
+            go("#/devices")
+            scenario({"health/summary": late, "overview": overview})
+            client.evaluate("new Promise(resolve => setTimeout(resolve, 2500))")   # an optional round is now waiting
+            scenario({"health/summary": dict(base, evaluated_at=time.time(), counts={"critical": 2}), "overview": overview})
+            client.call("Page.navigate", url=server.url + "#/probe-owner")
+            wait("document.getElementById('probe-owner')?.textContent === 'critical 2'")
+            client.evaluate("new Promise(resolve => setTimeout(resolve, 7000))")
+            if client.evaluate("document.getElementById('probe-owner')?.textContent") != "critical 2":
+                raise AssertionError("shell: a superseded answer replaced a newer one: "
+                                     + str(client.evaluate("document.querySelector('main').innerText"))[:300])
+        scenario({"health/summary": dict(base, evaluated_at=time.time()), "overview": overview})
+    finally:
+        client.call("Page.removeScriptToEvaluateOnNewDocument", identifier=owner)
+    # A slow optional document never holds back the screen's own documents nor makes the view stale.
+    scenario({"health/summary": dict(base, evaluated_at=time.time(), delay_s=9), "overview": overview})
+    go("#/devices")
+    for _ in range(3):
+        client.evaluate("new Promise(resolve => setTimeout(resolve, 3000))")
+        age = client.evaluate("Date.now() - window.Hyperloom.state.fetched.devices")
+        if age > 4500 or not client.evaluate("document.getElementById('connection').hidden && !document.getElementById('add-machine').disabled"):
+            raise AssertionError(f"shell: a slow optional document delayed the screen ({age} ms since the last devices answer)")
+    scenario({"health/summary": dict(base, evaluated_at=time.time()), "overview": overview})
+    # A slow core document: the action blocker (what every mutation control and dialog asks) is set whenever a
+    # current document is older than the stale limit, at any moment (not only after the next one-second check).
+    scenario({"health/summary": dict(base, evaluated_at=time.time()), "overview": overview, "jobs_delay_s": 8})
+    samples = client.evaluate("""new Promise(resolve => { const out = {aged: 0, violations: 0}; const started = Date.now();
+      const timer = setInterval(() => {
+        const age = Date.now() - (window.Hyperloom.state.fetched.devices || Date.now());
+        if (age > 6000) { out.aged++; if (!window.Hyperloom.mutationReason()) out.violations++; }
+        if (Date.now() - started > 9000) { clearInterval(timer); resolve(out); } }, 100); })""")
+    if not samples["aged"] or samples["violations"]:
+        raise AssertionError("shell: the action blocker was clear with an old document: " + json.dumps(samples))
+    scenario({"health/summary": dict(base, evaluated_at=time.time()), "overview": overview})
+    wait("!window.Hyperloom.mutationReason()", timeout=40)
+    # Info tooltips: shown on focus, dismissed by Escape and kept dismissed across a poll; the pointer can move
+    # from the button into the tooltip.
+    go("#/stats", "!!document.querySelector('main .info-btn')")
+    tip_id = client.evaluate("(() => { const b = document.querySelector('main .info-btn'); b.focus(); return b.getAttribute('aria-describedby'); })()")
+    shown = f"getComputedStyle(document.getElementById({json.dumps(tip_id)})).display === 'block'"
+    wait(shown)
+    key(client, "Escape")
+    wait("!(" + shown + ")")
+    client.evaluate("new Promise(resolve => setTimeout(resolve, 2600))")
+    if client.evaluate(shown) or client.evaluate("document.activeElement.getAttribute('aria-describedby')") != tip_id:
+        raise AssertionError("shell: a poll reopened a dismissed tooltip or lost its focus")
+    client.evaluate("document.activeElement.blur()")
+    box = client.evaluate(f"(() => {{ const b = document.querySelector('[aria-describedby={json.dumps(tip_id)}]').getBoundingClientRect(); return [b.x + b.width / 2, b.y + b.height / 2, b.bottom]; }})()")
+    for x, y in ((box[0], box[1]), (box[0], box[2] + 3)):
+        client.call("Input.dispatchMouseEvent", type="mouseMoved", x=x, y=y)
+        if not client.evaluate(shown):
+            raise AssertionError(f"shell: the tooltip closed while the pointer moved from its button towards it ({x}, {y})")
+    tip_box = client.evaluate(f"(() => {{ const b = document.getElementById({json.dumps(tip_id)}).getBoundingClientRect(); return [b.x + b.width / 2, b.y + b.height / 2]; }})()")
+    client.call("Input.dispatchMouseEvent", type="mouseMoved", x=tip_box[0], y=tip_box[1])
+    if not client.evaluate(shown):
+        raise AssertionError("shell: the tooltip closed under the pointer")
+    client.evaluate("new Promise(resolve => setTimeout(resolve, 2600))")        # a poll re-renders the page
+    if not client.evaluate(shown):
+        raise AssertionError("shell: a poll closed the tooltip under the pointer")
+    client.call("Input.dispatchMouseEvent", type="mouseMoved", x=5, y=995)
+    # Narrow: the bottom tab bar, the strip and no horizontal overflow; nothing hidden under the bar.
+    viewport(390, "light")
+    go("#/devices", "document.querySelectorAll('#tabbar a').length === 4")
+    metrics = client.evaluate("""(() => { const bar = document.getElementById('tabbar').getBoundingClientRect();
+      const pad = parseFloat(getComputedStyle(document.querySelector('.main')).paddingBottom);
+      return {display: getComputedStyle(document.getElementById('tabbar')).display, height: bar.height, pad,
+              scroll: document.documentElement.scrollWidth, current: document.querySelector('#tabbar a[aria-current=page]')?.textContent}; })()""")
+    if metrics["display"] != "grid" or metrics["pad"] < metrics["height"] or metrics["scroll"] > 390 or metrics["current"] != "Machines":
+        raise AssertionError("shell: narrow tab bar " + json.dumps(metrics))
+    shot("tabbar", "light", 390)
+    viewport(390, "dark")
+    client.evaluate("new Promise(resolve => setTimeout(resolve, 300))")
+    shot("tabbar", "dark", 390)
+    go("#/settings")
+    shot("settings", "dark", 390)
+    viewport(1440, "dark")
+    go("#/settings")
+    shot("settings", "dark", 1440)
+    viewport(390, "light")
+    go("#/settings")
+    shot("settings", "light", 390)
+    viewport(1440, "light")
+    scenario({"health/summary": "missing", "overview": "missing"})
+    go("#/devices", "document.getElementById('exceptions').hidden && !document.title.startsWith('(')", reload=True)
+    scenario(None)
+    client.evaluate("localStorage.removeItem('hyperloom-notify')")
+    if client.errors:
+        raise AssertionError("shell: browser console/exception errors: " + json.dumps(client.errors))
+    return "palette, Ctrl+B, deep links, black/compact/Spanish/refresh preferences, strip/banner/badge/favicon/notifications, tab bar"
+
+
+def shell_service_worker(client, server):
+    """The installable shell's worker: only static files come from its cache; navigations, API reads and POSTs
+    fail offline instead of being answered from a cache; a restarted portal's new CSRF page is shown; when the
+    portal stops serving /sw.js the page removes the worker, and the worker removes itself on a navigation the
+    page script does not see. Returns the fixture server now serving (the walkthrough restarts it)."""
+    def wait(expression, timeout=30):
+        try:
+            return eventually(lambda: client.evaluate(expression), timeout=timeout)
+        except AssertionError:
+            raise AssertionError("service worker: timed out waiting for " + expression) from None
+
+    registered = "navigator.serviceWorker.getRegistrations().then(rs => rs.filter(r => (r.active || r.waiting || r.installing)?.scriptURL === location.origin + '/sw.js').length)"
+    shell_caches = "caches.keys().then(ks => ks.filter(k => k.startsWith('hyperloom-shell-')))"
+    client.call("Emulation.setDeviceMetricsOverride", width=1440, height=1000, deviceScaleFactor=1, mobile=False)
+    client.call("Page.navigate", url=server.url + "#/devices")
+    wait("document.readyState === 'complete'")
+    wait("Promise.race([navigator.serviceWorker.ready.then(() => true), new Promise(resolve => setTimeout(() => resolve(false), 1000))])")
+    client.call("Page.reload")
+    wait("document.readyState === 'complete' && !!navigator.serviceWorker.controller")
+    wait("document.querySelector('main').getAttribute('aria-busy') === 'false'")
+    entries = client.evaluate("caches.open('hyperloom-shell-v1').then(c => c.keys()).then(rs => rs.map(r => new URL(r.url).pathname))")
+    if "/app.js" not in entries or any(p.startswith("/hyperloom/api") or p in ("/", "/index.html", "/sw.js") for p in entries):
+        raise AssertionError("service worker: unexpected cache entries " + json.dumps(entries))
+    if client.evaluate(shell_caches) != ["hyperloom-shell-v1"]:
+        raise AssertionError("service worker: unexpected caches")
+    client.call("Network.enable")
+    client.call("Network.emulateNetworkConditions", offline=True, latency=0, downloadThroughput=-1, uploadThroughput=-1)
+    try:
+        offline = client.evaluate("""(async () => {
+          const outcome = async work => { try { const r = await work(); return r.status; } catch (_) { return 'failed'; } };
+          return {api: await outcome(() => fetch('/hyperloom/api/devices', {cache: 'no-store'})),
+                  post: await outcome(() => fetch('/hyperloom/api/prefs/save', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'})),
+                  script: await outcome(() => fetch('/app.js'))}; })()""")
+        if offline != {"api": "failed", "post": "failed", "script": 200}:
+            raise AssertionError("service worker: offline answers " + json.dumps(offline))
+        client.call("Page.navigate", url=server.url + "?offline=1")
+        client.evaluate("new Promise(resolve => setTimeout(resolve, 1500))")
+        if client.evaluate("!!document.querySelector('meta[name=hyperloom-csrf]')"):
+            raise AssertionError("service worker: an offline navigation was answered from a cache")
+        # The browser's own offline error page refuses the smoke's start-up script (storage): not a portal error.
+        client.errors[:] = [e for e in client.errors
+                            if not e.get("params", {}).get("exceptionDetails", {}).get("url", "").startswith("chrome-error://")]
+    finally:
+        client.call("Network.emulateNetworkConditions", offline=False, latency=0, downloadThroughput=-1, uploadThroughput=-1)
+    # Back from the browser's error page on a fresh session.
+    client.call("Page.navigate", url=server.url + "#/devices")
+    time.sleep(2)
+    client.reconnect()
+    client.call("Page.reload")
+    wait("document.readyState === 'complete' && !!document.querySelector('meta[name=hyperloom-csrf]')")
+    before = client.evaluate("document.querySelector('meta[name=hyperloom-csrf]').content")
+    server.process.terminate()
+    server.process.wait(timeout=10)
+    restarted = FixtureServer(port=server.port)
+    try:
+        client.call("Page.reload")
+        wait("document.readyState === 'complete' && !!document.querySelector('meta[name=hyperloom-csrf]')")
+        after = client.evaluate("document.querySelector('meta[name=hyperloom-csrf]').content")
+        served = re.search(rb'name="hyperloom-csrf" content="([^"]+)"', restarted.request("GET", "/")[2])[1].decode()
+        if after == before or after != served:
+            raise AssertionError("service worker: the reloaded page did not show the new portal's CSRF page")
+        # The portal stops serving /sw.js: the page removes the worker and the shell caches on load.
+        (restarted.directory / "no-sw").touch()
+        client.call("Page.reload")
+        wait(f"{registered}.then(n => n === 0)")
+        wait(f"{shell_caches}.then(ks => ks.length === 0)")   # page-side removal
+        # Served again: registered again. Then the worker alone notices on a navigation the page never runs.
+        (restarted.directory / "no-sw").unlink()
+        client.call("Page.reload")
+        wait("Promise.race([navigator.serviceWorker.ready.then(() => true), new Promise(resolve => setTimeout(() => resolve(false), 1000))])")
+        wait(f"{registered}.then(n => n === 1)")
+        (restarted.directory / "no-sw").touch()
+        client.call("ServiceWorker.enable")
+        for attempt in range(3):
+            # A stopped worker starts again for the next navigation with no recent self-check. The stop command can
+            # take long on a loaded machine; a later attempt repeats it.
+            try:
+                client.socket.settimeout(45)
+                client.call("ServiceWorker.stopAllWorkers")
+                client.socket.settimeout(10)
+            except OSError:                  # no answer in time: continue on a fresh session
+                client.reconnect()
+            time.sleep(1.5)
+            client.call("Page.navigate", url=server.url + f"not-a-page-{attempt}")
+            wait("document.readyState === 'complete' && !document.querySelector('meta[name=hyperloom-csrf]')")
+            try:
+                wait(f"{registered}.then(n => n === 0)", timeout=15)
+                break
+            except AssertionError:
+                if attempt == 2:
+                    raise
+        wait(f"{shell_caches}.then(ks => ks.length === 0)")
+        client.call("ServiceWorker.disable")
+        if client.errors:
+            raise AssertionError("service worker: console/exception errors: " + json.dumps(client.errors))
+    finally:
+        (restarted.directory / "no-sw").unlink(missing_ok=True)
+        restarted.close()
+    return "static-only cache, offline navigation/API/POST not cached, new CSRF page after restart, page-side and worker-side removal"
 
 
 def seed_fixtures(directory, now):
@@ -758,6 +1298,8 @@ def browser_smoke(chrome, server, output, *, keyboard=False, keyboard_only=False
                         captures += feature_pages(client, server, output, width, theme)
                     if not backgrounds.get("light") or backgrounds["light"] == backgrounds.get("dark"):
                         raise AssertionError("System light/dark preference did not change the rendered theme")
+                if not keyboard_only and not recipes_only:
+                    print("PASS shell walkthrough: " + shell_walkthrough(client, server, output), flush=True)
                 if keyboard or keyboard_only:
                     # Desktop makes every opener visible; the manual walkthrough
                     # additionally covers the narrow navigation menu and NVDA.
@@ -771,6 +1313,8 @@ def browser_smoke(chrome, server, output, *, keyboard=False, keyboard_only=False
                 if not keyboard_only:
                     print("PASS recipes walkthrough: edit, inline refusal, fix, preview, " + recipes_walkthrough(client, server)
                           + ", save copy", flush=True)
+                    if not recipes_only:
+                        print("PASS service worker: " + shell_service_worker(client, server), flush=True)
                 return captures
             finally:
                 if client:
@@ -808,7 +1352,7 @@ def main():
             except KeyboardInterrupt:
                 pass
         return 0
-    print(f"PASS {check_contrast()} text/surface contrast pairs")
+    print(f"PASS {check_contrast(themes_checked=('light', 'dark', 'black'))} text/surface contrast pairs (light, dark, true black)")
     if args.contrast_only:
         return 0
     chrome = args.chrome or find_chrome()

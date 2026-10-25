@@ -37,7 +37,7 @@ Status: design for main/user review (2026-10-23); sections 9-11 answer Sol revie
 | 7 | **Settings & pairing** | pairing flow, trusted machines and revocation, secrets storage and rotation, lab rules, config file / versions / import–export | `img/settings-*.png` |
 
 **Global chrome**
-- **Left sidebar** (collapses to a top bar with a menu under 760 px). It holds the brand, the seven screens, badges (new machines, warnings), the control machine and the hyperloom version / lab mode.
+- **Left sidebar** (collapses to a top bar with a menu and a bottom tab bar under 760 px; section 12). It holds the brand, search, the grouped screens and feature pages, the machine list, the control machine and the hyperloom version / lab mode.
 - **Page header:** title, context tags (active profile, "Production preset · exact"), and the primary actions on the right.
 - **Global status** is shown in the narrow top bar as "Running / Stopped / Degraded".
 
@@ -310,3 +310,93 @@ Disabled controls always name their blocker (phase or request id).
   - logs wrap and scroll.
 - **Stale / resume:** after a background tab resumes, or on reconnect, the UI fetches authoritative state before it re-enables any mutation. Lease expiry is enforced server-side by `supervise`, independently of the browser.
 - **Sample data coherence:** mockup fixtures come from one configuration (context 32768 for the RTX profile, so the 8K/32K requests fit). Identity is shown as the qualified identity ("P17.5 · trellis quality-gated · RTX prefill exact arm"), never as a blanket "exact".
+
+## 12. Portal shell
+
+The shell (`app.js`, `app.css`, `index.html`, `pages/shell-i18n.js`, `assets/*`) frames every screen and feature page.
+Feature pages keep the page registry contract (`window.HyperloomPages`); the shell only adds helpers to
+`window.Hyperloom`.
+
+### 12.1 Sidebar, header and freshness
+- **Groups:** Workspace, Inference, Benchmarks, Operations (then any other group a page names). Core screens:
+  Devices, Topology → Workspace; Models, Recipes, Engines, Live stats → Inference; Logs, Settings → Operations. Within a
+  group entries follow `order`. A group header is a button (`aria-expanded`) that folds its links; the state is
+  remembered per browser; the group of the open page is always unfolded.
+- **Machines:** one link per configured machine with a status dot and its status word (never colour alone), from the
+  core devices document, or from the overview document when that feature is installed. The overview's machine rows
+  are read as `{id, status, engines: [{profile, role, throughput, follower_of}]}`: the shown rate is the sum of the
+  machine's own `rank 0` / `replica` rows that report completed tok/s; a `rank 1` row shows "rank 1 of <profile> ·
+  rank 0 on <machine>". No rate is ever shown as 0 when it is missing. A link opens the machine page when it is
+  registered, else Devices.
+- **Collapse:** Ctrl/Cmd-B (or the sidebar button) folds the sidebar into an icon rail (remembered); on narrow screens
+  it opens and closes the menu.
+- **Heartbeat pill** in the header: "Live · 2 s" (the refresh interval), "Stale", "Paused" (background tab, offline).
+- **Freshness:** stale = the oldest document of the current poll set (core screens + the open page's endpoints) is
+  older than max(6 s, 3 × refresh interval), or one of them failed. Optional shell documents (`prefs`,
+  `health/summary`, `overview`) never make the view stale and never disable a control; a 404 means the feature is
+  not installed (asked again every 60 s).
+
+### 12.2 Exceptions strip, throttle banner, tab badge, notifications
+- From `health/summary` (`{counts, strip: [{id, title, since, severity, machine}], banner, evaluated_at, stale}`):
+  up to six findings under the header, critical first then oldest, each with its severity pill, title, machine and
+  "for N min"; "+N more" and a link to the health page. Without the health feature nothing is shown; a failing
+  summary shows "Exceptions unavailable · why".
+- **Banner:** red, while `banner` is set ("GPU thermal slowdown on …"); announced once per distinct text.
+- **Tab title** `(n) Hyperloom · <page>` with the active count; **favicon** gets a red dot (any critical) or an amber
+  dot (otherwise any active finding).
+- **Stale summary** (the producer says so, its evaluation is older than 90 s, or it could not be fetched within the
+  view's stale limit): findings stay visible as last known with "evaluation stale since HH:MM", the banner reads
+  "Last known: …", the title `(n?)`.
+- **Desktop notifications** (opt-in in Settings, per browser, only while the portal is open): one per finding that
+  appears after the page opened (warning or worse), from fresh evaluations only; at most three per poll.
+
+### 12.3 Search and command palette
+- Ctrl/Cmd-K (or "Search" in the sidebar / the search button on narrow screens) opens a named dialog with a labelled
+  combobox and a listbox: pages (hidden ones included, marked), machines, profiles, recipes, and actions (refresh,
+  sidebar, theme, density, language, Add by address…, Doctor…, Start profile…, Rotate engine key…, preferences).
+  Arrows move, Enter runs, Escape closes and returns focus. An action the portal would refuse is listed disabled with
+  its blocker and does not run. Stop and other destructive actions are not offered here.
+- **Deep links:** `#/<page>[?query]`; `#/engines?profile=<id>`, `#/recipes?recipe=<id>`,
+  `#/settings?section=preferences|appearance|data|panels|notifications|related`.
+- **Filter boxes for pages:** `Hyperloom.filter(id, {label, placeholder, statuses})` renders a labelled search box
+  (and a status select); `Hyperloom.filterValue(id)` → `{text, status}`; `Hyperloom.matches(text, query)`.
+
+### 12.4 Themes, density, languages, units
+- Themes: System, Light, Dark, True black (`data-theme="dark"` + `data-shade="black"`: dark rules keep applying; its
+  own tokens meet the same AA pairs, checked by the contrast test). Density: Comfortable, Compact (targets stay
+  ≥ 32 px, 44 px narrow).
+- Languages: English, Spanish; switching is instant (navigation, header, palette, strip, settings, states).
+  `HyperloomI18n.t(key, vars, fallback)`, `.add(lang, table)` and `.onchange(fn)` let pages translate their own text;
+  the core screen bodies are English for now.
+- Units and time: `Hyperloom.temperature(celsius)` (°C or °F), `Hyperloom.time(epoch, withDate)` and
+  `Hyperloom.zone()` follow the preferences; stored values stay UTC epoch and °C. "Local" is the control machine's
+  zone: its IANA name when the portal knows it, else this browser's zone when it agrees with the portal's offset, else
+  the portal's fixed offset (the settings page says which).
+
+### 12.5 Preferences (Settings)
+- Settings opens with "Portal preferences": appearance and language, data and time (refresh every 1/2/5/10/30 s,
+  temperature unit, time zone from the list the portal accepts), panels shown in the sidebar (Settings always),
+  desktop notifications, and links to settings other features keep (energy price and currency, thresholds, alert
+  channels, MQTT, retention, collector intervals) or "unavailable · needs the <x> feature".
+- Stored by the portal (`GET prefs`, `POST prefs/save`, audited; store namespace `prefs/ui`, one key per field, a
+  default has no row) and mirrored in the browser for the first paint. CLI: `hyperloom prefs show|set key=value …`.
+  A change applies at once and saves in order; if a save fails the value stays in this browser only and says so.
+
+### 12.6 Narrow screens
+- Under 760 px a bottom tab bar: Overview (when installed), Machines, Stats, Settings (Logs instead of Overview
+  without it); the current tab is marked; content keeps clear of the bar; the Menu button keeps every other page.
+
+### 12.7 Explanations and empty/error states
+- `Hyperloom.info(text, {observer, basis})`: an "i" button (32 px target, 44 px narrow) whose tooltip (hover, focus
+  or click; Escape closes) says what the value is, its observer and whether it is measured or estimated. The shell's
+  own metrics carry one (device KPIs, GPU memory / busy, temperature, power, stats KPIs and charts, engine memory,
+  USB4 exchange, links); feature pages add theirs.
+- `Hyperloom.problem({title, why, retry, next})`: an error card with Retry and a next step (open logs, settings).
+
+### 12.8 Installable shell
+- `assets/manifest.webmanifest` (standalone, scope `/`) with SVG and PNG icons.
+- `/sw.js` (served from `assets/` only while listed there) answers only GET requests for `/app.js`, `/app.css`,
+  `/recipes.js`, `/pages/*.js|css` and `/assets/*.svg|png|webmanifest`: network first, its cached copy only when the
+  network fails. Navigations, the CSRF page, `/hyperloom/api/*`, POSTs and the worker file itself are never
+  intercepted or cached. When the portal stops serving `/sw.js`, the page (on load) and the worker (on a navigation)
+  unregister it and delete the `hyperloom-shell-*` caches.

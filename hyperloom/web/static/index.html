@@ -6,23 +6,28 @@
   <meta name="hyperloom-csrf" content="__HYPERLOOM_CSRF__">
   <meta name="color-scheme" content="light dark">
   <title>Hyperloom · Devices</title>
-  <link rel="icon" href="data:,">
+  <meta name="theme-color" content="#2f6fde">
+  <link rel="icon" id="favicon" href="/assets/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/assets/icon-192.png">
+  <link rel="manifest" href="/assets/manifest.webmanifest">
   <link rel="stylesheet" href="/app.css">
   <script src="/app.js" defer></script>
   <script src="/recipes.js" defer></script>
 </head>
 <body>
-  <a class="skip" href="#main">Skip to content</a>
+  <a class="skip" id="skip-link" href="#main">Skip to content</a>
   <div class="app">
     <aside class="side" id="sidebar" aria-label="Portal navigation">
-      <div class="brand"><span class="logo" aria-hidden="true">hl</span>Hyperloom</div>
+      <div class="brand"><span class="logo" aria-hidden="true">hl</span><span class="lbl">Hyperloom</span><button class="icon-btn" id="sidebar-toggle" type="button" data-shell="sidebar" aria-label="Collapse sidebar (Ctrl B)" aria-pressed="false"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="4" width="14" height="12" rx="2"/><path d="M8 4v12"/></svg></button></div>
+      <button class="search-btn" id="palette-open" type="button" data-shell="palette" aria-label="Search pages, machines, recipes and actions (Ctrl K)" aria-keyshortcuts="Control+K Meta+K"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="9" cy="9" r="5"/><path d="M13 13l4 4"/></svg><span class="lbl" aria-hidden="true">Search</span><kbd class="lbl" aria-hidden="true">Ctrl K</kbd></button>
       <nav class="nav" id="navigation" aria-label="Screens"></nav>
+      <nav class="nav nav-machines" id="nav-machines" aria-label="Machines"></nav>
       <div class="foot">
         <div id="control-machine">Control machine · unavailable</div>
         <div id="version">Hyperloom · local portal</div>
-        <label class="field theme-field" for="theme">Appearance
+        <label class="field theme-field" id="theme-label" for="theme">Appearance
           <select class="inp" id="theme">
-            <option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option>
+            <option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option><option value="black">True black</option>
           </select>
         </label>
       </div>
@@ -31,15 +36,19 @@
       <div class="mtop">
         <span class="logo" aria-hidden="true">hl</span><b>Hyperloom</b>
         <span id="mobile-status" class="pill p-off">Loading</span>
+        <button class="icon-btn" id="palette-mobile" type="button" data-shell="palette" aria-label="Search"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="9" cy="9" r="5"/><path d="M13 13l4 4"/></svg></button>
         <button class="btn" id="menu" type="button" aria-label="Open navigation menu" aria-expanded="false" aria-controls="sidebar">Menu</button>
       </div>
-      <header class="top"><h1 id="page-title">Devices</h1><span id="global-status" class="pill p-off">Loading</span><span class="sp"></span><div class="row" id="page-actions"></div></header>
+      <header class="top"><h1 id="page-title">Devices</h1><span id="global-status" class="pill p-off">Loading</span><span id="heartbeat" class="pill p-off heartbeat">Loading</span><span class="sp"></span><div class="row" id="page-actions"></div></header>
+      <div id="throttle-banner" class="throttle-banner" role="alert" hidden></div>
+      <section id="exceptions" class="exceptions" aria-label="Active exceptions" hidden></section>
       <div id="connection" class="connection" hidden></div>
       <div id="alerts" class="alerts" aria-live="polite" aria-atomic="true"></div>
       <section id="job-panel" class="job-panel" aria-label="Action progress" hidden></section>
       <main id="main" class="content" tabindex="-1" aria-busy="true">
         <div class="grid g3" aria-label="Loading devices"><div class="card skeleton"></div><div class="card skeleton"></div><div class="card skeleton"></div></div>
       </main>
+      <nav class="tabbar" id="tabbar" aria-label="Primary"></nav>
     </div>
   </div>
   <dialog id="action-dialog" aria-labelledby="dialog-title" aria-describedby="dialog-effects">
@@ -50,6 +59,13 @@
       <p id="dialog-error" class="field-error" aria-live="polite"></p>
       <div class="row dialog-actions"><button type="button" class="btn" data-close>Cancel</button><button id="dialog-confirm" type="submit" class="btn pri">Confirm</button></div>
     </form>
+  </dialog>
+  <dialog id="palette" class="palette" aria-label="Search and commands">
+    <label class="palette-label" id="palette-label" for="palette-input">Search pages, machines, recipes and actions</label>
+    <input class="inp" id="palette-input" type="text" role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list" aria-describedby="palette-keys palette-status" autocomplete="off" spellcheck="false" placeholder="Type a page, machine, recipe or action">
+    <ul id="palette-list" role="listbox" aria-label="Results"></ul>
+    <p class="hint" id="palette-keys">Arrow keys move · Enter opens · Esc closes</p>
+    <p class="field-error" id="palette-status" aria-live="polite"></p>
   </dialog>
   <noscript><p class="banner">Enable JavaScript to read the local portal and use its controls.</p></noscript>
 </body>
