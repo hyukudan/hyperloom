@@ -702,13 +702,13 @@
   // Shared with recipes.js (the Recipes & profiles page): the same rendering helpers, request path and job flow.
   // Benchmark-class jobs started from this page stay alive only while it renews them (abandoned otherwise).
   const owned = new Set();
-  function own(jobId) { if (jobId) { owned.add(jobId); (state.ownedAt ||= {})[jobId] = Date.now(); renewOwned(); } }
+  function own(jobId) { if (jobId) { owned.add(jobId); renewOwned(); } }
   async function renewOwned() {
-    const running = new Set(rows(state.lastJobs).filter(j => j.state === "running").map(j => j.id || j.job));
-    for (const id of [...owned]) if (state.lastJobs && !running.has(id) && Date.now() - (state.ownedAt?.[id] || 0) > 10000) owned.delete(id);
     if (!owned.size) return;
     try {
-      await request("jobs/renew", {method: "POST", headers: {"Content-Type": "application/json", "X-Hyperloom-CSRF": document.querySelector('meta[name="hyperloom-csrf"]')?.content || ""}, body: JSON.stringify({jobs: [...owned].slice(0, 32)})});
+      const answer = await request("jobs/renew", {method: "POST", headers: {"Content-Type": "application/json", "X-Hyperloom-CSRF": document.querySelector('meta[name="hyperloom-csrf"]')?.content || ""}, body: JSON.stringify({jobs: [...owned].slice(0, 32)})});
+      // Only the server's answer ends ownership (the job is no longer running); a stale poll never does.
+      for (const id of rows(answer.not_running)) owned.delete(id);
     } catch (_) { /* the next renewal retries; the server cancels a job only after two minutes without one */ }
   }
   setInterval(renewOwned, 15000);

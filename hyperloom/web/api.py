@@ -173,8 +173,9 @@ def redact(value):
                 {"storage": "0600 files", "values": "never shown"})
             sensitive = re.search(r"password|secret|token|authorization|api[_-]?key|private[_-]?key", key, re.I)
             counts = sensitive and _token_data(key, item)
-            result[key] = "[redacted]" if sensitive and not counts and not metadata and not key.endswith(
-                ("_file", "_path", "_tokens")) else redact(item)
+            credential = re.search(r"password|secret|authorization|api[_-]?key|private[_-]?key|bearer|csrf", key, re.I)
+            exempt = key.endswith(("_file", "_path")) or (key.endswith("_tokens") and not credential)
+            result[key] = "[redacted]" if sensitive and not counts and not metadata and not exempt else redact(item)
         return result
     if isinstance(value, (list, tuple)):
         result, hide = [], False
@@ -1090,8 +1091,9 @@ class API:
             return {"*"}
 
     def _renew_holds(self):
-        """Heartbeat: renew the admission holds of this process's running jobs (an abandoned portal job is
-        cancelled by its context and its hold lapses)."""
+        """Heartbeat: renew the admission hold of every job of this process until the job releases it after its
+        own cleanup (cancelled or abandoned jobs included: their resources stay owned while they clean up).
+        Abandonment is detected by the job context, separately; it cancels the job, it never drops the hold."""
         while True:
             time.sleep(HOLD_RENEW_S)
             with self._job_lock:
@@ -1099,8 +1101,8 @@ class API:
                 contexts = dict(self._features_running)
             for jid, hold in holds.items():
                 context = contexts.get(jid)
-                if context is not None and (context.cancelled() or not context.owner_fresh()):
-                    continue
+                if context is not None:
+                    context.cancelled()     # notices abandonment / stops / deadline promptly
                 try:
                     self._admission().renew(hold)
                 except Exception:
@@ -1133,14 +1135,16 @@ class API:
         ids = arguments.get("jobs") if isinstance(arguments, dict) and set(arguments) == {"jobs"} else None
         if not isinstance(ids, list) or len(ids) > 32 or any(not isinstance(i, str) for i in ids):
             raise APIError("jobs must be a list of at most 32 job ids")
-        renewed = []
+        renewed, finished = [], []
         with self._job_lock:
             for jid in ids:
                 context = self._features_running.get(jid)
                 if context is not None:
                     context.renew_owner()
                     renewed.append(jid)
-        return 200, {"renewed": renewed}
+                else:
+                    finished.append(jid)    # unknown or no longer running: the page may stop renewing it
+        return 200, {"renewed": renewed, "not_running": finished}
 
     def _feature_job(self, action, arguments):
         spec = feature_registry.registry().jobs[action]
