@@ -179,7 +179,8 @@ def _token_data(key, item):
     if key.lower().startswith("tokenizer"):
         return isinstance(item, str) and len(item) <= 200 and not re.search(r"(?i)bearer\s|\s", item)
     return (number(item) or (isinstance(item, list) and all(type(v) is int for v in item))
-            or (isinstance(item, dict) and bool(item) and all(number(v) for v in item.values()))
+            or (isinstance(item, dict) and bool(item)          # a counter's accounting: numbers, flags, unknowns
+                and all(number(v) or v is None or type(v) is bool for v in item.values()))
             or (isinstance(item, str) and key.lower().endswith("token_ids") and bool(COMPRESSED_IDS.fullmatch(item))))
 
 
@@ -189,6 +190,13 @@ def redact(value, text=True):
     if isinstance(value, dict):
         result = {}
         for key, item in value.items():
+            if key in ("why", "series") and isinstance(item, dict):
+                # A map keyed by field or series names (why a field has no value; a series' history link): its
+                # strings go through the text rules (a credential in them is still redacted); a field name such as
+                # "computed_tokens" is not a secret. Other values are redacted as usual.
+                result[key] = {k: redact(v, text) if isinstance(v, str) else redact({k: v}, text)[k]
+                               for k, v in item.items()}
+                continue
             metadata = key == "secrets" and isinstance(item, dict) and item in (
                 {"storage": "DPAPI", "values": "never shown"},
                 {"storage": "0600 files", "values": "never shown"})
