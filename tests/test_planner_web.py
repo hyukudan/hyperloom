@@ -51,6 +51,8 @@ class ArgvTests(unittest.TestCase):
                                    ({"recipe": "ds-user.toml"}, "not a path"), ({"recipe": "C:x"}, "not a path"),
                                    ({"recipe": "-x"}, "not starting with"),
                                    ({"recipe": "a", "facts": "C:/x.json"}, "facts must be an id"),
+                                   ({"recipe": "a", "facts": "nul"}, "device name"),
+                                   ({"recipe": "a", "facts": "COM1.json"}, "device name"),
                                    ({"recipe": "a", "bogus": 1}, "unknown arguments"),
                                    ({"recipe": "a", "vary": {"a b": [1]}}, "not a settable path"),
                                    ({"recipe": "a", "vary": {FLOOR: []}}, "1..12 values"),

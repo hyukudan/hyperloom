@@ -234,6 +234,9 @@ class WhatifRunTests(unittest.TestCase):
         self.assertEqual(planner.resolve_recipe(str(path), cluster)[1], "ds-user")
         with self.assertRaises(service.NotFound):
             planner.resolve_recipe("ds-user.toml", cluster, catalog_only=True)
+        for device in ("NUL", "con.json", "com1"):
+            with self.assertRaises(planner.Refused):
+                planner.resolve_facts(device, ["ds41-rtx"], names_only=True)
 
     def test_an_id_is_never_a_file_of_the_working_directory(self):
         cluster = cli._cluster(self.env.config)

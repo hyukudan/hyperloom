@@ -117,6 +117,14 @@ def _name(arguments, key, required=False):
     return value
 
 
+def _not_a_device(arguments):
+    """A facts name is a file name in the facts directory: never a Windows device name (CON, NUL, COM1...)."""
+    from hyperloom.recipes import service
+    facts = arguments.get("facts")
+    if isinstance(facts, str) and service.DEVICES.fullmatch(facts.removesuffix(".json")):
+        raise ValueError(f"facts {facts!r}: a saved facts name, not a device name such as CON or NUL")
+
+
 def _int(arguments, key, low, high):
     value = arguments.get(key)
     if value is None:
@@ -156,6 +164,7 @@ def whatif_argv(api, arguments):
     for key, flag in (("profile", "--profile"), ("facts", "--facts")):
         if _name(arguments, key) is not None:
             argv += [flag, arguments[key]]
+    _not_a_device(arguments)
     vary = arguments.get("vary")
     vary = {} if vary is None else vary
     if not isinstance(vary, dict) or len(vary) > 8:
@@ -211,6 +220,7 @@ def placement_argv(api, arguments):
     argv = ["placement", _name(arguments, "model", required=True), "--catalog-only"]
     if _name(arguments, "facts") is not None:
         argv += ["--facts", arguments["facts"]]
+    _not_a_device(arguments)
     for key, flag, low, high in (("prompt", "--prompt", 1, 1 << 20), ("output", "--output", 1, 65536),
                                  ("slots", "--slots", 1, 64), ("top_k", "--top-k", 1, 10)):
         value = _int(arguments, key, low, high)

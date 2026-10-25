@@ -167,8 +167,10 @@ def resolve_facts(ref, profiles, names_only=False):
     if ref:
         candidate = Path(ref)
         if names_only or not (candidate.suffix == ".json" and candidate.is_file()):
-            if not service.ID.fullmatch(ref) or Path(ref).name != ref:
-                raise Refused(f"--facts {ref}: a saved facts name or an existing file")
+            if not service.ID.fullmatch(ref) or Path(ref).name != ref or \
+                    service.DEVICES.fullmatch(ref.removesuffix(".json")):
+                raise Refused(f"--facts {ref}: a saved facts name (not a device name such as CON or NUL) or an "
+                              "existing file")
             candidate = service.facts_dir() / (ref.removesuffix(".json") + ".json")
             record = read_facts(candidate, service.facts_dir())
         else:
