@@ -125,12 +125,15 @@ class TypedSeriesTests(unittest.TestCase):
             path = Path(directory) / "old.sqlite3"
             db = sqlite3.connect(path)
             db.executescript("""
-                CREATE TABLE series (id INTEGER PRIMARY KEY, name TEXT NOT NULL, labels TEXT NOT NULL, UNIQUE(name, labels));
+                CREATE TABLE series (id INTEGER PRIMARY KEY, name TEXT NOT NULL, labels TEXT NOT NULL,
+                                     kind TEXT NOT NULL DEFAULT 'gauge', UNIQUE(name, labels));
                 CREATE TABLE raw (series INTEGER NOT NULL, ts REAL NOT NULL, value REAL NOT NULL);
                 CREATE TABLE agg (tier TEXT NOT NULL, series INTEGER NOT NULL, bucket INTEGER NOT NULL, sum REAL NOT NULL,
                                   count INTEGER NOT NULL, min REAL NOT NULL, max REAL NOT NULL, PRIMARY KEY(tier, series, bucket));
-                INSERT INTO series VALUES (1, 'busy', '{}');
-                INSERT INTO raw VALUES (1, 1799999000.0, 5.0);""")
+                INSERT INTO series VALUES (1, 'busy', '{}', 'gauge'), (2, 'tokens', '{}', 'delta'), (3, 'state', '{}', 'state'),
+                                          (4, 'mixed', '{"a":"1"}', 'gauge'), (5, 'mixed', '{"a":"2"}', 'delta');
+                INSERT INTO raw VALUES (1, 1799999000.0, 5.0);
+                INSERT INTO agg VALUES ('m1', 2, 1799999040, 30, 2, 10, 20), ('m1', 3, 1799999040, 3, 2, 1, 2);""")
             db.commit()
             db.close()
             store = Store(path, clock=self.clock)
@@ -138,6 +141,16 @@ class TypedSeriesTests(unittest.TestCase):
                 store.record([("busy", {}, 7)], ts=self.clock.now - 10, interval=2)
                 points = store.query("busy", self.clock.now - 3600, tier="raw")["lines"][0]["points"]
                 self.assertEqual([(p[1], p[8]) for p in points], [(5.0, None), (7.0, 2.0)])
+                self.assertEqual(store.descriptor("tokens")["kind"], "delta")
+                self.assertEqual(store.descriptor("state")["kind"], "state")
+                self.assertIsNone(store.descriptor("mixed"))      # disagreeing label sets stay undescribed
+                tokens = store.query("tokens", 1799999000, 1799999100, tier="m1")["lines"][0]["points"][0]
+                self.assertEqual((tokens[5], tokens[6], tokens[7]), (30, None, None))   # sum kept; last/coverage unknown
+                state = store.query("state", 1799999000, 1799999100, tier="m1")["lines"][0]["points"][0]
+                self.assertIsNone(state[6])                    # never a fabricated state 0
+                store.record([("state", {}, 1, "state")], ts=1799999050)
+                state = store.query("state", 1799999000, 1799999100, tier="m1")["lines"][0]["points"][0]
+                self.assertEqual(state[6], 1)                  # a new sample in the bucket is its known last value
             finally:
                 store.close()
             Store(path, clock=self.clock).close()           # idempotent

@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS raw (series INTEGER NOT NULL, ts REAL NOT NULL, value
 CREATE INDEX IF NOT EXISTS raw_series_ts ON raw(series, ts);
 CREATE TABLE IF NOT EXISTS agg (tier TEXT NOT NULL, series INTEGER NOT NULL, bucket INTEGER NOT NULL,
                                 sum REAL NOT NULL, count INTEGER NOT NULL, min REAL NOT NULL, max REAL NOT NULL,
-                                last REAL NOT NULL, last_ts REAL NOT NULL, observed REAL NOT NULL DEFAULT 0,
+                                last REAL, last_ts REAL, observed REAL NOT NULL DEFAULT 0,
                                 PRIMARY KEY(tier, series, bucket));
 CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, category TEXT NOT NULL,
                                    severity TEXT NOT NULL, machine TEXT, message TEXT NOT NULL, data TEXT);
@@ -84,19 +84,24 @@ class Store:
         with self._lock:
             self._db.close()
 
-    # Columns added after the first schema: (table, column, declaration). Existing rows keep unknown values
-    # (no cadence, no observed seconds), which readers show as unavailable coverage, never as zero.
+    # Columns added after the first schema: (table, column, declaration). Existing rows keep unknown values:
+    # no cadence, no last value (NULL, shown as unavailable, never as a measured 0) and no observed seconds
+    # (coverage unavailable).
     MIGRATIONS = (("raw", "interval", "REAL"),
-                  ("agg", "last", "REAL NOT NULL DEFAULT 0"),
-                  ("agg", "last_ts", "REAL NOT NULL DEFAULT 0"),
+                  ("agg", "last", "REAL"),
+                  ("agg", "last_ts", "REAL"),
                   ("agg", "observed", "REAL NOT NULL DEFAULT 0"))
 
     def _migrate(self):
-        """Idempotently add columns that older stores lack."""
+        """Idempotently upgrade older stores: add missing columns, and move per-series kinds of the first schema
+        into metric descriptors (only where every label set of a metric agreed on its kind)."""
         for table, column, declaration in self.MIGRATIONS:
             columns = {row[1] for row in self._db.execute(f"PRAGMA table_info({table})")}
             if column not in columns:
                 self._db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+        if "kind" in {row[1] for row in self._db.execute("PRAGMA table_info(series)")}:
+            self._db.execute("INSERT OR IGNORE INTO metrics(name, kind) SELECT name, MIN(kind) FROM series "
+                             "WHERE kind IN ('gauge', 'delta', 'state') GROUP BY name HAVING COUNT(DISTINCT kind) = 1")
 
     # -- transactions ---------------------------------------------------------------------------------------------
     def _atomic(self, work):
@@ -202,8 +207,9 @@ class Store:
                     "INSERT INTO agg(tier, series, bucket, sum, count, min, max, last, last_ts, observed) "
                     "VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?) ON CONFLICT(tier, series, bucket) DO UPDATE SET "
                     "sum=sum+excluded.sum, count=count+1, min=MIN(min, excluded.min), max=MAX(max, excluded.max), "
-                    "last=CASE WHEN excluded.last_ts >= last_ts THEN excluded.last ELSE last END, "
-                    "last_ts=MAX(last_ts, excluded.last_ts), observed=observed+excluded.observed",
+                    "last=CASE WHEN last_ts IS NULL OR excluded.last_ts >= last_ts THEN excluded.last ELSE last END, "
+                    "last_ts=CASE WHEN last_ts IS NULL OR excluded.last_ts >= last_ts THEN excluded.last_ts ELSE last_ts END, "
+                    "observed=observed+excluded.observed",
                     (tier, sid, bucket, value, value, value, value, ts, observed))
         return len(rows)
 
