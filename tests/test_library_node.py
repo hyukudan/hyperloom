@@ -298,6 +298,29 @@ class InventoryTests(LibraryCase):
         self.assertFalse(any(hasattr(node, name) for name in ("plan", "start_copy", "publish", "receive_main",
                                                               "send_main", "Staging")))
 
+    def test_slow_empty_manifests_stop_at_the_deadline_or_a_stop(self):
+        for index in range(12):
+            (self.models / f"empty-{index:02d}.sha256").write_bytes(b"")
+        real = node.Tree.read
+
+        def slow(tree, path, limit):
+            time.sleep(0.2)                                              # a slow disk: 2.4 s for all of them
+            return real(tree, path, limit)
+        started = time.monotonic()
+        with patch.object(node, "DEADLINE_S", 1.0), patch.object(node.Tree, "read", slow):
+            reply = node.run("models", {"roots": [str(self.models)]})
+        self.assertLess(time.monotonic() - started, 1.8)
+        self.assertTrue("error" in reply or "deadline" in reply["roots"][0]["truncated"], reply)
+        due = time.monotonic() + 0.5
+
+        def stop():
+            if time.monotonic() > due:
+                raise node.Stopped("cancelled")
+        started = time.monotonic()
+        with patch.object(node.Tree, "read", slow), self.assertRaises(node.Stopped):
+            node.verify_unit(str(self.models), "alpha", stop)
+        self.assertLess(time.monotonic() - started, 1.2)                 # stopped between the manifest reads
+
     def test_roots_are_checked(self):
         for bad in (["relative"], [str(self.models / "missing")], [], ["/"] if POSIX else ["C:\\"]):
             with self.subTest(bad):

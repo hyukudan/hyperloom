@@ -427,6 +427,7 @@ def parse_manifest(tree, path, size, budget):
     """[(digest, relpath)] and the count of invalid lines of one manifest file. A manifest that cannot be read in
     full (over the per-file byte or line limit, or unreadable) is a scan bound, never a partial answer: what it lists
     is unknown, so nothing it might cover can be called complete."""
+    budget.check()                               # before every read, also of an empty manifest
     if size > MANIFEST_FILE_MAX:
         raise Bound("manifest size")
     allowance = MANIFEST_TOTAL_MAX - budget.manifest_bytes
@@ -440,6 +441,7 @@ def parse_manifest(tree, path, size, budget):
         budget.manifest_bytes += limit           # what it may have consumed: counted in full
         raise Bound("changed while scanned") from None
     budget.manifest_bytes += len(raw)            # charged as read, before anything else
+    budget.check()                               # and after it
     if len(raw) != size:                     # it changed since it was listed: what it lists is not known
         raise Bound("changed while scanned")
     budget.snapshots[path] = (hashlib.sha256(raw).hexdigest(), len(raw))
@@ -494,6 +496,7 @@ def sibling_index(siblings, budget):
     its invalid lines are still reported."""
     index = {}
     for sibling, (rows, bad) in sorted(siblings.items()):
+        budget.check()
         mine = {}
         for number, (digest, rel) in enumerate(rows):
             if not number % 1024:
