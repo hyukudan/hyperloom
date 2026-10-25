@@ -206,7 +206,8 @@ class APIDispatchTests(unittest.TestCase):
         from hyperloom.web import api as api_module
         with mock.patch.object(api_module, "OWNER_LEASE_S", 0.3):
             job = self.api.mutate("demo/bench", {"on": ["halo-2"]})
-            self.assertEqual(self.api.renew_jobs({"jobs": [job["id"]]}), (200, {"renewed": [job["id"]]}))
+            self.assertEqual(self.api.renew_jobs({"jobs": [job["id"], "gone"]}),
+                             (200, {"renewed": [job["id"]], "not_running": ["gone"]}))
             done = self.wait(job["id"])
         self.assertEqual(done["state"], "cancelled")
         self.assertIn("abandoned", done["error"])
@@ -237,6 +238,10 @@ class APIDispatchTests(unittest.TestCase):
                          (5, 12, [1, 2, 3], {"cached": 4}, "gz:b64:H4sIAAAA", "qwen3-bpe-151k", 3))
         for key in ("token", "api_key", "csrf_token", "tokens_note", "access_token", "token_ids_raw", "tokenizer"):
             self.assertEqual(kept[key], "[redacted]", key)
+        credentials = redact({"password_tokens": "plain-credential", "api_key_tokens": 42, "secret_tokens": [1],
+                              "prompt_tokens": 7, "max_tokens": 64})
+        self.assertEqual(credentials, {"password_tokens": "[redacted]", "api_key_tokens": "[redacted]",
+                                       "secret_tokens": "[redacted]", "prompt_tokens": 7, "max_tokens": 64})
 
     def test_exclusive_jobs_take_the_single_slot(self):
         first = self.api.mutate("demo/exclusive", {})
@@ -335,7 +340,7 @@ class PortalAssetTests(unittest.TestCase):
 
     def test_job_renewal_route(self):
         status, body = self.post("/hyperloom/api/jobs/renew", {"jobs": []})
-        self.assertEqual((status, body), (200, {"renewed": []}))
+        self.assertEqual((status, body), (200, {"renewed": [], "not_running": []}))
 
     def test_feature_posts_and_jobs_need_post(self):
         self.assertEqual(self.get("/hyperloom/api/demo/echo")[0], 405)
@@ -364,7 +369,12 @@ class AdmissionTests(unittest.TestCase):
         self.db.release(core)
         stop = self.db.acquire("stop", {"halo-1"}, label="down qwen")
         self.assertIn("down qwen", self.db.cancelled(bench))
+        # A cancelled bench still owns its resources while it cleans up (until its owner releases the hold).
         self.db.release(stop)
+        with self.assertRaises(admission.Refused):
+            self.db.acquire("bench", {"halo-1"})
+        with self.assertRaises(admission.Refused):
+            self.db.acquire("core", {"halo-1"})
         self.db.release(bench)
         self.assertEqual(self.db.cancelled(bench), "admission expired")
         a = self.db.acquire("bench", {"a"})
@@ -475,3 +485,24 @@ class CLIAdmissionTests(unittest.TestCase):
                 self.assertEqual(cli.main(["down", "qwen-replicas"]), 0)
         self.assertIn("cli down", db.cancelled(bench))
         self.assertEqual([h["kind"] for h in db.holds()], ["bench"])     # the stop released its hold
+
+    def test_cli_holds_live_next_to_the_selected_configuration(self):
+        import contextlib
+        import io
+        from hyperloom import cli
+        seen = []
+        db = admission.Admission(":memory:")
+        self.addCleanup(db.close)
+
+        def for_config(path, *a, **kw):
+            seen.append(Path(path))
+            return db
+        fake = mock.Mock()
+        fake.down.return_value = {}
+        with mock.patch.object(admission, "for_config", for_config), \
+                mock.patch.object(cli, "_cluster", side_effect=ValueError("no config")), \
+                mock.patch.object(cli, "_module", side_effect=lambda name: __import__(name, fromlist=["x"]) if name == "hyperloom.admission" else fake), \
+                contextlib.redirect_stdout(io.StringIO()):
+            with contextlib.redirect_stderr(io.StringIO()):
+                cli.main(["install", "qwen-replicas", "--config", "elsewhere/cluster.json"])
+        self.assertEqual(seen, [Path("elsewhere/cluster.json")])

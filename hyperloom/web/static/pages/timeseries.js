@@ -35,7 +35,7 @@
     return (doc?.lines || []).map((line, i) => ({
       label: label ? label(line.labels || {}) : Object.values(line.labels || {}).join(" · ") || doc.series,
       color: colors[i % colors.length],
-      points: (line.points || []).map(p => [p[0], p[index], p[7] ?? null]),
+      points: (line.points || []).map(p => [p[0], p[index], p[7] ?? null, p[8] ?? null]),
     }));
   }
   let counter = 0;
@@ -49,12 +49,16 @@
     // Drawn at the container's real width so axis text keeps its size on any screen.
     const W = Math.round(Math.max(300, Math.min(1600, (document.querySelector("main")?.clientWidth || 700) - 64))), H = height, L = 52, R = 8, T = 8, B = 22;
     const x = t => L + (t - t0) / span * (W - L - R), y = v => T + (1 - (v - bottom) / ((top - bottom) || 1)) * (H - T - B);
+    // Per pair of points: the expected spacing is the bucket step, the cadence passed in, or the cadence recorded
+    // with either point (sampling-interval changes keep their own history).
     const gap = Math.max(step || 2, cadence || 0) * 2.5;
+    const joined = (a, b) => b[0] - a[0] <= Math.max(gap, 2.5 * Math.max(a[3] || 0, b[3] || 0));
     const paths = series.map(s => {
       const valid = s.points.filter(p => Number.isFinite(p[1]));
       let d = "", dots = "";
-      valid.forEach(([t, v], i) => {
-        const joinedBefore = i > 0 && t - valid[i - 1][0] <= gap, joinedAfter = i < valid.length - 1 && valid[i + 1][0] - t <= gap;
+      valid.forEach((point, i) => {
+        const [t, v] = point;
+        const joinedBefore = i > 0 && joined(valid[i - 1], point), joinedAfter = i < valid.length - 1 && joined(point, valid[i + 1]);
         d += `${joinedBefore ? "L" : "M"}${x(t).toFixed(1)},${y(v).toFixed(1)}`;
         if (!joinedBefore && !joinedAfter) dots += `<circle cx="${x(t).toFixed(1)}" cy="${y(v).toFixed(1)}" r="2.2" fill="var(${s.color})"/>`;
       });
@@ -94,7 +98,7 @@
       let best = null;
       for (const p of s.points) if (best == null || Math.abs(p[0] - t) < Math.abs(best[0] - t)) best = p;
       // Inside a gap there is no sample: say so instead of borrowing a distant value.
-      if (!best || Math.abs(best[0] - t) > meta.gap / 2) return `${s.label}: no sample`;
+      if (!best || Math.abs(best[0] - t) > Math.max(meta.gap, 2.5 * (best[3] || 0)) / 2) return `${s.label}: no sample`;
       return `${s.label}: ${fmt(best[1], meta.unit)}`;
     });
     const readout = svg.parentElement.querySelector(".ts-readout");

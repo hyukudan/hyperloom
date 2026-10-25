@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS metrics (name TEXT PRIMARY KEY, kind TEXT NOT NULL, u
                                     legend TEXT);
 CREATE TABLE IF NOT EXISTS series (id INTEGER PRIMARY KEY, name TEXT NOT NULL, labels TEXT NOT NULL,
                                    UNIQUE(name, labels));
-CREATE TABLE IF NOT EXISTS raw (series INTEGER NOT NULL, ts REAL NOT NULL, value REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS raw (series INTEGER NOT NULL, ts REAL NOT NULL, value REAL NOT NULL, interval REAL);
 CREATE INDEX IF NOT EXISTS raw_series_ts ON raw(series, ts);
 CREATE TABLE IF NOT EXISTS agg (tier TEXT NOT NULL, series INTEGER NOT NULL, bucket INTEGER NOT NULL,
                                 sum REAL NOT NULL, count INTEGER NOT NULL, min REAL NOT NULL, max REAL NOT NULL,
@@ -179,7 +179,8 @@ class Store:
             # The time this sample stands for is fixed when it is taken (the sampling interval then), so later
             # interval changes never rewrite the coverage of history.
             observed = interval if interval is not None else descriptor.get("interval_s") or 0.0
-            self._db.execute("INSERT INTO raw(series, ts, value) VALUES (?, ?, ?)", (sid, ts, value))
+            self._db.execute("INSERT INTO raw(series, ts, value, interval) VALUES (?, ?, ?, ?)",
+                             (sid, ts, value, observed or None))
             for tier, step, _ in TIERS[1:]:
                 bucket = int(ts // step) * step
                 self._db.execute(
@@ -282,8 +283,10 @@ class Store:
         return TIERS[-1][0], TIERS[-1][1]
 
     def query(self, name, start, end=None, labels=None, tier=None):
-        """{descriptor, lines: [{labels, points: [[t, avg, max, min, n, sum, last, coverage], ...]}], tier, step,
-        truncated}. ``coverage`` = observed seconds / step (capped at 1), from the interval each sample was taken
+        """{descriptor, lines: [{labels, points: [[t, avg, max, min, n, sum, last, coverage, cadence], ...]}], tier,
+        step, truncated}. ``cadence`` is the sampling interval in force for that point (raw) or the mean interval of
+        the bucket's samples, both as recorded at the time (None when unknown); charts use it to tell a gap from
+        sparse sampling. ``coverage`` = observed seconds / step (capped at 1), from the interval each sample was taken
         at; None when no sample carried an interval and on the raw tier. ``truncated`` names the lines whose oldest buckets were cut at MAX_POINTS (never silent)."""
         now = self.clock()
         end = now if end is None else end
@@ -305,14 +308,15 @@ class Store:
 
             for sid, have in self._matching(name, labels):
                 if tier == "raw":
-                    rows = self._db.execute("SELECT ts, value FROM raw WHERE series=? AND ts>=? AND ts<=? ORDER BY ts",
+                    rows = self._db.execute("SELECT ts, value, interval FROM raw WHERE series=? AND ts>=? AND ts<=? ORDER BY ts",
                                             (sid, start, end)).fetchall()
-                    points = [[t, v, v, v, 1, v, v, None] for t, v in rows]
+                    points = [[t, v, v, v, 1, v, v, None, i] for t, v, i in rows]
                 else:
                     rows = self._db.execute("SELECT bucket, sum, count, min, max, last, observed FROM agg WHERE tier=? "
                                             "AND series=? AND bucket>=? AND bucket<=? ORDER BY bucket",
                                             (tier, sid, int(start // step) * step, end)).fetchall()
-                    points = [[b, s / c, mx, mn, c, s, last, coverage(o)] for b, s, c, mn, mx, last, o in rows]
+                    points = [[b, s / c, mx, mn, c, s, last, coverage(o), (o / c) if o else None]
+                              for b, s, c, mn, mx, last, o in rows]
                 if len(points) > MAX_POINTS:
                     truncated.append(have)
                     points = points[-MAX_POINTS:]

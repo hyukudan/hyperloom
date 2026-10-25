@@ -119,6 +119,17 @@ class TypedSeriesTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.describe("tokens", "gauge")
 
+    def test_cadence_is_recorded_with_each_sample(self):
+        base = int(self.clock.now // 60) * 60 - 600
+        for i in range(10):
+            self.store.record([("busy", {}, 1)], ts=base + 2 * i, interval=2)
+        for i in range(5):
+            self.store.record([("busy", {}, 1)], ts=base + 120 + 60 * i, interval=60)
+        raw = self.store.query("busy", base, tier="raw")["lines"][0]["points"]
+        self.assertEqual([p[8] for p in raw], [2] * 10 + [60] * 5)
+        minute = self.store.query("busy", base, tier="m1")["lines"][0]["points"]
+        self.assertEqual((minute[0][8], minute[-1][8]), (2, 60))
+
     def test_coverage_of_history_survives_interval_changes(self):
         base = int(self.clock.now // 60) * 60 - 120
         for i in range(30):
@@ -244,6 +255,16 @@ class SamplerTests(unittest.TestCase):
                 break
             time.sleep(0.01)
         self.assertEqual(len(calls), 2)
+
+    def test_a_refresh_before_a_run_starts_is_consumed_by_that_run(self):
+        store = Store(":memory:")
+        self.addCleanup(store.close)
+        calls = []
+        sampler = telemetry.Sampler(object(), store, {"c": (lambda api, now: calls.append(now) or [], 60.0)})
+        self.assertTrue(sampler.refresh("c"))          # requested just before the loop starts a run
+        sampler.run_once("c")                          # the run that starts consumes it
+        self.assertFalse(sampler._wake["c"].is_set())
+        self.assertEqual(len(calls), 1)
 
     def test_start_is_atomic_and_stop_joins(self):
         with tempfile.TemporaryDirectory() as directory:

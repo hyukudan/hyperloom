@@ -57,18 +57,23 @@ class Sampler:
         self.state = {name: {"interval_s": spec[1], "last_ok": None, "last_error": None, "error": None,
                              "points": 0, "failures": 0, "running_since": None, "coalesced": 0}
                       for name, spec in self.collectors.items()}
-        self._running = {name: threading.Lock() for name in self.collectors}
+        self._busy = {name: False for name in self.collectors}     # guarded by _sched
+        self._sched = threading.Lock()
         self._wake = {name: threading.Event() for name in self.collectors}
         self._state_lock = threading.Lock()
         self._stop = threading.Event()
         self._threads = []
 
     def run_once(self, name):
-        """Run one collection now; returns False (coalesced) when a run of this collector is in progress."""
-        if not self._running[name].acquire(blocking=False):
-            with self._state_lock:
-                self.state[name]["coalesced"] += 1
-            return False
+        """Run one collection now; returns False (coalesced) when a run of this collector is in progress. Starting
+        a run consumes any refresh requested before it (one state transition under _sched)."""
+        with self._sched:
+            if self._busy[name]:
+                with self._state_lock:
+                    self.state[name]["coalesced"] += 1
+                return False
+            self._busy[name] = True
+            self._wake[name].clear()
         try:
             sample, interval = self.collectors[name]
             now = self.clock()
@@ -88,19 +93,22 @@ class Sampler:
                     self.state[name]["running_since"] = None
             return True
         finally:
-            self._running[name].release()
+            with self._sched:
+                self._busy[name] = False
 
     def refresh(self, name):
         """Ask for a collection now (coalesced with a run in progress)."""
         if name not in self.collectors:
             raise LookupError("unknown collector " + name)
-        # A request that arrives while this collector runs is absorbed by that run (no second collection).
-        if self._running[name].locked():
-            with self._state_lock:
-                self.state[name]["coalesced"] += 1
-            return False
-        self._wake[name].set()
-        return True
+        # Decided under the same lock a run takes to start: a request while a run is in progress is absorbed by
+        # it; a request before a run starts is consumed by that run (run_once clears the wake on entry).
+        with self._sched:
+            if self._busy[name]:
+                with self._state_lock:
+                    self.state[name]["coalesced"] += 1
+                return False
+            self._wake[name].set()
+            return True
 
     def set_interval(self, name, interval):
         if name not in self.collectors:
@@ -123,7 +131,6 @@ class Sampler:
             self.run_once(name)
             wait = max(0.2, self.collectors[name][1] - (time.monotonic() - started))
             self._wake[name].wait(wait)
-            self._wake[name].clear()
 
     def _maintain(self):
         while not self._stop.wait(300):
