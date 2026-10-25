@@ -1,0 +1,18 @@
+/* Observability pages: request timeline, latency, engine panel, speculative decoding. */
+.tl-fig{margin:10px 0}
+.tl-fig figcaption{font-weight:600;font-size:13px;margin-bottom:4px}
+.tl-fig svg{max-width:100%;height:auto;display:block}
+.tl-ax{font-size:10.5px;fill:var(--text-2)}
+.tl-filters{flex-wrap:wrap;gap:8px}
+.tl-filters .field{min-width:120px}
+.tl-id{padding:2px 8px;font:500 12px ui-monospace,monospace}
+.tl-id[aria-pressed="true"]{border-color:var(--accent)}
+.tl-mini{position:relative;display:inline-block;width:80px;height:8px;background:var(--surface-2);border-radius:3px;vertical-align:middle;margin-left:6px;overflow:hidden}
+.tl-mini i{position:absolute;top:0;bottom:0;background:var(--s1);opacity:.85}
+.ob-bars{display:grid;gap:3px;margin:6px 0}
+.ob-bar{display:grid;grid-template-columns:minmax(64px,110px) 1fr minmax(40px,auto);gap:8px;align-items:center;font-size:12px;color:var(--text-2)}
+.ob-bar .track{height:9px;background:var(--surface-2);border-radius:3px;overflow:hidden}
+.ob-bar .track i{display:block;height:100%;border-radius:3px}
+.ob-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}
+@media(max-width:760px){.ob-grid{grid-template-columns:minmax(0,1fr)}.tl-mini{display:none}}
+.tl-nw{white-space:nowrap}
