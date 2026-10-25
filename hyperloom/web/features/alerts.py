@@ -287,7 +287,7 @@ def _queue(cid, items, now, message=None):
                      "VALUES (?, ?, ?, ?, 0, ?)", (message, cid, now, now, json.dumps(items, ensure_ascii=True)))
 
 
-RESYNC, ATTEMPTED = "alerts/resync", "alerts/attempted"
+RESYNC = "alerts/resync"
 
 
 def track_key(cid, finding_id, occurrence):
@@ -300,7 +300,7 @@ def _mark(finding, now, message="pending"):
     summary = {key: finding.get(key) for key in ("id", "rule", "title", "severity", "machine", "since", "occurrence")}
     return {"occurrence": finding.get("occurrence"), "severity": finding.get("severity"), "finding": summary,
             "queued_at": now, "message": message, "delivered_at": None, "delivered_severity": None, "escalating": None,
-            "reminded_at": None, "reminder_queued": None, "resolving": None}
+            "reminded_at": None, "reminder_queued": None, "resolving": None, "attempted": False}
 
 
 def bound(now):
@@ -317,11 +317,6 @@ def bound(now):
              "'; it is brought up to date at the next evaluation', NULL WHERE " + over, (now, now)),
             ("INSERT INTO docs(namespace, key, ts, value) SELECT ?, " + victim + ", ?, '{}' WHERE " + over +
              " AND " + victim + " IS NOT NULL ON CONFLICT(namespace, key) DO NOTHING", (RESYNC, now, now, now)),
-            # messages already attempted (a receiver may have accepted them) are remembered for the reconciliation
-            ("INSERT INTO docs(namespace, key, ts, value) SELECT ?, message_id, ?, '{\"channel\": \"' || channel || '\"}' "
-             "FROM alerts_outbox WHERE " + over + " AND channel = " + victim + " AND attempts > 0 AND "
-             "(claimed_until IS NULL OR claimed_until < ?) ON CONFLICT(namespace, key) DO NOTHING",
-             (ATTEMPTED, now, now, now)),
             ("DELETE FROM alerts_outbox WHERE " + over + " AND channel = " + victim +
              " AND (claimed_until IS NULL OR claimed_until < ?)", (now, now))]
     # One pass drops one channel's backlog; claimed rows (at most one per channel) are never dropped, so passes
@@ -350,9 +345,6 @@ def plan(store, transitions, states, now):
         for key, _ in store.execute("SELECT key, value FROM docs WHERE namespace=?", (RESYNC,)):
             if key not in known:
                 statements.append(health.delete_doc(RESYNC, key))
-        for key, text in store.execute("SELECT key, value FROM docs WHERE namespace=?", (ATTEMPTED,)):
-            if json.loads(text).get("channel") not in known:
-                statements.append(health.delete_doc(ATTEMPTED, key))
         resync = {key: text for key, text in store.execute("SELECT key, value FROM docs WHERE namespace=?", (RESYNC,))}
         for channel in configured:
             cid, floor = channel["id"], health.RANK.get(channel.get("min_severity"), 1)
@@ -361,35 +353,34 @@ def plan(store, transitions, states, now):
             current = lambda key: touched.get(key, track.get(key))
             if cid in resync:
                 # Its backlog was dropped (outbox full): reconcile from the bookkeeping, before this round's changes.
-                # An occurrence the channel may have seen (delivered, attempted, or its firing still queued) gets its
-                # resolve once it is no longer active; one it never saw is forgotten; dropped firings and escalations
-                # of active occurrences are sent again (at least once).
+                # An occurrence the channel may have seen (a send of its firing was attempted) gets its resolve once
+                # it is no longer active; one never sent is forgotten (no orphan resolve); dropped firings and
+                # escalations of active occurrences are sent again (at least once).
                 statements.append(health.unchanged(RESYNC, cid, resync[cid]))
                 statements.append(health.delete_doc(RESYNC, cid))
-                tried = {key for key, text in store.execute("SELECT key, value FROM docs WHERE namespace=?", (ATTEMPTED,))
-                         if json.loads(text).get("channel") == cid}
-                for message_id in sorted(tried):
-                    statements.append(health.delete_doc(ATTEMPTED, message_id))
                 for key, mark in sorted(track.items()):
                     if not key.startswith(cid + "|") or not isinstance(mark, dict):
                         continue
                     fid = key.split("|")[1]
                     finding = active.get(fid)
-                    seen = bool(mark.get("seen") or mark.get("delivered_at")) or mark.get("message") in tried                         or mark.get("message") in queued
+                    # "attempted" is persisted in the claim transaction BEFORE any byte is sent and kept until the
+                    # resolve is acknowledged: only then may the receiver hold the firing.
+                    seen = bool(mark.get("attempted") or mark.get("delivered_at"))
+                    firing_queued = mark.get("message") in queued
                     ended = mark.get("resolving") or finding is None or finding.get("occurrence") != mark.get("occurrence")
                     if ended:
                         if mark.get("resolving") and mark["resolving"] in queued:
                             continue                                        # its resolve is still on the way
-                        if seen:
-                            # "seen" persists until the resolve is acknowledged, so a second drop resends it again
+                        if seen or firing_queued:
+                            # seen: resolve it; firing still queued: the resolve follows it in channel order
                             items.append({**(mark.get("finding") or {"id": fid}), "state": "resolved"})
-                            touched[key] = {**mark, "resolving": "pending", "seen": True}
+                            touched[key] = {**mark, "resolving": "pending"}
                         else:
-                            touched[key] = None                             # never seen: nothing to resolve
+                            touched[key] = None                             # never sent: nothing to resolve
                         continue
-                    if not mark.get("delivered_at") and mark.get("message") not in queued:
+                    if not mark.get("delivered_at") and not firing_queued:
                         items.append(_item(finding, "firing"))              # its firing was dropped: again
-                        touched[key] = {**mark, "message": "pending", "escalating": None, "seen": seen,
+                        touched[key] = {**mark, "message": "pending", "escalating": None,
                                         "severity": finding.get("severity")}
                     elif mark.get("escalating") and mark["escalating"] not in queued:
                         items.append(_item(finding, "escalated"))           # its escalation was dropped: again
@@ -701,6 +692,22 @@ def _ack(store, owner, generation, row, channel, outcome, now):
         health.commit(store, statements)
 
 
+def _unmark(store, owner, generation, cid, keys, now):
+    if not keys:
+        return
+    with BOOK_LOCK:
+        statements = health.guard(owner, generation, now)
+        for key in keys:
+            text = health.stored_text(store, TRACK, key)
+            mark = json.loads(text) if text else None
+            if isinstance(mark, dict) and mark.get("attempted") and not mark.get("delivered_at"):
+                statements += [health.unchanged(TRACK, key, text), health.upsert_doc(TRACK, key, {**mark, "attempted": False}, now)]
+        try:
+            health.commit(store, statements)
+        except sqlite3.IntegrityError:
+            pass                    # changed meanwhile: keeping "attempted" only errs towards an extra resolve
+
+
 def deliver(api, now, store=None, clock=time.monotonic, sender=None):
     """The ``alerts`` collector body: send due messages (lease holder only), oldest first per channel, within the
     run budget. Returns no points."""
@@ -720,9 +727,24 @@ def deliver(api, now, store=None, clock=time.monotonic, sender=None):
         if next_at > now or (claimed is not None and claimed >= now):
             continue
         claim = now + CLAIM_S
-        health.commit(store, health.guard(owner, generation, now) + [
-            ("UPDATE alerts_outbox SET claimed_until=? WHERE id=? AND (claimed_until IS NULL OR claimed_until < ?)",
-             (claim, oid, now))])
+        attempted, attempted_keys = [], []
+        with BOOK_LOCK:
+            # Before any byte is sent: the occurrences of this message may reach the receiver from now on.
+            for item in json.loads(items):
+                if item.get("state") not in ("firing", "escalated"):
+                    continue
+                key = track_key(cid, item["id"], item.get("occurrence"))
+                text = health.stored_text(store, TRACK, key)
+                mark = json.loads(text) if text else None
+                if isinstance(mark, dict) and not mark.get("attempted"):
+                    attempted += [health.unchanged(TRACK, key, text), health.upsert_doc(TRACK, key, {**mark, "attempted": True}, now)]
+                    attempted_keys.append(key)
+            try:
+                health.commit(store, health.guard(owner, generation, now) + [
+                    ("UPDATE alerts_outbox SET claimed_until=? WHERE id=? AND (claimed_until IS NULL OR claimed_until < ?)",
+                     (claim, oid, now))] + attempted)
+            except sqlite3.IntegrityError:
+                continue
         check = store.execute("SELECT claimed_until FROM alerts_outbox WHERE id=?", (oid,))
         if not check or check[0][0] != claim:
             continue
@@ -734,10 +756,13 @@ def deliver(api, now, store=None, clock=time.monotonic, sender=None):
         try:
             url = load_url(cid, channel.get("url_version"))
         except Exception as exc:
-            outcome = {"ok": False, "error": "channel URL unavailable (" + type(exc).__name__ + ")"}
+            outcome = {"ok": False, "error": "channel URL unavailable (" + type(exc).__name__ + ")", "unsent": True}
         else:
             outcome = (sender or send)(url, channel["kind"], "alert", message, json.loads(items), now,
                                        timeout=min(SEND_TIMEOUT, left))
+        if outcome.get("busy") or outcome.get("unsent"):
+            # Nothing was transmitted: undo this claim's "attempted" marks (only those it set).
+            _unmark(store, owner, generation, cid, attempted_keys, now)
         if outcome.get("busy"):         # a test send holds the slots: not an attempt, retried on the next run
             health.commit(store, health.guard(owner, generation, now) + [
                 ("UPDATE alerts_outbox SET claimed_until=NULL WHERE id=?", (oid,))])

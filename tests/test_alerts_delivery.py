@@ -371,7 +371,6 @@ class PlanTests(Base):
         self.fill_and_overflow()
         self.plan([], {})
         self.assertEqual([items for c, items in self.outbox() if c == channel["id"]], [[("resolved", a["id"])]])
-        self.assertEqual(self.store.items(alerts.ATTEMPTED), [])
 
     def test_two_successive_drops_still_deliver_the_resolve(self):
         channel = self.channel(path="/fail/x")
@@ -384,6 +383,34 @@ class PlanTests(Base):
         self.fill_and_overflow()                                      # and dropped again
         self.plan([], {})
         self.assertEqual([items for c, items in self.outbox() if c == channel["id"]], [[("resolved", a["id"])]])
+
+    def test_a_crash_after_sending_before_the_acknowledgement_keeps_the_resolve(self):
+        channel = self.channel()
+        a = self.finding()
+        self.plan([("appeared", a)], {a["id"]: a})
+
+        def crash(*args, **kwargs):
+            raise KeyboardInterrupt            # the receiver got the firing; this process dies before acknowledging
+        health.acquire(self.store, health.owner_of(self.api), self.clock.now)
+        with self.assertRaises(KeyboardInterrupt):
+            alerts.deliver(self.api, self.clock.now, self.store, sender=crash)
+        self.clock.now += alerts.CLAIM_S + 1                       # the claim expires; a new evaluator runs
+        self.plan([("cleared", a)], {})
+        self.fill_and_overflow()                                   # firing (expired claim) and resolve dropped
+        self.plan([], {})
+        self.assertEqual([items for c, items in self.outbox() if c == channel["id"]], [[("resolved", a["id"])]])
+
+    def test_a_catch_up_firing_dropped_unsent_leaves_no_orphan_resolve(self):
+        channel = self.channel(min_severity="critical")
+        w = self.finding(severity="warning")
+        self.store.put(health.STATE, w["id"], w)
+        self.fill_and_overflow(1)                                   # nothing to drop yet
+        alerts.save_channel(self.store, {"id": channel["id"], "min_severity": "warning"}, self.clock.now)   # catch-up
+        self.plan([("cleared", w)], {})                              # resolve queued behind the unsent firing
+        self.fill_and_overflow()                                     # both dropped, never attempted
+        self.plan([], {})
+        self.assertEqual([items for c, items in self.outbox() if c == channel["id"]], [])
+        self.assertEqual(self.store.items(alerts.TRACK), [])
 
     def test_the_bound_holds_for_writers_on_separate_connections(self):
         path = Path(self.dir.name) / "telemetry.sqlite3"
