@@ -39,7 +39,6 @@ MAX_FINDINGS = 500
 PENDING_EXPIRY_S = 3600.0
 GIB = 1 << 30
 LABEL = re.compile(r"[A-Za-z0-9._:@+-]{1,64}")
-PROFILE_RULES = ("engine-down", "replica-down", "route-state-stale")
 DOWN_STATES = frozenset(("down", "unhealthy", "failed", "error", "unreachable"))
 SNAPSHOT_MAX_AGE_S = 30.0
 UNAVAILABLE = "health evaluation not running in this portal process (telemetry store not open)"
