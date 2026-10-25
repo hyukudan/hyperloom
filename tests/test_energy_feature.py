@@ -142,6 +142,12 @@ class IntegrationTests(Base):
         self.assertAlmostEqual(archived(self.store), 90.0 * 2.75)
         self.assertEqual(self.store.events(category="energy"), [])
 
+    def test_evidence_of_unread_samples_is_found_over_the_whole_skipped_range(self):
+        energy.compute(self.store, NOW - 4 * DAY)                              # an old cursor
+        feed(self.store, lambda t: [(GPU, {"machine": "halo-1", "device": "0"}, 90.0)], NOW - 3 * DAY, NOW - 3 * DAY + HOUR)
+        summary = energy.compute(self.store, NOW)
+        self.assertEqual(summary["missed_quarters"], 4)
+
     def test_samples_that_left_the_raw_tier_unread_are_reported(self):
         feed(self.store, lambda t: [(GPU, {"machine": "halo-1", "device": "0"}, 90.0)], NOW - 12 * HOUR, NOW - 10 * HOUR)
         energy.compute(self.store, NOW - 13 * HOUR)                            # a run before: the cursor is old
@@ -175,6 +181,25 @@ class ExactnessTests(Base):
         machine = self.doc()["machines"][0]
         self.assertAlmostEqual(machine["wh"], expected)
         self.assertAlmostEqual(machine["observed_s"], observed)
+
+    def test_samples_sharing_a_timestamp_are_all_counted(self):
+        gpu = {"machine": "halo-1", "device": "0"}
+        tokens = {"profile": "p", "replica": "0", "instance": "a"}
+        for value in (100.0, 200.0):
+            self.store.record([(GPU, gpu, value), (TOKENS, tokens, value, "delta")], ts=NOW - 300, interval=10)
+        energy.compute(self.store, NOW)
+        self.assertAlmostEqual(self.doc()["machines"][0]["wh"], 3000 / HOUR)          # 0.8333 Wh
+        groups, _seen, _up = energy._tokens(self.store, NOW - HOUR, NOW, None, energy.time.monotonic() + 10)
+        self.assertEqual(groups[("p", "0")][energy._floor(NOW - 300, 60)][0], 300.0)
+
+    def test_split_reads_neither_lose_nor_repeat_samples(self):
+        gpu = {"machine": "halo-1", "device": "0"}
+        feed(self.store, lambda t: [(GPU, gpu, 100.0)], NOW - HOUR, NOW, step=1)
+        energy._ensure(self.store)
+        lines = energy._samples(self.store, GPU, NOW - HOUR, NOW, energy.time.monotonic() + 10)
+        (_labels, rows), = lines.values()
+        self.assertEqual(len(rows), HOUR)                                             # 3,600 > one store read
+        self.assertEqual(len({r[0] for r in rows}), HOUR)
 
     def test_samples_without_a_recorded_interval_are_not_integrated(self):
         self.store.record([(GPU, {"machine": "halo-1", "device": "0"}, 100.0)], ts=NOW - 120)   # no interval known
@@ -274,6 +299,13 @@ class ArchiveTests(Base):
             finally:
                 first.close()
                 second.close()
+
+    def test_measured_zero_energy_costs_zero(self):
+        self.store.put("prefs", "energy/price", {"price_per_kwh": 0.2, "currency": "EUR"})
+        feed(self.store, lambda t: [(GPU, {"machine": "halo-1", "device": "0"}, 0.0)], NOW - 2 * HOUR, NOW - HOUR)
+        energy.compute(self.store, NOW)
+        month = self.doc()["archive"][0]
+        self.assertEqual((month["cost"], month["currency"], month["cost_why"]), (0.0, "EUR", None))
 
     def test_currency_change_makes_the_month_cost_unavailable(self):
         gpu = {"machine": "halo-1", "device": "0"}
@@ -449,6 +481,13 @@ class PairingTests(Base):
         self.assertAlmostEqual(eff["wh"], 200.0 * 50 / 60)
         self.assertAlmostEqual(eff["generated_tokens"], 50 * 600)
 
+    def test_a_sample_longer_than_a_minute_never_pairs(self):
+        self.store.record([(GPU, {"machine": "halo-1", "device": "0"}, 100.0)], ts=NOW - 600, interval=HOUR)
+        self.store.record([(TOKENS, {"profile": "p", "replica": "0", "instance": "a"}, 600.0, "delta")],
+                          ts=NOW - 600, interval=60)
+        energy.compute(self.store, NOW)
+        self.assertIsNone(self.doc()["efficiency"])
+
     def test_a_machine_offline_blocks_pairing(self):
         self.power_and_tokens(NOW - 3 * HOUR, NOW - 2 * HOUR)
         feed(self.store, lambda t: [(GPU, {"machine": "halo-1", "device": "0"}, 100.0),
@@ -510,6 +549,16 @@ class ZoneTests(Base):
         lengths = {label.split()[0]: end - start for start, end, label in hours}
         self.assertEqual(lengths["02:30"], 1800)                                     # 02:00 jumped to 02:30
         self.assertTrue(all(v == HOUR for k, v in lengths.items() if k != "02:30"))
+
+    def test_zones_sharing_a_name_keep_distinct_identities(self):
+        with mock.patch.object(energy.time, "tzname", ("Local", "Local")), mock.patch.object(energy.time, "daylight", 0):
+            with mock.patch.object(energy.time, "timezone", -8 * HOUR):
+                east = energy.Zone().name
+            with mock.patch.object(energy.time, "timezone", 6 * HOUR):
+                west = energy.Zone().name
+        self.assertNotEqual(east, west)
+        self.assertIn("UTC+08:00", east)
+        self.assertIn("UTC-06:00", west)
 
     def test_an_unknown_zone_falls_back_and_says_so(self):
         self.store.put("prefs/ui", "timezone", "Nowhere/Invalid")
@@ -756,6 +805,21 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(connection.getresponse().status, 400)
         audit = Path(self.dir.name) / "audit.jsonl"
         self.assertEqual(json.loads(audit.read_text().splitlines()[-1])["result"]["state"], "refused")
+
+    def test_overflowing_literals_inside_arrays_are_refused_and_audited(self):
+        host = self.server.server_address[0]
+        audit = Path(self.dir.name) / "audit.jsonl"
+        for action, data in (("energy/price", b'{"price_per_kwh": [1e400], "currency": "EUR"}'),
+                             ("energy/thresholds", b'{"gpu": {"warn": [1e400], "crit": 90}}'),
+                             ("energy/reset", b'{"confirm": [1e400]}')):
+            connection = http.client.HTTPConnection(host, self.port, timeout=5)
+            connection.request("POST", "/hyperloom/api/" + action, body=data, headers={
+                "Host": f"{host}:{self.port}", "Origin": f"http://{host}:{self.port}",
+                "X-Hyperloom-CSRF": self.server.csrf_token, "Content-Type": "application/json",
+                "Content-Length": str(len(data))})
+            self.assertEqual(connection.getresponse().status, 400, action)
+            last = json.loads(audit.read_text().splitlines()[-1])
+            self.assertEqual((last["action"], last["result"]["state"]), (action, "refused"))
 
     def test_post_checks_and_documents(self):
         body = {"price_per_kwh": 0.2, "currency": "EUR"}

@@ -58,6 +58,7 @@ MAX_THERMAL_LINES = 96              # temperature and throttle lines read for on
 MAX_LABELS = 512                    # characters of one line's label set
 COMPUTE_BUDGET_S = 20.0             # wall time of one computation before it gives up (nothing written)
 MAX_ROWS = 20000                    # quarter rows written by one run (a backlog is worked off over several runs)
+MAX_SAMPLES = 400000                # raw rows one run may read for one series (8 h at 2 s is 14,400 per line)
 MAX_DOCUMENT_BYTES = 2 * 1024 * 1024  # serialized size of one energy or thermals document
 ARCHIVE_MONTHS = 24
 READ_ATTEMPTS = 3
@@ -138,7 +139,7 @@ class Zone:
         self.zone, self.source, self.why = zone, source, why
         # The default zone is named by the control machine's own standard-time name, so a change of the machine's
         # zone shows up in the archive as a different (or "mixed") zone.
-        self.name = name or "control machine local time (" + (time.tzname[0] or "unnamed") + ")"
+        self.name = name or _local_identity()
 
     def local(self, ts):
         return datetime.fromtimestamp(ts, self.zone) if self.zone is not None else datetime.fromtimestamp(ts).astimezone()
@@ -177,6 +178,15 @@ class Zone:
         if self.why:
             out["why"] = self.why
         return out
+
+
+def _local_identity():
+    """The control machine's zone as names and standard/daylight offsets, so two different zones that share a name
+    never share an identity."""
+    standard = _offset(timedelta(seconds=-time.timezone))
+    daylight = _offset(timedelta(seconds=-time.altzone)) if time.daylight else standard
+    names = "/".join(dict.fromkeys(n for n in time.tzname if n)) or "unnamed"
+    return f"control machine local time ({names}; {standard}" + (f", {daylight}" if daylight != standard else "") + ")"
 
 
 def _offset(delta):
@@ -221,41 +231,51 @@ def _admit(store, series):
         raise ValueError(f"{series}: a label set longer than {MAX_LABELS} characters; energy was not computed")
 
 
+def _raw_rows(store, series, start):
+    """How many raw rows of a series lie at or after start: admission before anything is materialised."""
+    return store.execute("SELECT COUNT(*) FROM raw WHERE ts >= ? AND series IN (SELECT id FROM series WHERE name=?)",
+                         (start, series))[0][0]
+
+
 def _samples(store, series, start, end, deadline):
-    """{labels key: (labels, {ts: (value, interval)})} of the raw samples in [start, end], read in windows small
-    enough that the store never cuts a query (a cut window is split and read again)."""
+    """{labels key: (labels, [(ts, value, interval), ...])} of every raw row in [start, end] (rows sharing a
+    timestamp are all kept), read in non-overlapping windows small enough that the store never cuts a query (a cut
+    window is split and read again)."""
+    if _raw_rows(store, series, start) > MAX_SAMPLES:
+        raise ValueError(f"{series} has more than {MAX_SAMPLES} raw samples to read; energy was not computed")
     out = {}
-    windows = [(start, end)]
+    windows = [(start, end, True)]                  # (from, to, to included)
     while windows:
         if time.monotonic() > deadline:
             raise ValueError(f"energy computation exceeded {COMPUTE_BUDGET_S:g} s; nothing was written")
-        a, b = windows.pop()
+        a, b, closed = windows.pop()
         result = store.query(series, a, b, tier="raw")
         if result["truncated"]:
             if b - a <= MINUTE:
                 raise ValueError(f"{series}: more samples per minute than the store returns; energy was not computed")
             middle = (a + b) / 2
-            windows += [(a, middle), (middle, b)]
+            windows += [(a, middle, False), (middle, b, closed)]
             continue
         for line in result["lines"]:
             key = telemetry.canonical_labels(line["labels"])
-            entry = out.setdefault(key, (line["labels"], {}))
-            for t, value, *_rest, interval in line["points"]:
-                entry[1][t] = (value, interval)
+            entry = out.setdefault(key, (line["labels"], []))
+            entry[1].extend((t, value, interval) for t, value, *_rest, interval in line["points"] if closed or t < b)
     return out
 
 
 def _units(samples, cutoff):
-    """{minute: (value x interval sum, observed s, max value, count)} of samples that carry their interval and come
-    after the reset cutoff. A sample stands for exactly the interval it was taken at (as recorded with it), so the
-    energy of a unit is the exact interval-weighted sum; samples without a recorded interval are not integrable."""
+    """{minute: (value x interval sum, observed s, max value, longest interval)} of samples that carry their interval
+    and come after the reset cutoff. A sample stands for exactly the interval it was taken at (as recorded with it),
+    so the energy of a unit is the exact interval-weighted sum; samples without a recorded interval are not
+    integrable."""
     units = {}
-    for t, (value, interval) in samples.items():
+    for t, value, interval in samples:
         if interval is None or interval <= 0 or (cutoff is not None and t <= cutoff):
             continue
         u = _floor(t, MINUTE)
-        weighted, observed, top, count = units.get(u, (0.0, 0.0, None, 0))
-        units[u] = (weighted + value * interval, observed + interval, value if top is None else max(top, value), count + 1)
+        weighted, observed, top, longest = units.get(u, (0.0, 0.0, None, 0.0))
+        units[u] = (weighted + value * interval, observed + interval, value if top is None else max(top, value),
+                    max(longest, interval))
     return units
 
 
@@ -280,7 +300,7 @@ def _power(store, start, end, now, cutoff, deadline):
             labels = (samples.get(key) or seen.get(key))[0]
             lines[(series, key)] = {"series": series, "labels": labels,
                                     "seen": seen.get(key, (None, set()))[1],
-                                    "units": _units(samples.get(key, (None, {}))[1], cutoff)}
+                                    "units": _units(samples.get(key, (None, []))[1], cutoff)}
     domains, gpu_machines = {}, set()
     # The plainest label set first: of two lines for one domain, the one with extra labels is the duplicate.
     for (series, key), line in sorted(lines.items(), key=lambda item: (item[0][0], len(item[1]["labels"]), item[0][1])):
@@ -296,7 +316,8 @@ def _power(store, start, end, now, cutoff, deadline):
             while (machine, f"{domain}#{n}") in domains:
                 n += 1
             domain = f"{domain}#{n}"
-        units = {u: (weighted / HOUR, observed, top) for u, (weighted, observed, top, _n) in line["units"].items()}
+        units = {u: (weighted / HOUR, observed, top, longest)
+                 for u, (weighted, observed, top, longest) in line["units"].items()}
         domains[(machine, domain)] = {"labels": line["labels"], "units": units, "seen": line["seen"],
                                       "duplicate": duplicate}
     # GPU presence also comes from the series index (all time), so the overlap rule never depends on the window.
@@ -325,15 +346,15 @@ def _tokens(store, start, end, cutoff, deadline):
         seen.setdefault(group, set())
         # Token deltas are counts: sum the values (not value x interval) per minute.
         per_minute = {}
-        for t, (value, interval) in samples.items():
+        for t, value, interval in samples:
             if interval is None or interval <= 0 or (cutoff is not None and t <= cutoff):
                 continue
             u = _floor(t, MINUTE)
-            tokens, observed = per_minute.get(u, (0.0, 0.0))
-            per_minute[u] = (tokens + value, observed + interval)
-        for u, (tokens, observed) in per_minute.items():
-            total, best = units.get(u, (0.0, 0.0))
-            units[u] = (total + tokens, max(best, observed))
+            tokens, observed, longest = per_minute.get(u, (0.0, 0.0, 0.0))
+            per_minute[u] = (tokens + value, observed + interval, max(longest, interval))
+        for u, (tokens, observed, longest) in per_minute.items():
+            total, best, worst = units.get(u, (0.0, 0.0, 0.0))
+            units[u] = (total + tokens, max(best, observed), max(worst, longest))
     up = {}
     for key, (labels, _quarters, points) in _seen(store, ENGINE_UP, start, end).items():
         marks = up.setdefault((labels.get("profile", ""), labels.get("replica", "")), set())
@@ -404,14 +425,16 @@ def plan(store, now, finalize_all=False, deadline=None):
         wh_both = tokens_both = both_s = 0.0
         for u in sorted({u for key in inventory for u in by_quarter[key].get(q, ())}):
             power = [domains[key]["units"].get(u) for key in inventory]
-            # Complete observation by every expected observer: the paired seconds are common seconds.
-            if any(v is None or v[1] < MINUTE - 1e-6 for v in power):
-                continue
             tokens = [groups.get(key, {}).get(u) for key in engines]
-            if any(t is None or t[1] < MINUTE - 1e-6 for t in tokens):
+            # Complete observation of this minute by every expected observer, by samples no longer than the minute
+            # (a longer sample's energy belongs to more than this minute). A unit's samples may reach a few
+            # seconds past the minute; each observer's contribution is scaled to exactly the minute it covers.
+            if any(v is None or v[1] < MINUTE - 1e-6 or v[3] > MINUTE for v in power):
                 continue
-            wh_both += sum(v[0] for v in power)
-            tokens_both += sum(t[0] for t in tokens)
+            if any(t is None or t[1] < MINUTE - 1e-6 or t[2] > MINUTE for t in tokens):
+                continue
+            wh_both += sum(v[0] * MINUTE / v[1] for v in power)
+            tokens_both += sum(t[0] * MINUTE / t[1] for t in tokens)
             both_s += MINUTE
         if both_s:
             pairs.append((q, wh_both, tokens_both, both_s))
@@ -438,12 +461,13 @@ def plan(store, now, finalize_all=False, deadline=None):
             entry[2] += both_s
     missed = 0
     if recompute > first:
-        # Quarters whose samples aged out of the raw tier before any run integrated them: reported once.
-        computed = {row[0] for row in kept}
-        sampled = set()
-        for info in domains.values():
-            sampled.update(q for q in info["seen"] if first <= q < recompute)
-        missed = len(sampled - computed)
+        # Quarters whose samples aged out of the raw tier before any run integrated them, per line, over the whole
+        # skipped range (the 15-minute tier still shows that samples existed): reported once.
+        computed = {(row[0], row[1]) for row in kept}
+        for series in (GPU_POWER, CPU_POWER):
+            for _key, (labels, quarters, _points) in _seen(store, series, first, recompute - 1).items():
+                machine = labels.get("machine")
+                missed += sum(1 for q in quarters if first <= q < recompute and (q, machine) not in computed)
 
     statements += [
         (f"DELETE FROM energy_quarters WHERE q >= ? AND q <= ? AND {GUARD}", (recompute, current, *g)),
@@ -469,9 +493,9 @@ def plan(store, now, finalize_all=False, deadline=None):
             "INSERT INTO energy_monthly(month, machine, wh, observed_s, priced_wh, cost, currency, zone) "
             f"SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE {GUARD} ON CONFLICT(month, machine) DO UPDATE SET "
             "wh=wh+excluded.wh, observed_s=observed_s+excluded.observed_s, "
-            "cost=CASE WHEN excluded.cost IS NULL THEN cost WHEN priced_wh=0 THEN excluded.cost "
+            "cost=CASE WHEN excluded.cost IS NULL THEN cost WHEN currency IS NULL THEN excluded.cost "
             "WHEN currency=excluded.currency THEN cost+excluded.cost ELSE NULL END, "
-            "currency=CASE WHEN excluded.currency IS NULL THEN currency WHEN priced_wh=0 THEN excluded.currency "
+            "currency=CASE WHEN excluded.currency IS NULL THEN currency WHEN currency IS NULL THEN excluded.currency "
             "WHEN currency=excluded.currency THEN currency ELSE 'mixed' END, "
             "priced_wh=priced_wh+excluded.priced_wh, "
             "zone=CASE WHEN zone=excluded.zone THEN zone ELSE 'mixed' END",
@@ -575,13 +599,13 @@ def thresholds_of(store):
 
 def _scrub(value):
     """Replace non-finite floats (an overflowing JSON literal such as 1e400 parses to infinity) by text in place,
-    so the refusal that follows can be written to the audit log."""
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if type(item) is float and not math.isfinite(item):
-                value[key] = "non-finite number"
-            else:
-                _scrub(item)
+    in objects and arrays at any depth, so the refusal that follows can be written to the audit log."""
+    items = value.items() if isinstance(value, dict) else enumerate(value) if isinstance(value, list) else ()
+    for key, item in list(items):
+        if type(item) is float and not math.isfinite(item):
+            value[key] = "non-finite number"
+        else:
+            _scrub(item)
     return value
 
 
@@ -745,7 +769,7 @@ def energy_document(api, query):
             fields["labels"]["collector_ok"] = zone.label(status["last_ok"])
         if _state(store).get("revision") == before:
             document = api.document("energy", **base, store=True, collector=status, **fields)
-            size = len(json.dumps(document, separators=(",", ":"), default=str))
+            size = len(json.dumps(document, ensure_ascii=True, default=str))
             if size > MAX_DOCUMENT_BYTES:
                 return api.document("energy", **base, store=True, **empty, price=price_of(store), collector=status,
                                     why={"machines": f"the document would be {size // 1024} KiB, over the limit"})
@@ -938,7 +962,7 @@ def _months(store, before=None, limit=ARCHIVE_MONTHS):
             entry["wh"] += wh
             entry["priced_wh"] += priced_wh
             entry["zone"] = month_zone if entry["zone"] in (None, month_zone) else "mixed"
-            _add_cost(entry, cost if priced_wh else None, currency)
+            _add_cost(entry, cost, currency)
         for month, wh_both, tokens_both, both_s in store.execute(
                 f"SELECT month, wh_both, tokens_both, both_s FROM energy_monthly_tokens WHERE month IN ({marks})", names):
             entry = months[month]
@@ -952,7 +976,7 @@ def _finish(entry):
         entry["wh_per_1k_tokens"] = pairs[0] / pairs[1] * 1000
     if entry["currency"] == "mixed":
         entry["cost"], entry["currency"], entry["cost_why"] = None, None, "price currency changed during the month"
-    elif not entry["priced_wh"]:
+    elif entry["currency"] is None:
         entry["cost"], entry["cost_why"] = None, "no energy price configured while this month was archived"
     return entry
 
@@ -1151,7 +1175,7 @@ def thermals_document(api, query):
                        "buckets that had samples; time between samples is unknown",
                "throttle": f"sampled periods at {native // 60}-minute resolution; a bucket without samples ends a period"},
         why=why)
-    size = len(json.dumps(document, separators=(",", ":"), default=str))
+    size = len(json.dumps(document, ensure_ascii=True, default=str))
     if size > MAX_DOCUMENT_BYTES:
         document = api.document("thermals", range=name, machines=None, thresholds=thresholds,
                                 why={"machines": f"the history would be {size // 1024} KiB, over the page limit of "

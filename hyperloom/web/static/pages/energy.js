@@ -164,8 +164,12 @@ ${card("Monthly archive", archive(d) + older(d))}
     try { await post(action, body); done(); H().announce(`${action.replace("energy/", "Energy ")} saved`); }
     catch (error) { view.error = error.message; H().announce(error.message); }
     finally {
-      // The first refresh may be a poll that started before the write; the second one surely reads after it.
-      try { H().state.fresh = false; await H().refresh(); await H().refresh(); }
+      // Every cached energy and thermals document is dropped, so whichever page shows them next (after a navigation
+      // too) waits for a fetch made after the write; the first refresh may be a poll that began before it.
+      try {
+        for (const key of Object.keys(H().state.docs)) if (/^(energy|thermals)/.test(key)) { delete H().state.docs[key]; delete H().state.fetched?.[key]; }
+        H().state.fresh = false; await H().refresh(); await H().refresh();
+      }
       finally { view.busy = false; H().state.busy = false; H().render(); }
     }
   }

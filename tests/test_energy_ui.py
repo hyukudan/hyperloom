@@ -87,6 +87,14 @@ class EnergyPagesInBrowser(unittest.TestCase):
     def js(self, expression):
         return self.client.evaluate(expression)
 
+    def click(self, selector):
+        """Click a control as soon as it is enabled (the shell's freshness gate flickers between polls)."""
+        self.js("""new Promise((resolve, reject) => { const started = Date.now(); const tick = () => {
+          const c = document.querySelector(%s);
+          if (c && !c.disabled) { c.click(); resolve(true); }
+          else if (Date.now() - started > 20000) reject(new Error('control stayed disabled: ' + %s));
+          else setTimeout(tick, 25); }; tick(); })""" % (json.dumps(selector), json.dumps(selector)))
+
     def wait_poll(self):
         self.js("new Promise(resolve => setTimeout(resolve, 2600))")
 
@@ -98,15 +106,16 @@ class EnergyPagesInBrowser(unittest.TestCase):
     def test_energy_page_drafts_reset_and_blockers(self):
         self.open("energy")
         self.assertIn("Estimated from sensors, not metered", self.js("document.body.innerText"))
+        smoke.eventually(lambda: self.js("document.querySelector('[data-page-action=\"energy-price-save\"]')?.disabled === false"), timeout=30)
         # A typed price survives the 2 s poll re-render.
         self.js("{ const i = document.getElementById('energy-price'); i.value = '0.31'; i.dispatchEvent(new Event('input', {bubbles: true})); }")
         self.wait_poll()
         self.assertEqual(self.js("document.getElementById('energy-price').value"), "0.31")
-        self.js("document.querySelector('[data-page-action=\"energy-price-save\"]').click()")
-        smoke.eventually(lambda: self.api("energy?range=24h")["price"] == {"price_per_kwh": 0.31, "currency": "EUR"})
-        smoke.eventually(lambda: self.js("document.querySelector('[data-page-action=\"energy-reset\"]')?.disabled === false"))
+        self.click('[data-page-action="energy-price-save"]')
+        smoke.eventually(lambda: self.api("energy?range=24h")["price"] == {"price_per_kwh": 0.31, "currency": "EUR"}, timeout=30)
+        smoke.eventually(lambda: self.js("document.querySelector('[data-page-action=\"energy-reset\"]')?.disabled === false"), timeout=30)
         # Reset: the first click reveals the confirmation with focus on the safe choice; Enter never confirms.
-        self.js("document.querySelector('[data-page-action=\"energy-reset\"]').click()")
+        self.click('[data-page-action="energy-reset"]')
         self.assertEqual(self.js("document.activeElement?.dataset.pageAction"), "energy-reset-cancel")
         self.js("document.querySelector('[data-page-action=\"energy-reset-confirm\"]').focus()")
         smoke.key(self.client, "Enter")
@@ -129,7 +138,7 @@ class EnergyPagesInBrowser(unittest.TestCase):
 
     def test_a_slow_poll_started_before_a_save_never_shows_stale_data_after_it(self):
         self.open("energy")
-        smoke.eventually(lambda: self.js("document.querySelector('[data-page-action=\"energy-price-save\"]')?.disabled === false"))
+        smoke.eventually(lambda: self.js("document.querySelector('[data-page-action=\"energy-price-save\"]')?.disabled === false"), timeout=30)
         state = self.js("""new Promise(resolve => {
           const real = window.fetch;
           // Polls of the energy document issued from now on answer late, the write itself is not delayed.
@@ -151,6 +160,28 @@ class EnergyPagesInBrowser(unittest.TestCase):
           setTimeout(check, 50);
         })""")
         self.assertEqual(state, {"price_per_kwh": 0.42, "currency": "EUR"})
+        self.assertEqual(self.client.errors, [])
+
+    def test_a_save_during_which_the_page_is_left_shows_the_saved_value_on_return(self):
+        self.open("energy")
+        smoke.eventually(lambda: self.js("document.querySelector('[data-page-action=\"energy-price-save\"]')?.disabled === false"), timeout=30)
+        self.js("""(() => {
+          const real = window.fetch;
+          window.__energyRealFetch = real;
+          // The write answers late; meanwhile the user goes to another page.
+          window.fetch = (url, options) => options && options.method === 'POST'
+            ? new Promise(r => setTimeout(r, 1500)).then(() => real(url, options)) : real(url, options);
+          const input = document.getElementById('energy-price');
+          input.value = '0.47'; input.dispatchEvent(new Event('input', {bubbles: true}));
+          document.querySelector('[data-page-action="energy-price-save"]').click();
+          location.hash = '#/thermals';
+        })()""")
+        self.js("new Promise(r => setTimeout(r, 4000))")
+        self.js("window.fetch = window.__energyRealFetch; location.hash = '#/energy';")
+        smoke.eventually(lambda: self.js("!!window.Hyperloom.state.docs['energy?range=24h'] && "
+                                         "document.getElementById('energy-price')?.value === '0.47'"), timeout=20)
+        self.assertEqual(self.js("window.Hyperloom.state.docs['energy?range=24h'].price"),
+                         {"price_per_kwh": 0.47, "currency": "EUR"})
         self.assertEqual(self.client.errors, [])
 
     def test_thermal_threshold_drafts_survive_polls(self):

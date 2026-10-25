@@ -39,7 +39,7 @@
     const top = Math.max(...values, ...limits.map(l => l[2].crit)) + 5, bottom = Math.max(0, Math.min(...values) - 5);
     const W = Math.round(Math.max(300, Math.min(1600, (document.querySelector("main")?.clientWidth || 700) - 64))), Hh = 240, L = 52, R = 8, T = 8, B = 22;
     const x = t => L + (t - t0) / span * (W - L - R), y = v => T + (1 - (v - bottom) / ((top - bottom) || 1)) * (Hh - T - B);
-    const gap = (d.step || 60) * 2.5;
+    const gap = (d.step || 60) * 1.5;            // a missing bucket breaks the line
     const bands = (m.throttle || []).map(p => `<rect x="${x(Math.max(p.start, t0)).toFixed(1)}" y="${T}" width="${Math.max(1.5, x(Math.min(p.end, t1)) - x(Math.max(p.start, t0))).toFixed(1)}" height="${Hh - T - B}" fill="var(--err-soft)" class="th-band"><title>${esc(`throttled${p.device ? ` (device ${p.device})` : ""}: ${stamp(p.start)} to ${stamp(p.end)}`)}</title></rect>`).join("");
     const paths = lines.map((l, i) => {
       let path = "", dots = "";
@@ -122,8 +122,12 @@
       view.draft = {}; H().announce("Thermal thresholds saved");
     } catch (error) { view.error = error.message; H().announce(error.message); }
     finally {
-      // The first refresh may be a poll that started before the write; the second one surely reads after it.
-      try { H().state.fresh = false; await H().refresh(); await H().refresh(); }
+      // Every cached energy and thermals document is dropped, so whichever page shows them next (after a navigation
+      // too) waits for a fetch made after the write; the first refresh may be a poll that began before it.
+      try {
+        for (const key of Object.keys(H().state.docs)) if (/^(energy|thermals)/.test(key)) { delete H().state.docs[key]; delete H().state.fetched?.[key]; }
+        H().state.fresh = false; await H().refresh(); await H().refresh();
+      }
       finally { view.busy = false; H().state.busy = false; H().render(); }
     }
   });
