@@ -379,8 +379,11 @@ def _publish_check(api, store, mid, row, found, now):
     """Record one machine's check as soon as it finishes (also after the collection that started it returned)."""
     with _checks_lock:
         known = dict(store.get(NAMESPACE, "node_tool", {}) or {})
+        previous = known.get(mid) or {}
+        if (previous.get("checked_at") or 0) > row["checked_at"]:
+            return          # a newer check or update was recorded meanwhile
         if row["seen_at"] is None:
-            row["seen_at"] = (known.get(mid) or {}).get("seen_at")
+            row["seen_at"] = previous.get("seen_at")
         known[mid] = row
         store.put(NAMESPACE, "node_tool", known)
         if found:
@@ -553,11 +556,12 @@ def nodes_update(api, arguments, ctx=None, deadline=None):
 def _remember_update(api, result):
     try:
         store = store_for_write(api)
-        known = dict(store.get(NAMESPACE, "node_tool", {}) or {})
-        now = api.clock()
-        for mid, row in (result or {}).items():
-            known[mid] = {"checked_at": now, "seen_at": now, "deployed": (row or {}).get("tool"), "error": None}
-        store.put(NAMESPACE, "node_tool", known)
+        with _checks_lock:
+            known = dict(store.get(NAMESPACE, "node_tool", {}) or {})
+            now = api.clock()
+            for mid, row in (result or {}).items():
+                known[mid] = {"checked_at": now, "seen_at": now, "deployed": (row or {}).get("tool"), "error": None}
+            store.put(NAMESPACE, "node_tool", known)
     except Exception:
         pass
 
