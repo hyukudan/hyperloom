@@ -271,6 +271,12 @@ class NodeVerbTests(unittest.TestCase):
         report = node.Collector(reader).collect({})
         self.assertIn("0-2: unreadable rx_speed, tx_speed", report["why"]["links_failed"])
         self.assertIsNone({l["router"]: l for l in report["links"]}["0-2"]["full_rate"])
+        for attribute in ("rx_speed", "rx_lanes", "tx_speed", "tx_lanes"):     # each one alone fails the part
+            reader = TreeReader(self.dir.name, FIXTURE, runner=Runner())
+            reading = reader.read
+            reader.read = lambda logical, limit=node.SMALL, a=attribute: None if logical.endswith("1-2/" + a) else reading(logical, limit)
+            report = node.Collector(reader).collect({})
+            self.assertEqual(report["why"].get("links_failed"), "1-2: unreadable " + attribute, attribute)
         missing = node.Reader(self.dir.name).listdir("/sys/bus/thunderbolt/nothing-here")
         self.assertEqual(missing, [])
 

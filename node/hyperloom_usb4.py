@@ -395,12 +395,13 @@ class Collector:
                 continue
             entry = base + "/" + name
             raw = {f: self.io.read(entry + "/" + f) for f in ("rx_speed", "rx_lanes", "tx_speed", "tx_lanes")}
-            if raw["rx_speed"] is None and raw["tx_speed"] is None:
-                present = [f for f in ("rx_speed", "tx_speed") if self.io.probe(entry + "/" + f)[0] != "absent"]
-                if not present:
-                    continue                # host routers and devices without a trained link of their own
-                raw["unreadable"] = present  # the attributes exist but could not be read: an unknown rate
-                self.link_failures.append(name + ": unreadable " + ", ".join(present))
+            # Every attribute that exists but could not be read is a failed inspection (its direction is unknown).
+            unreadable = [f for f, value in raw.items() if value is None and self.io.probe(entry + "/" + f)[0] != "absent"]
+            if raw["rx_speed"] is None and raw["tx_speed"] is None and not unreadable:
+                continue                    # host routers and devices without a trained link of their own
+            if unreadable:
+                raw["unreadable"] = unreadable
+                self.link_failures.append(name + ": unreadable " + ", ".join(unreadable))
             rx = link_direction(raw["rx_speed"], raw["rx_lanes"])
             tx = link_direction(raw["tx_speed"], raw["tx_lanes"])
             domain, route = int(match[1]), int(match[2], 16)
