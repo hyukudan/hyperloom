@@ -550,7 +550,7 @@ def _bound_families(families):
 
 
 def _router_instance(samples):
-    return next((dict(labels)["instance"][:80] for (name, labels), _ in samples.items()
+    return next((engine.identity_text(dict(labels)["instance"]) for (name, labels), _ in samples.items()
                  if name == "tensormeld_router_instance_info" and dict(labels).get("instance")), None)
 
 
@@ -762,12 +762,17 @@ def _fleet_identity(value):
         return None, None
     kind, raw = found.groups()
     if kind == "id":
-        return (raw if len(raw) <= 128 and raw.isprintable() else None), None
+        return engine.identity_text(raw), None
     try:
         start = float(raw)
     except ValueError:
         return None, None
     return None, start if math.isfinite(start) else None
+
+
+def _start_id(start):
+    """An identity from a reported start time, lossless (the shortest text that reads back as the same float)."""
+    return "start-" + repr(float(start))
 
 
 def _identity(store, key, observed, extra, reading, uptime):
@@ -795,13 +800,13 @@ def _identity(store, key, observed, extra, reading, uptime):
         return None, None, "conflict", "the answers name different engine instances (a restart between them)", None
     has_metrics, has_status = reading.get("metrics_text") is not None, reading.get("status") is not None
     if has_metrics and (metrics_id or metrics_start is not None):
-        return (metrics_id or f"start-{metrics_start:.3f}"), metrics_start or status_start, (
+        return (metrics_id or _start_id(metrics_start)), metrics_start or status_start, (
             "engine instance id" if metrics_id else "engine start time"), None, "metrics"
     if has_status and (status_id or status_start is not None):
-        return (status_id or f"start-{status_start:.3f}"), status_start, (
+        return (status_id or _start_id(status_start)), status_start, (
             "engine instance id" if status_id else "engine start time"), None, "status"
     if fleet_id or fleet_start is not None:
-        return (fleet_id or f"start-{fleet_start:.3f}", fleet_start, "node sampler's engine identity", None,
+        return (fleet_id or _start_id(fleet_start), fleet_start, "node sampler's engine identity", None,
                 "status" if has_status else "metrics")
     observed_at = reading["observed_at"]
     if uptime is None or not has_status:

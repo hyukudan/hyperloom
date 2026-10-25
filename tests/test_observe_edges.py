@@ -363,5 +363,63 @@ class FleetReachabilityTests(FleetBase):
         self.assertEqual(snapshot["state"], "unreachable")
 
 
+class ExactIdentityTests(FleetBase):
+    """Identities are kept exactly as reported (at most 128 characters, never truncated; starts losslessly)."""
+
+    LONG_A, LONG_B = "a" * 100 + "1", "a" * 100 + "2"
+
+    def direct(self, instance, generated):
+        env = self.env
+        env.launch("qwen", [("halo-1", NODE1, 18501)])
+        env.router()
+        status = fixture("engine-status-c1.json")
+        status["instance"] = {"id": instance}
+        metrics = (fixture("engine-metrics-c1.txt").replace('instance="5a5a5a5a5a5a5a5a"', f'instance="{instance}"')
+                   .replace("strix_generated_tokens_total 9910", f"strix_generated_tokens_total {generated}"))
+        env.engine(NODE1, 18501, status, metrics)
+        env.collect()
+        return env.store.get("observe/engine", "qwen/halo-1")
+
+    def generated(self):
+        lines = self.env.store.query("engine_generated_tokens", 0, 2e9, labels={"profile": "qwen"})["lines"]
+        return sum(p[5] for line in lines for p in line["points"])
+
+    def test_long_ids_sharing_a_prefix_stay_apart(self):
+        self.assertEqual(self.direct(self.LONG_A, 1000)["instance"], self.LONG_A)
+        self.assertEqual(self.direct(self.LONG_B, 1050)["instance"], self.LONG_B)
+        self.assertEqual(self.generated(), 0)                      # another process: a new baseline, no delta
+
+    def test_conflicting_long_ids(self):
+        env = self.env
+        env.launch("qwen", [("halo-1", NODE1, 18501)])
+        env.router()
+        status = fixture("engine-status-c1.json")
+        status["instance"] = {"id": self.LONG_A}
+        env.engine(NODE1, 18501, status,
+                   fixture("engine-metrics-c1.txt").replace('instance="5a5a5a5a5a5a5a5a"', f'instance="{self.LONG_B}"'))
+        env.collect()
+        self.assertEqual(env.store.get("observe/engine", "qwen/halo-1")["instance_basis"], "conflict")
+
+    def test_oversized_ids_are_refused(self):
+        from hyperloom.adapters import engine
+        self.assertIsNone(engine.identity_text("x" * 129))
+        self.assertIsNone(engine.identity_text("a" + chr(10) + "b"))
+        self.assertEqual(engine.identity_text("x" * 128), "x" * 128)
+        self.assertEqual(engine.instance_of({"instance": {"id": "x" * 129}}), (None, None))
+
+    def test_long_fleet_identity_matches_the_answers(self):
+        status = fixture("engine-status-c1.json")
+        status["instance"] = {"id": self.LONG_A}
+        metrics = fixture("engine-metrics-c1.txt").replace('instance="5a5a5a5a5a5a5a5a"', f'instance="{self.LONG_A}"')
+        self.fleet(self.env.clock() - 2, status, metrics, instance=f"up-lb/id:{self.LONG_A}")
+        self.env.collect()
+        snapshot = self.env.store.get("observe/engine", "lb/halo-1")
+        self.assertEqual((snapshot["instance"], snapshot["instance_basis"]), (self.LONG_A, "engine instance id"))
+
+    def test_close_start_times_stay_apart(self):
+        self.assertNotEqual(observe._start_id(1000.0001), observe._start_id(1000.0002))
+        self.assertEqual(float(observe._start_id(1799990000.123456)[len("start-"):]), 1799990000.123456)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -159,14 +159,25 @@ def request_fields(value):
     return fields
 
 
+MAX_IDENTITY = 128
+
+
+def identity_text(value):
+    """An engine or router instance id exactly as reported, or None when it is not a printable string of at most
+    128 characters: an identity is never truncated (two processes sharing a prefix must stay apart)."""
+    if isinstance(value, str) and value and len(value) <= MAX_IDENTITY and value.isprintable():
+        return value
+    return None
+
+
 def instance_of(obj):
     """(instance id, start time) from ``instance: {id, start_time}`` (or a plain id string with ``started_at``)."""
     value = obj.get("instance")
     if isinstance(value, dict):
         inner = _optional(value, {"id": str, "start_time": float})
-        return (inner["id"][:80] if inner["id"] else None), inner["start_time"]
+        return identity_text(inner["id"]), inner["start_time"]
     started = _optional(obj, {"started_at": float})["started_at"]
-    return (value[:80] if isinstance(value, str) and value else None), started
+    return identity_text(value), started
 
 
 def json_histogram(value):
@@ -305,7 +316,7 @@ def parse_metrics_extra(text):
     for key, name in METRICS_EXTRA.items():
         value = samples.get((name, ()))
         result[key] = value if value is not None and _number(value) else None
-    result["instance"] = next((dict(labels)["instance"][:80] for (name, labels), _ in samples.items()
+    result["instance"] = next((identity_text(dict(labels)["instance"]) for (name, labels), _ in samples.items()
                                if name == "strix_engine_info" and dict(labels).get("instance")), None)
     result["histograms"] = histograms(samples, "strix_")
     return result
