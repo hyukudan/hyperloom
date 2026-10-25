@@ -732,7 +732,8 @@ def _admission_hold(args):
     if getattr(args, "profile", None) and not getattr(args, "recipe_inputs", None):
         try:
             cluster = _cluster(getattr(args, "config", None) or config_path())
-            resources = admission.profile_resources(cluster, args.profile, _module("hyperloom.orchestrate"))
+            resources = admission.profile_resources(cluster, args.profile, _module("hyperloom.orchestrate"),
+                                                    getattr(args, "router", None) if args.command == "up" else None)
         except Exception:
             resources = {"*"}
     # The hold lives next to the configuration this command executes with (the portal's jobs pass the same one).

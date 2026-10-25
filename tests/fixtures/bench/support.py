@@ -48,7 +48,7 @@ class Bench:
                           "processes": [{"binary_sha256": "b" * 64}], "status": {"router": {"prefill": {"policy": "nodes"}}}},
                          {"id": "other", "state": "stopped", "family": "qwen-replicas", "processes": [], "status": {}}]
         self.api.snapshot = lambda: {"profiles": {"profiles": self.profiles}}
-        self.api._resources_of_profile = lambda profile: {"halo-1", "router"} if profile == "qwen" else {"halo-2", "router"}
+        self.api._resources_of_profile = lambda profile, router=None: {"halo-1", "router"} if profile == "qwen" else {"halo-2", "router"}
         patcher = mock.patch.object(secrets, "get", lambda name: KEY if name == "key-router-fixture" else None)
         patcher.start()
         test.addCleanup(patcher.stop)

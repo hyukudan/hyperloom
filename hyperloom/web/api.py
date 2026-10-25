@@ -178,7 +178,8 @@ def _token_data(key, item):
     number = lambda v: type(v) in (int, float)
     if key.lower().startswith("tokenizer"):
         return isinstance(item, str) and len(item) <= 200 and not re.search(r"(?i)bearer\s|\s", item)
-    return (number(item) or (isinstance(item, list) and all(type(v) is int for v in item))
+    ids = re.fullmatch(r"(?:[a-z0-9_]*_)?token_ids|tokens", key, re.I)      # token-id arrays, not *_tokens
+    return (number(item) or (ids and isinstance(item, list) and all(type(v) is int for v in item))
             or (isinstance(item, dict) and bool(item)          # a counter's accounting: numbers, flags, unknowns
                 and all(number(v) or v is None or type(v) is bool for v in item.values()))
             or (isinstance(item, str) and key.lower().endswith("token_ids") and bool(COMPRESSED_IDS.fullmatch(item))))
@@ -1127,11 +1128,11 @@ class API:
             self.admission_db = admission.for_config(self.config_path)
         return self.admission_db
 
-    def _resources_of_profile(self, profile):
+    def _resources_of_profile(self, profile, router=None):
         """Resource ids a profile occupies (its nodes, its prefill service's machine and its router); everything
         ("*") when unknown."""
         try:
-            return admission.profile_resources(self._cluster(), profile, self.orchestrate)
+            return admission.profile_resources(self._cluster(), profile, self.orchestrate, router)
         except Exception:
             return {"*"}
 
@@ -1747,7 +1748,8 @@ class API:
             stopping = not feature
         resources = set()
         if occupying or stopping:
-            resources = self._resources_of_profile(profile) if isinstance(profile, str) and profile else {"*"}
+            resources = self._resources_of_profile(profile, arguments.get("router") if action == "up" else None) \
+                if isinstance(profile, str) and profile else {"*"}
             if action == "up" and arguments.get("recipe_inputs"):
                 resources = {"*"}       # a snapshot launches with the placement it was planned on: hold everything
         jid = uuid.uuid4().hex

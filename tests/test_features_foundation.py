@@ -130,10 +130,12 @@ class APIDispatchTests(unittest.TestCase):
         document = {"generated_tokens": {"delta": None, "unobserved_s": 3.0, "uncertain": False, "stale": True},
                     "why": {"computed_tokens": "not reported by this engine build", "x": "token=abc123"},
                     "series": {"engine_generated_tokens": "history/engine_generated_tokens?profile=qwen"},
-                    "refresh_tokens": {"a": "ghp_abc"}, "github_tokens": "ghp_abc", "token_ids": [1, 2]}
+                    "refresh_tokens": {"a": "ghp_abc"}, "github_tokens": "ghp_abc", "token_ids": [1, 2],
+                    "prompt_token_ids": [3], "tokens": [4, 5], "access_tokens": [12345]}
         self.assertEqual(redact(document), dict(document, why={"computed_tokens": "not reported by this engine build",
                                                                "x": "token=[redacted]"},
-                                                refresh_tokens="[redacted]", github_tokens="[redacted]"))
+                                                refresh_tokens="[redacted]", github_tokens="[redacted]",
+                                                access_tokens="[redacted]"))
 
     def test_get_documents_are_redacted_and_errors_mapped(self):
         document = self.api.read("demo", {"x": "1"})

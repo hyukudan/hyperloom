@@ -197,12 +197,15 @@ def for_config(config_path, clock=time.time):
         return _opened[path]
 
 
-def profile_resources(cluster, profile, orchestrate):
+def profile_resources(cluster, profile, orchestrate, router=None):
     """The resource ids a profile occupies: its nodes, the machine of its prefill service (when it has one) and the
-    router, as configured, plus every machine its saved running state names (a running profile keeps the placement
-    it was launched with, also when the configuration changed since). Raises when the profile is unknown or its
-    saved state is unreadable (callers then hold everything)."""
+    router, as configured, the machine a launch places its router on (``router`` other than "local"), plus every
+    machine its saved running state names, its prefill service's included (a running profile keeps the placement it
+    was launched with, also when the configuration changed since). Raises when the profile is unknown or its saved
+    state is unreadable or names a prefill service without its machine (callers then hold everything)."""
     machines = [str(m) for m in orchestrate._profile(cluster, profile)[2]]
+    if router and router != "local":
+        machines.append(str(router))
     service = (cluster.profiles.get(profile) or {}).get("prefill_service")
     if isinstance(service, dict) and service.get("machine"):
         machines.append(str(service["machine"]))
@@ -210,6 +213,11 @@ def profile_resources(cluster, profile, orchestrate):
     if state.exists():
         saved = json.loads(state.read_text(encoding="utf-8"))
         machines += [str(m) for m in (saved.get("machines") or {})]
+        saved_service = saved.get("prefill_service")
+        if saved_service is not None:
+            if not isinstance(saved_service, dict) or not isinstance(saved_service.get("machine"), str):
+                raise ValueError(f"{profile}: saved prefill service without its machine")
+            machines.append(saved_service["machine"])
     return {*machines, "router"}
 
 

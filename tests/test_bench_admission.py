@@ -142,6 +142,18 @@ class GuardAndWorkerTests(unittest.TestCase):
             Path(directory, "up-plain.json").write_text('{"machines": {"halo-9": {}}}', encoding="utf-8")
             self.assertEqual(admission.profile_resources(cluster, "plain", orchestrate),
                              {"halo-1", "halo-2", "halo-9", "router"})
+            self.assertEqual(admission.profile_resources(cluster, "rtx", orchestrate, "m9"),
+                             {"halo-1", "halo-2", "workstation", "m9", "router"})      # a launch's router machine
+            self.assertEqual(admission.profile_resources(cluster, "rtx", orchestrate, "local"),
+                             {"halo-1", "halo-2", "workstation", "router"})
+            # The saved prefill service's machine (the configuration no longer names it).
+            Path(directory, "up-plain.json").write_text('{"machines": {}, "prefill_service": {"machine": "pc-2"}}',
+                                                        encoding="utf-8")
+            self.assertEqual(admission.profile_resources(cluster, "plain", orchestrate),
+                             {"halo-1", "halo-2", "pc-2", "router"})
+            Path(directory, "up-plain.json").write_text('{"prefill_service": {"port": 1}}', encoding="utf-8")
+            with self.assertRaises(ValueError):                 # its machine unknown: the caller holds everything
+                admission.profile_resources(cluster, "plain", orchestrate)
             Path(directory, "up-plain.json").write_text("{", encoding="utf-8")
             with self.assertRaises(ValueError):                 # unreadable: the caller holds everything
                 admission.profile_resources(cluster, "plain", orchestrate)
