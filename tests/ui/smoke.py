@@ -1012,8 +1012,8 @@ def shell_walkthrough(client, server, output):
         if age > 4500 or not client.evaluate("document.getElementById('connection').hidden && !document.getElementById('add-machine').disabled"):
             raise AssertionError(f"shell: a slow optional document delayed the screen ({age} ms since the last devices answer)")
     scenario({"health/summary": dict(base, evaluated_at=time.time()), "overview": overview})
-    # A slow core document: controls are blocked whenever a current document is older than the stale limit, at
-    # any moment (not only after the next one-second check).
+    # A slow core document: the action blocker (what every mutation control and dialog asks) is set whenever a
+    # current document is older than the stale limit, at any moment (not only after the next one-second check).
     scenario({"health/summary": dict(base, evaluated_at=time.time()), "overview": overview, "jobs_delay_s": 8})
     samples = client.evaluate("""new Promise(resolve => { const out = {aged: 0, violations: 0}; const started = Date.now();
       const timer = setInterval(() => {
@@ -1021,7 +1021,7 @@ def shell_walkthrough(client, server, output):
         if (age > 6000) { out.aged++; if (!window.Hyperloom.mutationReason()) out.violations++; }
         if (Date.now() - started > 9000) { clearInterval(timer); resolve(out); } }, 100); })""")
     if not samples["aged"] or samples["violations"]:
-        raise AssertionError("shell: controls were enabled with an old document: " + json.dumps(samples))
+        raise AssertionError("shell: the action blocker was clear with an old document: " + json.dumps(samples))
     scenario({"health/summary": dict(base, evaluated_at=time.time()), "overview": overview})
     wait("!window.Hyperloom.mutationReason()", timeout=40)
     # Info tooltips: shown on focus, dismissed by Escape and kept dismissed across a poll; the pointer can move
