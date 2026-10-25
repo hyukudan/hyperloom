@@ -1,0 +1,22 @@
+{
+  "ts": 0,
+  "ok": true,
+  "error": null,
+  "host": {
+    "schema": "hyperloom/node-v1",
+    "verb": "host",
+    "checks": {
+      "boot_id": {"status": "ok", "value": "00000000-0000-0000-0000-000000000000"},
+      "listeners": {
+        "status": "ok",
+        "value": [
+          {"port": 22, "family": "ipv4", "scope": "any"},
+          {"port": 22, "family": "ipv6", "scope": "lan"},
+          {"port": 18501, "family": "ipv4", "scope": "lan"},
+          {"port": 18521, "family": "ipv4", "scope": "loopback"},
+          {"port": 631, "family": "ipv6", "scope": "loopback"}
+        ]
+      }
+    }
+  }
+}
