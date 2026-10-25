@@ -1,0 +1,146 @@
+{
+ "schema": "hyperloom/node-v1",
+ "verb": "models",
+ "roots": [
+  {
+   "path": "/opt/lab/models",
+   "units": [
+    {
+     "name": "model-a",
+     "kind": "dir",
+     "bytes": null,
+     "files": null,
+     "newest_mtime": null,
+     "links": null,
+     "manifest": {
+      "status": "unknown",
+      "why": "scan bound reached: depth",
+      "manifests": []
+     }
+    },
+    {
+     "name": "model-b",
+     "kind": "dir",
+     "bytes": 171035902206,
+     "files": 49,
+     "newest_mtime": 1792762424,
+     "links": 0,
+     "manifest": {
+      "status": "none",
+      "listed": 0,
+      "missing": 0,
+      "unlisted": 49,
+      "invalid": 0,
+      "conflicts": 0,
+      "manifests": []
+     }
+    },
+    {
+     "name": "model-c",
+     "kind": "dir",
+     "bytes": null,
+     "files": null,
+     "newest_mtime": null,
+     "links": null,
+     "manifest": {
+      "status": "unknown",
+      "why": "scan bound reached: depth",
+      "manifests": []
+     }
+    },
+    {
+     "name": "model-d",
+     "kind": "dir",
+     "bytes": null,
+     "files": null,
+     "newest_mtime": null,
+     "links": null,
+     "manifest": {
+      "status": "unknown",
+      "why": "scan bound reached: depth",
+      "manifests": []
+     }
+    },
+    {
+     "name": "model-e",
+     "kind": "dir",
+     "bytes": 16111416950,
+     "files": 176,
+     "newest_mtime": 1792584203,
+     "links": 0,
+     "manifest": {
+      "status": "complete",
+      "listed": 172,
+      "missing": 0,
+      "unlisted": 0,
+      "invalid": 0,
+      "conflicts": 0,
+      "manifests": [
+       "model-e/part-3.sha256",
+       "model-e/part-4.sha256",
+       "model-e/part-5.sha256",
+       "model-e/part-6.sha256"
+      ]
+     }
+    },
+    {
+     "name": "model-f",
+     "kind": "dir",
+     "bytes": 648664097,
+     "files": 5,
+     "newest_mtime": 1792524211,
+     "links": 0,
+     "manifest": {
+      "status": "none",
+      "listed": 0,
+      "missing": 0,
+      "unlisted": 5,
+      "invalid": 0,
+      "conflicts": 0,
+      "manifests": []
+     }
+    },
+    {
+     "name": "model-g",
+     "kind": "dir",
+     "bytes": 424426297568,
+     "files": 7,
+     "newest_mtime": 1792848741,
+     "links": 0,
+     "manifest": {
+      "status": "none",
+      "listed": 0,
+      "missing": 0,
+      "unlisted": 7,
+      "invalid": 0,
+      "conflicts": 0,
+      "manifests": []
+     }
+    },
+    {
+     "name": "model-h",
+     "kind": "dir",
+     "bytes": 11652214696,
+     "files": 22,
+     "newest_mtime": 1792873166,
+     "links": 0,
+     "manifest": {
+      "status": "none",
+      "listed": 0,
+      "missing": 0,
+      "unlisted": 22,
+      "invalid": 0,
+      "conflicts": 0,
+      "manifests": []
+     }
+    }
+   ],
+   "other_files": 0,
+   "truncated": [
+    "depth"
+   ],
+   "free_bytes": 600000000000
+  }
+ ],
+ "cache": "direct"
+}
