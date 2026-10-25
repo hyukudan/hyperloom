@@ -1,7 +1,19 @@
 # VRAM placement: `--vram-cap-gib` plans the RTX placement
 
-Status: `hl/vramplan`, 2026-10-24. Unit-tested; the PC-BIG validation (predicted vs measured peak VRAM, identical
-outputs) is in `wave4/vramplan/report.md` of the lab notes.
+Status: merged in main, 2026-10-24. Validated on the RTX PRO for the three prefill engines at two caps each: every
+measured peak VRAM stayed under its cap and within 0.5 GiB of the prediction (MiniMax and Qwen within 0.12 GiB), and
+every output was identical to the uncapped reference (DeepSeek: exact oracle 4/4 at both caps; Qwen: end-to-end
+bit-identical; MiniMax, on layer subsets: state bytes identical on both ranks). Qwen at cap 48 is refused: that engine
+has no partial residency.
+
+| Engine | Cap (GiB) | Predicted peak (GiB) | Measured peak (GiB) |
+|---|---:|---:|---:|
+| MiniMax prefill (layer subsets) | 48 | 44.62 | 44.51 |
+| MiniMax prefill (layer subsets) | 90 | 84.64 | 84.53 |
+| Qwen prefill | 84 | 80.34 | 80.33 |
+| Qwen prefill | 90 | 83.95 | 83.94 |
+| DeepSeek prefill service | 48 | 44.80 | 44.33 |
+| DeepSeek prefill service | 90 | 86.24 | 85.78 |
 
 ## What it does
 
