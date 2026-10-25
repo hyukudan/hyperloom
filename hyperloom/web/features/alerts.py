@@ -741,6 +741,9 @@ def deliver(api, now, store=None, clock=time.monotonic, sender=None):
                     attempted_keys.append(key)
             try:
                 health.commit(store, health.guard(owner, generation, now) + [
+                    # the row must still exist unclaimed (an eviction may have removed it): else nothing commits
+                    ("INSERT INTO health_guard(x) SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM alerts_outbox WHERE id=? "
+                     "AND (claimed_until IS NULL OR claimed_until < ?))", (oid, now)),
                     ("UPDATE alerts_outbox SET claimed_until=? WHERE id=? AND (claimed_until IS NULL OR claimed_until < ?)",
                      (claim, oid, now))] + attempted)
             except sqlite3.IntegrityError:

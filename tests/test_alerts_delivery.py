@@ -400,6 +400,27 @@ class PlanTests(Base):
         self.plan([], {})
         self.assertEqual([items for c, items in self.outbox() if c == channel["id"]], [[("resolved", a["id"])]])
 
+    def test_an_eviction_between_head_selection_and_claim_marks_nothing(self):
+        channel = self.channel()
+        a = self.finding()
+        self.plan([("appeared", a)], {a["id"]: a})
+        original, sent = self.store.execute, []
+
+        def evicting(sql, args=()):
+            rows = original(sql, args)
+            if sql.startswith("SELECT id, message_id, channel") and not sent:
+                sent.append(0)
+                original("DELETE FROM alerts_outbox WHERE channel=?", (channel["id"],))     # evicted meanwhile
+                original("INSERT INTO docs(namespace, key, ts, value) VALUES (?, ?, ?, '{}')", (alerts.RESYNC, channel["id"], T0))
+            return rows
+        health.acquire(self.store, health.owner_of(self.api), self.clock.now)
+        with mock.patch.object(self.store, "execute", evicting):
+            alerts.deliver(self.api, self.clock.now, self.store, sender=lambda *a, **k: sent.append(1) or {"ok": True})
+        self.assertEqual(sent, [0])                                    # nothing was sent
+        self.assertFalse(any(m.get("attempted") for _, _, m in self.store.items(alerts.TRACK)))
+        self.plan([("cleared", a)], {})
+        self.assertEqual([items for c, items in self.outbox() if c == channel["id"]], [])   # no orphan resolve
+
     def test_a_catch_up_firing_dropped_unsent_leaves_no_orphan_resolve(self):
         channel = self.channel(min_severity="critical")
         w = self.finding(severity="warning")
