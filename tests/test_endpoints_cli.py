@@ -9,7 +9,7 @@ import unittest
 from unittest import mock
 
 from hyperloom import cli, config
-from tests.test_endpoints_feature import KEY, MODELS, FakeServer, json_route
+from tests.test_endpoints_feature import KEY, MODELS, PUBLIC, FakeServer, json_route
 
 
 class CLITests(unittest.TestCase):
@@ -47,7 +47,7 @@ class CLITests(unittest.TestCase):
         self.addCleanup(server.close)
         code, out, _ = self.run_cli("add", "--label", "Box", "--host", "127.0.0.1", "--port", str(server.port), "--key-name", "box-key")
         self.assertEqual((code, out.strip()), (0, f"saved box: http://127.0.0.1:{server.port}"))
-        code, _, err = self.run_cli("add", "--label", "Public", "--host", "8.8.8.8", "--port", "80")
+        code, _, err = self.run_cli("add", "--label", "Public", "--host", PUBLIC, "--port", "80")
         self.assertEqual(code, 2)
         self.assertIn("private or loopback", err)
         with mock.patch("hyperloom.secrets.get", return_value=KEY):
@@ -80,8 +80,11 @@ class CLITests(unittest.TestCase):
         # The loopback answer is red only with LAN listener evidence: give the control machine a fleet answer.
         with mock.patch.object(endpoints, "listener", return_value={"state": "any"}):
             code, out, _ = self.run_cli("exposure")
-        self.assertEqual(code, 1)
-        self.assertIn("RED", out)
+            self.assertEqual(code, 1)
+            self.assertIn("RED", out)
+            code, out, _ = self.run_cli("exposure", "--json")
+            self.assertEqual(code, 1)
+            self.assertEqual(json.loads(out)["summary"]["red"], 1)
 
 
 if __name__ == "__main__":

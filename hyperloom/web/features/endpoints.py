@@ -341,10 +341,11 @@ def _failure(exc, fired):
 class Session:
     """GETs to one endpoint, bounded in count, elapsed time and bytes; credentials only when a key is given."""
 
-    def __init__(self, scheme, address, port, key=None, *, deadline_s=ROUND_DEADLINE_S, max_requests=MAX_REQUESTS,
-                 timeout_s=TIMEOUT_S):
+    def __init__(self, scheme, address, port, key=None, *, host=None, deadline_s=ROUND_DEADLINE_S,
+                 max_requests=MAX_REQUESTS, timeout_s=TIMEOUT_S):
         self.scheme, self.address, self.port, self.key = scheme, address, port, key
-        self.host_header = (f"[{address}]" if ":" in address else address) + f":{port}"
+        authority = host or address              # the configured host (a machine id stays as written)
+        self.host_header = (f"[{authority}]" if ":" in authority else authority) + f":{port}"
         self.deadline = time.monotonic() + deadline_s
         self.left = max_requests
         self.timeout = timeout_s
@@ -363,12 +364,13 @@ class Session:
             conn = http.client.HTTPSConnection(self.address, self.port, timeout=budget, context=_context())
         else:
             conn = http.client.HTTPConnection(self.address, self.port, timeout=budget)
-        fired = []
+        fired, connected = [], []
 
         def abort():
-            # Elapsed-time bound: a server trickling its headers or body is cut off at the budget.
+            # Elapsed-time bound: a server trickling its headers or body is cut off at the budget. The connected
+            # socket is kept here because http.client drops conn.sock once a response owns the connection.
             fired.append(True)
-            sock = conn.sock
+            sock = connected[0] if connected else conn.sock
             if sock is not None:
                 try:
                     sock.shutdown(socket.SHUT_RDWR)
@@ -383,6 +385,10 @@ class Session:
                        "User-Agent": "hyperloom-endpoints", "Connection": "close"}
             if auth and self.key:
                 headers["Authorization"] = "Bearer " + self.key
+            conn.connect()
+            connected.append(conn.sock)
+            if fired:
+                raise TimeoutError()
             conn.request("GET", path, headers=headers)
             response = conn.getresponse()
             if fired:
@@ -519,7 +525,7 @@ def probe(target, cluster, previous=None, *, now, identify=False, session_factor
     key, problem = _key(target, key_lookup)
     if problem:
         result["why"]["key"] = problem + "; requests sent without credentials"
-    session = (session_factory or Session)(target["scheme"], address, target["port"], key)
+    session = (session_factory or Session)(target["scheme"], address, target["port"], key, host=target["host"])
     if not previous or previous.get("source") != result["source"]:
         previous = {}                       # another revision or destination: nothing carries over
     again = (identify or previous.get("kind") in (None, "unknown") or previous.get("error")
@@ -533,7 +539,7 @@ def probe(target, cluster, previous=None, *, now, identify=False, session_factor
         candidate = session.get("/api/status").json()
         if isinstance(candidate, dict) and candidate.get("schema") == engine_adapter.SCHEMA:
             kind, status_obj = "strix", candidate
-            status_seen = now + (time.monotonic() - started)
+            status_seen = now + _since(started)
             signatures.append("/api/status schema " + engine_adapter.SCHEMA)
         text = session.get("/metrics").text()
         if _ours_metrics(text):
@@ -566,7 +572,7 @@ def probe(target, cluster, previous=None, *, now, identify=False, session_factor
             candidate = session.get("/api/status").json()
             if isinstance(candidate, dict) and candidate.get("schema") == engine_adapter.SCHEMA:
                 status_obj = candidate
-                status_seen = now + (time.monotonic() - started)
+                status_seen = now + _since(started)
             text = session.get("/metrics").text()
             if _ours_metrics(text):
                 metrics_text = text
@@ -594,7 +600,11 @@ def probe(target, cluster, previous=None, *, now, identify=False, session_factor
     if kind == "strix":
         result["panel"] = panel = _panel(status_obj, metrics_text)
         uptime = panel.get("uptime_seconds")
-        if isinstance(uptime, (int, float)) and status_seen is not None:
+        reported = _reported_instance(status_obj)
+        if reported is not None:
+            # C3: the engine's own instance id or start time identifies its lifetime.
+            result["instance"] = reported
+        elif isinstance(uptime, (int, float)) and status_seen is not None:
             old_uptime, old_seen = previous.get("instance_uptime"), previous.get("instance_seen_at")
             # Continuity (C3): one engine lifetime is a run of replies whose uptime advanced like the wall clock
             # between them; anything else (less, backwards, a jump) is a new instance with a new baseline.
@@ -608,13 +618,34 @@ def probe(target, cluster, previous=None, *, now, identify=False, session_factor
     return _scrub(result, key)
 
 
+def _since(started):
+    """Seconds since a monotonic start (the time a status reply arrived within its round)."""
+    return time.monotonic() - started
+
+
+def _reported_instance(status_obj):
+    """The instance identity an engine reports itself (an id, or its start time), else None."""
+    if not isinstance(status_obj, dict):
+        return None
+    for key in ("instance_id", "instance"):
+        value = status_obj.get(key)
+        if isinstance(value, str) and 0 < len(value) <= 128:
+            return "id-" + value
+    for key in ("start_time", "started_at"):
+        value = status_obj.get(key)
+        if type(value) in (int, float) and value > 0:
+            return "start-" + repr(float(value))
+    return None
+
+
 def _publish(store, tid, result, now):
     """Write a probe document only while its target revision is current, and never over a newer observation."""
     needle = '"rev": "' + result["rev"] + '"'
-    store.execute("INSERT INTO docs(namespace, key, ts, value) SELECT ?, ?, ?, ? WHERE EXISTS "
-                  "(SELECT 1 FROM docs WHERE namespace=? AND key=? AND instr(value, ?) > 0) "
-                  "ON CONFLICT(namespace, key) DO UPDATE SET ts=excluded.ts, value=excluded.value WHERE excluded.ts > docs.ts",
-                  (NAMESPACE, "probe/" + tid, now, _encode(result), PREFS, TARGETS_KEY, needle))
+    return bool(store.execute(
+        "INSERT INTO docs(namespace, key, ts, value) SELECT ?, ?, ?, ? WHERE EXISTS "
+        "(SELECT 1 FROM docs WHERE namespace=? AND key=? AND instr(value, ?) > 0) "
+        "ON CONFLICT(namespace, key) DO UPDATE SET ts=excluded.ts, value=excluded.value WHERE excluded.ts > docs.ts "
+        "RETURNING 1", (NAMESPACE, "probe/" + tid, now, _encode(result), PREFS, TARGETS_KEY, needle)))
 
 
 def _drop(store, tid, rev):
@@ -634,9 +665,10 @@ def _describe(store):
     _described.add(store)
 
 
-def run_round(api, now, *, identify=False, session_factory=None, key_lookup=None):
-    """Probe every target once (one worker each, one deadline), account token counters and publish the probe
-    documents. Returns {target id: result} for the results that finished in time and were current."""
+def run_round(api, now, *, identify=False, session_factory=None, key_lookup=None, account=False):
+    """Probe every target once (one worker each, one deadline) and publish the probe documents; with ``account``
+    (the sampler's own rounds only, so each delta stands for one sampling interval) also account the token
+    counters. Returns {target id: result} for the results that finished in time and were accepted."""
     store = telemetry.open_store(api)
     _describe(store)
     if not _round_lock.acquire(timeout=LOCK_WAIT_S):
@@ -664,8 +696,10 @@ def run_round(api, now, *, identify=False, session_factory=None, key_lookup=None
         for tid, result in results.items():
             if current.get(tid) != result["rev"] or sources.get(tid) != result.get("source"):
                 continue                                    # removed, re-saved or re-pointed meanwhile
+            if not _publish(store, tid, result, now):
+                continue                                    # superseded at the moment of writing
             panel = result.get("panel") or {}
-            if result.get("instance"):
+            if account and result.get("instance"):
                 counters = {}
                 for field, series in COUNTERS:
                     value = panel.get(field + "_total")
@@ -676,9 +710,12 @@ def run_round(api, now, *, identify=False, session_factory=None, key_lookup=None
                             max_gap=4 * INTERVAL_S,
                             apply=lambda d, i, series=series, labels=labels: {"points": [(series, labels, d, "delta")]})
                         counters[field] = {"delta": delta, "unobserved_s": info.get("unobserved_s"),
-                                         "uncertain": info.get("uncertain"), "stale": info.get("stale")}
-                result["counters"] = counters or None
-            _publish(store, tid, result, now)
+                                           "uncertain": info.get("uncertain"), "stale": info.get("stale")}
+                if counters:
+                    result["counters"] = counters
+                    _publish(store, tid, result, now + 1e-6)     # the same observation with its accounting
+            elif not account and result.get("instance"):
+                result["why"]["counters"] = "token deltas are accounted only by the sampler's rounds"
             published[tid] = result
         for key, _, value in store.items(NAMESPACE):
             if not key.startswith("probe/") or not isinstance(value, dict):
@@ -698,7 +735,7 @@ def run_round(api, now, *, identify=False, session_factory=None, key_lookup=None
 def collect(api, now):
     """The ``endpoints`` collector: one round, then the up/models points (token deltas are written by the round)."""
     points = []
-    for tid, result in run_round(api, now).items():
+    for tid, result in run_round(api, now, account=True).items():
         labels = {"endpoint": tid}
         points.append(("endpoint_up", labels, 1 if result["up"] else 0, "state"))
         if result["models_total"] is not None:
@@ -730,7 +767,8 @@ def router_listen(cluster):
     return machine, config.listen(settings.get("listen", default), "router.listen")
 
 
-BASIS_FIELDS = ("kind", "machine", "scheme", "probe_address", "port", "configured_scope", "key_configured", "rev", "error")
+BASIS_FIELDS = ("kind", "machine", "scheme", "probe_address", "listen_address", "port", "configured_scope",
+                "key_configured", "rev", "error")
 
 
 def _basis(row):
@@ -744,10 +782,15 @@ def configured(cluster, targets):
     rows = []
     try:
         machine, listen = router_listen(cluster)
+        probe_address = listen["address"]
+        remote = (cluster.router or {}).get("machine", "local") != "local"
+        if remote and _scope(probe_address) == "loopback":
+            # Its loopback is not ours: ask at that machine's address, where a loopback listener must not answer.
+            probe_address = cluster.machines[machine].http_address
         rows.append({"id": "router", "kind": "router", "label": "router", "profile": None, "family": None,
-                     "machine": machine, "port": listen["port"], "scheme": "http",
+                     "machine": machine, "port": listen["port"], "scheme": "http", "listen_address": listen["address"],
                      "configured_scope": _scope(listen["address"]), "key_configured": "api_key_file" in (cluster.router or {}),
-                     "key_supported": True, "probe_address": listen["address"]})
+                     "key_supported": True, "probe_address": probe_address})
     except (KeyError, ValueError):
         rows.append({"id": "router", "kind": "router", "label": "router", "machine": None, "port": None,
                      "error": "router listen address does not resolve"})
@@ -1024,7 +1067,9 @@ def exposure(api, query):
     cluster = _cluster(api)
     if cluster is None:
         rows = list(stored.values())
-        why["configuration"] = "cluster configuration unavailable; rows shown as last checked"
+        for row in rows:
+            row["verdict"], row["reason"] = "unknown", "cluster configuration unavailable: the last result cannot be verified"
+        why["configuration"] = "cluster configuration unavailable; last results cannot be verified"
     else:
         rows = []
         for current in configured(cluster, load(store)):

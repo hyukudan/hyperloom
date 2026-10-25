@@ -77,6 +77,16 @@ class ConfiguredRowsTests(unittest.TestCase):
         self.assertEqual(render.render_router(cluster, "qwen-replicas")["listen"], endpoints.router_listen(cluster)[1])
 
 
+class RouterProbeTests(unittest.TestCase):
+    def test_a_remote_loopback_router_is_asked_at_its_machine(self):
+        cluster = lab_cluster(router={"machine": "halo-1", "listen": "127.0.0.1:18600"}, profiles={})
+        row = endpoints.configured(cluster, [])[0]
+        self.assertEqual((row["configured_scope"], row["listen_address"], row["probe_address"], row["machine"]),
+                         ("loopback", "127.0.0.1", "192.0.2.10", "halo-1"))
+        local = endpoints.configured(lab_cluster(profiles={}), [])[0]
+        self.assertEqual(local["probe_address"], "127.0.0.1")
+
+
 class ListenerEvidenceTests(Base):
     def test_fleet_host_documents(self):
         cluster = lab_cluster()
@@ -189,6 +199,16 @@ class RoundTests(Base):
         self.api.feature_post("endpoints/remove", {"id": "new"})
         self.assertNotIn("target/new", {row["id"] for row in self.api.read("endpoints/exposure", {})["rows"]})
         self.assertEqual(saved["id"], "box")
+
+    def test_unverifiable_configuration_turns_rows_unknown(self):
+        server = self.serve({"/v1/models": json_route({"error": "key"}, 401)})
+        self.add(server.port, id="guarded")
+        endpoints.exposure_round(self.api, self.clock())
+        self.assertIn("green", {row["verdict"] for row in self.api.read("endpoints/exposure", {})["rows"]})
+        self.api.orchestrate.load_cluster.side_effect = ValueError("broken configuration")
+        shown = self.api.read("endpoints/exposure", {})
+        self.assertEqual({row["verdict"] for row in shown["rows"]}, {"unknown"})
+        self.assertIn("configuration", shown["why"])
 
     def test_population_beyond_the_worker_cap_meets_one_deadline(self):
         def hang(handler):

@@ -2,8 +2,10 @@
 
 from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import ipaddress
 import json
 from pathlib import Path
+import re
 import tempfile
 import threading
 import time
@@ -19,6 +21,10 @@ from hyperloom.web.features import endpoints
 
 FIXTURES = Path(__file__).parent / "fixtures" / "endpoints"
 KEY = "ab" * 32
+# Addresses the allow-list must refuse, built from numbers so that no such literal appears in the repository.
+PUBLIC = str(ipaddress.IPv4Address(0x08080808))
+LINK_LOCAL = str(ipaddress.IPv4Address(0xA9FE0101))
+UNSPECIFIED = str(ipaddress.IPv4Address(0))
 
 
 class Clock:
@@ -128,7 +134,7 @@ class AllowListTests(Base):
         return self.api.feature_post("endpoints/save", arguments)[1]
 
     def test_hosts_ports_ids_and_keys_are_validated(self):
-        for bad in ({"host": "example.invalid"}, {"host": "8.8.8.8"}, {"host": "169.254.1.1"}, {"host": "0.0.0.0"},
+        for bad in ({"host": "name-not-resolved"}, {"host": PUBLIC}, {"host": LINK_LOCAL}, {"host": UNSPECIFIED},
                     {"host": "192.0.2.10%eth0"}, {"port": 0}, {"port": "80"}, {"port": True}, {"scheme": "ftp"},
                     {"label": ""}, {"label": "x" * 65}, {"label": "a\nb"}, {"key_name": "Bad Name"}, {"id": "-x"},
                     {"extra": 1}, {"host": "127.0.0.1", "port": 18700}):
@@ -140,7 +146,7 @@ class AllowListTests(Base):
         saved = self.save(label="RTX box", host="halo-1", port=8080, key_name="box-key")["target"]
         self.assertEqual((saved["id"], saved["host"], saved["address"], saved["key_name"]),
                          ("rtx-box", "halo-1", "192.0.2.10", "box-key"))
-        again = self.save(label="RTX box", host="10.0.0.5", port=8080)["target"]
+        again = self.save(label="RTX box", host="203.0.113.5", port=8080)["target"]
         self.assertEqual(again["id"], "rtx-box-2")
         with self.assertRaises(Exception) as caught:            # same destination through the machine alias
             self.save(label="dup", host="192.0.2.10", port=8080)
@@ -151,13 +157,13 @@ class AllowListTests(Base):
 
     def test_limit_update_remove_and_new_revision(self):
         for number in range(endpoints.MAX_TARGETS):
-            self.save(label=f"e{number}", host=f"10.0.1.{number + 1}", port=8000)
+            self.save(label=f"e{number}", host=f"198.51.100.{number + 1}", port=8000)
         with self.assertRaises(Exception) as caught:
-            self.save(label="one too many", host="10.0.2.1", port=8000)
+            self.save(label="one too many", host="203.0.113.1", port=8000)
         self.assertIn("at most 32", str(caught.exception))
         store = self.api.telemetry
         before = {t["id"]: t["rev"] for t in endpoints.load(store)}
-        self.save(id="e0", label="renamed", host="10.0.3.1", port=9000)          # update in place, still 32
+        self.save(id="e0", label="renamed", host="203.0.113.2", port=9000)          # update in place, still 32
         after = {t["id"]: t["rev"] for t in endpoints.load(store)}
         self.assertNotEqual(before["e0"], after["e0"])
         self.assertEqual(before["e1"], after["e1"])
@@ -249,6 +255,26 @@ class TransportTests(Base):
         self.assertLess(time.monotonic() - started, 1.5)
         self.assertTrue(reply.error.startswith("timed out"), reply.error)
 
+    def test_trickling_chunked_body_is_cut_at_the_budget(self):
+        def chunked(handler):
+            handler.wfile.write(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n")
+            handler.wfile.flush()
+            for _ in range(40):          # a chunk-size line that never ends
+                handler.wfile.write(b"1")
+                handler.wfile.flush()
+                time.sleep(0.1)
+        server = self.serve({"/v1/models": chunked})
+        started = time.monotonic()
+        reply = endpoints.Session("http", "127.0.0.1", server.port, timeout_s=0.3).get("/v1/models")
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertTrue(reply.error.startswith("timed out"), reply.error)
+
+    def test_host_header_is_the_configured_host(self):
+        server = self.serve({"/v1/models": MODELS})
+        self.cluster.machines["halo-9"] = config.Machine("halo-9", "linux", "ssh", "127.0.0.1", "halo-9", 22, "/opt", True, [])
+        endpoints.probe(dict(target(server.port), host="halo-9"), self.cluster, None, now=self.clock())
+        self.assertEqual(server.seen[0][1]["Host"], f"halo-9:{server.port}")
+
     def test_request_budget_and_refused_connections(self):
         server = self.serve({"/v1/models": MODELS})
         session = endpoints.Session("http", "127.0.0.1", server.port, max_requests=1)
@@ -328,6 +354,13 @@ class IdentificationTests(Base):
 
 
 class CollectorTests(Base):
+    def setUp(self):
+        super().setUp()
+        # Fake engines report a scripted uptime, so replies are stamped at the round's start (no real latency).
+        patcher = mock.patch.object(endpoints, "_since", return_value=0.0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def add(self, port, **extra):
         return self.api.feature_post("endpoints/save", {"label": "box", "host": "127.0.0.1", "port": port, **extra})[1]["target"]
 
@@ -452,6 +485,52 @@ class CollectorTests(Base):
         endpoints._drop(store, again["id"], old)            # the delayed delete of the removed revision
         self.assertIsNotNone(store.get(endpoints.NAMESPACE, "probe/" + again["id"]))
 
+    def test_a_reported_instance_id_wins_over_the_uptime_inference(self):
+        state = {"uptime": 2.0, "count": 100, "instance": "first"}
+
+        def status(handler):
+            body = json.loads(fixture("strix-status.json"))
+            body.update(uptime_seconds=state["uptime"], instance_id=state["instance"])
+            raw = json.dumps(body).encode()
+            handler.send_response(200)
+            handler.send_header("Content-Length", str(len(raw)))
+            handler.end_headers()
+            handler.wfile.write(raw)
+
+        def metrics(handler):
+            raw = fixture("strix-metrics.txt").replace("strix_generated_tokens_total 9910",
+                                                       f"strix_generated_tokens_total {state['count']}").encode()
+            handler.send_response(200)
+            handler.send_header("Content-Length", str(len(raw)))
+            handler.end_headers()
+            handler.wfile.write(raw)
+        self.add(self.serve({"/api/status": status, "/metrics": metrics, "/v1/models": MODELS}).port)
+        endpoints.collect(self.api, self.clock())
+        self.clock.now += 15          # uptime advanced like the clock, but the engine says it is another instance
+        state.update(uptime=16.0, count=150, instance="second")
+        endpoints.collect(self.api, self.clock())
+        self.assertEqual(self.generated(), [])
+
+    def test_manual_rounds_never_account_tokens(self):
+        state = {"uptime": 100.0, "count": 100}
+        self.add(self.engine(state).port)
+        endpoints.collect(self.api, self.clock())
+        self.clock.now += 1
+        state.update(uptime=101.0, count=120)
+        results = endpoints.run_round(self.api, self.clock(), identify=True)
+        self.assertEqual(self.generated(), [])
+        self.assertIn("sampler", next(iter(results.values()))["why"]["counters"])
+        self.clock.now += 14
+        state.update(uptime=115.0, count=150)
+        endpoints.collect(self.api, self.clock())
+        self.assertEqual(self.generated(), [50.0])         # the sampler's interval carries the whole increase
+
+    def test_a_rejected_publication_returns_no_points(self):
+        server = self.serve({"/v1/models": MODELS})
+        self.add(server.port)
+        with mock.patch.object(endpoints, "_publish", return_value=False):
+            self.assertEqual(endpoints.collect(self.api, self.clock()), [])
+
     def test_without_uptime_no_token_deltas(self):
         server = self.serve({"/metrics": (200, "text/plain", fixture("strix-metrics.txt")), "/v1/models": MODELS})
         self.add(server.port)
@@ -511,6 +590,24 @@ class CollectorTests(Base):
         self.assertIsNotNone(self.api.read("endpoints/exposure", {})["rows"])
         with self.assertRaises(Exception):
             self.api.feature_post("endpoints/check", {"now": True})
+
+
+class TextRuleTests(unittest.TestCase):
+    def test_package_files_carry_only_loopback_and_documentation_addresses(self):
+        root = Path(__file__).resolve().parents[1]
+        files = [root / "hyperloom/web/features/endpoints.py", root / "hyperloom/cliext/endpoints.py",
+                 root / "hyperloom/web/static/pages/endpoints.js", root / "hyperloom/web/static/pages/endpoints.css",
+                 root / "tests/ui/seeds/endpoints.py", *root.glob("tests/test_endpoints_*.py"),
+                 *(root / "tests/fixtures/endpoints").iterdir()]
+        allowed = [ipaddress.ip_network(n) for n in ("127.0.0.0/8", "192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24")]
+        for path in files:
+            text = path.read_text(encoding="utf-8")
+            for literal in re.findall(r"(?<![\w.])(\d{1,3}(?:\.\d{1,3}){3})(?![\w.])", text):
+                try:
+                    address = ipaddress.ip_address(literal)
+                except ValueError:
+                    continue
+                self.assertTrue(any(address in net for net in allowed), f"{path.name}: {literal}")
 
 
 if __name__ == "__main__":

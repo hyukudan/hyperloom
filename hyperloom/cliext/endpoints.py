@@ -109,16 +109,17 @@ def _exposure(args):
     except PermissionError as exc:
         print("hyperloom: " + str(exc), file=sys.stderr)
         return 2
+    red = 1 if (document.get("summary") or {}).get("red") else 0
     if args.json:
         _print(document, True)
-        return 0
+        return red
     rows = document.get("rows")
     if rows is None:
         print("exposure unavailable: " + str((document.get("why") or {}).get("rows")))
         return 1
     _print([f"{row['verdict'].upper():8}{row['id']}\t{row.get('probe_address')}:{row.get('port')}\t{row['reason']}"
             for row in rows] or ["no endpoints configured"], False)
-    return 1 if (document.get("summary") or {}).get("red") else 0
+    return red
 
 
 def add(commands):
