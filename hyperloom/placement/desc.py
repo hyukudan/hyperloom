@@ -29,6 +29,7 @@ from pathlib import Path
 from ..vramplan import Model, PlanError, Unit
 
 SCHEMA = "strix-stream/desc-v1"
+SCHEMAS = (SCHEMA, "tierstream/desc-v1")  # the project is renamed tierstream; both spellings are read, the old one written
 PLAN_SCHEMA = "strix-stream/plan-v1"
 TIERS = ("pinned", "disk", "pinned|disk", "pair")
 LETTER = {"pinned": "P", "disk": "D", "pair": "X"}
@@ -114,8 +115,8 @@ def load(source):
 
 def _validate(desc):
     _keys(desc, TOP_KEYS, "desc")
-    if desc.get("schema") != SCHEMA:
-        raise PlanError(f"descriptor: expected schema {SCHEMA}")
+    if desc.get("schema") not in SCHEMAS:
+        raise PlanError(f"descriptor: expected schema {' or '.join(SCHEMAS)}")
     for key in ("model", "engine", "routes"):
         _text(desc, key, "desc")
     if desc.get("order", "ranked") not in ("prefix", "ranked") or desc.get("tiers", "pinned|disk") not in TIERS:

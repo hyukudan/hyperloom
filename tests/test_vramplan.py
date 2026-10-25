@@ -536,6 +536,14 @@ class DescriptorTests(unittest.TestCase):
             with self.subTest(layer_change=sorted(change)), self.assertRaises(PlanError):
                 D.load(dict(base, layers=[layer] + base["layers"][1:]))
 
+    def test_renamed_schema_id_reads_the_same(self):
+        from hyperloom.placement import desc as D
+        base = self.desc("moe-ranked")
+        old = vramplan.plan(D.model(D.load(base)), Inputs(48, host_gib=63))
+        new = vramplan.plan(D.model(D.load(dict(base, schema="tierstream/desc-v1"))), Inputs(48, host_gib=63))
+        self.assertEqual(D.plan_v1(base, old), D.plan_v1(base, new))
+        self.assertEqual(D.plan_v1(base, new)["schema"], "strix-stream/plan-v1")
+
     def test_plan_v1_letters_cover_every_unit(self):
         from hyperloom.placement import desc as D
         d = self.desc("blob-prefix")
