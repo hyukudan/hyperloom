@@ -38,13 +38,14 @@ def _control(machines):
 
 
 def seed(store, now):
-    """Eight hours of node series (one sample a minute, every 5 s in the last hour) with a 20-minute offline gap
+    """Eight hours of node series (one sample a minute, every 5 s in the last 20 minutes) with a 20-minute offline gap
     on halo-2."""
     for name, unit in (("node_gpu_busy_percent", "%"), ("node_gpu_power_watts", "W"), ("node_gpu_power_limit_watts", "W"),
                        ("node_gpu_temp_celsius", "celsius"), ("node_cpu_busy_percent", "%")):
         store.describe(name, "gauge", unit=unit, interval=5)
     devices = {"halo-1": [("card0", "PPT", None, "amdgpu/edge")], "halo-2": [("card0", "PPT", None, "amdgpu/edge")],
                "workstation": [("GPU-a0b1c2d3", "board", 498.0, "gpu"), ("GPU-d4e5f6a7", "board", 450.0, "gpu")]}
+    batches = []
     t = now - 8 * 3600
     while t < now:
         for machine, cards in devices.items():
@@ -60,9 +61,15 @@ def seed(store, now):
                            ("node_gpu_temp_celsius", {**labels, "sensor": temp}, 42 + 0.35 * busy)]
                 if limit:
                     points.append(("node_gpu_power_limit_watts", labels, limit))
-            step = 60 if t < now - 3600 else 5      # the last hour at the collectors' own cadence
-            store.record(points, ts=t, interval=step)
-        t += 60 if t < now - 3600 else 5
+            step = 60 if t < now - 1200 else 5      # the last 20 minutes at the collectors' own cadence
+            batches.append((points, t, step))
+        t += 60 if t < now - 1200 else 5
+
+    # One transaction for the whole seed (thousands of single-sample transactions are slow on some file systems).
+    def insert(pending):
+        for points, ts, step in batches:
+            store._insert(pending, store._rows(points), ts, step)
+    store._atomic(insert)
 
 
 def patches(directory, now):

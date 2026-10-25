@@ -88,7 +88,7 @@ THRESHOLD_LABELS = {"unified": "unified node memory (MemAvailable and GPU-visibl
 
 
 def _finite(value):
-    return type(value) in (int, float) and math.isfinite(value)
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
 def _value(check):
@@ -380,8 +380,18 @@ def engine_identity(status):
         return "id:" + value if len(value) <= 128 and value.isprintable() else None
     for key in ("start_time", "started_at"):
         if _finite(status.get(key)):
-            return f"{key}:{status[key]!r}"
+            # The number exactly as the engine wrote it (RawFloat keeps the JSON text; integers are exact).
+            return f"{key}:{getattr(status[key], 'raw', repr(status[key]))}"
     return None
+
+
+class RawFloat(float):
+    """A JSON number that also keeps its exact text (an identity must never be rounded by parsing)."""
+
+    def __new__(cls, text):
+        value = super().__new__(cls, text)
+        value.raw = text
+        return value
 
 
 def _instance(status, launch):
@@ -414,7 +424,7 @@ def engine_entry(previous, machine, target, answer, now):
     status = paths.get("/api/status?detail=1") or {}
     if status.get("status") == "ok":
         try:
-            parsed = json.loads(status["value"]["body"])
+            parsed = json.loads(status["value"]["body"], parse_float=RawFloat)
             row["status"] = parsed if isinstance(parsed, dict) else None
         except (ValueError, KeyError, TypeError):
             pass
@@ -436,7 +446,7 @@ def engine_entry(previous, machine, target, answer, now):
     row["instance"] = _instance(row["status"], row["launch"])
     second = paths.get("/api/status") or {}
     try:
-        after = json.loads(second["value"]["body"]) if second.get("status") == "ok" else None
+        after = json.loads(second["value"]["body"], parse_float=RawFloat) if second.get("status") == "ok" else None
     except (ValueError, KeyError, TypeError):
         after = None
     if row["instance"] is not None and not bracketed(row["status"], after):

@@ -225,6 +225,12 @@ class EngineIdentityTests(unittest.TestCase):
         self.assertNotEqual(machines.engine_identity({"instance_id": "x" * 100 + "A"}), machines.engine_identity({"instance_id": "x" * 100 + "B"}))
         self.assertIsNone(machines.engine_identity({"instance_id": "x" * 129}))
         self.assertFalse(machines.bracketed({"start_time": 1700.0000001}, {"start_time": 1700.0000002}))
+        # Numbers as the engine wrote them: two start times a float cannot tell apart stay distinct.
+        parse = lambda text: json.loads(text, parse_float=machines.RawFloat)
+        first, second = parse('{"start_time": 1700000000.0000002}'), parse('{"start_time": 1700000000.0000003}')
+        self.assertEqual(float(first["start_time"]), float(second["start_time"]))
+        self.assertFalse(machines.bracketed(first, second))
+        self.assertNotEqual(machines._instance(first, "L1"), machines._instance(second, "L1"))
         self.assertIsNone(machines._instance({"uptime_seconds": 500.0}, "L1"))     # an uptime alone is not an identity
         self.assertIsNone(machines._instance({"instance_id": "abc"}, None))
         self.assertTrue(machines.bracketed({"start_time": 10.0}, {"start_time": 10.0}))
