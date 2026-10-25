@@ -56,7 +56,7 @@ def seed(store, now):
             ("node_gpu_power_watts", {"machine": "workstation", "device": "1"}, wave(t, 86400, 25, 260, 1)),
             ("node_gpu_power_watts", {"machine": "halo-1", "device": "0"}, wave(t, 86400, 35, 130, 2)),
             ("node_cpu_power_watts", {"machine": "halo-1"}, wave(t, 86400, 12, 45, 2)),
-            ("engine_generated_tokens", {"profile": "qwen-two", "replica": "0", "model": "fixture", "instance": "a"},
+            ("engine_generated_tokens", {"profile": "fixture-profile", "replica": "0", "model": "fixture", "instance": "a"},
              wave(t, 86400, 200, 2400, 2), "delta"),
         ]
         if not now - 30 * 3600 < t < now - 27 * 3600:

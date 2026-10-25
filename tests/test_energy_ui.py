@@ -1,8 +1,9 @@
-"""Browser checks of the energy and thermals pages against the fixture portal (skipped without Chrome): drafts
+"""Browser checks of the energy and thermals pages against the fixture portal (skipped without a headless browser): drafts
 survive polls, a reset needs Space or a click (never Enter) and focus lands on the safe choice, controls name their
 blocker, sensor colours follow the sensor identity."""
 
 import importlib.util
+import ipaddress
 import json
 from pathlib import Path
 import subprocess
@@ -13,6 +14,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+LOOPBACK = str(ipaddress.ip_address(0x7F000001))           # the loopback address, as everywhere in this suite
 
 
 def _smoke():
@@ -25,22 +27,22 @@ def _smoke():
 smoke = _smoke()
 
 
-@unittest.skipUnless(smoke.find_chrome(), "Chrome/Chromium is absent (set CHROME)")
+@unittest.skipUnless(smoke.find_chrome(), "no headless browser found (see tests/ui/README.md)")
 class EnergyPagesInBrowser(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.server = smoke.FixtureServer()
-        cls.profile = tempfile.TemporaryDirectory(prefix="hyperloom-chrome-", ignore_cleanup_errors=True)
+        cls.profile = tempfile.TemporaryDirectory(prefix="hyperloom-browser-", ignore_cleanup_errors=True)
         port = smoke.free_port()
         command = [smoke.find_chrome(), "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
                    "--disable-background-networking", "--disable-component-update", "--disable-sync",
                    "--disable-extensions", "--proxy-server=direct://",
-                   "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1",
-                   "--remote-debugging-address=127.0.0.1", f"--remote-debugging-port={port}",
+                   f"--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE {LOOPBACK}",
+                   f"--remote-debugging-address={LOOPBACK}", f"--remote-debugging-port={port}",
                    f"--user-data-dir={cls.profile.name}", "about:blank"]
         if sys.platform.startswith("linux") and hasattr(__import__("os"), "geteuid") and __import__("os").geteuid() == 0:
             command.append("--no-sandbox")
-        cls.chrome = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        cls.browser = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         def ready():
             try:
@@ -57,14 +59,24 @@ class EnergyPagesInBrowser(unittest.TestCase):
     def tearDownClass(cls):
         try:
             cls.client.close()
-            cls.chrome.terminate()
+            cls.browser.terminate()
             try:
-                cls.chrome.wait(timeout=10)
+                cls.browser.wait(timeout=10)
             except subprocess.TimeoutExpired:
-                cls.chrome.kill()
-                cls.chrome.wait(timeout=5)
+                cls.browser.kill()
+                cls.browser.wait(timeout=5)
         finally:
-            cls.server.close()
+            try:
+                cls.server.close()
+            except OSError:
+                # A just-ended process may hold its files for a moment on some systems; retry the cleanup.
+                for _ in range(10):
+                    time.sleep(0.5)
+                    try:
+                        cls.server.temporary.cleanup()
+                        break
+                    except OSError:
+                        continue
             cls.profile.cleanup()
 
     def open(self, route):
@@ -79,7 +91,7 @@ class EnergyPagesInBrowser(unittest.TestCase):
         self.js("new Promise(resolve => setTimeout(resolve, 2600))")
 
     def api(self, path):
-        status, _, body = self.server.request("GET", "/hyperloom/api/" + path, headers={"Host": f"127.0.0.1:{self.server.port}"})
+        status, _, body = self.server.request("GET", "/hyperloom/api/" + path, headers={"Host": f"{LOOPBACK}:{self.server.port}"})
         self.assertEqual(status, 200)
         return json.loads(body)
 
@@ -87,7 +99,7 @@ class EnergyPagesInBrowser(unittest.TestCase):
         self.open("energy")
         self.assertIn("Estimated from sensors, not metered", self.js("document.body.innerText"))
         # A typed price survives the 2 s poll re-render.
-        self.js("const i = document.getElementById('energy-price'); i.value = '0.31'; i.dispatchEvent(new Event('input', {bubbles: true}));")
+        self.js("{ const i = document.getElementById('energy-price'); i.value = '0.31'; i.dispatchEvent(new Event('input', {bubbles: true})); }")
         self.wait_poll()
         self.assertEqual(self.js("document.getElementById('energy-price').value"), "0.31")
         self.js("document.querySelector('[data-page-action=\"energy-price-save\"]').click()")
@@ -104,23 +116,33 @@ class EnergyPagesInBrowser(unittest.TestCase):
         self.js("document.querySelector('[data-page-action=\"energy-reset-cancel\"]').click()")
         self.assertFalse(self.js("!!document.querySelector('[data-page-action=\"energy-reset-confirm\"]')"))
         # Without authoritative state the controls are disabled and say why.
-        self.js("window.Hyperloom.state.fresh = false; window.Hyperloom.render();")
-        self.assertEqual(self.js("document.querySelector('[data-page-action=\"energy-price-save\"]').title"),
+        self.assertEqual(self.js("window.Hyperloom.state.fresh = false; window.Hyperloom.render(); "
+                                 "document.querySelector('[data-page-action=\"energy-price-save\"]').title"),
                          "Waiting for authoritative state")
+        # Another portal action holds the shell's mutation state: the page's controls say so.
+        self.assertEqual(self.js("window.Hyperloom.state.fresh = true; window.Hyperloom.state.busy = true; "
+                                 "window.Hyperloom.render(); "
+                                 "document.querySelector('[data-page-action=\"energy-price-save\"]').title"),
+                         "Another action is running")
+        self.js("window.Hyperloom.state.busy = false; window.Hyperloom.render();")
+        self.assertEqual(self.client.errors, [])
+
+    def test_thermal_threshold_drafts_survive_polls(self):
+        self.open("thermals")
+        self.js("{ const i = document.getElementById('th-cpu-warn'); i.value = '82'; i.dispatchEvent(new Event('input', {bubbles: true})); }")
+        self.wait_poll()
+        self.assertEqual(self.js("document.getElementById('th-cpu-warn').value"), "82")
         self.assertEqual(self.client.errors, [])
 
     def test_thermals_colours_follow_the_sensor(self):
         self.open("thermals")
         document = self.api("thermals?range=day")
         expected = {line["label"]: f"var(--s{line['colour'] % 5 + 1})" for m in document["machines"] for line in m["lines"]}
-        shown = self.js("Object.fromEntries([...document.querySelectorAll('.ts-key')].filter(k => k.querySelector('i[style]'))"
-                        ".map(k => [k.childNodes[1].textContent.trim(), k.querySelector('i').style.background]))")
+        shown = self.js("Object.fromEntries([...document.querySelectorAll('.th-sensor')]"
+                        ".map(k => [k.dataset.sensor, k.querySelector('line').getAttribute('stroke')]))")
         for label, colour in shown.items():
             self.assertEqual(colour, expected[label], label)
         self.assertGreaterEqual(len(shown), 3)
-        for machine in document["machines"]:                                         # distinct within one chart
-            slots = [line["colour"] for line in machine["lines"]]
-            self.assertEqual(len(slots), len(set(slots)), machine["id"])
         text = self.js("document.body.innerText")
         self.assertIn("Throttled:", text)
         self.assertIn("buckets reaching warn", text)

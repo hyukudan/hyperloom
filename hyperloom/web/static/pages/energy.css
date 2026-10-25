@@ -15,3 +15,4 @@
 .th-band{opacity:.85}
 .th-mark{fill:var(--text-2)}
 .th-key{background:var(--err-soft);border:1px solid var(--err);height:10px!important;width:12px!important}
+.th-swatch{vertical-align:middle;margin-right:6px}

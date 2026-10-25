@@ -9,6 +9,7 @@
     hyperloom thermals [--range day|week] [--machine ID] [--json]
 """
 
+import argparse
 import json
 import sys
 
@@ -56,19 +57,22 @@ def _show(args):
         print(f"Range {document['range']}: {_wh(totals['wh'])} integrated, coverage {_pct(totals['coverage'])}, "
               f"average {totals['avg_w']:.0f} W" if totals.get("avg_w") is not None else
               f"Range {document['range']}: {_wh(totals['wh'])} integrated, coverage {_pct(totals['coverage'])}")
+        if totals.get("partial"):
+            print("Partial: " + document["why"].get("totals", ", ".join(totals["partial"])))
         if peak:
-            print(f"Peak hour starts {_when(peak['start'])}: {_wh(peak['wh'])}")
+            print(f"Peak hour starts {peak.get('label') or _when(peak['start'])}: {_wh(peak['wh'])}")
     else:
         print("Totals unavailable · " + document["why"].get("totals", ""))
     cost = document.get("cost")
-    print(f"Estimated cost: {cost['value']:.2f} {cost['currency']} at {cost['price_per_kwh']} per kWh" if cost else
+    print(f"Estimated cost: {cost['value']:.2f} {cost['currency']} at {cost['price_per_kwh']} per kWh ({cost['basis']})" if cost else
           "Estimated cost unavailable · " + document["why"].get("cost", ""))
     efficiency = document.get("efficiency")
     print(f"Energy per 1k generated tokens: {efficiency['wh_per_1k_tokens']:.2f} Wh over "
           f"{efficiency['both_s'] / 3600:.2f} h where both were observed" if efficiency else
           "Energy per 1k generated tokens unavailable · " + document["why"].get("efficiency", ""))
     for machine in document["machines"]:
-        print(f"\n{machine['id']}: {_wh(machine['wh'])}, coverage {_pct(machine['coverage'])}")
+        note = machine.get("why", {}).get("wh")
+        print(f"\n{machine['id']}: {_wh(machine['wh'])}, coverage {_pct(machine['coverage'])}" + (f" ({note})" if note else ""))
         for domain in machine["domains"]:
             state = "added" if domain["counted"] else "not added: " + (domain["overlap"] or "")
             print(f"  {domain['label']} ({domain['source']}): {_wh(domain['wh'])}, coverage {_pct(domain['coverage'])}, "
@@ -137,6 +141,15 @@ def _thresholds(args):
     for kind, limits in current.items():
         print(f"{kind}: warn {limits['warn']:g} C, critical {limits['crit']:g} C")
     return 0
+
+
+def _finite(text):
+    """A finite number (the portal's JSON parser refuses NaN and infinities before any handler runs; so does this)."""
+    import math
+    value = float(text)
+    if not math.isfinite(value):
+        raise argparse.ArgumentTypeError("must be a finite number")
+    return value
 
 
 def _pair(values):
@@ -225,13 +238,13 @@ def add(commands):
     compute.add_argument("--json", action="store_true")
     compute.set_defaults(ext_run=_run(_compute))
     price = sub.add_parser("price", help="show or set the energy price per kWh")
-    price.add_argument("--set", type=float, metavar="PRICE")
+    price.add_argument("--set", type=_finite, metavar="PRICE")
     price.add_argument("--currency", default="EUR")
     price.add_argument("--clear", action="store_true")
     price.set_defaults(ext_run=_run(_price))
     thresholds = sub.add_parser("thresholds", help="show or set the thermal thresholds (degrees Celsius)")
     for kind in ("gpu", "cpu", "sensor"):
-        thresholds.add_argument("--" + kind, nargs=2, type=float, metavar=("WARN", "CRIT"))
+        thresholds.add_argument("--" + kind, nargs=2, type=_finite, metavar=("WARN", "CRIT"))
     thresholds.add_argument("--no-cpu", action="store_true")
     thresholds.add_argument("--no-sensor", action="store_true")
     thresholds.set_defaults(ext_run=_run(_thresholds))

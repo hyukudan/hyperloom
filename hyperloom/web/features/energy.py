@@ -58,6 +58,9 @@ INVENTORY_S = DAY                   # a power domain is an expected observer whi
 TOKEN_LOOKBACK_S = HOUR             # an engine is an expected observer while it reported tokens within this lookback
 MAX_LINES = 64                      # per input series (power, tokens, temperatures)
 MAX_THROTTLE = 200                  # throttle periods per machine
+MAX_THERMAL_LINES = 96              # temperature and throttle lines read for one thermals document
+MAX_LABELS = 512                    # characters of one line's label set
+COMPUTE_BUDGET_S = 20.0             # wall time of one computation before it gives up (nothing written)
 ARCHIVE_MONTHS = 24
 READ_ATTEMPTS = 3
 BANNER = "Estimated from sensors, not metered"
@@ -98,11 +101,12 @@ CREATE TABLE IF NOT EXISTS energy_monthly_tokens (month TEXT PRIMARY KEY, wh_bot
     tokens_both REAL NOT NULL, both_s REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS energy_domains (machine TEXT NOT NULL, domain TEXT NOT NULL, counted INTEGER NOT NULL,
     first_seen REAL NOT NULL, last_seen REAL NOT NULL, PRIMARY KEY(machine, domain));
-CREATE TABLE IF NOT EXISTS energy_verified (start REAL PRIMARY KEY, end REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS energy_verified (start REAL PRIMARY KEY, end REAL NOT NULL, intervals TEXT);
+CREATE TABLE IF NOT EXISTS energy_receipts (token TEXT PRIMARY KEY, ts REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS energy_state (key TEXT PRIMARY KEY, value REAL);
 """
 TABLES = ("energy_quarters", "energy_pairs", "energy_monthly", "energy_monthly_tokens", "energy_domains",
-          "energy_verified", "energy_state")
+          "energy_verified", "energy_receipts", "energy_state")
 GUARD = "EXISTS (SELECT 1 FROM energy_state WHERE key='revision' AND value=?)"
 
 _ensure_lock = threading.Lock()
@@ -157,6 +161,18 @@ class Zone:
         local = self.local(ts)
         return local.strftime(fmt) + " " + _offset(local.utcoffset())
 
+    def offsets(self, start, end):
+        """[[from_ts, utc_offset_s], ...] covering [start, end] (quarter resolution): enough for any client to show
+        every time in this zone without knowing its name."""
+        out = []
+        t = _floor(start, QUARTER)
+        while t <= end + QUARTER:
+            offset = int(self.local(max(t, start)).utcoffset().total_seconds())
+            if not out or out[-1][1] != offset:
+                out.append([max(t, start), offset])
+            t += QUARTER
+        return out
+
     def describe(self, now):
         out = {"name": self.name, "source": self.source, "offset": _offset(self.local(now).utcoffset())}
         if self.why:
@@ -196,29 +212,56 @@ def _fingerprint(cadence):
 
 
 class Verified:
-    """Sorted, disjoint spans of verified sampling time."""
+    """Sorted, disjoint spans of verified sampling time, each with the sampling intervals seen at both ends."""
 
     def __init__(self, spans):
         self.spans = sorted(spans)
-        self.starts = [s for s, _ in self.spans]
+        self.starts = [s for s, _e, _i in self.spans]
 
-    def covers(self, start, end):
+    def intervals(self, start, end):
+        """The intervals of the span holding [start, end] entirely, () when none does (None: any, fixtures only)."""
         i = bisect.bisect_right(self.starts, start) - 1
-        return i >= 0 and self.spans[i][1] >= end
+        if i < 0 or self.spans[i][1] < end:
+            return ()
+        return self.spans[i][2]
 
     def overlap(self, start, end):
-        return sum(max(0.0, min(e, end) - max(s, start)) for s, e in self.spans)
+        return sum(max(0.0, min(e, end) - max(s, start)) for s, e, _i in self.spans)
 
     @property
     def until(self):
         return self.spans[-1][1] if self.spans else None
 
 
-def _mark_verified(store, start, end):
-    """Record [start, end] as verified sampling time (used by the collector through plan; fixtures use it to stand
-    for runs of a portal that happened before they were recorded)."""
+def _intervals_text(cadence):
+    return json.dumps(sorted({round(float(v), 6) for v in cadence.values() if v}))
+
+
+def _load_spans(store):
+    spans = []
+    for start, end, text in store.execute("SELECT start, end, intervals FROM energy_verified ORDER BY start"):
+        spans.append((start, end, None if text is None else tuple(json.loads(text))))
+    return spans
+
+
+def _mark_verified(store, start, end, intervals=None):
+    """Record [start, end] as verified sampling time with the intervals sampled at (fixtures and tests use it to
+    stand for runs of a portal that happened before they were recorded; None accepts any cadence)."""
     _ensure(store)
-    store.execute("INSERT OR REPLACE INTO energy_verified(start, end) VALUES (?, ?)", (float(start), float(end)))
+    store.execute("INSERT OR REPLACE INTO energy_verified(start, end, intervals) VALUES (?, ?, ?)",
+                  (float(start), float(end), None if intervals is None else json.dumps(sorted(intervals))))
+
+
+def _one_cadence(observed, count, step, intervals):
+    """True when a unit's samples can all have been taken at one of the verified intervals: their mean interval
+    equals one of them (a mixture of different intervals inside the unit has a mean between them), or a single
+    sample whose interval reaches past the unit (its time is capped at the unit)."""
+    if intervals is None:
+        return True
+    mean = observed / count
+    if any(abs(mean - i) <= 0.005 * i for i in intervals):
+        return True
+    return count == 1 and observed >= step - 1e-6 and any(i >= step for i in intervals)
 
 
 # -- reading the store ---------------------------------------------------------------------------------------------
@@ -233,12 +276,14 @@ def _line_count(store, series):
     return store.execute("SELECT COUNT(*) FROM series WHERE name=?", (series,))[0][0]
 
 
-def _read(store, series, start, end, now, cutoff, verified):
+def _read(store, series, start, end, now, cutoff, verified, integrate=True):
     """Lines of one series as [{labels, units: {unit: (avg, observed, max, count, step)}}]: minute units for quarters
     starting within FINE_S of now, quarter units before (the boundary is quarter-aligned, so a quarter never mixes
-    both). Only units entirely inside verified time and at or after the reset cutoff are kept (``verified`` None:
-    no filter, for state series that are not integrated). More than MAX_LINES lines or a truncated query refuses
-    the whole computation."""
+    both). Kept: units at or after the reset cutoff that lie entirely inside verified time and whose mean sample
+    interval is one of the verified intervals (``integrate`` False: no cadence filter, for series whose values are
+    exact counts or states). ``seen`` holds every quarter with samples, unfiltered (observer expectations must not
+    depend on resets or verification). More than MAX_LINES lines or a truncated query refuses the whole
+    computation."""
     if _line_count(store, series) > MAX_LINES:
         raise ValueError(f"{series} has more than {MAX_LINES} lines; energy was not computed")
     fine_from = _floor(now - FINE_S, QUARTER) + QUARTER
@@ -254,16 +299,22 @@ def _read(store, series, start, end, now, cutoff, verified):
             raise ValueError(f"{series}: the store cut the query; energy was not computed")
         for line in result["lines"]:
             key = telemetry.canonical_labels(line["labels"])
-            entry = lines.setdefault(key, {"labels": line["labels"], "units": {}})
+            if len(key) > MAX_LABELS:
+                raise ValueError(f"{series}: a label set longer than {MAX_LABELS} characters; energy was not computed")
+            entry = lines.setdefault(key, {"labels": line["labels"], "units": {}, "seen": set()})
             for t, avg, mx, _mn, n, _sum, _last, coverage in line["points"]:
                 t = int(t)
-                if coverage is None or not n or t < _floor(a, step) or t > b:
-                    continue                    # no sampling interval recorded: not integrable
-                if cutoff is not None and t < cutoff:
+                if not n or t < _floor(a, step) or t > b:
                     continue
-                if verified is not None and not verified.covers(t, t + step):
-                    continue
-                entry["units"][t] = (avg, min(1.0, coverage) * step, mx, n, step)
+                entry["seen"].add(_floor(t, QUARTER))
+                if coverage is None or (cutoff is not None and t < cutoff):
+                    continue                    # no sampling interval recorded, or before a reset
+                observed = min(1.0, coverage) * step
+                if integrate:
+                    intervals = verified.intervals(t, t + step)
+                    if intervals == () or not _one_cadence(observed, n, step, intervals):
+                        continue
+                entry["units"][t] = (avg, observed, mx, n, step)
     # The plainest label set first: of two lines for one domain, the one with extra labels is the duplicate.
     return sorted(lines.values(), key=lambda e: (len(e["labels"]), telemetry.canonical_labels(e["labels"])))
 
@@ -288,7 +339,8 @@ def _power(store, start, end, now, cutoff, verified):
                 domain = f"{domain}#{n}"
             units = {u: (avg * observed / HOUR, observed, mx, step)
                      for u, (avg, observed, mx, _n, step) in line["units"].items()}
-            domains[(machine, domain)] = {"labels": labels, "units": units, "duplicate": duplicate}
+            domains[(machine, domain)] = {"labels": labels, "units": units, "seen": line["seen"],
+                                          "duplicate": duplicate}
     # GPU presence also comes from the series index (all time), so the overlap rule never depends on the window.
     for line in store.query(GPU_POWER, now, now, tier="m15")["lines"]:
         if line["labels"].get("machine"):
@@ -301,22 +353,25 @@ def _power(store, start, end, now, cutoff, verified):
 
 def _tokens(store, start, end, now, cutoff, verified):
     """Token observers grouped by (profile, replica) across engine instances (a restart is the same observer):
-    {group: {unit: (tokens, observed)}}, and the quarters in which each group's engine reported up."""
-    groups = {}
-    for line in _read(store, TOKENS, start, end, now, cutoff, verified):
+    {group: {unit: (tokens, observed)}} where the tokens of every instance add up (counts are exact) and the
+    observed time is that of the best-covered single instance (instances may overlap, so their times never add);
+    the quarters each group reported in (unfiltered); and the quarters in which its engine reported up."""
+    groups, seen = {}, {}
+    for line in _read(store, TOKENS, start, end, now, cutoff, verified, integrate=False):
         key = (line["labels"].get("profile", ""), line["labels"].get("replica", ""))
         units = groups.setdefault(key, {})
+        seen.setdefault(key, set()).update(line["seen"])
         for u, (avg, observed, _mx, n, step) in line["units"].items():
-            tokens, seen = units.get(u, (0.0, 0.0))
-            units[u] = (tokens + avg * n, min(float(step), seen + observed))
+            tokens, best = units.get(u, (0.0, 0.0))
+            units[u] = (tokens + avg * n, max(best, observed))
     up = {}
-    for line in _read(store, ENGINE_UP, start, end, now, cutoff, None):
+    for line in _read(store, ENGINE_UP, start, end, now, None, verified, integrate=False):
         key = (line["labels"].get("profile", ""), line["labels"].get("replica", ""))
         marks = up.setdefault(key, set())
         for u, (_avg, _observed, mx, _n, _step) in line["units"].items():
             if mx >= 1:
                 marks.add(_floor(u, QUARTER))
-    return groups, up
+    return groups, seen, up
 
 
 def _by_quarter(units):
@@ -342,18 +397,20 @@ def plan(store, now, cadence=None, finalize_all=False):
     g = (revision,)
     statements = []
 
-    spans = [tuple(row) for row in store.execute("SELECT start, end FROM energy_verified ORDER BY start")]
+    spans = _load_spans(store)
     if cadence is not None:
         fingerprint = _fingerprint(cadence)
         previous, since = state.get("cadence"), state.get("cadence_ts")
+        text = _intervals_text(cadence)
+        intervals = tuple(json.loads(text))
         if previous == fingerprint and since is not None and now > since:
-            if spans and spans[-1][1] == since:
+            if spans and spans[-1][1] == since and spans[-1][2] == intervals:
                 statements.append((f"UPDATE energy_verified SET end=? WHERE start=? AND {GUARD}", (now, spans[-1][0], *g)))
-                spans[-1] = (spans[-1][0], now)
+                spans[-1] = (spans[-1][0], now, intervals)
             else:
-                statements.append((f"INSERT OR REPLACE INTO energy_verified(start, end) SELECT ?, ? WHERE {GUARD}",
-                                   (since, now, *g)))
-                spans.append((since, now))
+                statements.append(("INSERT OR REPLACE INTO energy_verified(start, end, intervals) "
+                                   f"SELECT ?, ?, ? WHERE {GUARD}", (since, now, text, *g)))
+                spans.append((since, now, intervals))
         statements += [_set("cadence", fingerprint, revision), _set("cadence_ts", now, revision)]
     statements.append((f"DELETE FROM energy_verified WHERE end < ? AND {GUARD}", (now - KEEP_ROWS_S, *g)))
     verified = Verified(spans)
@@ -365,16 +422,20 @@ def plan(store, now, cadence=None, finalize_all=False):
     lost = verified.overlap(stored, oldest) if stored is not None and stored < oldest else 0.0
     current = _floor(now, QUARTER)
     domains = _power(store, first - INVENTORY_S, now, now, cutoff, verified)
-    groups, up = _tokens(store, first - TOKEN_LOOKBACK_S, now, now, cutoff, verified)
+    groups, token_seen, up = _tokens(store, first - TOKEN_LOOKBACK_S, now, now, cutoff, verified)
     zone = zone_of(store)
     price = price_of(store)
 
     by_quarter = {key: _by_quarter(info["units"]) for key, info in domains.items()}
-    reported = {key: sorted(quarters) for key, quarters in by_quarter.items()}
-    token_reported = {key: sorted(_by_quarter(units)) for key, units in groups.items()}
+    # Expected observers come from every quarter with samples, before reset and verification filters.
+    reported = {key: sorted(info["seen"]) for key, info in domains.items()}
+    token_reported = {key: sorted(quarters) for key, quarters in token_seen.items()}
 
     rows, pairs = [], []
+    deadline = time.monotonic() + COMPUTE_BUDGET_S
     for q in range(first, current + 1, QUARTER):
+        if time.monotonic() > deadline:
+            raise ValueError(f"energy computation exceeded {COMPUTE_BUDGET_S:g} s; nothing was written")
         for key, info in domains.items():
             present = [info["units"][u] for u in by_quarter[key].get(q, ())]
             if present:
@@ -382,7 +443,7 @@ def plan(store, now, cadence=None, finalize_all=False):
                              max(v[2] for v in present), int(info["counted"])))
         inventory = [key for key, info in domains.items() if info["counted"]
                      and _reported_within(reported[key], q - INVENTORY_S, q)]
-        engines = [key for key in groups if _reported_within(token_reported[key], q - TOKEN_LOOKBACK_S, q)]
+        engines = [key for key in token_reported if _reported_within(token_reported[key], q - TOKEN_LOOKBACK_S, q)]
         engines += [key for key, quarters in up.items() if key not in engines and q in quarters]
         if not inventory or not engines:
             continue
@@ -483,17 +544,24 @@ def _new_revision():
     return float(secrets.randbits(52) + 1)
 
 
-def _applied(store, new):
-    return _state(store).get("revision") == new
+def _receipt(token, revision, now):
+    """A guarded row only the winning transaction inserts: an outcome no later commit can change."""
+    return (f"INSERT INTO energy_receipts(token, ts) SELECT ?, ? WHERE {GUARD}", (token, now, revision))
+
+
+def _applied(store, token):
+    found = bool(store.execute("SELECT 1 FROM energy_receipts WHERE token=?", (token,)))
+    store.execute("DELETE FROM energy_receipts WHERE token=? OR ts < ?", (token, time.time() - DAY))
+    return found
 
 
 def compute(store, now, cadence=None):
     """One computation: recompute the quarters not yet archived and archive the final ones. A run that lost a race
     with another process changes nothing (``applied`` false); the next run redoes it."""
     statements, summary = plan(store, now, cadence)
-    new = _new_revision()
-    store.transaction(statements + [_bump(summary["revision"], new)])
-    summary["applied"] = _applied(store, new)
+    new, token = _new_revision(), secrets.token_hex(16)
+    store.transaction(statements + [_receipt(token, summary["revision"], now), _bump(summary["revision"], new)])
+    summary["applied"] = _applied(store, token)
     if summary["applied"] and summary["lost_s"]:
         store.event("energy", "warning", f"energy for {summary['lost_s'] / 3600:.1f} h of verified sampling time could "
                     "not be computed: the samples were no longer retained")
@@ -509,13 +577,14 @@ def reset_store(store, now, cadence=None):
     """Archive every quarter not yet archived (the current partial one too), then clear the quarter rows; only units
     starting after the minute that held the reset are integrated afterwards, so nothing is counted twice."""
     statements, summary = plan(store, now, cadence, finalize_all=True)
-    revision, new = summary["revision"], _new_revision()
+    revision, new, token = summary["revision"], _new_revision(), secrets.token_hex(16)
     g = (revision,)
     statements += [(f"DELETE FROM energy_quarters WHERE {GUARD}", g), (f"DELETE FROM energy_pairs WHERE {GUARD}", g),
                    _set("reset_at", now, revision), _set("cutoff", _floor(now, MINUTE) + MINUTE, revision),
-                   _set("final_through", _floor(now, QUARTER), revision), _bump(revision, new)]
+                   _set("final_through", _floor(now, QUARTER), revision), _receipt(token, revision, now),
+                   _bump(revision, new)]
     store.transaction(statements)
-    if not _applied(store, new):
+    if not _applied(store, token):
         raise PermissionError("another energy computation ran at the same time; nothing was changed, retry the reset")
     return {"reset_at": now, "archived_quarters": summary["archived_quarters"]}
 
@@ -549,7 +618,8 @@ def _only(arguments, allowed):
 
 
 def _number(value, name, low, high, low_open=False):
-    if type(value) not in (int, float) or not math.isfinite(value) or value > high or \
+    # Compared before any float conversion, so an integer of any size is refused, never an overflow.
+    if type(value) not in (int, float) or (type(value) is float and not math.isfinite(value)) or value > high or \
             (value <= low if low_open else value < low):
         raise ValueError(f"{name} must be a number in {'(' if low_open else '['}{low:g}, {high:g}]")
     return float(value)
@@ -657,6 +727,8 @@ def _windows(zone, now, name):
 def _latest(store):
     out = {}
     for series in (GPU_POWER, CPU_POWER):
+        if _line_count(store, series) > MAX_LINES:
+            continue                    # the computation refuses such a series too; the page says so
         descriptor = store.descriptor(series) or {}
         max_age = 3 * float(descriptor.get("interval_s") or 10)
         for item in store.latest(series, max_age=max_age):
@@ -690,6 +762,8 @@ def energy_document(api, query):
     for _ in range(READ_ATTEMPTS):
         before = _state(store).get("revision")
         fields = _energy_fields(api, store, zone, name)
+        if status and status.get("last_ok"):
+            fields["labels"]["collector_ok"] = zone.label(status["last_ok"])
         if _state(store).get("revision") == before:
             return api.document("energy", **base, store=True, collector=status, **fields)
     return api.document("energy", **base, store=True, timezone=zone.describe(api.clock()), **empty,
@@ -805,15 +879,17 @@ def _energy_fields(api, store, zone, name):
     measured = [m for m in machines_out if m["wh"] is not None]
     if measured:
         observed = sum(stats[k]["observed_s"] for k in inventory)
-        partial = [m["id"] for m in machines_out if m["partial"] or (m["wh"] is None and
-                                                                     any(k[0] == m["id"] for k in inventory))]
+        # Incomplete: a machine with expected domains lacking samples, or a configured machine whose power was
+        # never recorded (its energy is unknown, so the lab total is a partial sum).
+        partial = [m["id"] for m in machines_out if m["partial"] or m["wh"] is None]
         totals = {"wh": sum(m["wh"] for m in measured),
                   "avg_w": sum(m["avg_w"] for m in measured) if not partial else None,
                   "partial": partial, "coverage": min(1.0, observed / (len(inventory) * elapsed)) if elapsed else None,
                   "peak": peak, "since": since, "since_label": zone.label(since)}
         if partial:
             why["avg_w"] = "unavailable: no samples in this range for part of " + ", ".join(partial)
-            why["totals"] = "partial: " + ", ".join(partial) + " had expected power domains without samples"
+            why["totals"] = ("partial: no energy for " + ", ".join(partial)
+                             + "; coverage counts only the expected power domains of machines with readings")
     else:
         why["totals"] = "no power samples in this range" if inventory else "no power readings recorded"
     cost = None
@@ -836,7 +912,9 @@ def _energy_fields(api, store, zone, name):
         why["efficiency"] = ("no interval in which power and generated tokens were both completely observed"
                              if not both_s else "no tokens generated while power and tokens were both observed")
     archive, more = _archive(store, zone, final_through, price)
-    return dict(timezone=zone.describe(now), bucket="hour" if name == "24h" else "day", machines=machines_out,
+    labels = {"collector_ok": None, "reset_at": zone.label(reset_at) if reset_at is not None else None}
+    return dict(timezone=zone.describe(now), offsets=zone.offsets(start, now), labels=labels,
+                bucket="hour" if name == "24h" else "day", machines=machines_out,
                 machine_order=order, buckets=by_bucket, totals=totals, cost=cost, efficiency=efficiency,
                 archive=archive, archive_more=more, price=price, reset_at=reset_at,
                 verified_until=state.get("cadence_ts"), why=why)
@@ -930,16 +1008,33 @@ def archive_document(api, query):
     if store is None or not _has_tables(store):
         return api.document("energy-archive", months=None, more=False,
                             why={"months": NO_STORE if store is None else NOT_RUN})
-    months, more = _months(store, before)
+    found = _consistent(store, lambda: _months(store, before))
+    if found is None:
+        return api.document("energy-archive", months=None, more=False, before=before,
+                            why={"months": "the archive changed while being read; the next poll retries"})
+    months, more = found
     return api.document("energy-archive", months=[_finish(months[m]) for m in sorted(months, reverse=True)],
                         more=more, before=before)
+
+
+def _consistent(store, read):
+    """read() between two equal revisions (a run commits atomically and always moves the revision), or None."""
+    for _ in range(READ_ATTEMPTS):
+        before = _state(store).get("revision")
+        result = read()
+        if _state(store).get("revision") == before:
+            return result
+    return None
 
 
 def archive_months(store):
     """Every archived month, newest first (the CLI's full listing)."""
     if not _has_tables(store):
         return []
-    months, _more = _months(store, limit=10 ** 6)
+    found = _consistent(store, lambda: _months(store, limit=10 ** 6))
+    if found is None:
+        raise PermissionError("the archive changed while being read; retry")
+    months, _more = found
     return [_finish(months[m]) for m in sorted(months, reverse=True)]
 
 
@@ -965,9 +1060,11 @@ def _regroup(points, step, native, start, end):
     return [[t, round(s / n, 2), round(mx, 2)] for t, (s, n, mx) in sorted(groups.items())][-limit:]
 
 
-def _colour(label):
-    """The preferred colour slot of a sensor identity (stable across polls and ranges)."""
-    return zlib.crc32(label.encode("utf-8")) % 5
+def _style(identity):
+    """(colour slot 0..4, dash pattern 0..2) of a sensor identity: fixed by the identity alone, so a sensor keeps its
+    look whatever other sensors appear or disappear; two sensors share both only by a 1-in-15 chance."""
+    h = zlib.crc32(identity.encode("utf-8"))
+    return h % 5, (h // 5) % 3
 
 
 def thermals_document(api, query):
@@ -994,10 +1091,14 @@ def thermals_document(api, query):
     def machine_entry(machine):
         return machines.setdefault(machine, {"id": machine, "lines": [], "throttle": [], "throttle_more": 0})
 
+    total = 0
     for series, kind in (*TEMPS, (THROTTLE, None)):
-        if _line_count(store, series) > MAX_LINES * 8:
-            why[series] = f"more than {MAX_LINES * 8} lines; not read"
+        # Bounded before anything is read: at most MAX_LINES lines per series and MAX_THERMAL_LINES per document.
+        count = _line_count(store, series)
+        if count > MAX_LINES or total + count > MAX_THERMAL_LINES:
+            why[series] = f"{count} lines exceed the limit of this page ({MAX_LINES} per series); not read"
             continue
+        total += count
         result = store.query(series, start, now, tier=tier)
         if result["truncated"]:
             why[series] = "oldest buckets beyond the point limit were cut"
@@ -1007,21 +1108,21 @@ def thermals_document(api, query):
             if not machine:
                 continue
             if kind is None:
-                # A state sample stands for its sampling interval (at least one bucket); samples whose spans touch
-                # join one period, a longer silence ends it (never bridged).
-                stand = max(native, float((store.descriptor(series) or {}).get("interval_s") or native))
+                # Runs of directly adjacent sampled buckets whose last state is non-zero; a missing or zero bucket
+                # ends a run (never bridged), and runs are clipped to the range.
                 periods, current = [], None
                 for t, _avg, _mx, _mn, n, _sum, last, _cov in line["points"]:
                     if not n or t < _floor(start, native):
                         continue
                     if last:
-                        if current and t <= current[1]:
-                            current[1] = t + stand
+                        if current and t == current[1]:
+                            current[1] = t + native
                         else:
-                            current = [t, t + stand]
+                            current = [t, t + native]
                             periods.append(current)
                     else:
                         current = None
+                periods = [[max(a, start), min(b, now)] for a, b in periods if min(b, now) > max(a, start)]
                 if periods:
                     machine_entry(machine)["throttle"] += [{"device": labels.get("device"), "start": s, "end": e}
                                                            for s, e in periods]
@@ -1031,8 +1132,9 @@ def thermals_document(api, query):
                 continue
             limit = thresholds.get(kind)
             label = _thermal_label(kind, labels)
+            colour, dash = _style(series + telemetry.canonical_labels(labels))
             machine_entry(machine)["lines"].append({
-                "series": series, "kind": kind, "label": label, "colour": _colour(label), "labels": labels,
+                "series": series, "kind": kind, "label": label, "colour": colour, "dash": dash, "labels": labels,
                 "points": points, "max": max(p[2] for p in points), "last": points[-1][1], "last_ts": points[-1][0],
                 "sampled_buckets": len(points), "buckets": buckets,
                 "warn_buckets": sum(1 for p in points if p[2] >= limit["warn"]) if limit else None})
@@ -1046,19 +1148,6 @@ def thermals_document(api, query):
         if len(entry["lines"]) > MAX_LINES:
             why[machine] = f"{len(entry['lines']) - MAX_LINES} more sensors not shown"
             entry["lines"] = entry["lines"][:MAX_LINES]
-        # Each sensor starts from its own slot (stable as other sensors come and go) and moves to the next free
-        # one only on a collision inside this chart, so up to five lines never share a colour.
-        taken = set()
-        for line in entry["lines"]:
-            slot = line["colour"]
-            for shift in range(5):
-                if (slot + shift) % 5 not in taken:
-                    slot = (slot + shift) % 5
-                    break
-            taken.add(slot)
-            line["colour"] = slot
-            if len(taken) == 5:
-                taken = set()
         entry["throttle"].sort(key=lambda p: p["start"])
         if len(entry["throttle"]) > MAX_THROTTLE:
             entry["throttle_more"] = len(entry["throttle"]) - MAX_THROTTLE
@@ -1066,12 +1155,13 @@ def thermals_document(api, query):
         out.append(entry)
     if not out:
         why["machines"] = "no temperature samples recorded in this range"
+    throttle_read = THROTTLE not in why
     document = api.document(
         "thermals", range=name, step=step, start=start, end=now, machines=out, thresholds=thresholds,
-        timezone=zone.describe(now), observer="node and control-machine temperature sensors (measured)",
+        throttle_read=throttle_read, timezone=zone.describe(now), offsets=zone.offsets(start, now), observer="node and control-machine temperature sensors (measured)",
         notes={"warn": f"{step // 60}-minute buckets whose recorded maximum reached the warn threshold, out of the "
                        "buckets that had samples; time between samples is unknown",
-               "throttle": f"sampled periods at {native // 60}-minute resolution; each sample stands for its sampling interval and a longer silence ends a period"},
+               "throttle": f"sampled periods at {native // 60}-minute resolution; a bucket without samples ends a period"},
         why=why)
     _thermal_cache[key] = (now, document)
     return document

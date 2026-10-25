@@ -75,6 +75,8 @@ class CliTests(unittest.TestCase):
         code, _, err = self.run_cli("energy", "price", "--set", "0.3", "--currency", "euro")
         self.assertEqual(code, 2)
         self.assertIn("three-letter", err)
+        with self.assertRaises(SystemExit):                   # refused by the parser, like the portal's JSON parser
+            self.run_cli("energy", "price", "--set", "nan", "--currency", "EUR")
         self.assertEqual(self.run_cli("energy", "price", "--clear")[0], 0)
         self.assertIsNone(energy.price_of(self.store))
         self.assertEqual(self.run_cli("energy", "thresholds", "--gpu", "80", "95", "--cpu", "85", "100")[0], 0)

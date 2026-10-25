@@ -16,11 +16,13 @@
   const pct = value => value == null || !Number.isFinite(value) ? null : `${Math.round(value * 100)} %`;
   const hours = seconds => seconds >= 3600 ? `${(seconds / 3600).toFixed(seconds >= 36000 ? 0 : 1)} h` : `${Math.round(seconds / 60)} min`;
   const shown = (text, why) => text == null ? H().unavailable(why) : H().esc(text);
-  function zoneOpt(d) {
-    const name = d?.timezone?.source === "configured" ? d.timezone.name : undefined;
-    try { if (name) new Intl.DateTimeFormat(undefined, {timeZone: name}); return name ? {timeZone: name} : {}; } catch (_) { return {}; }
+  // Times are shown in the zone the server uses (configured or the control machine's): the document carries that
+  // zone's UTC offsets over its range, so no browser zone is ever assumed.
+  function zoned(t, offsets, opts) {
+    let offset = 0;
+    for (const [from, value] of offsets || []) if (from <= t) offset = value; else break;
+    return new Date((t + offset) * 1000).toLocaleString(undefined, {...opts, timeZone: "UTC"});
   }
-  const when = (t, d, opts = {}) => new Date(t * 1000).toLocaleString(undefined, {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", ...zoneOpt(d), ...opts});
   const colorOf = (d, machine) => `--s${((d.machine_order || []).indexOf(machine) % 5 + 5) % 5 + 1}`;
   const money = (value, currency) => { try { return new Intl.NumberFormat(undefined, {style: "currency", currency}).format(value); } catch (_) { return `${value.toFixed(2)} ${currency}`; } };
 
@@ -56,7 +58,7 @@
     const body = buckets.map((b, i) => `<tr><td>${esc(bucketLabel(b, d))}</td>${order.map(m => `<td>${shown(wh(b.machines?.[m]), "no samples")}</td>`).join("")}<td>${Object.keys(b.machines || {}).length ? esc(wh(totals[i])) : H().unavailable("no samples")}</td><td>${shown(pct(b.coverage), "no samples")}</td></tr>`).join("");
     const title = `Energy per ${d.bucket === "day" ? "day" : "hour"}, stacked by machine (Wh, estimated)`;
     return `<figure class="ts en-bars"><figcaption>${esc(title)}</figcaption><div class="ts-legend">${legend}</div>
-<svg viewBox="0 0 ${W} ${Hh}" width="${W}" height="${Hh}" role="img" aria-label="${esc(`${title}: ${buckets.length} buckets from ${bucketLabel(buckets[0], d)} to ${bucketLabel(buckets.at(-1), d)}; largest ${wh(Math.max(...totals))}; last ${wh(totals.at(-1)) || "no samples"}`)}">${grid}${rects}${xt}</svg>
+<svg viewBox="0 0 ${W} ${Hh}" width="${W}" height="${Hh}" role="img" aria-label="${esc(`${title}: ${buckets.length} buckets from ${bucketLabel(buckets[0], d)} to ${bucketLabel(buckets.at(-1), d)}; largest ${wh(Math.max(...totals))}; last ${Object.keys(buckets.at(-1).machines || {}).length ? wh(totals.at(-1)) : "no samples (unavailable)"}`)}">${grid}${rects}${xt}</svg>
 <details><summary>View as table</summary><div class="table-wrap" tabindex="0" role="region" aria-label="${esc(title)}"><table class="tbl"><thead>${head}</thead><tbody>${body}</tbody></table></div></details></figure>`;
   }
 
@@ -74,8 +76,8 @@
     if (!d.archive?.length) return `<p class="muted">No month archived yet. Each quarter hour is archived 15 minutes after it ends.</p>`;
     const order = d.machine_order || [];
     const machines = order.filter(m => d.archive.some(a => a.machines?.[m] != null));
-    const body = d.archive.map(a => `<tr><td>${esc(a.month)}${a.open ? ` <span class="tag">open</span>` : ""}</td>${machines.map(m => `<td>${shown(wh(a.machines?.[m]), "no samples")}</td>`).join("")}<td>${esc(wh(a.wh))}</td><td>${a.cost == null ? H().unavailable(a.cost_why || "no price") : esc(money(a.cost, a.currency)) + (a.priced_wh < a.wh ? `<div class="hint">covers ${esc(wh(a.priced_wh))}</div>` : "")}</td><td>${a.wh_per_1k_tokens == null ? H().unavailable("no interval with both observed") : esc(`${a.wh_per_1k_tokens.toFixed(2)} Wh`)}</td></tr>`).join("");
-    return table(["Month", ...machines, "Total", "Estimated cost", "Per 1k generated tokens"], body, "Monthly energy archive") + `<p class="hint">Permanent: a reset never removes archived months. Months follow the time zone configured when each quarter hour was archived.</p>`;
+    const body = d.archive.map(a => `<tr><td>${esc(a.month)}${a.open ? ` <span class="tag">open</span>` : ""}</td>${machines.map(m => `<td>${shown(wh(a.machines?.[m]), "no samples")}</td>`).join("")}<td>${esc(wh(a.wh))}</td><td>${a.cost == null ? H().unavailable(a.cost_why || "no price") : esc(money(a.cost, a.currency)) + (a.priced_wh < a.wh ? `<div class="hint">covers ${esc(wh(a.priced_wh))}</div>` : "")}</td><td>${a.wh_per_1k_tokens == null ? H().unavailable("no interval with both observed") : esc(`${a.wh_per_1k_tokens.toFixed(2)} Wh`)}</td><td>${esc(a.zone || "")}</td></tr>`).join("");
+    return table(["Month", ...machines, "Total", "Estimated cost", "Per 1k generated tokens", "Zone"], body, "Monthly energy archive") + `<p class="hint">Permanent: a reset never removes archived months. Months follow the time zone configured when each quarter hour was archived.</p>`;
   }
 
   function older(d) {
@@ -138,7 +140,7 @@ ${button("Save price", "", {style: "pri", disabled: blocker, extra: 'data-page-a
         kpi("Coverage", shown(t && pct(t.coverage), d.why?.totals || "no samples"), "sampled share of the range over every expected power domain"),
       ].join("")}</div>`;
       const zone = d.timezone ? `Times in ${esc(d.timezone.source === "configured" ? d.timezone.name : "the control machine's local time")} (${esc(d.timezone.offset || "")})${d.timezone.why ? ` · ${esc(d.timezone.why)}` : ""}.` : "";
-      const collector = d.collector ? (d.collector.error ? `Collector error: ${esc(d.collector.error)}.` : d.collector.last_ok ? `Recomputed ${esc(when(d.collector.last_ok, d))}.` : "Collector has not completed a run yet.") : "Collector not running in this process; figures are the stored hourly rows.";
+      const collector = d.collector ? (d.collector.error ? `Collector error: ${esc(d.collector.error)}.` : d.collector.last_ok ? `Recomputed ${esc(d.labels?.collector_ok || "")}.` : "Collector has not completed a run yet.") : "Collector not running in this process; figures are the stored hourly rows.";
       const rule = eff ? `<p class="hint">Energy per 1k generated tokens counts ${esc(eff.rule)}.</p>` : "";
       return `<div class="grid">${banner}<div class="row between">${toggle}<span class="hint">${zone} ${collector}</span></div>${kpis}${rule}
 ${card("Energy over time", bars(d), d.bucket === "day" ? "per day" : "per hour")}
@@ -153,11 +155,15 @@ ${card("Monthly archive", archive(d) + older(d))}
     if (!token || token === "__HYPERLOOM_CSRF__") throw new Error("Launch the portal through hyperloom ui to enable actions.");
     return H().request(action, {method: "POST", headers: {"Content-Type": "application/json", "X-Hyperloom-CSRF": token}, body: JSON.stringify(body), signal: AbortSignal.timeout(30000)});
   }
+  // A write holds the shell's mutation state until the authoritative refresh after it, so no other action of the
+  // portal starts meanwhile, and the gate is checked again at dispatch.
   async function act(action, body, done) {
-    view.busy = true; view.error = ""; H().render();
+    const blocker = H().mutationReason();
+    if (blocker || view.busy) { H().announce(blocker || "Another action is running"); return; }
+    view.busy = true; H().state.busy = true; view.error = ""; H().render();
     try { await post(action, body); done(); H().announce(`${action.replace("energy/", "Energy ")} saved`); }
     catch (error) { view.error = error.message; H().announce(error.message); }
-    finally { view.busy = false; await H().refresh(); }
+    finally { try { await H().refresh(); } finally { view.busy = false; H().state.busy = false; H().render(); } }
   }
 
   document.addEventListener("click", event => {

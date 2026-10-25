@@ -136,7 +136,8 @@ class CadenceTests(Base):
 
     def test_only_time_between_runs_with_one_cadence_is_integrated(self):
         gpu = {"machine": "halo-1", "device": "0"}
-        feed(self.store, lambda t: [(GPU, gpu, 100.0)], NOW - 4 * HOUR, NOW, step=10)
+        feed(self.store, lambda t: [(GPU, gpu, 100.0)], NOW - 4 * HOUR, NOW - 2.5 * HOUR, step=10)
+        feed(self.store, lambda t: [(GPU, gpu, 100.0)], NOW - 2.5 * HOUR, NOW, step=2)
         for t, cadence in ((NOW - 4 * HOUR, {"fleet": 10.0}), (NOW - 3 * HOUR, {"fleet": 10.0}),
                            (NOW - 2 * HOUR, {"fleet": 2.0}), (NOW - HOUR, {"fleet": 2.0}), (NOW, {"fleet": 2.0})):
             energy.compute(self.store, t, cadence)
@@ -146,6 +147,20 @@ class CadenceTests(Base):
         self.assertAlmostEqual(machine["wh"], 300.0)
         self.assertEqual(self.store.execute("SELECT start, end FROM energy_verified ORDER BY start"),
                          [(NOW - 4 * HOUR, NOW - 3 * HOUR), (NOW - 2 * HOUR, NOW)])
+
+    def test_a_cadence_changed_and_restored_between_two_runs_is_not_integrated(self):
+        gpu = {"machine": "halo-1", "device": "0"}
+        t = NOW - HOUR
+        while t < NOW:
+            changed = NOW - 40 * 60 <= t < NOW - 30 * 60 + 30        # 10 s cadence for a while, then back to 2 s
+            self.store.record([(GPU, gpu, 200.0 if changed else 100.0)], ts=t, interval=10 if changed else 2)
+            t += 10 if changed else 2
+        energy.compute(self.store, NOW - HOUR, {"fleet": 2.0})
+        energy.compute(self.store, NOW, {"fleet": 2.0})                     # both runs saw 2 s
+        machine = self.doc()["machines"][0]
+        # Only minutes sampled entirely at 2 s count: the 10 s minutes and the mixed one are unobserved.
+        self.assertAlmostEqual(machine["observed_s"], HOUR - 11 * 60)
+        self.assertAlmostEqual(machine["wh"], 100.0 * (HOUR - 11 * 60) / HOUR)
 
     def test_history_before_the_first_run_and_runs_without_a_sampler_are_not_integrated(self):
         gpu = {"machine": "halo-1", "device": "0"}
@@ -293,9 +308,13 @@ class InventoryTests(Base):
         self.api.machines = [("workstation", "windows"), ("halo-1", "linux")]
         feed(self.store, lambda t: [(GPU, {"machine": "halo-1", "device": "0"}, 100.0)], NOW - HOUR, NOW)
         energy.compute(self.store, NOW)
-        by = {m["id"]: m for m in self.doc()["machines"]}
+        d = self.doc()
+        by = {m["id"]: m for m in d["machines"]}
         self.assertIsNone(by["workstation"]["wh"])
         self.assertIn("no power reading", by["workstation"]["why"]["wh"])
+        self.assertEqual(d["totals"]["partial"], ["workstation"])                 # the lab total is partial
+        self.assertIsNone(d["totals"]["avg_w"])
+        self.assertIn("workstation", d["why"]["totals"])
         self.assertIn(energy.CONTROL_HOST, by["workstation"]["uncovered"])
 
     def test_documents_are_built_from_one_revision(self):
@@ -320,6 +339,39 @@ class InventoryTests(Base):
             d = self.doc()
         self.assertIsNone(d["machines"])
         self.assertIn("changed while being read", d["why"]["machines"])
+
+
+class OutcomeTests(Base):
+    def test_the_outcome_survives_a_later_commit(self):
+        feed(self.store, lambda t: [(GPU, {"machine": "halo-1", "device": "0"}, 100.0)], NOW - HOUR, NOW)
+        real = energy._applied
+
+        done = []
+
+        def later_commit(store, token):
+            if not done:
+                done.append(1)
+                energy.compute(store, NOW)              # another run commits before this one looks at its outcome
+            return real(store, token)
+        with mock.patch.object(energy, "_applied", later_commit):
+            result = energy.reset_store(self.store, NOW)
+        self.assertEqual(result["reset_at"], NOW)
+        self.assertEqual(self.store.execute("SELECT COUNT(*) FROM energy_receipts")[0][0], 0)
+
+    def test_archive_reads_are_consistent(self):
+        feed(self.store, lambda t: [(GPU, {"machine": "halo-1", "device": "0"}, 100.0)], NOW - 2 * HOUR, NOW)
+        energy.compute(self.store, NOW)
+        real = energy._months
+        calls = []
+
+        def racing(store, before=None, limit=energy.ARCHIVE_MONTHS):
+            calls.append(1)
+            if len(calls) == 1:
+                store.execute("UPDATE energy_state SET value=value+1 WHERE key='revision'")
+            return real(store, before, limit)
+        with mock.patch.object(energy, "_months", racing):
+            self.assertEqual(len(energy.archive_document(self.api, {})["months"]), 1)
+        self.assertEqual(len(calls), 2)
 
 
 class ResetTests(Base):
@@ -540,17 +592,37 @@ class DocumentTests(Base):
         self.assertEqual(machine["throttle"], [{"device": "0", "start": NOW - 2 * HOUR, "end": NOW - 1.5 * HOUR}])
         self.assertEqual(doc["thresholds"], {"gpu": {"warn": 85.0, "crit": 90.0}})
         self.assertLessEqual(len(gpu["points"]), 289)
-        self.assertEqual(gpu["colour"], energy._colour("GPU 0 edge"))
+        self.assertEqual((gpu["colour"], gpu["dash"]), energy._style(
+            "node_gpu_temp_celsius" + telemetry.canonical_labels({"machine": "halo-1", "device": "0", "sensor": "edge"})))
         self.assertIn("recorded maximum", doc["notes"]["warn"])
         self.assertEqual(doc["step"], 300)
         self.assertTrue(doc["notes"]["warn"].startswith("5-minute"))
+
+    def test_a_sensor_keeps_its_style_when_others_disappear(self):
+        def styles():
+            energy._thermal_cache.clear()
+            lines = energy.thermals_document(self.api, {"range": "day"})["machines"][0]["lines"]
+            return {line["label"]: (line["colour"], line["dash"]) for line in lines}
+        sensors = [{"machine": "halo-1", "sensor": f"s{i}"} for i in range(6)]
+        for labels in sensors:
+            self.store.record([("node_sensor_temp_celsius", labels, 40.0)], ts=NOW - 23.5 * HOUR, interval=60)
+        before = styles()
+        for labels in sensors[2:]:
+            self.store.record([("node_sensor_temp_celsius", labels, 41.0)], ts=NOW - 60, interval=60)
+        self.clock.now = NOW + HOUR                                                 # the first two fall out of range
+        after = styles()
+        self.assertEqual(len(after), 4)
+        self.assertTrue(all(after[k] == before[k] for k in after))
 
     def test_throttle_periods_never_bridge_missing_buckets(self):
         gpu = {"machine": "halo-1", "device": "0"}
         for t in (NOW - 600, NOW - 540, NOW - 360, NOW - 300):        # a missing stretch between
             self.store.record([("node_gpu_throttled", gpu, 1, "state")], ts=t, interval=60)
+        self.store.describe("node_gpu_throttled", "state", interval=300)        # today's cadence never stretches history
         doc = energy.thermals_document(self.api, {"range": "day"})
-        self.assertEqual(len(doc["machines"][0]["throttle"]), 2)
+        self.assertEqual(doc["machines"][0]["throttle"], [{"device": "0", "start": NOW - 600, "end": NOW - 480},
+                                                          {"device": "0", "start": NOW - 360, "end": NOW - 240}])
+        self.assertTrue(doc["throttle_read"])
 
 
 class WriteTests(unittest.TestCase):
@@ -577,7 +649,8 @@ class WriteTests(unittest.TestCase):
         bad = [{"price_per_kwh": True, "currency": "EUR"}, {"price_per_kwh": 0, "currency": "EUR"},
                {"price_per_kwh": 101, "currency": "EUR"}, {"price_per_kwh": 0.2, "currency": "eur"},
                {"price_per_kwh": 0.2}, {"clear": True, "currency": "EUR"}, {"clear": False}, {"price": 1},
-               {"price_per_kwh": "0.2", "currency": "EUR"}]
+               {"price_per_kwh": "0.2", "currency": "EUR"}, {"price_per_kwh": 10 ** 400, "currency": "EUR"},
+               {"price_per_kwh": -10 ** 400, "currency": "EUR"}]
         for arguments in bad:
             with self.assertRaises(APIError, msg=arguments):
                 self.api.feature_post("energy/price", arguments)
@@ -632,14 +705,15 @@ class HttpTests(unittest.TestCase):
         self.port = self.server.server_port
 
     def request(self, method, path, body=None, origin=True, csrf=True):
-        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
-        headers = {"Host": f"127.0.0.1:{self.port}"}
+        host = self.server.server_address[0]
+        connection = http.client.HTTPConnection(host, self.port, timeout=5)
+        headers = {"Host": f"{host}:{self.port}"}
         data = None
         if body is not None:
             data = json.dumps(body).encode()
             headers.update({"Content-Type": "application/json", "Content-Length": str(len(data))})
             if origin:
-                headers["Origin"] = f"http://127.0.0.1:{self.port}"
+                headers["Origin"] = f"http://{host}:{self.port}"
             if csrf:
                 headers["X-Hyperloom-CSRF"] = self.server.csrf_token
         connection.request(method, path, body=data, headers=headers)
