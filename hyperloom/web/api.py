@@ -125,7 +125,10 @@ class JobContext:
                 self.cancel("abandoned: the portal page that started it stopped renewing it")
             elif self._admission is not None and self.hold and now - self._checked >= 1.0:
                 self._checked = now
-                reason = self._admission.cancelled(self.hold)
+                try:
+                    reason = self._admission.cancelled(self.hold)
+                except Exception:  # noqa: BLE001 - unreadable now: checked again at the next call
+                    reason = None
                 if reason:
                     self.cancel(reason)
         return self._event.is_set()
@@ -1133,9 +1136,12 @@ class API:
                 holds = dict(self._holds)
                 contexts = dict(self._features_running)
             for jid, hold in holds.items():
-                context = contexts.get(jid)
-                if context is not None:
-                    context.cancelled()     # notices abandonment / stops / deadline promptly
+                try:
+                    context = contexts.get(jid)
+                    if context is not None:
+                        context.cancelled()     # notices abandonment / stops / deadline promptly
+                except Exception:  # noqa: BLE001 - one failing check never stops the renewals
+                    pass
                 try:
                     self._admission().renew(hold)
                 except Exception:
@@ -1149,9 +1155,19 @@ class API:
             raise APIError(str(exc), 409) from exc
         with self._job_lock:
             self._holds[jid] = hold
+            heartbeat = None
             if self._heartbeat is None:
-                self._heartbeat = threading.Thread(target=self._renew_holds, name="hyperloom-admission", daemon=True)
-                self._heartbeat.start()
+                heartbeat = self._heartbeat = threading.Thread(target=self._renew_holds, name="hyperloom-admission",
+                                                               daemon=True)
+        if heartbeat is not None:
+            try:
+                heartbeat.start()
+            except Exception:
+                with self._job_lock:
+                    if self._heartbeat is heartbeat:
+                        self._heartbeat = None      # the next hold tries again
+                self._unhold(jid)
+                raise
         return hold
 
     def _unhold(self, jid):
@@ -1280,7 +1296,8 @@ class API:
                 if self._active == jid:
                     self._active = None
                 self._features_running.pop(jid, None)
-        threading.Thread(target=run, name="hyperloom-feature-" + jid[:8], daemon=True).start()
+        self._start_worker(run, "hyperloom-feature-" + jid[:8], jid, job, action, arguments,
+                           lambda: self._rollback(spec, validated))
         return response
 
     def _action_log(self):
@@ -1571,6 +1588,8 @@ class API:
                 if context is not None:
                     context.cancel("cancelled by request")
                     return {"cancelled": args["job"]}
+                if job and job["state"] != "running" and job["action"] in feature_registry.registry().jobs:
+                    raise APIError(f"job {job['job']} has already {job['state']}", 409)
                 if not job or job["action"] not in ("up", "recipes/deploy"):
                     raise APIError("only an up or a recipes/deploy job can be cancelled; use down with a profile")
                 if job["state"] != "running":
@@ -1696,8 +1715,10 @@ class API:
         stopping, profile = action == "down", arguments.get("profile")
         if action == "cancel":
             with self._job_lock:
-                feature = arguments.get("job") in self._features_running
                 job = self._jobs.get(arguments.get("job")) if arguments.get("job") else None
+                # A feature job's cancel (running or just finished) only cancels its context: never a stop.
+                feature = arguments.get("job") in self._features_running or (
+                    job is not None and job["action"] in feature_registry.registry().jobs)
                 if job is not None and not profile:
                     profile = job["arguments"].get("profile")
             stopping = not feature
@@ -1727,7 +1748,10 @@ class API:
                 with self._job_lock:
                     contexts = [self._features_running[j] for j in self._holds if j in self._features_running]
                 for context in contexts:
-                    context.cancelled()     # observe the stop's cancellation now, not at the next poll
+                    try:
+                        context.cancelled()     # observe the stop's cancellation now, not at the next poll
+                    except Exception:  # noqa: BLE001 - the benchmark sees it at its own next check
+                        pass
         with self._job_lock:
             job = {"job": jid, "id": jid, "action": action, "arguments": redact(arguments),
                    "state": "running", "started_at": self.clock(), "finished_at": None,
@@ -1763,5 +1787,25 @@ class API:
                     self._active = None
             with self._poll_lock:
                 self._expires = 0
-        threading.Thread(target=run, name="hyperloom-ui-" + jid[:8], daemon=True).start()
+        self._start_worker(run, "hyperloom-ui-" + jid[:8], jid, job, action, arguments)
         return response
+
+    def _start_worker(self, run, name, jid, job, action, arguments, rollback=lambda: None):
+        """Start an accepted job's worker; when no thread can be started, the job fails at once and everything it
+        reserved (hold, slot, feature context, validation) is released, answered 503."""
+        try:
+            threading.Thread(target=run, name=name, daemon=True).start()
+        except Exception as exc:  # noqa: BLE001 - e.g. RuntimeError: can't start new thread
+            self._unhold(jid)
+            with self._job_lock:
+                job.update(state="failed", error=redact("the job could not start: " + str(exc)),
+                           finished_at=self.clock(), progress="finished")
+                if self._active == jid:
+                    self._active = None
+                self._features_running.pop(jid, None)
+            rollback()
+            try:
+                self._audit(action, arguments, {"job": jid, "state": "failed", "error": "the job could not start"})
+            except OSError:
+                pass
+            raise APIError("the job could not start: " + str(exc), 503) from exc

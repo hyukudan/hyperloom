@@ -332,6 +332,56 @@ class APIDispatchTests(unittest.TestCase):
             self.api.mutate("demo/reserving", {"on": "x", "machines": ["taken-by-another"]})
         self.assertEqual(reserved, {"taken-by-another"})
 
+    def test_a_feature_job_finishing_before_its_cancel_runs_is_never_a_stop(self):
+        bench = self.api.mutate("demo/bench", {"on": ["halo-2"]})
+        job = self.api.mutate("demo/job", {"n": 1})
+        self.wait(job["id"])
+        checked = self.api._arguments
+        with mock.patch.object(self.api, "_arguments", side_effect=lambda a, b: b if a == "cancel" else checked(a, b)):
+            cancel = self.api.mutate("cancel", {"job": job["id"]})     # as if it finished after the check
+        done = self.wait(cancel["id"])
+        self.assertEqual(done["state"], "failed")
+        self.assertIn("has already succeeded", done["error"])
+        self.assertEqual(self.api.read("jobs/" + bench["id"])["state"], "running")   # no stop was taken
+        self.api.orchestrate.down.assert_not_called()
+        self.wait(self.api.mutate("cancel", {"job": bench["id"]})["id"])
+        self.wait(bench["id"])
+
+    def test_an_unreadable_cancellation_state_never_breaks_a_stop_or_the_renewals(self):
+        import sqlite3
+        from hyperloom.web.api import JobContext
+        context = JobContext(30, self.api.admission_db, "hold-id")
+        with mock.patch.object(self.api.admission_db, "cancelled", side_effect=sqlite3.OperationalError("locked")):
+            self.assertFalse(context.cancelled())
+            bench = self.api.mutate("demo/bench", {"on": ["halo-1"]})
+            stop = self.wait(self.api.mutate("down", {"profile": "qwen"})["id"])
+        self.assertEqual(stop["state"], "succeeded")
+        self.assertEqual(self.wait(bench["id"])["state"], "cancelled")
+        self.assertEqual(self.api._holds, {})
+
+    def test_a_worker_that_cannot_start_releases_everything(self):
+        from hyperloom.web import api as api_module
+        with mock.patch.object(api_module.threading.Thread, "start", side_effect=RuntimeError("no thread")):
+            for action, arguments in (("demo/bench", {"on": ["halo-1"]}), ("down", {"profile": "qwen"})):
+                with self.assertRaises(APIError) as caught:      # the renewal thread itself cannot start
+                    self.api.mutate(action, arguments)
+                self.assertEqual(caught.exception.status, 503)
+                self.assertEqual((self.api._holds, self.api._active, self.api._heartbeat), ({}, None, None))
+                self.assertEqual(self.api.admission_db.holds(), [])
+        self.wait(self.api.mutate("down", {"profile": "qwen"})["id"])      # starts the renewal thread
+        self.assertIsNotNone(self.api._heartbeat)
+        for action, arguments in (("demo/bench", {"on": ["halo-1"]}), ("demo/exclusive", {}),
+                                  ("down", {"profile": "qwen"})):
+            with self.subTest(action=action):
+                with mock.patch.object(api_module.threading.Thread, "start",
+                                       side_effect=RuntimeError("can't start new thread")):
+                    with self.assertRaises(APIError) as caught:
+                        self.api.mutate(action, arguments)
+                self.assertEqual(caught.exception.status, 503)
+                self.assertEqual((self.api._holds, self.api._active, self.api._features_running), ({}, None, {}))
+                self.assertEqual(self.api.admission_db.holds(), [])
+                self.assertFalse([j for j in self.api._jobs.values() if j["state"] == "running"])
+
     def test_a_finished_feature_job_cancel_is_409(self):
         job = self.api.mutate("demo/job", {"n": 1})
         self.wait(job["id"])
