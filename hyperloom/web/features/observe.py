@@ -1581,8 +1581,13 @@ def latency_document(api, query, store=None):
     args, scope = [now - span], ""
     if "profile" in query:
         scope, args = " AND profile=?", [now - span, query["profile"]]
+    eligible = store.execute(f"SELECT COUNT(*) FROM observe_requests WHERE state='done' AND COALESCE(ended_at, updated_at) "
+                             f">= ?{scope}", tuple(args))[0][0]
     rows = _rows(store, f"SELECT profile, record, state FROM observe_requests WHERE state='done' AND COALESCE(ended_at, updated_at) "
                         f">= ?{scope} ORDER BY COALESCE(ended_at, updated_at) DESC LIMIT ?", (*args, MAX_ROWS))
+    coverage = {"selected": len(rows), "eligible": eligible, "cut": eligible > len(rows),
+                "basis": f"the newest {len(rows):,} of {eligible:,} completed requests in this range" if eligible > len(rows)
+                else f"all {eligible:,} completed requests in this range"}
     found = {profile: _engine_records(store, profile, {r["id"] for p, r, _ in rows if p == profile})
              for profile in {p for p, _, _ in rows}}
     groups = {}
@@ -1632,13 +1637,16 @@ def latency_document(api, query, store=None):
         item["stale"] = item["age_s"] is None or item["age_s"] > limit
     sources = _sources(store, query.get("profile"))
     why = {}
+    if coverage["cut"]:
+        why["coverage"] = (f"statistics cover {coverage['basis']} (at most {MAX_ROWS:,} per view); older requests in "
+                           "the range are not counted: choose a shorter range or one profile")
     if not result:
         reasons = _reasons(sources, "requests")
         why["groups"] = "; ".join(reasons) if reasons else "no completed requests recorded in this range"
     if not histograms:
         reasons = _reasons(sources, "metrics")
         why["histograms"] = "; ".join(reasons) if reasons else NEEDS_HIST
-    return api.document("observe-latency", **common, groups=result, histograms=histograms,
+    return api.document("observe-latency", **common, groups=result, histograms=histograms, coverage=coverage,
                         retention={"requests": MAX_ROWS, "days": settings(store)["retention_days"]}, why=why)
 
 
@@ -1785,11 +1793,15 @@ def engines_document(api, query, store=None):
 
 
 def _scope(spec):
-    since = (spec.get("since") or "").lower()
-    if since.startswith("armed"):
-        return "cumulative since the engine was armed"
+    """The counting scope the engine published, normalized where it is known and kept as published otherwise."""
+    published = str(spec.get("since") or "").strip()[:80]
+    since = published.lower()
+    if since.startswith("armed") or since.startswith("observed") or "after arming" in since:
+        return "cumulative since the engine was armed" + (f" ({published})" if not since.startswith("armed") else "")
     if since.startswith("process"):
         return "cumulative since the engine process started"
+    if since and since != "unknown":
+        return f"cumulative ({published})"
     return "cumulative (scope not reported)"
 
 

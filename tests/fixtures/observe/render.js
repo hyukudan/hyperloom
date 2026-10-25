@@ -19,7 +19,7 @@ global.window = {
     statusPill: state => `<span>${esc(state)}</span>`,
     button: () => "<button></button>", csrf: () => "", request() {}, announce() {}, refresh() {},
   },
-  HyperloomTS: {chart: () => "", lines: () => [], bind() {}},
+  HyperloomTS: {chart: () => "", lines: () => [], bind() {}, endpoint: name => "history/" + name},
 };
 require(path.resolve(__dirname, "../../../hyperloom/web/static/pages", input.page + ".js"));
 process.stdout.write(window.HyperloomPages[input.name || input.page].render());

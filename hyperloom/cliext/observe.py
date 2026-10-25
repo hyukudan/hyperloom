@@ -76,7 +76,7 @@ def _fmt(value, digits=0):
 def _print_why(document):
     for key, why in sorted((document.get("why") or {}).items()):
         if why:
-            print(f"  {key}: unavailable · {why}")
+            print(f"  {key}: {why}" if key in ("coverage", "sessions_cut") else f"  {key}: unavailable · {why}")
 
 
 def _table(headers, rows):

@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from hyperloom.web.features import observe
 from tests.fixtures.observe.fakes import HERE, NODE1, Env, fixture
@@ -99,6 +100,39 @@ class DisagreementTests(Collected):
         page = render("timeline", {"observe/requests?limit=50": listing,
                                    "observe/requests/aabbccddeeff0011": request}, {"selected": "aabbccddeeff0011"})
         self.assertIn("engine reports 809 computed tokens; prompt - cached - imported = 808", page)
+
+
+class LatencyCoverageTests(Collected):
+    """The latency statistics name the share of completed requests they cover when the per-view bound cuts them."""
+
+    def test_cut_across_profiles_is_disclosed(self):
+        self.env.collect()
+        store = self.env.store
+        columns = [row[1] for row in store.execute("PRAGMA table_info(observe_requests)")]
+        copied = ", ".join("'other'" if c == "profile" else c for c in columns)
+        store.execute(f"INSERT INTO observe_requests ({', '.join(columns)}) SELECT {copied} FROM observe_requests")
+        eligible = store.execute("SELECT COUNT(*) FROM observe_requests WHERE state='done'")[0][0]
+        self.assertGreater(eligible, 3)
+        whole = observe.latency_document(self.env.api, {})
+        self.assertEqual((whole["coverage"]["eligible"], whole["coverage"]["cut"]), (eligible, False))
+        self.assertNotIn("coverage", whole["why"])
+        with mock.patch.object(observe, "MAX_ROWS", 3):
+            cut = observe.latency_document(self.env.api, {})
+        self.assertEqual((cut["coverage"]["selected"], cut["coverage"]["eligible"], cut["coverage"]["cut"]), (3, eligible, True))
+        self.assertIn(f"the newest 3 of {eligible}", cut["why"]["coverage"])
+        self.assertEqual(sum(g["requests"] for g in cut["groups"]), 3)
+        if NODE:
+            page = render("latency", {"observe/latency?by=model&range=3600": cut})
+            self.assertIn(f"the newest 3 of {eligible} completed requests", page)
+            self.assertIn("partial", page)
+
+    def test_published_scopes_are_kept(self):
+        self.assertEqual(observe._scope({"since": "observed (submitted after arming)"}),
+                         "cumulative since the engine was armed (observed (submitted after arming))")
+        self.assertEqual(observe._scope({"since": "armed"}), "cumulative since the engine was armed")
+        self.assertEqual(observe._scope({"since": "process start"}), "cumulative since the engine process started")
+        self.assertEqual(observe._scope({"since": "last reset"}), "cumulative (last reset)")
+        self.assertEqual(observe._scope({"since": "unknown"}), "cumulative (scope not reported)")
 
 
 if __name__ == "__main__":

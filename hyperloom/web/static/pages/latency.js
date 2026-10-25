@@ -82,7 +82,8 @@
         if (h.lines == null) return `<p>${H().display(null, h.why?.lines)}</p>`;
         return window.HyperloomTS.chart({title: `TTFT p50 · ${observer}-observed (s, over 60 s windows)`, unit: "s", step: h.step || 2, cadence: h.tier === "raw" ? h.interval_s || 0 : 0, start: h.start, end: h.end, lines: window.HyperloomTS.lines(h, {label: l => observer === "router" ? `${l.profile || ""} · ${l.model || "router"}` : `${l.replica || "engine"} · ${l.basis === "first_token" ? "first published token" : "queue + prefill (approximation)"}`}), group: "latency", height: 160});
       }).join("");
-      const groups = d.groups.length ? `<div class="grid">${d.groups.map(g => group(g, d.definitions)).join("")}</div>` : `<p>${H().unavailable(d.why?.groups)}</p>`;
+      const coverage = d.why?.coverage ? `<p class="hint" role="note"><span class="pill p-warn">partial</span> ${H().esc(d.why.coverage)}</p>` : d.coverage ? `<p class="hint">${H().esc(d.coverage.basis)}</p>` : "";
+      const groups = coverage + (d.groups.length ? `<div class="grid">${d.groups.map(g => group(g, d.definitions)).join("")}</div>` : `<p>${H().unavailable(d.why?.groups)}</p>`);
       const hist = d.histograms?.length ? estimated(d.histograms) : card("Component histograms", `<p>${H().unavailable(d.why?.histograms)}</p>`);
       return `<div class="grid">${controls}${card("TTFT over time", charts || `<p>${H().unavailable("history not loaded")}</p>`)}${groups}${hist}</div>`;
     },
