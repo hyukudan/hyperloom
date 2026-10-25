@@ -706,7 +706,7 @@ def _admission_hold(args):
     """Contract C11 for direct CLI use: a deploy/start/install takes a "core" hold (refused while a benchmark
     holds its resources), a stop a "stop" hold (cancels overlapping benchmarks). Returns a release function."""
     kind = {"up": "core", "install": "core", "down": "stop"}.get(args.command)
-    if args.command == "recipe" and getattr(args, "operation", None) == "deploy":
+    if args.command == "recipe" and getattr(args, "operation", None) in ("deploy", "probe"):
         kind = "core"
     if kind is None or (args.command in ("up", "down") and args.profile is None
                         and not (getattr(args, "recipe", None) or getattr(args, "recipe_inputs", None))):
@@ -719,7 +719,8 @@ def _admission_hold(args):
             resources = {*(str(m) for m in _module("hyperloom.orchestrate")._profile(cluster, args.profile)[2]), "router"}
         except Exception:
             resources = {"*"}
-    database = admission.for_config(config_path())
+    # The hold lives next to the configuration this command executes with (the portal's jobs pass the same one).
+    database = admission.for_config(getattr(args, "config", None) or config_path())
     try:
         hold = database.acquire(kind, resources, label=f"cli {args.command} {getattr(args, 'profile', '') or ''}".strip())
     except admission.Refused as exc:

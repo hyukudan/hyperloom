@@ -11,6 +11,9 @@ CLI invocation on the control machine. A hold names its class, the resource ids 
   next ``cancelled()`` check and cleans up) and it keeps its hold until the stop finishes, so no bench starts
   meanwhile.
 
+A cancelled bench keeps owning its resources (and counting against the cap) until its owner releases the hold
+after its cleanup; the owner keeps renewing it until then.
+
 A hold whose lease expired (owner gone or stopped renewing, e.g. an abandoned portal tab) is dropped on the next
 decision. Decisions run inside ``BEGIN IMMEDIATE`` so two processes cannot both admit overlapping work.
 """
@@ -98,14 +101,14 @@ class Admission:
                 if blockers:
                     raise Refused(f"a {'stop' if blockers[0]['kind'] == 'stop' else 'deploy, start or install'} is running"
                                   f" ({blockers[0]['label'] or blockers[0]['id']})")
-                benches = [h for h in holds if h["kind"] == "bench" and not h["cancelled"]]
+                benches = [h for h in holds if h["kind"] == "bench"]
                 busy = [h for h in benches if _overlap(h["resources"], resources)]
                 if busy:
                     raise Refused("the target's resources are held by " + (busy[0]["label"] or busy[0]["id"]))
                 if len(benches) >= BENCH_CAP:
                     raise Refused(f"at most {BENCH_CAP} benchmark or demo runs at a time")
             elif kind == "core":
-                busy = [h for h in holds if h["kind"] == "bench" and not h["cancelled"] and _overlap(h["resources"], resources)]
+                busy = [h for h in holds if h["kind"] == "bench" and _overlap(h["resources"], resources)]
                 if busy:
                     raise Refused("a benchmark or demo holds these resources (" + (busy[0]["label"] or busy[0]["id"])
                                   + "); cancel it first")
