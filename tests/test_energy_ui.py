@@ -203,6 +203,8 @@ class EnergyPagesInBrowser(unittest.TestCase):
 
     def test_thermal_threshold_drafts_survive_polls(self):
         self.open("thermals")
+        # The threshold form renders with the page's first document; wait for it on a loaded machine.
+        smoke.eventually(lambda: self.js("!!document.getElementById('th-cpu-warn')"), timeout=20)
         self.js("{ const i = document.getElementById('th-cpu-warn'); i.value = '82'; i.dispatchEvent(new Event('input', {bubbles: true})); }")
         self.wait_poll()
         self.assertEqual(self.js("document.getElementById('th-cpu-warn').value"), "82")
