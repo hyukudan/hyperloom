@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import unittest
 from unittest import mock
 
@@ -14,6 +15,10 @@ from tests.test_ledger_collector import make_api, state
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "ledger"
+# The JSON of the recorded run's stats lines (legacy marker and schema id, as the run wrote them).
+STREAM_LINES = [line.split("ss stats ", 1)[1] for line in (FIXTURES / "rtx-run.log").read_text(encoding="utf-8").splitlines()
+                if "mm-rtx-prefill: ss stats " in line]
+NODE = shutil.which("node")
 
 
 def fresh(api, name):
@@ -262,12 +267,42 @@ class RtxTests(Base):
         run_id = ledger.list_runs(ledger._setting(self.api, "logs_dir"))[0][0]["id"]
         with self.assertRaises(APIError) as caught:
             self.api.feature_post("ledger/rtx-parse", {"id": run_id})
-        self.assertIn("no `ss stats` line", str(caught.exception))
-        (directory / "plain.log").write_text('mm-rtx-prefill: ss stats {"schema": "other"}\n', encoding="utf-8")
+        self.assertIn("no `ss stats` or `ts stats` line", str(caught.exception))
+        for mark in ("ss", "ts"):
+            (directory / "plain.log").write_text(f'mm-rtx-prefill: {mark} stats {{"schema": "other"}}\n', encoding="utf-8")
+            run_id = ledger.list_runs(ledger._setting(self.api, "logs_dir"))[0][0]["id"]
+            with self.assertRaises(APIError) as caught:
+                self.api.feature_post("ledger/rtx-parse", {"id": run_id})
+            self.assertIn("not strix-stream/stats-v1", str(caught.exception))
+
+    def test_both_marker_and_schema_spellings_parse_alike(self):
+        # A run may write `ss stats` or `ts stats` with either schema id; the record is the same, under the legacy id.
+        first, last = STREAM_LINES[0], STREAM_LINES[-1]
+        directory = self.root / "spellings"
+        directory.mkdir()
+
+        def parsed(text):
+            (directory / "run.log").write_text(text, encoding="utf-8", newline="")
+            with open(directory / "run.log", "rb") as handle:
+                return ledger.last_stats(handle)
+        reference = parsed(f"mm-rtx-prefill: ss stats {last}\n")
+        self.assertEqual((reference["schema"], reference["total"]["hits"]), ("strix-stream/stats-v1", 31))
+        for mark in ("ss", "ts"):
+            for schema in ledger.STATS_SCHEMAS:
+                line = json.dumps({**json.loads(last), "schema": schema})
+                for newline in ("\n", "\r\n"):
+                    with self.subTest(mark=mark, schema=schema, newline=newline):
+                        self.assertEqual(parsed(f"mm-rtx-prefill: {mark} stats {line}{newline}"), reference)
+        # The last stats line wins whatever its spelling.
+        self.assertEqual(parsed(f"mm-rtx-prefill: ss stats {first}\nmm-rtx-prefill: ts stats {last}\n"), reference)
+        self.assertEqual(parsed(f"mm-rtx-prefill: ts stats {last}\nmm-rtx-prefill: ss stats {first}\n")["total"]["hits"], 32)
+        # Through the listed-id POST too.
+        self.configure("runs")
+        (self.root / "runs" / "ts.log").write_text(
+            f"mm-rtx-prefill: ts stats {json.dumps({**json.loads(last), 'schema': 'tierstream/stats-v1'})}\n", encoding="utf-8")
         run_id = ledger.list_runs(ledger._setting(self.api, "logs_dir"))[0][0]["id"]
-        with self.assertRaises(APIError) as caught:
-            self.api.feature_post("ledger/rtx-parse", {"id": run_id})
-        self.assertIn("not strix-stream/stats-v1", str(caught.exception))
+        status, result = self.api.feature_post("ledger/rtx-parse", {"id": run_id})
+        self.assertEqual(result["stats"], reference)
 
     def test_service_without_provider_counters_is_unavailable(self):
         profile = state("ds", "ds41-pair")
@@ -298,6 +333,52 @@ class RtxTests(Base):
         self.assertEqual([c["name"] for c in service["provider"]["counters"]], ["hits", "misses", "bytes_streamed"])
         self.assertEqual(service["provider"]["counters"][2]["unit"], "bytes")
         self.assertEqual(service["strix_stream"]["total"]["hits"], 32)
+
+    def test_service_stream_stats_under_either_key(self):
+        first, last = (json.loads(line) for line in (STREAM_LINES[0], STREAM_LINES[-1]))
+        renamed = {**first, "schema": "tierstream/stats-v1"}
+        reference = ledger.service_panel(None, {"strix_stream": first})["strix_stream"]
+        self.assertEqual(reference["total"]["hits"], 32)
+        for status in ({"tierstream": first}, {"tierstream": renamed}, {"strix_stream": renamed},
+                       {"tierstream": renamed, "strix_stream": last}, {"tierstream": None, "strix_stream": first}):
+            with self.subTest(keys=sorted(status)):
+                panel = ledger.service_panel(None, status)
+                # The new key wins over the legacy one; the panel keeps the legacy key and schema id.
+                self.assertEqual(panel["strix_stream"], reference)
+                self.assertNotIn("tierstream", panel)
+                self.assertNotIn("strix_stream", panel["why"])
+        panel = ledger.service_panel(None, {"tierstream": {"schema": "other"}, "strix_stream": first})
+        self.assertIsNone(panel["strix_stream"])
+        self.assertIn("not strix-stream/stats-v1", panel["why"]["strix_stream"])
+        for status in (None, {}, {"tierstream": None}):
+            self.assertIn("not built on", ledger.service_panel(None, status)["why"]["strix_stream"])
+
+
+@unittest.skipUnless(NODE, "needs node to render the page")
+class RtxPageTests(unittest.TestCase):
+    def render(self, service):
+        doc = {"services": [{"profile": "ds", "port": 18500, "health": None, "provider": None,
+                             "why": {"service": "x", "provider": "x", **service.pop("why", {})}, **service}],
+               "runs": [], "logs_dir_set": False, "logs_dir": None, "notes": [], "why": {"last": "none"},
+               "observer": "fixture"}
+        answer = subprocess.run([NODE, str(FIXTURES / "render_rtx.js")], input=json.dumps({"doc": doc}),
+                                capture_output=True, text=True, encoding="utf-8", timeout=60)
+        if answer.returncode:
+            raise AssertionError(answer.stderr)
+        return answer.stdout
+
+    def test_tier_statistics_under_either_key(self):
+        stats = ledger.parse_stats(json.loads(STREAM_LINES[0]))
+        for key in ("tierstream", "strix_stream"):
+            with self.subTest(key=key):
+                html = self.render({key: stats})
+                self.assertIn("Tier statistics", html)
+                self.assertIn("strix-stream/stats-v1 · backend cuda", html)
+        for key in ("tierstream", "strix_stream"):
+            with self.subTest(why=key):
+                html = self.render({"why": {key: "reason " + key}})
+                self.assertNotIn("Tier statistics", html)
+                self.assertIn("unavailable · reason " + key, html)
 
 
 if __name__ == "__main__":
