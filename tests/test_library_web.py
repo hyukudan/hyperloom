@@ -151,7 +151,7 @@ class JobTests(LibraryFeatureCase):
         running = threading.Event()
 
         def gate(machine, verb, payload, timeout=60):
-            if verb == "model-job" and not running.is_set():
+            if verb == "copy-job" and not running.is_set():
                 running.set()
                 return {"state": "running", "job": "n1"}
             return node(machine, verb, payload)
@@ -169,7 +169,7 @@ class JobTests(LibraryFeatureCase):
 
     def test_a_real_portal_cancel_keeps_a_node_failure_and_its_reason(self):
         def node(machine, verb, payload):
-            if verb == "model-cancel":
+            if verb == "copy-cancel":
                 return {"state": "running"}
             return {"state": "failed", "job": "n1", "reason": "the unit changed while it was hashed"}
         done, row, final = self.run_watched_verify(node)
@@ -192,7 +192,7 @@ class JobTests(LibraryFeatureCase):
 
     def test_a_cancelled_node_job_cancels_the_portal_job(self):
         def node(machine, verb, payload):
-            return {"state": "running" if verb == "model-cancel" else "cancelled", "job": "n1"}
+            return {"state": "running" if verb == "copy-cancel" else "cancelled", "job": "n1"}
         done, row, final = self.run_watched_verify(node)
         self.assertEqual((row["state"], done["state"]), ("cancelled", "cancelled"))
 
@@ -224,7 +224,7 @@ class JobTests(LibraryFeatureCase):
         ctx.cancel("cancel requested")
         records = iter([{"state": "running", "job": "n1"}] * 5 + [{"state": "succeeded", "job": "n1"}])
         self.node.side_effect = lambda machine, verb, payload, timeout=60: (
-            next(records) if verb == "model-job" else {"state": "running"})
+            next(records) if verb == "copy-job" else {"state": "running"})
         pauses = []
         with mock.patch.object(library, "_sleep", pauses.append):
             record = downloads.watch_job(self.cluster, "halo-1", "n1", cancelled=ctx.cancelled,

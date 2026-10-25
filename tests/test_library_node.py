@@ -278,6 +278,26 @@ class InventoryTests(LibraryCase):
         self.assertTrue(all(units[f"grow-{i:02d}"]["manifest"]["status"] == "unknown" for i in range(20)))
         self.assertIn("manifest bytes", reply["roots"][0]["truncated"])
 
+    def test_a_repeated_entry_or_an_invalid_only_sibling_is_partial(self):
+        with (self.models / "alpha.sha256").open("a", encoding="utf-8") as stream:
+            stream.write(f"{digest(self.alpha['alpha/a.bin'])} alpha/a.bin\n")       # listed twice, same digest
+        (self.models / "delta.sha256").write_text("not a manifest line\n", encoding="utf-8")
+        units, _ = self.scan()
+        self.assertEqual((units["alpha"]["manifest"]["status"], units["alpha"]["manifest"]["repeated"]),
+                         ("partial", 1))
+        self.assertEqual((units["delta"]["manifest"]["status"], units["delta"]["manifest"]["invalid"]),
+                         ("partial", 1))
+
+    def test_the_copy_verbs_are_not_part_of_this_release(self):
+        before = tree(self.root)
+        for verb in ("copy-plan", "copy"):
+            with self.subTest(verb):
+                reply = node.run(verb, {"root": str(self.root), "name": "alpha"})
+                self.assertEqual(reply["error"], "copies between machines are not available in this release")
+        self.assertEqual(tree(self.root), before)
+        self.assertFalse(any(hasattr(node, name) for name in ("plan", "start_copy", "publish", "receive_main",
+                                                              "send_main", "Staging")))
+
     def test_roots_are_checked(self):
         for bad in (["relative"], [str(self.models / "missing")], [], ["/"] if POSIX else ["C:\\"]):
             with self.subTest(bad):
@@ -354,21 +374,21 @@ class SettlementTests(LibraryCase):
         for state in ("queued", "running", "paused"):
             with self.subTest(state):
                 self.record(state=state, pid=2 ** 22 + 12345, start_time=1, boot_id=install.boot_id())
-                self.assertEqual(node.run("model-job", {"root": str(self.root), "job": "j1"})["state"], "failed")
+                self.assertEqual(node.run("copy-job", {"root": str(self.root), "job": "j1"})["state"], "failed")
         self.record(state="running", pid=os.getpid(), start_time=node.start_time(os.getpid()) + 1,
                     boot_id=install.boot_id())
-        self.assertIn("ended", node.run("model-job", {"root": str(self.root), "job": "j1"})["reason"])
+        self.assertIn("ended", node.run("copy-job", {"root": str(self.root), "job": "j1"})["reason"])
         self.record(state="running", pid=os.getpid(), start_time=node.start_time(os.getpid()), boot_id="earlier")
-        self.assertIn("rebooted", node.run("model-job", {"root": str(self.root), "job": "j1"})["reason"])
+        self.assertIn("rebooted", node.run("copy-job", {"root": str(self.root), "job": "j1"})["reason"])
         self.record(state="queued", created=time.time() - 120)
-        self.assertIn("never started", node.run("model-job", {"root": str(self.root), "job": "j1"})["reason"])
+        self.assertIn("never started", node.run("copy-job", {"root": str(self.root), "job": "j1"})["reason"])
         self.record(state="running", pid=os.getpid(), start_time=node.start_time(os.getpid()),
                     boot_id=install.boot_id())
-        self.assertEqual(node.run("model-job", {"root": str(self.root), "job": "j1"})["state"], "running")
+        self.assertEqual(node.run("copy-job", {"root": str(self.root), "job": "j1"})["state"], "running")
         self.record(state="succeeded")
-        self.assertEqual(node.run("model-cancel", {"root": str(self.root), "job": "j1"})["state"], "succeeded")
+        self.assertEqual(node.run("copy-cancel", {"root": str(self.root), "job": "j1"})["state"], "succeeded")
         install.atomic_json(self.root / "run" / "job-j2.json", {"job": "j2", "kind": "install", "state": "running"})
-        self.assertIn("not a model library job", node.run("model-job", {"root": str(self.root), "job": "j2"})["error"])
+        self.assertIn("not a model library job", node.run("copy-job", {"root": str(self.root), "job": "j2"})["error"])
 
 
 class DeadlineTests(LibraryCase):
@@ -383,7 +403,7 @@ class DeadlineTests(LibraryCase):
         try:
             with patch.object(node, "DEADLINE_S", 1.0):
                 started = time.monotonic()
-                reply = node.run("model-job", {"root": str(self.root), "job": "j1"})
+                reply = node.run("copy-job", {"root": str(self.root), "job": "j1"})
                 elapsed = time.monotonic() - started
         finally:
             os.close(fd)
@@ -436,6 +456,24 @@ class StartupAfterTheWorkerExistsTests(LibraryCase):
                 self.assertEqual(record["state"], "queued")                 # the worker records itself on start
 
 
+@unittest.skipUnless(POSIX, "node jobs need POSIX")
+class StartupDeadlineTests(LibraryCase):
+    def test_no_worker_is_dispatched_once_the_deadline_passed_while_records_were_written(self):
+        real = install.atomic_json
+
+        def slow(path, value):
+            real(path, value)
+            node._request.deadline = time.monotonic() - 1               # the writes took the rest of the deadline
+        with patch.object(install, "atomic_json", slow), \
+                patch.object(node.subprocess, "Popen", side_effect=AssertionError("dispatched after the deadline")):
+            reply = node.run("model-verify", {"root": str(self.root), "model_root": str(self.models), "name": "alpha"})
+        self.assertIn("deadline", reply["error"])
+        records = list((self.root / "run").glob("job-*.json"))
+        self.assertEqual([install.read_json(path)["state"] for path in records if ".spec." not in path.name],
+                         ["failed"])
+        self.assertEqual(list((self.root / "run").glob("job-*.spec.json")), [])
+
+
 class VerifyTests(LibraryCase):
     def test_counts_and_failures(self):
         result = node.verify_unit(str(self.models), "alpha")
@@ -448,6 +486,36 @@ class VerifyTests(LibraryCase):
         self.assertEqual(node.verify_unit(str(self.models), "beta.gguf")["counts"]["ok"], 1)
         with self.assertRaisesRegex(ValueError, "no manifest entries"):
             node.verify_unit(str(self.models), "delta")
+
+    def test_verification_checks_before_reading_and_for_every_entry(self):
+        real, reads = node.Tree.read, []
+
+        def read(tree, path, limit):
+            reads.append(path)
+            return real(tree, path, limit)
+
+        def stop():
+            raise node.Stopped("cancelled")
+        with patch.object(node.Tree, "read", read), self.assertRaises(node.Stopped):
+            node.verify_unit(str(self.models), "alpha", stop)
+        self.assertEqual(reads, [])                                      # cancelled before anything was read
+        calls = []
+        with patch.object(node.Tree, "read", read):
+            def stop_while_scanning():
+                calls.append(True)
+                if reads:                                                # the first manifest was read: stop now
+                    raise node.Stopped("cancelled")
+            with self.assertRaises(node.Stopped):
+                node.verify_unit(str(self.models), "alpha", stop_while_scanning)
+        self.assertEqual(len(reads), 1)                                  # serviced while the manifests are parsed
+        (self.models / "empty").mkdir()
+        (self.models / "empty" / "zero.bin").write_bytes(b"")
+        (self.models / "empty.sha256").write_text(f"{digest(b'')}  empty/zero.bin\nf{'0' * 63}  empty/gone.bin\n",
+                                                  encoding="utf-8")
+        calls.clear()
+        result = node.verify_unit(str(self.models), "empty", lambda: calls.append(True))
+        self.assertEqual((result["counts"]["ok"], result["counts"]["missing"]), (1, 1))
+        self.assertGreaterEqual(len(calls), 1 + 2 + 1)                   # entry, both entries, the empty file's hash
 
     @unittest.skipUnless(POSIX, "node jobs")
     def test_verify_job_pauses_for_a_turn_and_aborts_after_the_limit(self):
@@ -469,7 +537,7 @@ class VerifyTests(LibraryCase):
                 holder.write_text("", encoding="utf-8")
         spec_path = self.root / "run" / f"job-{job}.spec.json"
         code = node.job_main(str(spec_path), clock=lambda: clock[0], sleep=sleep)
-        state = node.run("model-job", {"root": str(self.root), "job": job})
+        state = node.run("copy-job", {"root": str(self.root), "job": job})
         self.assertEqual(state["state"], "succeeded", state)
         self.assertTrue(state["result"]["ok"])
         self.assertGreater(state["paused"]["total_s"], 0)

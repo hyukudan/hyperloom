@@ -5,7 +5,10 @@ Verbs (node extension contract: VERBS and run(verb, payload) -> dict):
 - ``models``: read-only inventory of model roots (units, sizes, file counts, newest mtime, manifest status).
   Bounded by a deadline, directory entries, depth, units, manifest bytes and the reply size; it creates nothing.
 - ``model-verify``: a background job hashing one unit against its ``*.sha256`` manifests.
-- ``model-job`` / ``model-cancel``: state and cancellation of those jobs.
+- ``copy-job`` / ``copy-cancel``: state and cancellation of the library's node jobs (in this release only
+  verification jobs exist).
+- ``copy-plan`` / ``copy``: copies between machines are not part of this release; both answer so, and nothing
+  runs behind them.
 
 The guards (no GPU turn holder, no live lease) are checked at least once a second while a job hashes; a tripped
 guard pauses it and more than ten minutes of pause fail it. Reads never fill the page cache (direct I/O, or cache
@@ -41,7 +44,8 @@ except ImportError:  # not POSIX: node jobs are refused there; inventory and ver
     fcntl = None
 
 
-VERBS = {"models", "model-verify", "model-job", "model-cancel"}
+VERBS = {"models", "model-verify", "copy-plan", "copy", "copy-job", "copy-cancel"}
+NOT_IN_RELEASE = "copies between machines are not available in this release"
 SCHEMA = "hyperloom/node-v1"
 MAX_REPLY = 200 * 1024
 DEADLINE_S = 5.0
@@ -266,11 +270,14 @@ def guard_reason(policy, what="model verification"):
 # Inventory
 
 class Budget:
-    def __init__(self, deadline):
+    def __init__(self, deadline, tick=None):
         self.deadline, self.entries, self.manifest_bytes = deadline, 0, 0
+        self.tick = tick            # a verification's stop/guard check, serviced while it scans and parses
         self.snapshots = {}         # manifest path -> (sha256, size) of the exact bytes that were parsed
 
     def check(self):
+        if self.tick is not None:
+            self.tick()
         if time.monotonic() >= self.deadline:
             raise Bound("deadline")
 
@@ -482,7 +489,9 @@ def walk_unit(tree, name, budget):
 
 
 def sibling_index(siblings, budget):
-    """unit name -> [(sibling manifest, its rows for that unit, its invalid line count)], built once per root."""
+    """unit name -> [(sibling manifest, its rows for that unit, its invalid line count)], built once per root. A
+    sibling manifest without one valid line is attributed to the unit its name belongs to (``<unit>.sha256``), so
+    its invalid lines are still reported."""
     index = {}
     for sibling, (rows, bad) in sorted(siblings.items()):
         mine = {}
@@ -490,26 +499,35 @@ def sibling_index(siblings, budget):
             if not number % 1024:
                 budget.check()
             mine.setdefault(rel.split("/", 1)[0], []).append((digest, rel))
+        if not mine and bad:
+            mine[sibling[:-len(".sha256")]] = []
         for unit, unit_rows in mine.items():
             index.setdefault(unit, []).append((sibling, unit_rows, bad))
     return index
 
 
 def unit_entries(tree, name, files, manifests, index, budget):
-    """Manifest entries of a unit: path relative to the root -> set of digests; plus invalid line count."""
-    entries, invalid = {}, 0
+    """Manifest entries of a unit: path relative to the root -> set of digests; the invalid line count; and the
+    paths listed more than once (every file must be listed exactly once for a complete manifest)."""
+    entries, invalid, seen, repeated = {}, 0, set(), set()
+
+    def add(path, digest):
+        if path in seen:
+            repeated.add(path)
+        seen.add(path)
+        entries.setdefault(path, set()).add(digest)
     for manifest in manifests:
         directory = manifest.rsplit("/", 1)[0]
         rows, bad = parse_manifest(tree, manifest, files[manifest][0], budget)
         invalid += bad
         for digest, rel in rows:
-            entries.setdefault(directory + "/" + rel, set()).add(digest)
+            add(directory + "/" + rel, digest)
     for _, rows, bad in index.get(name, ()):
         budget.check()
         invalid += bad
         for digest, rel in rows:
-            entries.setdefault(rel, set()).add(digest)
-    return entries, invalid
+            add(rel, digest)
+    return entries, invalid, repeated
 
 
 def root_listing(tree, budget):
@@ -576,7 +594,7 @@ def _scan(tree, budget):
                 files, manifests, links = {name: (item[2], item[3])}, [], 0
         if not unit_hit:
             try:
-                entries, invalid = unit_entries(tree, name, files, manifests, index, budget)
+                entries, invalid, repeated = unit_entries(tree, name, files, manifests, index, budget)
                 budget.check()
             except Bound as exc:
                 unit_hit = str(exc)
@@ -592,12 +610,13 @@ def _scan(tree, budget):
         conflicts = sorted(path for path, digests in entries.items() if len(digests) > 1)
         unlisted = sorted(data - set(entries))
         covering = sorted(manifests + [sibling for sibling, _, _ in index.get(name, ())])
-        status = ("none" if not entries else "conflict" if conflicts else "missing" if missing
-                  else "partial" if unlisted or invalid else "complete")
+        status = ("partial" if not entries and invalid else "none" if not entries else "conflict" if conflicts
+                  else "missing" if missing else "partial" if unlisted or invalid or repeated else "complete")
         unit.update(bytes=sum(size for size, _ in files.values()), files=len(files),
                     newest_mtime=max(mtime for _, mtime in files.values()) / 1e9 if files else None, links=links,
                     manifest={"status": status, "listed": len(listed), "missing": len(missing),
                               "unlisted": len(unlisted), "invalid": invalid, "conflicts": len(conflicts),
+                              "repeated": len(repeated),
                               "manifests": covering[:32]})
         result["units"].append(unit)
     result["truncated"] = sorted(set(result["truncated"]))
@@ -706,6 +725,8 @@ class Reader:
 
 def hash_reader(reader, check=None, progress=None):
     digest, offset = hashlib.sha256(), 0
+    if check is not None:
+        check()                                   # also for an empty file
     while offset < reader.size:
         if check is not None:
             check()
@@ -1155,7 +1176,9 @@ def guard_check(policy, pauser, what="model verification"):
 def verify_unit(model_root, name, check=None, progress=None, budget_s=30.0):
     """Hash every manifest entry of one unit (cache-free, protected opens); counts and the first 50 failures."""
     name = unit_name(name)
-    budget = Budget(time.monotonic() + budget_s)
+    if check is not None:
+        check()                                   # before anything is read
+    budget = Budget(time.monotonic() + budget_s, check)
     with Tree(model_root) as tree:
         root = tree.root
         units, sibling_sizes, _, hit = root_listing(tree, budget)
@@ -1172,7 +1195,8 @@ def verify_unit(model_root, name, check=None, progress=None, budget_s=30.0):
             raise ValueError("the scan reached a bound (" + hit + "); verification refused")
         try:
             siblings = {s: parse_manifest(tree, s, size, budget) for s, size in sibling_sizes.items()}
-            entries, invalid = unit_entries(tree, name, files, manifests, sibling_index(siblings, budget), budget)
+            entries, invalid, _ = unit_entries(tree, name, files, manifests, sibling_index(siblings, budget),
+                                               budget)
         except Bound as exc:
             raise ValueError("the scan reached a bound (" + str(exc) + "); verification refused") from None
         if not entries:
@@ -1180,6 +1204,8 @@ def verify_unit(model_root, name, check=None, progress=None, budget_s=30.0):
         counts = {"ok": 0, "mismatch": 0, "missing": 0, "changed": 0, "conflict": 0}
         failures, hashed = [], 0
         for path in sorted(entries):
+            if check is not None:
+                check()                           # every entry, also the ones that are not read
             digests = entries[path]
             result, why = None, None
             if len(digests) > 1:
@@ -1240,6 +1266,12 @@ def spawn(root, job, kind, spec, record=None):
         install.atomic_json(path, {"job": job, "kind": kind, "state": "queued", "created": time.time(),
                                    "boot_id": install.boot_id(), **record})
     prefix = ["nice", "-n", "19"] + (["ionice", "-c3"] if shutil.which("ionice") else [])
+    try:
+        request_check()                       # writing the records took time: the last check before dispatch
+    except ValueError as exc:
+        transition(root, job, lambda r: {**r, "state": "failed", "reason": str(exc), "finished": time.time()})
+        spec_path.unlink(missing_ok=True)
+        raise
     try:
         with log.open("ab") as output:
             child = subprocess.Popen(["nohup", *prefix, sys.executable, str(Path(__file__).resolve()), "--job",
@@ -1376,7 +1408,9 @@ def run(verb, payload):
             result.update(models(payload))
         elif verb == "model-verify":
             result.update(start_verify(payload))
-        elif verb == "model-job":
+        elif verb in ("copy-plan", "copy"):
+            raise ValueError(NOT_IN_RELEASE)
+        elif verb == "copy-job":
             result.update(job_state(payload))
         else:
             result.update(cancel(payload))

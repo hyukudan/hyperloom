@@ -245,12 +245,12 @@ class WatchAndVerifyTests(unittest.TestCase):
 
         def node(machine, verb, payload, timeout=60):
             verbs.append(verb)
-            return {"state": next(states) if verb == "model-job" else "running", "job": "j"}
+            return {"state": next(states) if verb == "copy-job" else "running", "job": "j"}
         with patch.object(downloads, "_node", node):
             record = downloads.watch_job(parse(example()), "halo-2", "j", cancelled=lambda: True,
                                          sleep=lambda s: None)
         self.assertEqual(record["state"], "cancelled")
-        self.assertEqual(verbs, ["model-job", "model-cancel", "model-job", "model-job"])
+        self.assertEqual(verbs, ["copy-job", "copy-cancel", "copy-job", "copy-job"])
 
     def test_the_watcher_returns_the_real_final_state_of_a_long_job(self):
         cluster = parse(example())
@@ -259,13 +259,13 @@ class WatchAndVerifyTests(unittest.TestCase):
 
         def node(machine, verb, payload, timeout=60):
             verbs.append(verb)
-            return {"state": next(states) if verb == "model-job" else "running", "job": "j"}
+            return {"state": next(states) if verb == "copy-job" else "running", "job": "j"}
         clock = [0.0]
         with patch.object(downloads, "_node", node), patch.object(downloads._time, "monotonic", lambda: clock[0]):
             record = downloads.watch_job(cluster, "halo-1", "j", cancelled=lambda: True,
                                          sleep=lambda s: clock.__setitem__(0, clock[0] + s))
         self.assertEqual(record["state"], "succeeded")
-        self.assertGreater(verbs.count("model-cancel"), 1)           # asked again while it was not honoured yet
+        self.assertGreater(verbs.count("copy-cancel"), 1)           # asked again while it was not honoured yet
 
     def test_a_watcher_rides_out_transient_status_failures(self):
         cluster = parse(example())
@@ -275,7 +275,7 @@ class WatchAndVerifyTests(unittest.TestCase):
 
         def node(machine, verb, payload, timeout=60):
             verbs.append(verb)
-            if verb == "model-cancel":
+            if verb == "copy-cancel":
                 return {"state": "running"}
             reply = replies.pop(0)
             if isinstance(reply, Exception):
@@ -284,7 +284,7 @@ class WatchAndVerifyTests(unittest.TestCase):
         with patch.object(downloads, "_node", node):
             record = downloads.watch_job(cluster, "halo-1", "j", cancelled=lambda: True, sleep=lambda s: None)
         self.assertEqual(record["state"], "succeeded")
-        self.assertIn("model-cancel", verbs)
+        self.assertIn("copy-cancel", verbs)
 
     def test_control_machine_verification_has_one_pause_budget(self):
         temp = tempfile.TemporaryDirectory()

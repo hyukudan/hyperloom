@@ -532,7 +532,7 @@ def watch_job(cluster, machine_id, job, *, cancelled=lambda: False, progress=lam
     asked, failing_since = None, None
     while True:
         try:
-            record = _node(machine, "model-job", {"root": machine.install_root, "job": job}, timeout=30)
+            record = _node(machine, "copy-job", {"root": machine.install_root, "job": job}, timeout=30)
             failing_since = None
         except (ValueError, RuntimeError, OSError) as exc:
             # A busy gate or an unreachable node: retried (cancellation still sent); after 10 min of failures the
@@ -550,7 +550,7 @@ def watch_job(cluster, machine_id, job, *, cancelled=lambda: False, progress=lam
             # Asked again every 30 s until the node's job sees it; its real final record is what this returns.
             asked = _time.monotonic()
             try:
-                _node(machine, "model-cancel", {"root": machine.install_root, "job": job}, timeout=30)
+                _node(machine, "copy-cancel", {"root": machine.install_root, "job": job}, timeout=30)
             except (ValueError, RuntimeError, OSError):
                 pass
         sleep(poll)
@@ -607,4 +607,4 @@ def library_job(cluster, machine_id, job, cancel=False):
     if _is_local(machine):
         raise ValueError(machine.id + " runs no node jobs (control-machine work runs in the portal or the CLI)")
     payload = {"root": machine.install_root, "job": job}
-    return _node(machine, "model-cancel" if cancel else "model-job", payload, timeout=30)
+    return _node(machine, "copy-cancel" if cancel else "copy-job", payload, timeout=30)
