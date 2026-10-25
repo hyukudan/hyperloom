@@ -375,20 +375,21 @@ def plan(store, transitions, states, now):
                         continue
                     fid = key.split("|")[1]
                     finding = active.get(fid)
-                    seen = bool(mark.get("delivered_at")) or mark.get("message") in tried or mark.get("message") in queued
+                    seen = bool(mark.get("seen") or mark.get("delivered_at")) or mark.get("message") in tried                         or mark.get("message") in queued
                     ended = mark.get("resolving") or finding is None or finding.get("occurrence") != mark.get("occurrence")
                     if ended:
                         if mark.get("resolving") and mark["resolving"] in queued:
                             continue                                        # its resolve is still on the way
                         if seen:
+                            # "seen" persists until the resolve is acknowledged, so a second drop resends it again
                             items.append({**(mark.get("finding") or {"id": fid}), "state": "resolved"})
-                            touched[key] = {**mark, "resolving": "pending"}
+                            touched[key] = {**mark, "resolving": "pending", "seen": True}
                         else:
                             touched[key] = None                             # never seen: nothing to resolve
                         continue
                     if not mark.get("delivered_at") and mark.get("message") not in queued:
                         items.append(_item(finding, "firing"))              # its firing was dropped: again
-                        touched[key] = {**mark, "message": "pending", "escalating": None,
+                        touched[key] = {**mark, "message": "pending", "escalating": None, "seen": seen,
                                         "severity": finding.get("severity")}
                     elif mark.get("escalating") and mark["escalating"] not in queued:
                         items.append(_item(finding, "escalated"))           # its escalation was dropped: again

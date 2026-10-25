@@ -373,6 +373,18 @@ class PlanTests(Base):
         self.assertEqual([items for c, items in self.outbox() if c == channel["id"]], [[("resolved", a["id"])]])
         self.assertEqual(self.store.items(alerts.ATTEMPTED), [])
 
+    def test_two_successive_drops_still_deliver_the_resolve(self):
+        channel = self.channel(path="/fail/x")
+        a = self.finding()
+        self.plan([("appeared", a)], {a["id"]: a})
+        self.deliver()                                                # attempted: the receiver may have the firing
+        self.plan([("cleared", a)], {})
+        self.fill_and_overflow()
+        self.plan([], {})                                             # compensating resolve queued
+        self.fill_and_overflow()                                      # and dropped again
+        self.plan([], {})
+        self.assertEqual([items for c, items in self.outbox() if c == channel["id"]], [[("resolved", a["id"])]])
+
     def test_the_bound_holds_for_writers_on_separate_connections(self):
         path = Path(self.dir.name) / "telemetry.sqlite3"
         first, second = Store(path, clock=self.clock), Store(path, clock=self.clock)
