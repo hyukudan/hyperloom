@@ -283,6 +283,27 @@ class PublishingTests(Base):
         cleared = sorted(m["topic"] for m in publisher.messages if m["payload"] == b"")
         self.assertEqual(cleared, ["lab/metrics/halo-1", "lab/status/halo-1"])
 
+    def test_an_old_clear_acknowledgement_never_forgets_a_republished_topic(self):
+        self.enable()
+        self.api.machines = [{"id": "halo-1", "health": "online"}]
+        self.collect()
+        publisher = self.publishers[0]
+        self.api.machines = [{"id": "halo-1", "health": None}]          # unknown (stale): a clear is queued
+        self.clock.now += 20
+        self.collect()
+        clear = [m for m in publisher.messages if m["topic"] == "lab/status/halo-1" and m["payload"] == b""][-1]
+        self.api.machines = [{"id": "halo-1", "health": "online"}]      # online again: "1" is republished...
+        self.clock.now += 5
+        self.collect()
+        clear["done"]("sent")                                           # ...and only then the old clear is acknowledged
+        publisher.messages.clear()
+        self.api.machines = [{"id": "halo-1", "health": None}]          # unknown again: must be cleared again
+        self.clock.now += 20
+        self.collect()
+        self.assertEqual([(m["topic"], m["payload"]) for m in publisher.messages if m["retain"]],
+                         [("lab/status/halo-1", b"")])
+        self.assertIn("lab/status/halo-1", self.store.get(integrations.RETAINED_NAMESPACE, "topics"))
+
     def test_a_new_publisher_clears_what_an_earlier_one_left(self):
         self.store.put(integrations.RETAINED_NAMESPACE, "topics", ["old/status/halo-9", "lab/metrics/halo-2"])
         self.enable()

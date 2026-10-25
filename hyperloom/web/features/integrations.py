@@ -295,7 +295,7 @@ def _ensure(api, config, factory, store, expires):
         return None
     password = _password(config)
     state = {"digest": digest, "status": {}, "metrics": set(), "connects": 0, "metrics_at": None, "pending": {},
-             "events_lost": 0, "renewed": time.monotonic(), "lock": threading.Lock(), "cleared": set(), "gaps": {}, "metric_keys": {},
+             "events_lost": 0, "renewed": time.monotonic(), "lock": threading.Lock(), "cleared": set(), "gaps": {}, "metric_keys": {}, "generation": {},
              "lease_until": _lease_cutoff(api, expires)}
 
     def alive():
@@ -444,9 +444,17 @@ def publish_round(api, store, config, state, now):
     except (OSError, ValueError, RuntimeError, LookupError, AttributeError):
         statuses = None                 # configuration unreadable: nothing is changed or cleared this round
     with state["lock"]:
-        done, state["cleared"] = state["cleared"], set()
+        acknowledged, state["cleared"] = state["cleared"], set()
+        # A clear counts only when it is still the latest write queued to its topic: a value published after it
+        # (a new generation) keeps the topic remembered, so a later unknown state clears it again.
+        done = {topic for topic, generation in acknowledged if state["generation"].get(topic) == generation}
     stored = _retained(store)
     remembered = stored - done          # topics whose clearing the broker acknowledged are forgotten
+
+    def put_retained(topic, payload, qos, done_for=None, **kw):
+        with state["lock"]:
+            generation = state["generation"][topic] = state["generation"].get(topic, 0) + 1
+        publisher.put(topic, payload, qos, True, done=done_for(generation) if done_for else None, **kw)
     wanted = set()
     if statuses is not None:
         for machine, value in sorted(statuses.items()):
@@ -455,7 +463,7 @@ def publish_round(api, store, config, state, now):
             topic = f"{prefix}/status/{machine}"
             wanted.add(topic)
             if state["status"].get(machine) != value:
-                publisher.put(topic, value, 0, True)
+                put_retained(topic, value, 0)
                 state["status"][machine] = value
                 queued += 1
         state["status"] = {machine: value for machine, value in state["status"].items()
@@ -473,7 +481,7 @@ def publish_round(api, store, config, state, now):
         keys[topic] = sorted(json.dumps([v["series"], v["labels"]], sort_keys=True) for v in values)
         if due or keys[topic] != state["metric_keys"].get(topic):
             payload = metrics_payload(machine, now, values)
-            publisher.put(topic, payload, 0, True, expires=time.monotonic() + max(0.0, valid_until - now))
+            put_retained(topic, payload, 0, expires=time.monotonic() + max(0.0, valid_until - now))
             queued += 1
     if due:
         state["metrics_at"] = now
@@ -482,11 +490,13 @@ def publish_round(api, store, config, state, now):
     wanted |= state["metrics"]
     if statuses is not None:            # without the configuration nothing is cleared this round
         for topic in sorted(remembered - wanted):
-            def cleared(outcome, topic=topic):
-                if outcome == "sent":
-                    with state["lock"]:
-                        state["cleared"].add(topic)
-            publisher.put(topic, b"", 1, True, done=cleared)
+            def cleared_for(generation, topic=topic):
+                def cleared(outcome):
+                    if outcome == "sent":
+                        with state["lock"]:
+                            state["cleared"].add((topic, generation))
+                return cleared
+            put_retained(topic, b"", 1, done_for=cleared_for)
             queued += 1
     current = remembered | wanted
     if current != stored:
