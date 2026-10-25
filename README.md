@@ -5,7 +5,7 @@
 **One control plane for AI inference across different machines.** Hyperloom brings a Windows workstation with an NVIDIA GPU and AMD Strix Halo Linux mini-PCs into one explicitly configured cluster. It installs pinned components, manages their lifecycle, starts a router, and gives operators a unified view of nodes, links, logs, and performance.
 
 > [!IMPORTANT]
-> **Development status — not production-ready:** Phase 0 is complete; Phase 1a code is written and unit-tested, but real-hardware acceptance is pending. **No inference has yet been served through Hyperloom.** Performance results published below in the technical documentation come from the component projects running independently, not from a Hyperloom deployment. This repository is private and proprietary.
+> **Development status — not production-ready:** Phase 0 is complete. Phase 1a (deployment and node supervision) was accepted on real hardware on 2026-10-23 and Phase 2 (validated profiles, DeepSeek pair) on 2026-10-23/24, including a token regression gate: 8 of 8 greedy prompts identical between the Hyperloom launch and the reference launch. The optional RTX prefill extension is partly validated (build and service on the RTX PRO accepted; the pair + RTX placement run is pending). Performance results published in the technical documentation come from the component projects running independently, not from a Hyperloom deployment. This repository is private and proprietary.
 
 ## What problem does it solve?
 
@@ -59,20 +59,20 @@ hloom doctor halo-2
 hloom render qwen-replicas
 ```
 
-**Hardware acceptance is still pending.** The staged install/start/stop workflow and its constraints are explained in [the detailed quick start](docs/README-technical.md#quick-start). Not every documented future option is implemented: notably `--plan` and `--allow-partial` are planned.
+**Hardware acceptance covers phases 1a and 2;** see the acceptance documents. The staged install/start/stop workflow and its constraints are explained in [the detailed quick start](docs/README-technical.md#quick-start). Not every documented future option is implemented: notably `--plan` and `--allow-partial` are planned.
 
 ## Current status
 
 | Phase | Status |
 |---|---|
 | 0 — configuration, rendering and local router control | Complete |
-| 1a — deployment and node supervision | Code written and unit-tested; hardware acceptance pending |
-| 1b — local monitoring portal | Planned |
-| 2 — validated cluster profiles and operational workflows | Planned |
-| 3 — optional RTX prefill and heterogeneous inference extensions | Planned / component-dependent |
+| 1a — deployment and node supervision | Accepted on real hardware (2026-10-23, Qwen replicas) |
+| 1b — local monitoring portal | Implemented on main (thin web UI over the CLI); no acceptance record yet |
+| 2 — validated cluster profiles and operational workflows | Accepted on real hardware (2026-10-23/24, DeepSeek pair) |
+| 3 — optional RTX prefill and heterogeneous inference extensions | 3a in progress: CUDA build and prefill service on the RTX PRO accepted (fidelity gate equal to the exact reference at 512 / 2K / 8K / 32K); pair + RTX placement through `up` pending; optional operator gate before the device is touched |
 | 4 — discovery, pairing and other operational extensions | Later |
 
-These statuses describe **Hyperloom integration work**, not the maturity of individual underlying engines. See the [full roadmap and acceptance criteria](docs/SPEC.md) and [Phase 1a acceptance checklist](docs/acceptance-1a.md).
+These statuses describe **Hyperloom integration work**, not the maturity of individual underlying engines. See the [full roadmap and acceptance criteria](docs/SPEC.md) and the acceptance records for [Phase 1a](docs/acceptance-1a.md), [Phase 2](docs/acceptance-2.md) and [Phase 3a](docs/acceptance-3a.md).
 
 ## Documentation
 
