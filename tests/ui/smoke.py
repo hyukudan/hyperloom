@@ -82,7 +82,13 @@ class FixtureServer:
         try:
             connection.request(method, path, body=body, headers=headers or {})
             response = connection.getresponse()
-            return response.status, dict(response.getheaders()), response.read()
+            try:
+                data = response.read()
+            except ConnectionError:
+                # A refusal sent before the request body was read (e.g. 413) closes the connection; Windows may then
+                # reset it under the client while it reads the answer's body. The status already arrived.
+                data = b""
+            return response.status, dict(response.getheaders()), data
         finally:
             connection.close()
 
