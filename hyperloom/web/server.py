@@ -144,6 +144,11 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == "/favicon.ico":
                 self._send(204, b"", "image/x-icon", head=head)
                 return
+            if parsed.path == "/hyperloom/api/stream":
+                # Live snapshot stream (server-sent events); same Host and target checks as every GET.
+                from .features import integrations
+                integrations.serve_stream(self, head)
+                return
             if parsed.path.startswith("/hyperloom/api/"):
                 endpoint = parsed.path[len("/hyperloom/api/"):]
                 if endpoint == "recipes" or endpoint.startswith("recipes/"):

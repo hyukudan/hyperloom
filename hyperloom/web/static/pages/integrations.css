@@ -1,0 +1,4 @@
+/* Integrations page (integrations.js). */
+.intg-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 16px;align-items:start}
+.intg-form .check{grid-column:span 1}
+@media (max-width:720px){.intg-form{grid-template-columns:minmax(0,1fr)}}
