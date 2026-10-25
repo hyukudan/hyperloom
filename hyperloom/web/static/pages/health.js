@@ -48,7 +48,7 @@
     const kpis = `<div class="grid g4 hl-kpis">${[["critical", "Critical"], ["warning", "Warning"], ["info", "Info"]].map(([key, label]) => `<div class="card kpi"><div class="lbl">${esc(label)}</div><div class="val">${counts[key]}</div><div class="dl muted">active findings</div></div>`).join("")}<div class="card kpi"><div class="lbl">Evaluated</div><div class="val hl-small">${d.evaluated_at == null ? display(null, d.why?.evaluated_at || "no evaluation yet") : esc(duration(d.evaluation_age_s) + " ago")}</div><div class="dl muted">every 10 s · ${d.pending?.length || 0} pending</div></div></div>`;
     const stale = d.evaluated_at != null && d.stale ? `<div class="banner warn" role="status">Evaluation stale · last run ${esc(time(d.evaluated_at))}. Findings below are the last known state.</div>` : "";
     const rows = d.findings.map(f => cells([severity(f.severity), `<b>${esc(f.title)}</b><div class="hint">${esc(f.detail || "")}</div>`, f.machine ? esc(f.machine) : `<span class="muted">lab</span>`,
-      `${esc(time(f.since) || "")}<div class="hint">for ${esc(duration(now - f.since))}</div>`,
+      `${esc(time(f.since) || "")}<div class="hint">for ${esc(duration(now - f.since))}</div><div class="hint">${typeof f.last_observed === "number" ? `observed ${esc(duration(now - f.last_observed))} ago` : "not observed since"}</div>`,
       `${f.state === "clearing" ? `<span class="pill p-ok">clearing</span>` : `<span class="pill p-err">firing</span>`}${f.note ? `<div class="hint">${esc(f.note)}</div>` : ""}`,
       `<span class="hide-n">${esc(f.hint || "")}</span>`])).join("");
     const active = d.findings.length ? table(["Severity", "Finding", "Machine", "Since", "State", ["What to do", "hide-n"]], rows, "Active findings")

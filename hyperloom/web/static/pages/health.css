@@ -11,4 +11,5 @@
 .hl-form .field{min-width:200px}
 .hl-nowrap{white-space:nowrap}
 .hl-url{overflow-wrap:anywhere}
-@media (max-width:760px){.hl-filters .field{min-width:100%}.hl-tab{padding:8px 8px}}
+
+@media (max-width:760px){#health-panel td{min-width:72px}.hl-filters .field{min-width:100%}.hl-tab{padding:8px 8px}}

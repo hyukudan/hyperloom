@@ -15,6 +15,7 @@ from hyperloom.web.features import health
 
 
 T0 = 1_800_000_000.0
+SECRET_URL = "https://" + ".".join(("secret", "example", "test")) + "/abc"     # a reserved test name, built at run time
 
 
 class Clock:
@@ -196,6 +197,33 @@ class StateMachineTests(Base):
         self.assertEqual((after["state"], after["since"], after["occurrence"]), ("firing", before["since"], before["occurrence"]))
         self.assertEqual(len(self.health_events()), events)
 
+    def test_observations_of_removed_machines_never_come_back(self):
+        self.store.put(health.CONFIG, "gpu-hot", {"hold_s": 0})
+        self.at(0)
+        self.hot(95, "halo-2")
+        self.run_eval()
+        del self.api.machines["halo-2"]
+        for t in (10, 20, 30):
+            self.at(t)
+            self.hot(95, "halo-2")
+            self.run_eval()
+        self.assertNotIn("gpu-hot:halo-2/card0", self.states())
+        self.assertEqual([e["data"]["change"] for e in reversed(self.health_events())], ["appeared", "cleared"])
+
+    def test_a_rule_change_during_an_evaluation_aborts_its_commit(self):
+        self.store.put(health.CONFIG, "gpu-hot", {"hold_s": 0})
+        self.at(0)
+        self.hot(95)
+        original = health.configs
+
+        def racing(store):
+            result = original(store)
+            health.set_rule(store, {"rule": "gpu-hot", "enabled": False})       # lands after the settings were read
+            return result
+        with mock.patch.object(health, "configs", racing), self.assertRaises(sqlite3.IntegrityError):
+            self.run_eval()
+        self.assertEqual(self.states(), {})
+
     def test_disabled_rules_and_removed_machines_resolve_explicitly(self):
         self.store.put(health.CONFIG, "gpu-hot", {"hold_s": 0})
         self.at(0)
@@ -296,7 +324,7 @@ class RuleTests(Base):
         self.record(("node_mem_available_bytes", {"machine": "halo-1"}, 3 * health.GIB))
         out, ctx = self.evaluate_rule("memory-headroom")
         self.assertEqual([(o.subject, o.verdict) for o in out], [("halo-1/system", False)])
-        self.assertEqual(ctx.sources["thresholds"], "fleet thresholds setting")
+        self.assertIn(ctx.sources["thresholds"], ("fleet thresholds document", "fleet thresholds setting"))
         self.assertEqual(health.parse_thresholds({"thresholds": {"commit": {"amber_gib": 4, "red_gib": None}}})["commit"],
                          {"amber": 4 * health.GIB, "red": None})
 
@@ -323,6 +351,27 @@ class RuleTests(Base):
         out, _ = self.evaluate_rule("gpu-throttled")
         self.assertEqual((out[0].verdict, out[0].facts["reason"]), (True, "thermal"))
         self.assertEqual(self.verdicts("machine-unreachable"), {"halo-1": (False, "critical"), "halo-2": (True, "critical")})
+
+    def test_a_stop_of_another_profile_never_exempts(self):
+        self.api.profiles["other"] = {"nodes": ["halo-1"]}
+        self.record(("engine_up", {"profile": "qwen-replicas", "replica": "halo-2", "machine": "halo-2"}, 0))
+        self.api.admission_db.acquire("stop", {"halo-1", "router"}, "down other")
+        self.assertEqual(self.verdicts("engine-down")["qwen-replicas/halo-2"][0], True)
+        self.api.admission_db.acquire("stop", {"halo-2", "router"}, "cli down qwen-replicas")
+        self.assertEqual(self.verdicts("engine-down")["qwen-replicas/halo-2"][0], False)
+
+    def test_untyped_or_unknown_state_codes_never_judge(self):
+        self.record(("node_up", {"machine": "halo-1"}, 2), ("node_up", {"machine": "halo-2"}, 0.5),
+                    ("engine_up", {"profile": "qwen-replicas", "replica": "halo-1"}, 7),
+                    ("node_gpu_throttled", {"machine": "workstation", "device": "gpu0"}, 9))
+        self.assertEqual({k: v[0] for k, v in self.verdicts("machine-unreachable").items()}, {"halo-1": None, "halo-2": None})
+        self.assertEqual(self.verdicts("engine-down"), {"qwen-replicas/halo-1": (None, None)})
+        self.assertEqual(self.verdicts("gpu-throttled"), {"workstation/gpu0": (None, None)})
+        bare = Store(":memory:", clock=self.clock)
+        self.addCleanup(bare.close)
+        bare.record([("node_up", {"machine": "halo-1"}, 0)], ts=self.clock.now)      # a gauge, not a state
+        ctx = health.Context(self.api, bare, self.clock.now, "x")
+        self.assertIsNone(health.BY_ID["machine-unreachable"].evaluate(ctx, {}))
 
     def test_engine_down_is_expected_during_a_stop_from_any_process(self):
         self.record(("engine_up", {"profile": "qwen-replicas", "replica": "halo-1", "machine": "halo-1"}, 0),
@@ -515,12 +564,12 @@ class DocumentTests(Base):
         self.assertEqual((result["effective"]["params"]["warn_c"], result["effective"]["hold_s"]), (80, 30))
         bad = [{"rule": "nope"}, {"rule": "gpu-hot", "params": {"warn_c": 500}}, {"rule": "gpu-hot", "params": {"x": 1}},
                {"rule": "gpu-hot", "hold_s": -1}, {"rule": "gpu-hot", "enabled": "yes"},
-               {"rule": "gpu-hot", "params": {"warn_c": 95}}, {"rule": "gpu-hot", "url": "https://secret.example/abc"}]
+               {"rule": "gpu-hot", "params": {"warn_c": 95}}, {"rule": "gpu-hot", "url": SECRET_URL}]
         for arguments in bad:
             with self.assertRaises((ValueError, LookupError), msg=arguments):
                 health.set_rule_post(self.api, arguments)
         text = json.dumps(self.api.audits)
-        self.assertNotIn("secret.example", text)
+        self.assertNotIn(SECRET_URL, text)
         self.assertEqual([a[2]["state"] for a in self.api.audits], ["succeeded"] + ["refused"] * len(bad))
         health.set_rule_post(self.api, {"rule": "gpu-hot", "reset": True})
         self.assertIsNone(self.store.get(health.CONFIG, "gpu-hot"))

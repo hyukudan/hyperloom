@@ -282,17 +282,27 @@ def _queue(cid, items, now, message=None):
                      "VALUES (?, ?, ?, ?, 0, ?)", (message, cid, now, now, json.dumps(items, ensure_ascii=True)))
 
 
+RESYNC = "alerts/resync"
+
+
 def bound(now):
-    """Statements, run last in the committing transaction, that keep the outbox at MAX_OUTBOX rows: the oldest
-    unclaimed rows beyond it are dropped (with one event). They count the table inside the transaction, so
-    concurrent writers can never exceed the bound; a dropped reminder is re-armed by the planner."""
-    excess = f"(SELECT COUNT(*) FROM alerts_outbox) - {MAX_OUTBOX}"
-    return [("INSERT INTO events(ts, category, severity, machine, message, data) SELECT ?, 'alerts', 'warning', NULL, "
-             "'alert outbox full: dropped the ' || (" + excess + ") || ' oldest undelivered messages', NULL "
-             "WHERE " + excess + " > 0", (now,)),
-            ("DELETE FROM alerts_outbox WHERE id IN (SELECT id FROM alerts_outbox WHERE claimed_until IS NULL OR "
-             "claimed_until < ? ORDER BY id LIMIT MAX(0, " + excess + "))", (now,)),
-            health.RETENTION]
+    """Statements, run last in the committing transaction, that keep the outbox at MAX_OUTBOX rows. They count the
+    table inside the transaction, so writers on different connections can never exceed the bound. When it is
+    exceeded, the channel owning the oldest unclaimed message loses its WHOLE undelivered backlog together with its
+    bookkeeping (so no later message of it can refer to a dropped one, e.g. a resolve without its firing) and is
+    marked for a resync: the next evaluation tells it the findings active then. One event per dropped backlog."""
+    over = f"(SELECT COUNT(*) FROM alerts_outbox) > {MAX_OUTBOX}"
+    victim = "(SELECT channel FROM alerts_outbox WHERE claimed_until IS NULL OR claimed_until < ? ORDER BY id LIMIT 1)"
+    once = [("INSERT INTO events(ts, category, severity, machine, message, data) SELECT ?, 'alerts', 'warning', NULL, "
+             "'alert outbox full: dropped the undelivered backlog of channel ' || " + victim + " || "
+             "'; it is told the active findings again', NULL WHERE " + over, (now, now)),
+            ("INSERT INTO docs(namespace, key, ts, value) SELECT ?, " + victim + ", ?, '{}' WHERE " + over +
+             " AND " + victim + " IS NOT NULL ON CONFLICT(namespace, key) DO NOTHING", (RESYNC, now, now, now)),
+            ("DELETE FROM docs WHERE namespace=? AND " + over + " AND substr(key, 1, length(" + victim + ") + 1) = "
+             + victim + " || '|'", (TRACK, now, now)),
+            ("DELETE FROM alerts_outbox WHERE " + over + " AND channel = " + victim +
+             " AND (claimed_until IS NULL OR claimed_until < ?)", (now, now))]
+    return once * 3 + [health.RETENTION]
 
 
 def plan(store, transitions, states, now):
@@ -312,10 +322,27 @@ def plan(store, transitions, states, now):
         for key in [k for k in track if k.split("|", 1)[0] not in known]:
             statements.append(health.delete_doc(TRACK, key))
             del track[key]
+        for key, _ in store.execute("SELECT key, value FROM docs WHERE namespace=?", (RESYNC,)):
+            if key not in known:
+                statements.append(health.delete_doc(RESYNC, key))
+        resync = {key: text for key, text in store.execute("SELECT key, value FROM docs WHERE namespace=?", (RESYNC,))}
         for channel in configured:
             cid, floor = channel["id"], health.RANK.get(channel.get("min_severity"), 1)
             period = REMINDERS.get(channel.get("reminders"))
             items, touched = [], {}
+            if cid in resync:
+                # Its backlog was dropped (outbox full): tell it the findings active now, before this round's changes.
+                statements.append(health.unchanged(RESYNC, cid, resync[cid]))
+                statements.append(health.delete_doc(RESYNC, cid))
+                for fid, finding in sorted(active.items()):
+                    key = cid + "|" + fid
+                    mark = track.get(key)
+                    if health.RANK.get(finding.get("severity"), 1) >= floor and not (
+                            isinstance(mark, dict) and mark.get("occurrence") == finding.get("occurrence")):
+                        items.append(_item(finding, "firing"))
+                        touched[key] = {"occurrence": finding.get("occurrence"), "severity": finding.get("severity"),
+                                        "queued_at": now, "delivered_at": None, "reminded_at": None,
+                                        "reminder_queued": None}
             for change, finding in transitions:
                 key = cid + "|" + finding["id"]
                 mark = touched.get(key, track.get(key))
@@ -724,16 +751,22 @@ def channels_post(api, arguments):
 
 def delete_post(api, arguments):
     store = telemetry.open_store(api)
-    if set(arguments) - {"id"}:
-        raise ValueError("delete takes only the channel id")
-    return _audited(api, "alerts/channels/delete", arguments, lambda: delete_channel(store, arguments.get("id")))
+
+    def work():
+        if set(arguments) - {"id"}:
+            raise ValueError("delete takes only the channel id")
+        return delete_channel(store, arguments.get("id"))
+    return _audited(api, "alerts/channels/delete", arguments, work)
 
 
 def test_post(api, arguments):
     store = telemetry.open_store(api)
-    if set(arguments) - {"id"}:
-        raise ValueError("test takes only the channel id")
-    return _audited(api, "alerts/test", arguments, lambda: test_channel(api, store, arguments.get("id"), api.clock()))
+
+    def work():
+        if set(arguments) - {"id"}:
+            raise ValueError("test takes only the channel id")
+        return test_channel(api, store, arguments.get("id"), api.clock())
+    return _audited(api, "alerts/test", arguments, work)
 
 
 def document(api, query):

@@ -223,6 +223,22 @@ class Context:
             return rows
         return self._once("series:" + name, read)
 
+    def states(self, name, codes):
+        """Fresh samples of a state series whose value is one of ``codes``: [(row, code or None)]; None when the
+        series is absent or is not described as a state (an untyped series is never judged)."""
+        rows = self.latest(name)
+        if rows is None:
+            return None
+        if (self.store.descriptor(name) or {}).get("kind") != "state":
+            self.sources["series:" + name] = "not described as a state series"
+            return None
+        out = []
+        for row in rows:
+            value = row["value"]
+            code = int(value) if float(value).is_integer() and int(value) in codes else None
+            out.append((row, code))
+        return out
+
     def legend(self, name):
         descriptor = self.store.descriptor(name) or {}
         return descriptor.get("legend") or {}
@@ -245,7 +261,8 @@ class Context:
         """The core documents the portal already holds (cache only: never a refresh, so never a node, router or
         engine request), or None when absent or older than SNAPSHOT_MAX_AGE_S."""
         def read():
-            cached = getattr(self.api, "_cached", None)
+            reader = getattr(self.api, "cached_snapshot", None)
+            cached = reader() if callable(reader) else getattr(self.api, "_cached", None)
             devices = cached.get("devices") if isinstance(cached, dict) else None
             at = devices.get("server_time") if isinstance(devices, dict) else None
             if type(at) not in (int, float) or self.now - at > SNAPSHOT_MAX_AGE_S:
@@ -259,7 +276,8 @@ class Context:
         def read():
             from hyperloom import admission
             database = getattr(self.api, "admission_db", None) or admission.for_config(self.api.config_path)
-            return [set(hold["resources"]) for hold in database.holds() if hold.get("kind") == "stop"]
+            return [(set(hold["resources"]), str(hold.get("label") or "")) for hold in database.holds()
+                    if hold.get("kind") == "stop"]
         return self._once("admission", read)
 
     def profile_machines(self, profile):
@@ -274,8 +292,19 @@ class Context:
         holds = self.stop_resources()
         if holds is None:
             return None
-        mine = self.profile_machines(profile) | ({machine} if machine else set()) | {"router"}
-        return any("*" in hold or hold & mine for hold in holds)
+        mine = self.profile_machines(profile) | ({machine} if machine else set())
+        profiles = set(self.profiles() or {})
+        for resources, label in holds:
+            # A stop names its profile in its label ("down <profile>", "cli down <profile>"): only that profile is
+            # exempt. A stop whose label names no configured profile falls back to its machines; the router
+            # resource is shared by every profile and never identifies one.
+            named = label.split()[-1] if label.split() and label.split()[-1] in profiles else None
+            if named is not None:
+                if named == profile:
+                    return True
+            elif "*" in resources or (resources - {"router"}) & mine:
+                return True
+        return False
 
     def feature(self, name):
         """A registered feature's GET document (e.g. another package's), or None with the reason."""
@@ -338,13 +367,17 @@ def _gpu_low_clock(ctx, p):
 
 
 def _gpu_throttled(ctx, p):
-    rows = ctx.latest("node_gpu_throttled")
-    if rows is None:
-        return None
     legend = ctx.legend("node_gpu_throttled")
+    typed = ctx.states("node_gpu_throttled", {int(code) for code in legend if str(code).isdigit()} if legend else range(0, 64))
+    if typed is None:
+        return None
+    codes = {id(row): code for row, code in typed}
     out = []
-    for (machine, device), row in sorted(_keyed(rows, "machine", "device").items()):
-        code = int(row["value"])
+    for (machine, device), row in sorted(_keyed([row for row, _ in typed], "machine", "device").items()):
+        code = codes[id(row)]
+        if code is None:
+            out.append(Obs(_subject(machine, device), None))
+            continue
         reason = legend.get(str(code))
         reason = reason if isinstance(reason, str) and len(reason) <= 64 else None
         out.append(Obs(_subject(machine, device), code != 0, "critical",
@@ -460,11 +493,13 @@ def _disk(ctx, p):
 
 
 def _unreachable(ctx, p):
-    rows = ctx.latest("node_up")
-    if rows is None:
+    typed = ctx.states("node_up", {0, 1})
+    if typed is None:
         return None
-    return [Obs(machine, int(row["value"]) == 0, "critical", f"{machine} does not answer the node tool", machine)
-            for (machine,), row in sorted(_keyed(rows, "machine").items())]
+    codes = {id(row): code for row, code in typed}
+    return [Obs(machine, None if codes[id(row)] is None else codes[id(row)] == 0, "critical",
+                f"{machine} does not answer the node tool", machine)
+            for (machine,), row in sorted(_keyed([row for row, _ in typed], "machine").items())]
 
 
 _first_seen = {}
@@ -527,7 +562,7 @@ def _fleet_sources(ctx):
     when one machine's read fails; a machine it marks down (node_up = 0) is judged by machine-unreachable instead."""
     descriptor = ctx.store.descriptor("node_up") or {}
     interval = _number(descriptor.get("interval_s")) or 5.0
-    down = {key[0] for key, row in _keyed(ctx.latest("node_up"), "machine").items() if int(row["value"]) == 0}
+    down = {key[0] for key, row in _keyed(ctx.latest("node_up"), "machine").items() if row["value"] == 0}
     out = []
     for machine, _, doc in ctx.store.items("fleet/host"):
         if not _clean(machine) or not isinstance(doc, dict):
@@ -549,12 +584,16 @@ def _producer_sources(ctx):
 
 
 def _engine_down(ctx, p):
-    rows = ctx.latest("engine_up")
-    if rows is None:
+    typed = ctx.states("engine_up", {0, 1})
+    if typed is None:
         return None
+    codes = {id(row): code for row, code in typed}
     machines = ctx.machines() or {}
     out = []
-    for (profile, replica), row in sorted(_keyed(rows, "profile", "replica").items()):
+    for (profile, replica), row in sorted(_keyed([row for row, _ in typed], "profile", "replica").items()):
+        if codes[id(row)] is None:
+            out.append(Obs(_subject(profile, replica), None))
+            continue
         machine = _clean(row["labels"].get("machine")) or (replica if replica in machines else None)
         subject, what = _subject(profile, replica), f"engine {replica} of {profile}" if replica else f"engine of {profile}"
         if int(row["value"]) != 0:
@@ -974,6 +1013,9 @@ def advance(states, results, cfg, now, machines=None, profiles=None, gap_s=GAP_S
         for obs in observations:
             if obs.verdict is None or not isinstance(obs.subject, str) or not obs.subject:
                 continue
+            if (machines is not None and obs.machine and obs.machine not in machines
+                    or profiles is not None and obs.profile and obs.profile not in profiles):
+                continue                       # authoritatively not configured: never creates or moves a finding
             fid = rule.id + ":" + obs.subject
             if fid in changes["removed"]:
                 continue
@@ -1087,6 +1129,7 @@ def evaluate(api, now, store=None):
         return _gauge(store)
     with _eval_lock:
         ctx = Context(api, store, now, owner)
+        config_revision = version(store, CONFIG)       # captured before the settings are read
         cfg = configs(store)
         results = {}
         for rule in RULES:
@@ -1102,7 +1145,7 @@ def evaluate(api, now, store=None):
         machines, profiles = ctx.machines(), ctx.profiles()
         changes = advance(states, results, cfg, now, machines=None if machines is None else set(machines),
                           profiles=None if profiles is None else set(profiles))
-        statements = guard(owner, generation, api.clock())
+        statements = guard(owner, generation, api.clock()) + [same_version(CONFIG, config_revision)]
         statements += [upsert_doc(STATE, fid, finding, now) for fid, finding in changes["changed"].items()
                        if finding != states.get(fid)]
         statements += [delete_doc(STATE, fid) for fid in changes["removed"]]

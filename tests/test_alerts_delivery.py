@@ -257,16 +257,25 @@ class PlanTests(Base):
         with self.assertRaises(sqlite3.IntegrityError):
             health.commit(self.store, statements)
 
-    def test_the_outbox_is_bounded(self):
-        channel = self.channel()
-        rows = [("INSERT INTO alerts_outbox(message_id, channel, created, next_at, attempts, items) VALUES (?, ?, ?, ?, 0, ?)",
-                 (str(i), channel["id"], T0, T0, json.dumps([{"id": f"f{i}", "state": "firing"}]))) for i in range(alerts.MAX_OUTBOX)]
-        health.commit(self.store, rows)
-        a = self.finding()
-        self.plan([("appeared", a)], {a["id"]: a})
-        self.assertEqual(self.store.execute("SELECT COUNT(*) FROM alerts_outbox")[0][0], alerts.MAX_OUTBOX)
-        self.assertEqual(self.store.execute("SELECT COUNT(*) FROM alerts_outbox WHERE message_id='0'")[0][0], 0)
-        self.assertIn("outbox full: dropped the 1 oldest", self.store.events(category="alerts")[0]["message"])
+    def test_overflow_drops_a_whole_channel_backlog_and_resyncs_it(self):
+        busy, quiet = self.channel(path="/busy"), self.channel(path="/quiet")
+        a, b = self.finding(occurrence="o1"), self.finding("disk-full:halo-2/disk:/", "warning", "o2")
+        self.plan([("appeared", a)], {a["id"]: a})                  # [firing a] for both channels
+        self.plan([("cleared", a)], {})                              # [resolved a] for both
+        filler = [("INSERT INTO alerts_outbox(message_id, channel, created, next_at, attempts, items) VALUES (?, ?, ?, ?, 0, '[]')",
+                   (f"x{i}", quiet["id"], T0, T0)) for i in range(alerts.MAX_OUTBOX - 4)]
+        health.commit(self.store, filler)
+        self.plan([("appeared", b)], {b["id"]: b})                  # 102 rows: the oldest owner's backlog goes
+        rows = self.outbox()
+        self.assertLessEqual(len(rows), alerts.MAX_OUTBOX)
+        victim = busy["id"] if rows[0][0] != busy["id"] else quiet["id"]
+        remaining = [items for channel, items in rows if channel == victim]
+        self.assertEqual(remaining, [])                              # no orphan resolve without its firing
+        self.assertEqual([k for k, _, _ in self.store.items(alerts.TRACK) if k.startswith(victim)], [])
+        self.assertIn("dropped the undelivered backlog of channel " + victim, self.store.events(category="alerts")[0]["message"])
+        self.plan([], {b["id"]: b})                                  # the resync tells it what is active now
+        self.assertEqual([items for channel, items in self.outbox() if channel == victim], [[("firing", b["id"])]])
+        self.assertEqual(self.store.items(alerts.RESYNC), [])
 
     def test_the_bound_holds_for_writers_on_separate_connections(self):
         path = Path(self.dir.name) / "telemetry.sqlite3"
@@ -281,7 +290,8 @@ class PlanTests(Base):
                                       "VALUES (?, 'ch-00000000', ?, ?, 0, '[]')", (str(i), T0, T0)) for i in range(99)])
         alerts.save_channel(first, {"name": "a", "kind": "push", "url": self.receiver.url("/a")}, self.clock.now)
         alerts.save_channel(second, {"name": "b", "kind": "push", "url": self.receiver.url("/b")}, self.clock.now)
-        self.assertEqual(first.execute("SELECT COUNT(*) FROM alerts_outbox")[0][0], alerts.MAX_OUTBOX)
+        self.assertLessEqual(first.execute("SELECT COUNT(*) FROM alerts_outbox")[0][0], alerts.MAX_OUTBOX)
+        self.assertEqual(first.execute("SELECT COUNT(*) FROM alerts_outbox WHERE channel='ch-00000000'")[0][0], 0)
 
     def test_a_dropped_reminder_is_re_armed(self):
         channel = self.channel(reminders="1h")
@@ -366,6 +376,15 @@ class DeliveryTests(Base):
             time.sleep(2.0)                                # the lookup finishes later: still nothing is sent
         self.assertEqual(outcome["error"], "no answer within 0.5 s")
         self.assertEqual((connects, self.receiver.received), ([], []))
+
+    def test_refused_delete_and_test_are_audited_without_client_text(self):
+        record = self.channel()
+        for post in (alerts.delete_post, alerts.test_post):
+            with self.assertRaises(ValueError):
+                post(self.api, {"id": record["id"], "password=" + TOKEN: 1})
+        self.assertEqual([(a[0], a[2]["state"]) for a in self.api.audits],
+                         [("alerts/channels/delete", "refused"), ("alerts/test", "refused")])
+        self.assertNotIn(TOKEN, json.dumps(self.api.audits))
 
     def test_sends_are_bounded_and_a_busy_test_is_refused(self):
         record = self.channel()
