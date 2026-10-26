@@ -363,6 +363,20 @@ class WriteTests(unittest.TestCase):
             self.assertEqual(Path(stored["path"]).parent, service.receipts_dir().resolve())
             with self.assertRaisesRegex(RecipeError, "needs"):
                 service.save_receipt(None, "bad", json.dumps({"host": "x"}))
+            for value in (float("nan"), float("inf"), 10 ** 400, 0, "6.1", True):
+                with self.assertRaisesRegex(RecipeError, "is not a JSON number|finite number"):
+                    service.save_receipt(None, "bad", json.dumps(dict(receipt, disk_read_gbytes_ps=value)))
+            with self.assertRaisesRegex(RecipeError, "strings"):
+                service.save_receipt(None, "bad", json.dumps(dict(receipt, host=["halo-1"])))
+            # Files written by hand: bounded reads, each problem a row error, the whole file hashed.
+            directory = service.receipts_dir()
+            (directory / "huge.json").write_bytes(b" " * (service.MAX_RECEIPT_BYTES + 1) + b"{}")
+            (directory / "nan.json").write_text(json.dumps(dict(receipt, disk_read_gbytes_ps=float("nan"))))
+            rows = {r["name"]: r for r in service.receipt_files()}
+            self.assertIn("larger than 64 KiB", rows["huge"]["error"])
+            self.assertIn("NaN", rows["nan"]["error"])
+            self.assertEqual(rows["halo1-disk"]["sha256"], hashlib.sha256(Path(stored["path"]).read_bytes()).hexdigest())
+            self.assertIsNone(rows["halo1-disk"]["error"])
 
     def test_layers_read_both_schema_spellings_and_write_the_legacy_one(self):
         """tierstream/* layer ids are the same kinds as strix-stream/* (dispatch by kind, not by string); the layers

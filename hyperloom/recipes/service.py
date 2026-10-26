@@ -40,6 +40,7 @@ DEVICES = re.compile(r"(?i)(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³]|conin\
 MAX_SAVE_BYTES = 256 * 1024
 MAX_FILES = 512                  # recipe files read per directory by the catalog (the portal's GETs are bounded)
 MAX_FILE_BYTES = 1024 * 1024     # a recipe file larger than this is listed as an error, not read
+MAX_RECEIPT_BYTES = 64 * 1024    # a stored disk-read receipt (saved and listed at most this large)
 OVERRIDES_SCHEMA = "strix-stream/recipe-overrides-v1"   # written in the legacy spelling (tierstream/* is read too)
 # Known x-predicted metrics: (label, unit, kind). Unknown metrics are shown as they are, never dropped.
 METRICS = {"ttft_s": ("TTFT", "s", "speed"), "decode_tok_s": ("decode", "tok/s", "speed"),
@@ -283,13 +284,37 @@ def receipt_files():
             row = {"name": path.stem, "sha256": None, "host": None, "path": None, "disk_read_gbytes_ps": None,
                    "error": None}
             try:
-                data = path.read_bytes()[: 64 * 1024 + 1]
-                receipt = json.loads(data)
-                row.update(sha256=_sha256(data), **{k: receipt.get(k) for k in ("host", "path", "disk_read_gbytes_ps")})
-            except (OSError, ValueError, AttributeError) as exc:
+                with open(path, "rb") as stream:
+                    data = stream.read(MAX_RECEIPT_BYTES + 1)      # never more than the limit is read
+                if len(data) > MAX_RECEIPT_BYTES:
+                    raise ValueError(f"larger than {MAX_RECEIPT_BYTES // 1024} KiB (not read)")
+                receipt = _receipt(data)
+                row.update(sha256=_sha256(data), **{k: receipt[k] for k in ("host", "path", "disk_read_gbytes_ps")})
+            except (OSError, ValueError, RecipeError) as exc:
                 row["error"] = str(exc)
             out.append(row)
     return out
+
+
+def _receipt(data):
+    """A receipt's JSON object, checked as `probe --evidence` reads it: host and path strings, disk_read_gbytes_ps a
+    finite number in (0, 1e6) (no NaN, infinities or huge integers, which no answer could carry either)."""
+    from . import facts
+
+    def constant(name):
+        raise RecipeError(f"{name} is not a JSON number")
+    try:
+        receipt = json.loads(data, parse_constant=constant)
+    except (ValueError, RecursionError) as exc:
+        raise RecipeError(f"not JSON ({exc})") from exc
+    if not isinstance(receipt, dict) or not facts.EVIDENCE_SCHEMA_KEYS <= receipt.keys():
+        raise RecipeError(f"needs {', '.join(sorted(facts.EVIDENCE_SCHEMA_KEYS))}")
+    if not isinstance(receipt["host"], str) or not isinstance(receipt["path"], str):
+        raise RecipeError("host and path must be strings")
+    value = receipt["disk_read_gbytes_ps"]
+    if type(value) not in (int, float) or not 0 < value < 1e6:
+        raise RecipeError("disk_read_gbytes_ps must be a finite number in (0, 1e6)")
+    return receipt
 
 
 def find(ref, cluster=None, extra=()):
@@ -1478,17 +1503,14 @@ def save_layer(cluster, layer_name, recipe_ref=None, sets=(), *, text=None, repl
 def save_receipt(cluster, name, text, *, replace=None):
     """Store a node disk-read receipt (JSON with the keys `probe --evidence` reads) as <config dir>/run/receipts/NAME.json,
     for `probe --evidence NODE=NAME`; its content is checked against the node and model where it is used."""
-    from . import facts
     check_id(name, "receipt name")
-    try:
-        receipt = json.loads(text)
-    except ValueError as exc:
-        raise RecipeError(f"receipt {name}: not JSON ({exc})") from exc
-    if not isinstance(receipt, dict) or not facts.EVIDENCE_SCHEMA_KEYS <= receipt.keys():
-        raise RecipeError(f"receipt {name}: needs {', '.join(sorted(facts.EVIDENCE_SCHEMA_KEYS))}")
     data = text.encode("utf-8")
-    if len(data) > 64 * 1024:
-        raise RecipeError(f"receipt {name}: larger than 64 KiB")
+    if len(data) > MAX_RECEIPT_BYTES:
+        raise RecipeError(f"receipt {name}: larger than {MAX_RECEIPT_BYTES // 1024} KiB")
+    try:
+        _receipt(data)
+    except RecipeError as exc:
+        raise RecipeError(f"receipt {name}: {exc}") from exc
     with runtime_lock():
         root = _plain_dir(receipts_dir())
         _check_overlap(cluster, root)
