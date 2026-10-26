@@ -37,6 +37,15 @@ def manifest_store():
     return content_cache.ManifestStore(runtime_dir())
 
 
+def measure_command(cluster, args):
+    """Only the top-level probe command calls this explicit acquisition path."""
+    from . import measurements
+    mode = "xfer" if args.xfer else "store" if args.store else "manifest"
+    return measurements.acquire(cluster, mode, runtime=runtime_dir(), uuid=args.uuid,
+                                xfer_sha256=args.xfer_sha256, store_id=args.store_id,
+                                files=args.file, window=args.window)
+
+
 def recipe_dirs(cluster, extra=()):
     """Where `--recipe auto` and pick look: the built-in examples (not the pending ones), the configured directories
     and the user directory, aliases removed (the catalog's own list)."""
