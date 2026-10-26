@@ -835,7 +835,9 @@ class LaunchTests(unittest.TestCase):
         obj["profiles"]["mm"] = {"preset": "minimax-pair", "rank0": "halo-1", "rank1": "halo-2", "port": 18601,
                                  "release_id": "0" * 12}
         real = engines.load_preset
-        keyed = lambda name: dict(real(name), serve_auth="key-file") if name == "minimax-pair" else real(name)
+        keyed = lambda name: (dict(real(name), serve_auth="key-file",
+                                   argv=real(name)["argv"] + ["--api-key-file", "{key_file}"])
+                              if name == "minimax-pair" else real(name))
         for keyed_release in (False, True):
             with mock.patch.object(engines, "load_preset", side_effect=keyed if keyed_release else real):
                 for host in ("local", "halo-1"):
@@ -883,9 +885,11 @@ class LaunchTests(unittest.TestCase):
     def test_release_auth_binds_the_lan_only_for_that_release(self):
         from hyperloom import engines
         from hyperloom.config import ConfigError
-        presets = {"mm-old": {"family": "minimax-pair"}, "mm-new": {"family": "minimax-pair", "serve_auth": "key-file"},
-                   "ds-bad": {"family": "ds41-pair", "serve_auth": "key-file"},
-                   "mm-odd": {"family": "minimax-pair", "serve_auth": "token"}}
+        keyed = ["{binary}", "--bind", "{address}", "--api-key-file", "{key_file}"]
+        presets = {"mm-old": {"family": "minimax-pair"},
+                   "mm-new": {"family": "minimax-pair", "serve_auth": "key-file", "argv": keyed},
+                   "ds-bad": {"family": "ds41-pair", "serve_auth": "key-file", "argv": keyed},
+                   "mm-odd": {"family": "minimax-pair", "serve_auth": "token", "argv": keyed}}
         with mock.patch.object(engines, "load_preset", side_effect=presets.__getitem__):
             old, new = engines.release_adapter("mm-old"), engines.release_adapter("mm-new")
             self.assertEqual((old.bind, old.key_file), ("loopback", False))
@@ -895,6 +899,23 @@ class LaunchTests(unittest.TestCase):
             for name in ("ds-bad", "mm-odd"):
                 with self.subTest(name=name), self.assertRaisesRegex(ConfigError, "serve_auth"):
                     engines.release_adapter(name)
+
+    def test_release_auth_needs_the_key_on_the_command_line(self):
+        # A keyed release whose argv does not pass {key_file} after a key flag would serve the LAN unauthenticated.
+        from hyperloom import engines
+        from hyperloom.config import ConfigError
+        argvs = {"none": ["{binary}", "--bind", "{address}"],
+                 "no-flag": ["{binary}", "--bind", "{address}", "{key_file}"],
+                 "other-flag": ["{binary}", "--model", "{key_file}"],
+                 "first": ["{key_file}", "--bind", "{address}"]}
+        presets = {name: {"family": "minimax-pair", "serve_auth": "key-file", "argv": argv}
+                   for name, argv in argvs.items()}
+        with mock.patch.object(engines, "load_preset", side_effect=presets.__getitem__):
+            for name in argvs:
+                with self.subTest(name=name), self.assertRaisesRegex(ConfigError, "needs the argv to pass the key"):
+                    engines.release_adapter(name)
+        for flag in engines.KEY_FILE_FLAGS:
+            self.assertTrue(engines.passes_key_file(["{binary}", flag, "{key_file}"]))
 
     def test_idle_cuda_members_are_never_available(self):
         spec = dict(self.spec(None), idle=["GPU-4090"])

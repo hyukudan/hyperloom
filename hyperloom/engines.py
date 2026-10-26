@@ -76,6 +76,13 @@ def adapter(family):
 # Families whose serve gained an API key option in some release: a preset of such a release declares
 # `"serve_auth": "key-file"` and binds the LAN with a key file; presets without it keep the family's loopback bind.
 AUTH_BY_RELEASE = ("minimax-pair",)
+# The serve flags that take the node-local key file ({key_file} is the token right after one of them).
+KEY_FILE_FLAGS = ("--http-api-key-file", "--api-key-file")
+
+
+def passes_key_file(argv):
+    """True when the argv hands the serve its key file: "{key_file}" right after a key flag."""
+    return any(token == "{key_file}" and i > 0 and argv[i - 1] in KEY_FILE_FLAGS for i, token in enumerate(argv))
 
 
 def release_adapter(preset_name):
@@ -87,6 +94,10 @@ def release_adapter(preset_name):
         return base
     if auth != "key-file" or base.family not in AUTH_BY_RELEASE or base.key_file:
         raise ConfigError(f"preset {preset_name}: serve_auth {auth!r} is not supported for {base.family}")
+    if not passes_key_file(data.get("argv") or []):
+        # A LAN bind without the key on the command line would serve generation unauthenticated.
+        raise ConfigError(f"preset {preset_name}: serve_auth 'key-file' needs the argv to pass the key file "
+                          f"({' or '.join(KEY_FILE_FLAGS)} {{key_file}})")
     return replace(base, bind="lan", key_file=True, capabilities=base.capabilities + ("key-file",))
 
 
