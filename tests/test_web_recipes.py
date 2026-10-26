@@ -246,8 +246,8 @@ class ContractTests(unittest.TestCase):
         state = orchestrate._state_path("qwen-replicas")
         state.parent.mkdir(parents=True, exist_ok=True)
         state.write_text(json.dumps({"profile": "qwen-replicas", "phase": "running", "recipe": {
-            "recipe": QWEN, "inputs": [], "router_api_key": "sekrit-value", "argv": ["--api-key", "sekrit-value"]}}),
-            encoding="utf-8")
+            "recipe": QWEN, "inputs": [], "router_api_key": "sekrit-value", "argv": ["--api-key", "sekrit-value"]},
+            "config": orchestrate.config_record(self.env.config)}), encoding="utf-8")
         try:
             status, document = self.portal.request("GET", "recipes/active")
         finally:

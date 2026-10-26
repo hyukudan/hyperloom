@@ -887,7 +887,7 @@ class API:
             return documents
         status_error = None
         try:
-            statuses = self.orchestrate.status()
+            statuses = self.orchestrate.status(config_path=self.config_path)     # this configuration's launches only
         except (OSError, ValueError, RuntimeError) as exc:
             status_error = str(exc)
             statuses = {name: {"error": status_error} for name in cluster.profiles}
@@ -1643,7 +1643,9 @@ class API:
                 devices=args.get("device"), deadline_s=args.get("deadline", 1140), approval=approval,
                 **({"cancelled": cancelled} if cancelled else {}))
             if not args.get("_job"):
-                return launch()
+                from hyperloom.recipes import service
+                with service.configured(self.config_path):     # the launch state records this configuration
+                    return launch()
             # The job's cancel marker is checked right after up owns the profile (the hand-over), as `up --job`
             # does: a cancel before it starts nothing and never stops a profile that was running already.
             from hyperloom.recipes import service

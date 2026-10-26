@@ -55,6 +55,46 @@ def _read(path):
     return rtx._retry(lambda: json.loads(path.read_text(encoding="utf-8")))
 
 
+def config_record(config_path):
+    """What a launch state records about the configuration it was launched from: the resolved absolute path (its
+    identity, the one `launch_states` compares) and the file's sha256 at launch (for the record only, never compared:
+    an edit of the configuration does not hide the profiles it launched)."""
+    import hashlib
+    path = Path(config_path).resolve()
+    try:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        digest = None
+    return {"path": str(path), "sha256": digest}
+
+
+def _config_key(path):
+    try:
+        return os.path.normcase(str(Path(path).resolve()))
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None
+
+
+def launch_states(config_path, read=None):
+    """{profile: state} of the saved launch states (the up-*.json files) launched from the configuration at
+    ``config_path``, in profile order. A state that records another configuration, or none (written before launch
+    states recorded it), is left out: a portal or a command on one configuration never shows or polls the profiles
+    of another. ``read``: the state reader (default `_read`); an unreadable state is skipped."""
+    read = read or _read
+    wanted = _config_key(config_path)
+    found = {}
+    for path in sorted(secrets.runtime_dir().glob("up-*.json")):
+        try:
+            state = read(path)
+        except (OSError, ValueError):
+            continue
+        record = state.get("config") if isinstance(state, dict) else None
+        recorded = record.get("path") if isinstance(record, dict) else None
+        if wanted is not None and isinstance(recorded, str) and _config_key(recorded) == wanted:
+            found[path.stem[3:]] = state
+    return found
+
+
 def _known_hosts():
     return secrets._directory().parent / "known_hosts"
 
@@ -658,6 +698,11 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
              "known_hosts": str(_known_hosts()), "machines": {},
              "token": uuid.uuid4().hex, "phase": "starting", "keys": [],
              "production": not diagnostics and (launch is None or launch.production), "diagnostic": diagnostics}
+    from .recipes import service as recipe_service
+    if recipe_service.configured_file() is not None:
+        # The configuration this launch belongs to (the portal and the CLI set it for the call): only a portal or a
+        # command on the same configuration lists or polls it.
+        state["config"] = config_record(recipe_service.configured_file())
     if launch is not None:
         state["recipe"] = launch.record()
     keys = []
@@ -1195,9 +1240,13 @@ def down(profile, force=False):
         lock.close()
 
 
-def status(profile=None):
+def status(profile=None, config_path=None):
+    """One profile's status, or every saved launch's ({profile: status}); with ``config_path``, only the launches of
+    that configuration (`launch_states`): the others are neither listed nor polled."""
     if profile is None:
-        return {path.stem[3:]: status(path.stem[3:]) for path in secrets.runtime_dir().glob("up-*.json")}
+        names = (list(launch_states(config_path)) if config_path is not None
+                 else [path.stem[3:] for path in secrets.runtime_dir().glob("up-*.json")])
+        return {name: status(name) for name in names}
     path = _state_path(profile)
     if not path.exists():
         return {"profile": profile, "state": "stopped"}

@@ -83,6 +83,11 @@ def configured(path):
         _config.reset(token)
 
 
+def configured_file():
+    """The configuration `configured` set for this call (None outside one: no default is assumed)."""
+    return _config.get()
+
+
 def config_file():
     from ..cli import config_path
     return Path(_config.get() or config_path())
@@ -486,7 +491,7 @@ def _prune_snapshots(keep):
     """Retention (caller holds the runtime lock): keep snapshots referenced by a launch state, younger than a day, and
     at most MAX_SNAPSHOTS in all; remove the rest, oldest first."""
     directory = runtime_dir() / "recipe-inputs"
-    referenced = {keep} | {((state.get("recipe") or {}).get("inputs_digest")) for state in _states().values()}
+    referenced = {keep} | {((state.get("recipe") or {}).get("inputs_digest")) for state in _states(every=True).values()}
     now = time.time()
     pins = directory / "pins"
     referenced |= {p.name.split(".")[0] for p in (pins.iterdir() if pins.is_dir() else ())
@@ -1082,9 +1087,13 @@ def _deploy_pinned(digest, stop, source, orchestrate, approval, progress):
 
 # --- the running deployment --------------------------------------------------------------------------------------
 
-def _states(profile=None):
-    """{profile: launch state} of the profiles hyperloom launched (their state files; no remote call)."""
+def _states(profile=None, *, every=False):
+    """{profile: launch state} of the profiles hyperloom launched from the configuration in use (their state files; no
+    remote call; `orchestrate.launch_states`); ``every``: from any configuration (snapshot retention)."""
     from .. import orchestrate
+    if not every:
+        return {name: state for name, state in orchestrate.launch_states(config_file()).items()
+                if isinstance(state.get("profile"), str) and state["profile"] == name == (profile or name)}
     paths = [orchestrate._state_path(profile)] if profile else \
         sorted(orchestrate._state_path("x").parent.glob("up-*.json"))
     out = {}

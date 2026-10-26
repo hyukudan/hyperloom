@@ -259,14 +259,10 @@ def launches(api):
     key_name, service_key, replicas [{id, node, address, port, loopback}], family, service_port}]. At most 8
     profiles x 8 replicas; what is left out is counted, never silently dropped."""
     rows, omitted = [], {"profiles": 0, "replicas": 0}
-    paths = sorted(secrets.runtime_dir().glob("up-*.json"))
-    omitted["profiles"] = max(0, len(paths) - MAX_PROFILES)
-    for path in paths[:MAX_PROFILES]:
-        profile = path.stem[3:]
-        try:
-            state = api.orchestrate._read(path)
-        except (OSError, ValueError):
-            continue
+    from hyperloom import orchestrate
+    states = orchestrate.launch_states(api.config_path, read=api.orchestrate._read)   # this portal's launches
+    omitted["profiles"] = max(0, len(states) - MAX_PROFILES)
+    for profile, state in list(states.items())[:MAX_PROFILES]:
         endpoint = (state.get("router") or {}).get("endpoint") if isinstance(state, dict) else None
         if not isinstance(endpoint, dict) or not isinstance(endpoint.get("address"), str) or type(endpoint.get("port")) is not int:
             continue

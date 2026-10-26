@@ -138,19 +138,16 @@ def describe(api, store, state=None):
 
 # -- launch records: roles and loopback engines (local files only) ------------------------------------------------
 def launch_records(api):
-    """{profile: launch record} of the profiles this control machine launched (local reads, no ssh)."""
+    """{profile: launch record} of the profiles this control machine launched from the portal's configuration (local
+    reads, no ssh)."""
     records = {}
     try:
-        paths = sorted(secrets.runtime_dir().glob("up-*.json"))
+        from hyperloom import orchestrate
+        states = orchestrate.launch_states(api.config_path, read=api.orchestrate._read)
     except OSError:
         return records
-    for path in paths[:32]:
-        try:
-            record = api.orchestrate._read(path)
-        except (OSError, ValueError):
-            continue
-        if isinstance(record, dict):
-            records[str(record.get("profile") or path.stem[3:])] = record
+    for name, record in list(states.items())[:32]:
+        records[str(record.get("profile") or name)] = record
     return records
 
 

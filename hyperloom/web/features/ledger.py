@@ -156,17 +156,11 @@ def _invalidate(store):
 # Sources: running profiles and their engines (read-only)
 
 def _states(api):
-    """Launch records of the running profiles (the files `orchestrate.status()` reads; no ssh here)."""
-    from hyperloom import orchestrate, secrets
-    states = []
-    for path in sorted(secrets.runtime_dir().glob("up-*.json"))[:MAX_PROFILES]:
-        try:
-            state = orchestrate._read(path)
-        except (OSError, ValueError):
-            continue
-        if isinstance(state, dict) and isinstance(state.get("profile"), str):
-            states.append(state)
-    return states
+    """Launch records of the running profiles of the portal's configuration (the files `orchestrate.status()` reads;
+    no ssh here)."""
+    from hyperloom import orchestrate
+    return [state for state in list(orchestrate.launch_states(api.config_path).values())[:MAX_PROFILES]
+            if isinstance(state.get("profile"), str)]
 
 
 def _adapter(family):

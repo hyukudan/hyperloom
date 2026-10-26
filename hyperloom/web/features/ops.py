@@ -210,9 +210,10 @@ def safe_open(path):
 
 # -- occupancy (in use) -------------------------------------------------------------------------------------------
 def statuses(api):
-    """orchestrate.status() for every saved launch ({} when none) and the error text (fresh: jobs and saves only)."""
+    """orchestrate.status() for every saved launch of the portal's configuration ({} when none) and the error text
+    (fresh: jobs and saves only)."""
     try:
-        return api.orchestrate.status() or {}, None
+        return api.orchestrate.status(config_path=api.config_path) or {}, None
     except Exception as exc:
         return {}, f"profile status unavailable: {exc}"
 

@@ -177,6 +177,20 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
         self.assertEqual(orch._read(orch._state_path("qwen-replicas")), state)
 
+    def test_up_records_the_configuration_of_the_call(self):
+        from hyperloom.recipes import service
+        config = self.directory / "cluster.json"
+        config.write_text('{"fixture": true}', encoding="utf-8")
+        with service.configured(config):
+            state = orch.up(self.cluster, "qwen-replicas")
+        self.assertEqual(state["config"], orch.config_record(config))
+        self.assertEqual(orch._read(orch._state_path("qwen-replicas"))["config"]["path"], str(config.resolve()))
+        self.assertEqual(list(orch.launch_states(config)), ["qwen-replicas"])
+        orch.down("qwen-replicas")
+        state = orch.up(self.cluster, "qwen-replicas")             # no configuration set for the call: none recorded
+        self.assertNotIn("config", state)
+        self.assertEqual(orch.launch_states(config), {})
+
     def test_failed_rollback_keeps_state_for_down_retry(self):
         self.fail.update({("halo-2", "lease"), ("halo-1", "stop")})
         with self.assertRaises(orch.OrchestrationError):

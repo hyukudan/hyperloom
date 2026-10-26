@@ -39,17 +39,15 @@ def configured(api, store=None):
 
 
 def owned_directories(api):
-    """Router and prefill service directories of owned launches on the control machine (from the launch records)."""
+    """Router and prefill service directories of owned launches on the control machine (from the launch records of the
+    portal's configuration)."""
     found = []
     try:
-        names = sorted(path.stem[3:] for path in secrets.runtime_dir().glob("up-*.json"))
+        from hyperloom import orchestrate
+        states = orchestrate.launch_states(api.config_path, read=api.orchestrate._read)
     except OSError:
-        names = []
-    for profile in names[:32]:
-        try:
-            state = api.orchestrate._read(api.orchestrate._state_path(profile))
-        except Exception:
-            continue
+        states = {}
+    for profile, state in list(states.items())[:32]:
         for kind in ("router", "prefill_service"):
             entry = state.get(kind) or {}
             directory = entry.get("directory")

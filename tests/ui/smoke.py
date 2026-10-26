@@ -226,7 +226,7 @@ def fixture_server(args):
         (directory / "release").touch()
         return {"profile": "qwen-replicas", "state": "stopped"}
 
-    def status(profile=None):
+    def status(profile=None, config_path=None):
         row = {"profile": "qwen-replicas", "nodes": {}, "router": None}
         if running["value"]:
             row["router"] = router_status

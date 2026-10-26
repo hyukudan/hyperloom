@@ -48,7 +48,7 @@ class Orchestrate:
         return json.loads(Path(path).read_text(encoding="utf-8"))
 
     @staticmethod
-    def status():
+    def status(*args, **kwargs):
         raise AssertionError("the collectors must not call orchestrate.status (ssh)")
 
 
@@ -103,7 +103,7 @@ class Env:
         state = {"profile": profile, "router": {"machine": "local", "endpoint": {"address": router[0], "port": router[1]}},
                  "rendered_router": {"listen": {"address": router[0], "port": router[1]},
                                      "replicas": [{"id": r[0], "node": r[0], "address": r[1], "port": r[2]} for r in replicas]},
-                 "launch": {"family": family}}
+                 "launch": {"family": family}, "config": orchestrate.config_record(self.api.config_path)}
         if service_port:
             state["prefill_service"] = {"port": service_port}
         (self.run / f"up-{profile}.json").write_text(json.dumps(state), encoding="utf-8")

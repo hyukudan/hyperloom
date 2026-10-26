@@ -91,7 +91,7 @@ class APITests(unittest.TestCase):
             documents = list(pool.map(self.api.read, list(SCREENS) * 2))
         self.assertEqual(len(documents), 14)
         self.assertEqual(self.calls, ["doctor", "gpu"])
-        self.orch.status.assert_called_once_with()
+        self.orch.status.assert_called_once_with(config_path=self.api.config_path)
         self.now += 2
         self.api.read("devices")
         self.assertEqual(self.calls, ["doctor", "gpu"] * 2)
@@ -183,6 +183,16 @@ class APITests(unittest.TestCase):
         self.assertEqual(len(entries), 2)
         self.assertEqual(entries[-1]["action"], "up")
         self.assertEqual(entries[-1]["result"]["state"], "succeeded")
+
+    def test_up_runs_on_the_portals_configuration_and_lists_only_its_launches(self):
+        from hyperloom.recipes import service
+        seen = []
+        self.orch.up.side_effect = lambda *a, **kw: seen.append(service.configured_file()) or {"state": "running"}
+        self.assertEqual(wait_job(self.api, self.api.mutate("up", {"profile": "qwen-replicas"}))["state"], "succeeded")
+        self.api._execute_action("up", {"profile": "qwen-replicas"})      # in process, without a job
+        self.assertEqual(seen, [Path(self.api.config_path).absolute()] * 2)
+        self.api.read("profiles")
+        self.assertEqual(self.orch.status.call_args.kwargs, {"config_path": self.api.config_path})
 
     def test_install_down_doctor_rotate_and_host_pin_endpoints(self):
         for action, arguments in (("install", {"profile": "qwen-replicas"}),

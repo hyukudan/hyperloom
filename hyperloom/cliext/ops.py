@@ -21,7 +21,7 @@ def cli_api(args):
         if "profiles" not in cache:
             try:
                 cluster = api.cluster()
-                statuses = api.orchestrate.status()
+                statuses = api.orchestrate.status(config_path=api.config_path)
                 rows = api._profiles(cluster, statuses)
             except Exception as exc:
                 rows = [{"id": "?", "state": None, "why": {"state": str(exc)}}]
