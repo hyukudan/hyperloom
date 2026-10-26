@@ -270,7 +270,11 @@ def expand_placement(data, plan):
 
 
 def render_service(cluster, profile_name, *, api_key, handoff_api_key, free_physical_gib, now=None, vram_cap_gib=None,
-                   host_gib_exact=None):
+                   host_gib_exact=None, placement_request=None):
+    if placement_request is not None:
+        if vram_cap_gib is not None or host_gib_exact is not None:
+            raise ConfigError("PL_E_CONFLICT placement cannot be combined with legacy sizing flags")
+        return render_placement_service(cluster, placement_request, api_key=api_key)
     s, data, kind = _service(cluster, profile_name)
     decode = data["decode_profiles"][kind]
     rule = decode["context"]
@@ -347,6 +351,46 @@ def render_service(cluster, profile_name, *, api_key, handoff_api_key, free_phys
                        redact(argv, data["secret_flags"]), deadline, cap, floor, data["ready"]["timeout_s"], consistency,
                        sha, None if plan is None else dict(plan.to_dict(), explain=vramplan.explain(plan)),
                        (reservation or {}).get("gate"))
+
+
+def render_placement_service(cluster, request, *, api_key):
+    """Opt-in RTX-alone decode renderer. The shipped unpublished pin refuses before rendering any argv."""
+    from .recipes import runtime
+    from .recipes.grants import uuid_key
+    data = runtime.preset()
+    runtime.qualified(data)
+    machine = cluster.machines[request.machine]
+    if machine.access != "local" or machine.os != "windows":
+        raise ConfigError("PL_E_CAPABILITY placement decode adapter requires the local Windows machine")
+    if not re.fullmatch(r"[0-9a-f]{64}", api_key):
+        raise ConfigError("placement service key must be a generated 32-byte hex key")
+    binary = PureWindowsPath(machine.install_root) / "cuda" / data["engine_sha"][:12] / "bin" / (data["binary"] + ".exe")
+    argv, explicit, document = runtime.render(request.files, binary=binary,
+        argv=["--host", "127.0.0.1", "--port", str(request.port), "--api-key", api_key, *request.argv], data=data)
+    policy = request.supervision
+    touched = {uuid_key(d["uuid"]) for d in document["devices"]}
+    if touched != set(policy.get("caps_gib", {})):
+        raise ConfigError("PL_E_GRANT supervision must cover exactly the placement's touched UUIDs")
+    granted = {uuid_key(g["uuid"]): g for g in policy.get("grants", [])}
+    if touched != granted.keys():
+        raise ConfigError("PL_E_GRANT every touched device needs an explicit grant")
+    from . import placement_supervision
+    placement_supervision.validate(policy, now=time.time(), starting=False)
+    windows = [g["window"] for g in granted.values()]
+    if policy.get("host_grant") is not None:
+        windows.append(policy["host_grant"]["window"])
+    deadline = min(expires(w["expires_at"], "placement grant expires_at") for w in windows)
+    anchor = next((d for d in document["devices"] if d.get("role") == "anchor"), None)
+    if anchor is None:
+        raise ConfigError("PL_E_SCHEMA placement has no anchor")
+    for device in document["devices"]:
+        if device.get("budget_bytes") != int(round(policy["caps_gib"][uuid_key(device["uuid"])] * GIB)):
+            raise ConfigError("PL_E_GRANT supervised cap differs from placement budget")
+    return ServiceSpec(data["name"], request.machine, anchor["uuid"], request.port, argv,
+                       dict(child_env(os.environ), **explicit), redact(argv, data["secret_flags"]),
+                       deadline, policy["caps_gib"][uuid_key(anchor["uuid"])],
+                       policy.get("free_commit_floor_gib", 4), data["ready_timeout_s"], {},
+                       document.get("build_sha256"), document, placement_supervision=policy)
 
 
 # Device selection and behaviour switches of the CUDA runtime are never inherited (the preset sets its own);
@@ -876,11 +920,12 @@ def stop_service(record, timeout_s=60):
 
 # --- operator commands: preview, device check, CUDA build, fidelity gate, placement check --------------------
 
-def render_preview(cluster, profile_name, vram_cap_gib=None):
+def render_preview(cluster, profile_name, vram_cap_gib=None, *, placement_request=None):
     """The service line as it would start now (keys redacted), with the context consistency it was checked for and
     the placement planned for the cap."""
     spec = render_service(cluster, profile_name, api_key="0" * 64, handoff_api_key="0" * 64,
-                          free_physical_gib=memory_status()["free_physical_gib"], vram_cap_gib=vram_cap_gib)
+                          free_physical_gib=(0 if placement_request is not None else memory_status()["free_physical_gib"]),
+                          vram_cap_gib=vram_cap_gib, placement_request=placement_request)
     return {"argv": spec.redacted, "cuda_env": {k: spec.env[k] for k in ("CUDA_DEVICE_ORDER", "CUDA_VISIBLE_DEVICES")},
             "deadline": spec.deadline if math.isfinite(spec.deadline) else None, "consistency": spec.consistency,
             "binary_sha256": spec.binary_sha256, "vram_cap_gib": spec.vram_cap_gib, "placement": spec.placement}

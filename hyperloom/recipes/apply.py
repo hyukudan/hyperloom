@@ -354,9 +354,14 @@ def check_endpoints(recipe, bound, decode, ctx):
                               f"placements ({', '.join(diff)})")
 
 
-def launch_flags(route, set_id, table, what, memory_min, checked=()):
+def launch_flags(route, set_id, table, what, memory_min, checked=(), *, placement_files=None):
     """The launch values a placement maps to; any other non-default field is refused, never dropped (``checked``
     fields are verified elsewhere against the engine's declaration)."""
+    if reader.placement_mode(route):
+        if placement_files is None:
+            raise RecipeError("PL_E_CAPABILITY placement needs the qualified decode adapter and runtime artifacts")
+        placement_files.read()
+        return dict(zip(placement_files.argv()[::2], placement_files.argv()[1::2]))
     placement = route["placement"][set_id]
     defaults = dict(_defaults(), device_gib=memory_min)
     unmapped = sorted(k for k in placement if k not in table and k not in BOUND_FIELDS and k not in checked
@@ -392,7 +397,13 @@ def check_bounds(route, set_id, kind, ctx):
                 raise RecipeError(f"{where}.{field}: {value} > the engine's {flag} {bound}")
 
 
-def refuse_unsupported(recipe):
+def refuse_unsupported(recipe, *, adapter=None):
+    if any(reader.placement_mode(r) for r in recipe["routes"]):
+        from . import runtime
+        if adapter is None:
+            raise RecipeError("PL_E_CAPABILITY placement requires the opt-in RTX decode adapter (schema only for legacy engines)")
+        runtime.qualified(adapter)
+        return
     if any(any(key in device for key in ("optional", "uuid", "pci", "index"))
            for device in recipe["match"]["devices"]):
         raise RecipeError("PL_E_CAPABILITY placement selectors require a qualified placement adapter (schema only)")

@@ -296,6 +296,22 @@ def router_prefill(launch, cluster, profile, key_file):
     return block
 
 
+def render_placement(cluster, profile, request, *, api_key):
+    """Pure rendering of already admitted local artifacts, before any launch-state or lease mutation."""
+    return rtx.render_service(cluster, profile, api_key=api_key, handoff_api_key="0" * 64,
+                              free_physical_gib=0, placement_request=request)
+
+
+def ingest_context(realised, destination):
+    """Persist local context-v1 from an engine's realised checkpoint-1 events; never publish physical identities."""
+    from . import content_cache, runtime
+    destination = Path(destination)
+    previous = content_cache._read(destination, "PL_E_SCHEMA") if destination.exists() else None
+    document = runtime.ingest(realised, previous)
+    content_cache._write(destination, document)
+    return document
+
+
 def route_state_spec(launch, service_record, reservation_end, state):
     """What the router helper needs to write the route state every second, including how to reach the nodes."""
     e = launch.evaluation
