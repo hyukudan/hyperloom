@@ -65,13 +65,15 @@ def node_call(cluster):
 def live_source(cluster, measure_disks=False, *, placement=False):
     def source(ctx):
         executable = None
-        if source.placement:
+        data = None
+        if source.placement or getattr(source, "identity", False):
             from . import runtime
             data = runtime.preset()
             if data.get("engine_sha") is not None:
                 executable = runtime.executable(cluster, ctx.pc, data)
         return facts.gather(cluster, ctx, call=node_call(cluster), cache=cache(), measure_disks=measure_disks,
-                            **({"release_executable": executable} if executable is not None else {}))
+                            **({"release_executable": executable, "release_commit": data["engine_sha"]}
+                               if executable is not None else {}))
     source.placement = placement
     return source
 

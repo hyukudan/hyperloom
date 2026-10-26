@@ -149,14 +149,14 @@ def decision(cluster, recipe, ctx, bound, effective_sha, plans, admitted):
             "effective_sha256": effective_sha, "machine": ctx.pc, "argv": list(argv),
             "files": {"placement": str(files.placement), "manifest": str(manifest), "receipts": receipts,
                       "manifest_sha256": files.manifest_sha256, "document": plan},
-            "supervision": admitted["policies"][route["id"]]}
+            "supervision": admitted["policies"][route["id"]], "port": admitted["inputs"].get("port", 8096)}
 
 
 def request(decision):
     files = decision["files"]
     return Request(decision["machine"], Files(Path(files["placement"]), Path(files["manifest"]),
                    Path(files["receipts"]), files["manifest_sha256"], files["document"]),
-                   decision["supervision"], argv=tuple(decision["argv"]))
+                   decision["supervision"], port=decision.get("port", 8096), argv=tuple(decision["argv"]))
 
 
 def visibility(document):
@@ -184,6 +184,8 @@ def render(files, *, binary, argv=(), data=None):
     """One placement file, manifest and receipts, with no legacy sizing translation or inherited device order."""
     data = preset() if data is None else data
     qualified(data)
+    if "placement-v1" not in data.get("capabilities", []):
+        raise RecipeError("PL_E_CAPABILITY replica release does not parse placement-v1 flags")
     document = files.read()
     if document.get("engine") != data["engine"]:
         raise RecipeError("PL_E_CAPABILITY placement engine differs from the decode adapter")
@@ -191,6 +193,8 @@ def render(files, *, binary, argv=(), data=None):
                        & (SUGAR | SIZING | {"--placement", "--content-manifest", "--receipts"}))
     if conflicts:
         raise RecipeError("PL_E_CONFLICT placement owns allocation flags: " + ", ".join(conflicts))
+    if not argv or not isinstance(argv[0], str) or argv[0].startswith("--"):
+        raise RecipeError("PL_E_SCHEMA replica requires the positional model before options")
     return [str(binary), *argv, *files.argv()], visibility(document), document
 
 

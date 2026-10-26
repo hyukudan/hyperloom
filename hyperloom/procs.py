@@ -15,6 +15,20 @@ class ProcessError(RuntimeError):
     pass
 
 
+def check_port(address, port):
+    """Read-only availability check; the caller must still bind/recheck when it starts serving."""
+    family = socket.AF_INET6 if ":" in address else socket.AF_INET
+    with socket.socket(family, socket.SOCK_STREAM) as probe:
+        if os.name == "nt":
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind((address, port))
+        except OSError as exc:
+            raise ProcessError(f"port unavailable: {address}:{port}") from exc
+
+
 class InstanceLock:
     """An OS lock, released even on a crash. The lock file is never unlinked."""
 
@@ -175,17 +189,7 @@ class LocalChild:
     def _check_port(self):
         if self.port is None:
             return
-        address, port = self.port
-        family = socket.AF_INET6 if ":" in address else socket.AF_INET
-        with socket.socket(family, socket.SOCK_STREAM) as probe:
-            if os.name == "nt":
-                probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-            else:
-                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                probe.bind((address, port))
-            except OSError as exc:
-                raise ProcessError(f"port unavailable: {address}:{port}") from exc
+        check_port(*self.port)
 
     def start(self):
         if self.process is not None:

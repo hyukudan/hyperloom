@@ -36,7 +36,7 @@ def test_01_published_evaluation_keeps_admitted_launch_decision(tmp_path, identi
     ctx = SimpleNamespace(pc="local", nodes=[], service=None, profile="decode")
     resolved = core.Resolved(recipe, "a" * 64, {"fields": []}, False, [])
     backend = core.CoreBackend(core.Core("fake"))
-    data = dict(runtime.preset(), engine_sha="1" * 40)
+    data = dict(runtime.preset(), engine_sha="1" * 40, capabilities=["placement-v1"])
     decision = {"placement": True, "service": {"start": True, "why": None}}
     with mock.patch.object(session.facts, "context", return_value=ctx), \
             mock.patch.object(session, "resolve", return_value=resolved), \
@@ -75,8 +75,8 @@ def files(tmp_path, identity):
 def test_02_actual_core_schema_renders_without_injected_manifest_hash(files):
     artifacts, document = files
     before = artifacts.placement.read_bytes()
-    data = dict(runtime.preset(), engine_sha="1" * 40)
-    assert runtime.render(artifacts, binary="fake", data=data)[2] == document
+    data = dict(runtime.preset(), engine_sha="1" * 40, capabilities=["placement-v1"])
+    assert runtime.render(artifacts, binary="fake", argv=["model"], data=data)[2] == document
     assert artifacts.placement.read_bytes() == before
     assert data["engine"] == document["engine"]
 
@@ -167,7 +167,7 @@ def test_08_manifest_command_connects_core_runner(tmp_path):
 
 
 def test_09_live_placement_source_resolves_release_executable(tmp_path):
-    data = dict(runtime.preset(), engine_sha="1" * 40)
+    data = dict(runtime.preset(), engine_sha="1" * 40, capabilities=["placement-v1"])
     cluster = SimpleNamespace(machines={"local": SimpleNamespace(install_root=str(tmp_path))})
     with mock.patch.object(runtime, "preset", return_value=data), \
             mock.patch.object(commands.facts, "gather", return_value=({}, {}, {}, [])) as gather:
@@ -250,7 +250,7 @@ def test_14_core_half_byte_budget_is_carried_exactly(tmp_path, files, identity):
                   caps_bytes={identity.lower(): budget}, host_pinned_gib=0, host_pageable_gib=0,
                   free_commit_floor_gib=4)
     cluster = SimpleNamespace(machines={"local": SimpleNamespace(access="local", os="windows", install_root=str(tmp_path))})
-    with mock.patch.object(runtime, "preset", return_value=dict(runtime.preset(), engine_sha="1" * 40)), \
+    with mock.patch.object(runtime, "preset", return_value=dict(runtime.preset(), engine_sha="1" * 40, capabilities=["placement-v1"])), \
             mock.patch.object(runtime, "render", return_value=(["fake"], {}, document)), \
             mock.patch.object(rtx.time, "time", return_value=NOW):
         spec = rtx.render_placement_service(cluster, runtime.Request("local", artifacts, policy), api_key="0" * 64)
@@ -267,10 +267,10 @@ def test_14_core_half_byte_budget_is_carried_exactly(tmp_path, files, identity):
 
 def test_01_evaluate_prepare_up_and_real_watchdog_with_fake_child(tmp_path, files, identity, monkeypatch):
     from hyperloom import gpu_counters, orchestrate, secrets
-    from tests.test_rtx import FakeChild
+    from tests.replica_fake import FakeReplica as FakeChild
 
     artifacts, document = files
-    data = dict(runtime.preset(), engine_sha="1" * 40)
+    data = dict(runtime.preset(), engine_sha="1" * 40, capabilities=["placement-v1"])
     recipe_doc = test_recipes.PlacementSchemaTests.document()
     recipe_doc["routes"][0]["components"]["drafter"]["device"] = "auto"
     path = tmp_path / "recipe.json"
@@ -360,7 +360,7 @@ def test_01_evaluate_prepare_up_and_real_watchdog_with_fake_child(tmp_path, file
         state = orchestrate.up(cluster, "decode", recipe=options)
         assert state["phase"] == "running"
         assert gates == [entry["gate"]] and locks == [identity.lower()]
-        assert orchestrate.endpoint("decode")["url"].endswith(":8096")
+        assert orchestrate.endpoint("decode")["protocol"] == "ds41-replica-spool-v1"
         assert len(calls) == 2
         values[identity.lower()] = 90 * rtx.GIB + 1
         threads[0].join(5)
@@ -441,8 +441,8 @@ def test_02_genuine_core_output_renders_without_modifying_hashed_document(tmp_pa
     assert "manifest_sha256" not in result.document
     artifacts.placement.write_bytes(json.dumps(result.document).encode())
     original = artifacts.placement.read_bytes()
-    data = dict(runtime.preset(), engine_sha="1" * 40)
-    assert runtime.render(artifacts, binary="fake", data=data)[2] == result.document
+    data = dict(runtime.preset(), engine_sha="1" * 40, capabilities=["placement-v1"])
+    assert runtime.render(artifacts, binary="fake", argv=["model"], data=data)[2] == result.document
     assert artifacts.placement.read_bytes() == original
 
 

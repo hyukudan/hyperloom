@@ -162,6 +162,7 @@ class ServiceSpec:
     placement: dict | None = None
     gate: list | None = None
     placement_supervision: dict | None = None
+    replica_spool: bool = False
 
 
 def redact(argv, flags):
@@ -364,9 +365,12 @@ def render_placement_service(cluster, request, *, api_key):
         raise ConfigError("PL_E_CAPABILITY placement decode adapter requires the local Windows machine")
     if not re.fullmatch(r"[0-9a-f]{64}", api_key):
         raise ConfigError("placement service key must be a generated 32-byte hex key")
+    if any(a.split("=", 1)[0] in {"--serve", "--serve-idle", "--serve-max", "--host", "--port", "--api-key"}
+           for a in request.argv):
+        raise ConfigError("PL_E_CONFLICT replica spool lifecycle belongs to the helper; HTTP options are unsupported")
     binary = PureWindowsPath(machine.install_root) / "cuda" / data["engine_sha"][:12] / "bin" / (data["binary"] + ".exe")
     argv, explicit, document = runtime.render(request.files, binary=binary,
-        argv=["--host", "127.0.0.1", "--port", str(request.port), "--api-key", api_key, *request.argv], data=data)
+        argv=[*request.argv, "--serve", "{replica_spool}"], data=data)
     policy = request.supervision
     touched = {uuid_key(d["uuid"]) for d in document["devices"]}
     if touched != set(policy.get("caps_gib", {})):
@@ -399,7 +403,7 @@ def render_placement_service(cluster, request, *, api_key):
                        dict(child_env(os.environ), **explicit), redact(argv, data["secret_flags"]),
                        deadline, policy["caps_gib"][uuid_key(anchor["uuid"])],
                        policy.get("free_commit_floor_gib", 4), data["ready_timeout_s"], {},
-                       sha, document, placement_supervision=policy)
+                       sha, document, placement_supervision=policy, replica_spool=True)
 
 
 # Device selection and behaviour switches of the CUDA runtime are never inherited (the preset sets its own);
@@ -689,7 +693,11 @@ def _sha256(path):
 
 def device_lock(pro_uuid):
     """One heavy PC job (service or CUDA build) per device at a time, across every profile on this machine."""
-    return procs.InstanceLock(secrets.runtime_dir() / f"pcbig-{re.sub(r'[^A-Za-z0-9-]', '', pro_uuid)}.lock")
+    return procs.InstanceLock(device_lock_path(pro_uuid))
+
+
+def device_lock_path(pro_uuid):
+    return secrets.runtime_dir() / f"pcbig-{re.sub(r'[^A-Za-z0-9-]', '', pro_uuid)}.lock"
 
 
 def _owner_alive(owner):
@@ -717,7 +725,7 @@ def service_run(spec_path, *, child_factory=procs.LocalChild, watchdog_factory=W
     path = Path(spec_path)
     directory = path.parent
     lifetime = procs.InstanceLock(directory / "helper.lock").acquire()
-    child = watchdog = device = None
+    child = watchdog = device = spool = None
     devices = ExitStack()
     observer = None
     reason = "stopped"
@@ -736,6 +744,11 @@ def service_run(spec_path, *, child_factory=procs.LocalChild, watchdog_factory=W
         raw = _read(path)
         path.unlink()  # the only copy of the literal keys on disk, now in memory only
         spec = ServiceSpec(**raw["spec"])
+        if spec.replica_spool:
+            from .replica_spool import Client
+            # A new helper owns a new spool: a previous worker's ready.json can never admit this start.
+            spec = ServiceSpec(**dict(spec.__dict__, argv=[str(directory / "spool") if a == "{replica_spool}"
+                                                          else a for a in spec.argv]))
         owner, redacted = raw.get("owner"), spec.redacted
         if stopping():
             reason = "stop requested before start"
@@ -780,6 +793,8 @@ def service_run(spec_path, *, child_factory=procs.LocalChild, watchdog_factory=W
             return
         child = child_factory(spec.argv, spec.env, directory, "service", port=("127.0.0.1", spec.port))
         child.start()
+        if spec.replica_spool:
+            spool = Client(directory / "spool", alive=child.alive)
         # The watchdog only terminates the process; this loop sees it and does the orderly stop below.
         if spec.placement_supervision is not None:
             watchdog = placement_supervision.Watchdog(spec, child.process.pid, child.process.kill, log,
@@ -815,10 +830,11 @@ def service_run(spec_path, *, child_factory=procs.LocalChild, watchdog_factory=W
                 if now >= end:
                     reason = "readiness timed out"
                     break
-                event = _ready_event(directory / "service.stdout.log")
+                event = spool.ready() if spool is not None else _ready_event(directory / "service.stdout.log")
                 if event is not None:
                     try:
-                        if health(spec.port).get("status") == "ok":
+                        ok = spool.health() if spool is not None else health(spec.port).get("status") == "ok"
+                        if ok:
                             ready = _scrub(event, [a for a, b in zip(spec.argv, redacted) if a != b])
                             _write(directory / "state.json", {"state": "ready", "pid": child.process.pid,
                                                               "device": info, "ready": ready, "argv": redacted})
@@ -827,7 +843,7 @@ def service_run(spec_path, *, child_factory=procs.LocalChild, watchdog_factory=W
                         pass
             elif now >= next_health:
                 try:
-                    ok = health(spec.port).get("status") == "ok"
+                    ok = spool.health() if spool is not None else health(spec.port).get("status") == "ok"
                 except (OSError, ValueError):
                     ok = False
                 strikes = 0 if ok else strikes + 1
@@ -843,6 +859,11 @@ def service_run(spec_path, *, child_factory=procs.LocalChild, watchdog_factory=W
         if watchdog is not None:
             watchdog.stop()
         if child is not None:
+            if spool is not None and child.alive():
+                try:
+                    spool.shutdown(timeout=5)
+                except (OSError, ValueError):
+                    pass  # an unresponsive or failed worker is still terminated by the owned Job Object
             child.stop(10)
         events.close()
         _write(directory / "state.json", {"state": "stopped", "reason": reason, "argv": redacted})
@@ -863,6 +884,8 @@ def prepare_service(spec):
             "placement": spec.placement}
     if spec.placement_supervision is not None:
         record["placement_supervision"] = spec.placement_supervision
+    if spec.replica_spool:
+        record["spool"] = str(directory / "spool")
     return record
 
 

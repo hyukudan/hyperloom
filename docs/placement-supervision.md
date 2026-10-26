@@ -30,6 +30,12 @@ CPU-only tests: `python -m pytest -q tests/test_placement_supervision.py tests/t
 Native driver behavior is not qualified by these fake-counter/process tests. Operational policy documents and
 watchdog logs contain local identities and belong in local runtime storage, never in committed fixtures.
 
+Pure admission checks every touched device's existing OS lock with `create=False` and checks the selected local
+port before any admission hold, published placement, launch state or helper directory. A missing lock creates no
+file or directory; an unlocked stale lock is allowed. A held/unreadable lock or occupied port is `PL_E_BUSY`.
+Checks release their temporary lock/socket immediately. The helper still takes its lifetime device locks and
+the owned child repeats the port check, so races after admission cannot bypass the launch checks.
+
 Static ABI verification (round-2 finding 15): the installed CUDA 13.0 `cuda.h` declares `cuInit`, `cuDeviceGetCount`,
 `cuDeviceGet`, `cuDeviceGetLuid(char *, unsigned int *, CUdevice)` and
 `cuDeviceGetPCIBusId(char *, int, CUdevice)`; all five occur in the installed `nvcuda.dll` export table (769 names).

@@ -21,6 +21,7 @@ class PlacementRenderTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.data = runtime.preset()
+        self.data["capabilities"] = ["placement-v1"]
         self.data["engine_sha"] = "1" * 40  # test-only release; never a production/local engine pin
         self.uuids = ["GPU-" + str(uuid.uuid4()) for _ in range(2)]
         model = self.root / "model"
@@ -44,6 +45,7 @@ class PlacementRenderTests(unittest.TestCase):
         self.files.placement.write_bytes(json.dumps(self.document).encode())
 
     def render(self, **kwargs):
+        kwargs.setdefault("argv", [str(self.root / "model")])
         return runtime.render(self.files, binary="<release>/bin/replica", data=self.data, **kwargs)
 
     def test_single_and_two_gpu_goldens(self):
@@ -62,7 +64,7 @@ class PlacementRenderTests(unittest.TestCase):
                       "caps_gib": {u.lower(): 10 for u in self.uuids[:count]}, "host_pinned_gib": 0,
                       "host_pageable_gib": 0, "free_commit_floor_gib": 4}
             machine = SimpleNamespace(access="local", os="windows", install_root=str(self.root))
-            request = runtime.Request("local", self.files, policy, argv=("--exact",))
+            request = runtime.Request("local", self.files, policy, argv=(str(self.root / "model"), "--phases", "chats0"))
             with mock.patch.object(runtime, "preset", return_value=self.data), mock.patch.object(rtx.time, "time", return_value=NOW):
                 spec = rtx.render_placement_service(SimpleNamespace(machines={"local": machine}), request, api_key="0" * 64)
             argv = [str(a).replace(str(self.root), "<runtime>").replace("\\", "/") for a in spec.redacted]
@@ -93,7 +95,7 @@ class PlacementRenderTests(unittest.TestCase):
                   "host_pageable_gib": 0, "free_commit_floor_gib": 4}
         machine = SimpleNamespace(access="local", os="windows", install_root=str(self.root))
         cluster = SimpleNamespace(machines={"local": machine})
-        request = runtime.Request("local", self.files, policy)
+        request = runtime.Request("local", self.files, policy, argv=(str(self.root / "model"),))
         with mock.patch.object(runtime, "preset", return_value=self.data), \
                 mock.patch.object(rtx.time, "time", return_value=NOW), \
                 mock.patch.object(rtx, "memory_status", side_effect=AssertionError("pure preview")):

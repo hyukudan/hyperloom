@@ -29,6 +29,15 @@ Legacy evaluation never requests this check. Without a published placement relea
 unknown. The engine independently checks the effective policy at every placement-mode start.
 
 CPU-only tests: `python -m pytest -q tests/test_placement_probe.py tests/test_recipes_grants.py`.
+
+For a placement evaluation, including a profile that introduces placement, live gathering hashes the selected
+release executable and compares it with the published commit's local release manifest. Model identity comes from
+the existing assets-verify manifest only when local size, nanosecond mtime, inode/device and configured digest
+still match. Missing/stale verification withholds the identity and records the reason; gathering never hashes
+model content or starts the engine. This remains a metadata cache, with the existing forged-metadata limitation.
+Both candidate and bound-device reports carry `engine_sha256` and `model_sha256` into the core's profile freshness
+check. Auto selection caches identity-bearing samples separately. CPU coverage in `test_placement_review4.py`
+uses live gathering, the real report builders, and a real Tierstream CPU core (set `HYPERLOOM_TS_RECIPE`).
 All fixture identities and absolute executable paths are generated at runtime. Probe documents carrying live
 UUIDs, BDFs or executable paths are local data and must not be committed. Native GPU/driver qualification remains
 outside these fake-API tests.

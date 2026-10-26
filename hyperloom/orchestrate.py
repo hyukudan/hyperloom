@@ -1024,8 +1024,7 @@ def endpoint(profile, config_path=None):
     if config_path is not None and not owns(state, config_path):
         raise OrchestrationError(f"{profile}: launched from another configuration")
     if state.get("recipe", {}).get("deploy", {}).get("placement") and state.get("prefill_service"):
-        return {"url": _url({"address": "127.0.0.1", "port": state["prefill_service"]["port"]}, ""),
-                "key_name": _secret_name(profile, "router")}
+        return {"protocol": "ds41-replica-spool-v1", "directory": state["prefill_service"]["spool"]}
     if not state.get("router"):
         raise OrchestrationError("profile router has not started")
     return {"url": _url(state["router"]["endpoint"], ""),
@@ -1358,7 +1357,21 @@ def status(profile=None, config_path=None, skip=None, read=None):
                 result["router"] = _http_json(state["router"]["endpoint"])
             except (OSError, ValueError) as exc:
                 result["router"] = {"error": str(exc)}
-    if (state.get("prefill_service") or {}).get("port"):
+    if (state.get("prefill_service") or {}).get("spool"):
+        why = skip("local", "prefill", profile) if skip is not None else None
+        if why:
+            result["prefill_service"] = {"error": why}
+        else:
+            from .replica_spool import Client
+            service = state["prefill_service"]
+            # Passive status does not enqueue work. The owning helper checks liveness with --ping.
+            try:
+                helper = _read(Path(service["directory"]) / "state.json")
+                result["prefill_service"] = {"state": helper.get("state"), "ready": Client(
+                    service["spool"], alive=lambda: helper.get("state") == "ready").ready()}
+            except (OSError, ValueError) as exc:
+                result["prefill_service"] = {"error": str(exc)}
+    elif (state.get("prefill_service") or {}).get("port"):
         why = skip("local", "prefill", profile) if skip is not None else None
         if why:
             result["prefill_service"] = {"error": why}

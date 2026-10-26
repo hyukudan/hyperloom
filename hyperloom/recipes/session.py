@@ -79,8 +79,14 @@ def evaluate(cluster, profile, path, layers, source, backend=None, *, placement_
     # Profiles need a measured identity. Overrides and --set can already activate placement before probing.
     structural = Layers(overrides=layers.overrides, sets=layers.sets, workload=layers.workload)
     preliminary = resolve(path, structural, backend=backend).recipe if layers.overrides or layers.sets else base
+    profile_fields = reader.load_text(read_text(layers.profile), str(layers.profile)).get("set", {}) \
+        if layers.profile else {}
+    profile_placement = isinstance(backend, core.CoreBackend) and isinstance(profile_fields, dict) and any(
+        len(parts := name.split(".")) >= 3 and parts[0] == "routes" and parts[2] in ("assist", "components")
+        for name in profile_fields)
     if hasattr(source, "placement"):
         source.placement = any(reader.placement_mode(r) for r in preliminary["routes"])
+        source.identity = profile_placement
     inventory, gathered, raw, notes = source(ctx)
     ctx.limits = dict(ctx.limits or {}, node_runtime=facts.current_runtime(cluster, ctx, gathered.get("node_runtime")))
     if any(reader.placement_mode(r) for r in preliminary["routes"]):
@@ -88,11 +94,6 @@ def evaluate(cluster, profile, path, layers, source, backend=None, *, placement_
                                      placement_inputs=placement_inputs)
     # A profile can activate a CUDA-only recipe for which the legacy HIP/service binder cannot build an identity.
     # Field names choose only the provisional identity path; the core still validates freshness and activation.
-    profile_fields = reader.load_text(read_text(layers.profile), str(layers.profile)).get("set", {}) \
-        if layers.profile else {}
-    profile_placement = isinstance(backend, core.CoreBackend) and isinstance(profile_fields, dict) and any(
-        len(parts := name.split(".")) >= 3 and parts[0] == "routes" and parts[2] in ("assist", "components")
-        for name in profile_fields)
     if profile_placement:
         report = devices.candidates(cluster, ctx, inventory, gathered)
         _, binding, _ = backend.match(path, structural, report, None)
@@ -290,7 +291,8 @@ def pick(cluster, profile, directories, layers, source, backend=None):
     def once(c):
         if hasattr(source, "placement"):
             source.placement = policy_for_candidates or once.placement
-        policy = getattr(source, "placement", False)
+            source.identity = getattr(once, "identity", False)
+        policy = (getattr(source, "placement", False), getattr(source, "identity", False))
         if policy not in cached:
             cached[policy] = source(c)
         return cached[policy]

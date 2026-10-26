@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import time
 
-from .. import gpu_counters, placement_supervision, rtx
+from .. import gpu_counters, placement_supervision, procs, rtx
 from . import commands, content_cache, grants, reader, session, sysmem
 from .reader import RecipeError
 
@@ -73,12 +73,30 @@ def check(cluster, path, layers, backend, recipe, bound, report, raw, effective_
             except (rtx.ServiceError, ValueError, TypeError) as exc:
                 raise RecipeError("PL_E_FREE " + str(exc)) from exc
     for uuid in sorted(used):
+        # Probe an existing OS lock only. A missing lock must not create the runtime directory or lock file.
+        if rtx.device_lock_path(used[uuid]["uuid"]).exists():
+            lock = rtx.device_lock(used[uuid]["uuid"])
+            try:
+                lock.acquire(create=False)
+            except FileNotFoundError:
+                pass  # disappeared since exists(); the helper takes a fresh lifetime lock
+            except (procs.ProcessError, OSError) as exc:
+                raise RecipeError("PL_E_BUSY device lock is already held or unavailable") from exc
+            finally:
+                lock.close()
         try:
             reason = (busy or rtx.pro_busy)(used[uuid]["uuid"])
         except rtx.ServiceError as exc:
             raise RecipeError("PL_E_BUSY device idle state unknown: " + str(exc)) from exc
         if reason:
             raise RecipeError("PL_E_BUSY " + reason)
+    port = inputs.get("port", 8096)
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise RecipeError("PL_E_SCHEMA placement port must be an integer in 1..65535")
+    try:
+        procs.check_port("127.0.0.1", port)
+    except procs.ProcessError as exc:
+        raise RecipeError("PL_E_BUSY " + str(exc)) from exc
     observer = None
     try:
         observer = (observer_factory or gpu_counters.Observer)()
