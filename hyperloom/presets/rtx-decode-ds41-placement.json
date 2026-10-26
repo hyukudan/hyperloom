@@ -4,7 +4,7 @@
   "engine": "strix-cuda-ds41-replica",
   "engine_sha": null,
   "capabilities": [],
-  "release_owner": "claudeinfo-release",
+  "release_owner": "the release owner",
   "release_note": "Opt-in RTX-alone DS decode replica. Rendering is refused until the release owner publishes the pinned SHA. No local engine SHA qualifies this preset.",
   "binary": "strix-cuda-ds41-replica",
   "ready_timeout_s": 600,

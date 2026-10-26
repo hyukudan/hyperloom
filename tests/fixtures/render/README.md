@@ -29,7 +29,7 @@ replica_api_key_files are local to the selected router host. For remote router
 placement, configure key paths on that machine. Rendering itself never reads
 keys; validate_router invokes the real TensorMeld parser, which reads them.
 
-Run: python -m unittest tests.test_config tests.test_render -v
+Run: python -m pytest -q tests/test_config.py tests/test_render.py
 
 G6 legacy oracle: `legacy-eb9ae96.json` freezes argv, explicit env, release id,
 engine/binary pins, build component pins/options and expected refusals for every
@@ -41,12 +41,11 @@ clock, operator reservation, free RAM, process environment and cached model
 header are fixed. RTX explicit env includes the legacy visibility variables,
 as required by contract rev 21b section 7.1.7. Inherited env is cleared.
 
-Generate independently from the frozen revision (PowerShell, repository root):
+Generate independently using a separately prepared read-only checkout of the frozen revision
+(PowerShell, repository root; replace `<baseline-checkout>` with that checkout):
 
 ```powershell
-git worktree add --detach D:/tmp/cluster-opus-spec/wave4/placement/hl/scratch/g6-eb9ae96 eb9ae96
-python tests/legacy_render.py --source D:/tmp/cluster-opus-spec/wave4/placement/hl/scratch/g6-eb9ae96 --output tests/fixtures/render/legacy-eb9ae96.json
-git worktree remove D:/tmp/cluster-opus-spec/wave4/placement/hl/scratch/g6-eb9ae96
+python tests/legacy_render.py --source "<baseline-checkout>" --output tests/fixtures/render/legacy-eb9ae96.json
 python -m pytest -q tests/test_legacy_render.py
 ```
 

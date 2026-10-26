@@ -206,16 +206,16 @@ def test_product_legacy_deploy_preflight_refuses_with_400_before_job_or_hold():
             status, body = portal.request("POST", "recipes/deploy", {"inputs": "0" * 64})
             assert status == 400
             assert set(body) == {"error"}
-            assert "no snapshot" in body["error"]
+            assert "preflight refused; see local audit" in body["error"]
             status, body = portal.request("POST", "recipes/deploy", {"inputs": digest})
             assert status == 400
             assert set(body) == {"error"}
-            assert "changed" in body["error"]
+            assert "preflight refused; see local audit" in body["error"]
             status, body = portal.request("POST", "up", {"profile": "qwen-replicas", "recipe_inputs": "0" * 64,
                                                         "node": ["halo-1"]})
             assert status == 400
             assert set(body) == {"error"}
-            assert "planned snapshot as it is" in body["error"]
+            assert "preflight refused; see local audit" in body["error"]
             assert portal.api._jobs == {}
             assert portal.api._active is None
             assert not (env.config.parent / "run" / "admission.sqlite3").exists()

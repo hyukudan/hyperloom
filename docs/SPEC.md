@@ -208,7 +208,7 @@ hyperloom/
   hyperloom/            config.py render.py remote.py lease.py stats.py adapters/ web/ presets/
   node/           hyperloom-node   build-node.sh
   windows/        install.ps1  hyperloom.cmd  build-cuda-front.ps1 (Phase 3)
-  tests/          unittest; fake engines that REPLAY real captured outputs; fake ssh
+  tests/          unittest classes and pytest fixtures; fake engines that REPLAY real captured outputs; fake ssh
   docs/           install, prerequisites, auth matrix, lab mode, component requests
 ```
 
@@ -553,7 +553,7 @@ It starts only when the engine ships a CUDA FRONT with an HTTP serving API, `/he
 
 ## 8. Conventions
 - **Repo:** `hyukudan/hyperloom` (private). Package and CLI: `hyperloom`. Node tool: `hyperloom-node`.
-- **Python:** stdlib only (PC ≥ 3.11, node system python3 ≥ 3.10); `unittest`.
+- **Python:** stdlib only in production (PC ≥ 3.11, node system python3 ≥ 3.10); pytest (`.[test]`), including unittest classes.
 - **Commit author** `hyukudan <19479239+hyukudan@users.noreply.github.com>`, with no trailers (no co-author or session lines).
 - **License:** proprietary/private for now; the `NOTICE` file preserves component licenses.
 

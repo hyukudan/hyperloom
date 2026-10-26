@@ -5,13 +5,13 @@ standard library. These commands need no GPU, SSH server, credentials, downloads
 or network beyond 127.0.0.1.
 
 ```powershell
-python -m unittest tests.test_web_security -v
+python -m pytest tests/test_web_security.py -q
 python tests/ui/smoke.py
 python tests/ui/smoke.py --keyboard
 python tests/ui/smoke.py --keyboard-only
 python tests/ui/smoke.py --contrast-only
-python -m unittest discover -s tests
-wsl -e bash -lc 'cd /mnt/d/tmp/hyperloom && python3 -m unittest discover -s tests'
+python -m pytest -q
+wsl -e bash -lc 'cd /mnt/d/tmp/hyperloom && python3 -m pytest -q'
 ```
 
 `smoke.py` finds Google Chrome or Chromium in the usual Windows installation
@@ -19,7 +19,7 @@ directories and Linux executable paths. Override discovery with `--chrome PATH`
 or the `CHROME` environment variable. An absent browser produces an explicit
 skip; a present browser that fails to start or reports a JavaScript error fails
 the run. The contrast check always runs, even when Chrome is absent. Browser
-smoke is a separate command so ordinary unittest discovery needs no browser.
+smoke is a separate command so the ordinary test run needs no browser.
 
 The script prints a retained temporary screenshot directory. `--output PATH`
 selects another directory. There are 32 PNGs: eight hash routes, two themes, and

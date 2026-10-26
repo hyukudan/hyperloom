@@ -81,16 +81,12 @@ def check(cluster, path, layers, backend, recipe, bound, report, raw, effective_
                 raise RecipeError("PL_E_FREE " + str(exc)) from exc
     for uuid in sorted(used):
         # Probe an existing OS lock only. A missing lock must not create the runtime directory or lock file.
-        if uuid not in owners and rtx.device_lock_path(used[uuid]["uuid"]).exists():
-            lock = rtx.device_lock(used[uuid]["uuid"])
+        if uuid not in owners:
             try:
-                lock.acquire(create=False)
-            except FileNotFoundError:
-                pass  # disappeared since exists(); the helper takes a fresh lifetime lock
+                if procs.lock_held(rtx.device_lock_path(used[uuid]["uuid"])):
+                    raise procs.ProcessError("device lock is held")
             except (procs.ProcessError, OSError) as exc:
                 raise RecipeError("PL_E_BUSY device lock is already held or unavailable") from exc
-            finally:
-                lock.close()
         try:
             reason = (_handover_busy(used[uuid]["uuid"], owners[uuid], observer_factory)
                       if uuid in owners else (busy or rtx.pro_busy)(used[uuid]["uuid"]))

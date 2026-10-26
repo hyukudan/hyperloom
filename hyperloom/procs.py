@@ -129,6 +129,35 @@ def private_resident_bytes(pid):
         return 0
 
 
+def lock_held(path):
+    """Inspect a lifetime lock without ever taking it. Unreadable state raises; missing files are free."""
+    path = Path(path)
+    try:
+        info = path.stat()
+    except FileNotFoundError:
+        return False
+    if os.name == "nt":
+        try:
+            # Windows mandatory byte locks reject a ReadFile overlapping the locked byte. No lock request,
+            # file creation or write occurs, so a concurrent helper can still acquire its lifetime lock.
+            with path.open("rb", buffering=0) as stream:
+                stream.read(1)
+        except PermissionError:
+            return True  # Held or inaccessible: both must refuse admission.
+        return False
+    # Linux flock locks are visible in /proc/locks; F_GETLK only sees POSIX record locks, not flock.
+    identity = (os.major(info.st_dev), os.minor(info.st_dev), info.st_ino)
+    for line in Path("/proc/locks").read_text(encoding="ascii").splitlines():
+        fields = line.split()
+        if len(fields) >= 6 and fields[1] == "FLOCK":
+            device = fields[5].split(":")
+            if len(device) != 3:
+                raise ProcessError("lock inventory unreadable")
+            if (int(device[0], 16), int(device[1], 16), int(device[2])) == identity:
+                return True
+    return False
+
+
 class InstanceLock:
     """An OS lock, released even on a crash. The lock file is never unlinked."""
 

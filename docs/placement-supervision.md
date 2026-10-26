@@ -6,6 +6,8 @@ one `caps_gib` entry and a core-produced integer `caps_bytes` entry per granted 
 and `free_commit_floor_gib`. UUID keys are compared case-insensitively. Caps above grants are refused without
 clamping. VRAM comparisons use the integer bytes without converting GiB in Python. Fixed operator window boundaries
 and the earliest configured PC-BIG conflict are rechecked throughout the process lifetime; no window is opened.
+The live PC-BIG guard also rereads the PRO lock/busy signal and configured ledger at watchdog cadence.
+An open or partial ledger record, held lock, busy PRO or unreadable signal stops the owned child.
 
 Before spawn, pinned plus pageable must fit the host grant and available physical memory; MemAvailable must be at
 least 82 GB, and the charge must leave the configured commit floor. Runtime checks retain the legacy physical-RAM
@@ -14,9 +16,11 @@ in normalized UUID order before any gate runs. Any lock, gate, identity or start
 in reverse order. Each grant has its own gate; the legacy single gate cannot replace these gates.
 
 Placement counters are attributable bytes, including context memory. Windows uses the English PDH
-`GPU Process Memory(*)/Dedicated Usage` counter. A context-free CUDA driver inventory supplies LUIDs and PCI bus ids;
-NVML's PCI lookup supplies the corresponding UUIDs. Enumeration order is never an identity. Missing, duplicate,
-zero-mask or incomplete mappings refuse admission, including a CUDA visibility filter hiding an NVML adapter.
+`GPU Process Memory(*)/Dedicated Usage` counter. DXGI adapter descriptions supply LUIDs; read-only D3DKMT
+adapter-address queries supply PCI addresses, and NVML's PCI lookup supplies the corresponding UUIDs. No nvcuda
+load or cuInit occurs in this observer or in preflight. Enumeration order is never an identity. Missing, duplicate,
+zero or incomplete mappings refuse admission. Runtime observer construction additionally follows every device
+lock and operator gate in both the measurement worker's parent and the service helper.
 Linux uses NVML compute
 and graphics process lists and deduplicates a PID appearing in both. Missing mappings, N/A, invalid samples and
 observer failures refuse/stop the process. Activity on an ungranted adapter stops it. Device-total subtraction is
@@ -30,10 +34,10 @@ CPU-only tests: `python -m pytest -q tests/test_placement_supervision.py tests/t
 Native driver behavior is not qualified by these fake-counter/process tests. Operational policy documents and
 watchdog logs contain local identities and belong in local runtime storage, never in committed fixtures.
 
-Pure admission checks every touched device's existing OS lock with `create=False` and checks the selected local
+Pure admission inspects every touched device's existing OS lock without acquiring it and checks the selected local
 port before any admission hold, published placement, launch state or helper directory. A missing lock creates no
 file or directory; an unlocked stale lock is allowed. A held/unreadable lock or occupied port is `PL_E_BUSY`.
-Checks release their temporary lock/socket immediately. The helper still takes its lifetime device locks and
+Windows reads the mandatorily locked byte; Linux reads the flock entries in `/proc/locks`. The socket check closes immediately. The helper still takes its lifetime device locks and
 the owned child repeats the port check, so races after admission cannot bypass the launch checks.
 
 A reviewed deploy switch may credit the old child's measured private resident host bytes, bounded by its private
@@ -48,12 +52,6 @@ validation before admission holds, progress, snapshot publication or pins. Snaps
 intent. Approval parsing is shared too. Deploy checks again under its snapshot pin, and up checks at launch so an
 approval expiring after passive admission cannot bypass the later checks.
 
-Static ABI verification (round-2 finding 15): the installed CUDA 13.0 `cuda.h` declares `cuInit`, `cuDeviceGetCount`,
-`cuDeviceGet`, `cuDeviceGetLuid(char *, unsigned int *, CUdevice)` and
-`cuDeviceGetPCIBusId(char *, int, CUdevice)`; all five occur in the installed `nvcuda.dll` export table (769 names).
-`nvml.h` declares `nvmlDeviceGetHandleByPciBusId_v2(const char *, nvmlDevice_t *)` and
-`nvmlDeviceGetUUID(nvmlDevice_t, char *, unsigned int)`; these and the inventory/process APIs used here occur in
-`nvml.dll` (430 names). Neither the header nor that DLL exports `nvmlDeviceGetLuid`.
-Verification parsed DLL bytes and header text without loading a driver. ABI fakes use `spec_set` restricted to
-these exported names. The Windows mapper calls only driver initialization and device identity APIs, never a
-context or a kernel. Live WDDM behavior still requires separate qualification.
+The earlier CUDA-LUID implementation has been replaced by DXGI/D3DKMT; its historical CUDA export audit is
+not a qualification of this observer. CPU ABI fakes exercise the NVML PCI/UUID join and adapter queries without
+loading a CUDA driver. Live WDDM driver behavior remains a separate qualification prerequisite.

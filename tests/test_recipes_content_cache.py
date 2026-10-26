@@ -17,7 +17,7 @@ from hyperloom.recipes import commands, content_cache, core, descriptors, launch
 
 class ContentCacheTests(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory(dir=Path.cwd())
+        self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.runtime = self.root / "run"

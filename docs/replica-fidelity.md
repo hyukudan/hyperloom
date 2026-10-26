@@ -54,9 +54,9 @@ They do not establish continuous visibility between samples, model quality quali
 
 The shipped adapter still has a null release SHA and cannot launch. The inspected native implementation supplies
 the spool, prompts and token output, but does not publish a release-bound reference bundle or a normative corpus
-with expected tokens for this gate. `claudesoporte-wdsrtx` must provide the qualified native imported state,
+with expected tokens for this gate. the engine owner must provide the qualified native imported state,
 sequence corpus, complete `chats0 --qual` reference tokens and their model/configuration provenance, bound to
-the release SHA that `claudeinfo-release` publishes. The adapter must also publish the exact manifest's
+the release SHA that the release owner publishes. The adapter must also publish the exact manifest's
 `fidelity.oracle_sha256`. No new native HTTP endpoint or expected-token flag is needed.
 Placement flags/components/receipts support and native placement qualification remain separate release blockers.
 Until those inputs exist, the gate refuses a missing or invalid oracle; the CPU fake-protocol tests qualify only

@@ -113,6 +113,12 @@ Pending integration follows these decisions:
 
 For the complete security model and limitations, see [Technical overview — Security](docs/README-technical.md#security).
 
+## Tests
+
+Install the test extra with `python -m pip install -e ".[test]"`, then run `python -m pytest -q`.
+Pytest runs both the existing unittest classes and the placement fixture/parameter tests on Windows and Linux.
+The pinned TensorMeld submodule must be available for router/parser and planner tests.
+
 ## License
 
 Copyright © 2026 hyukudan. **Proprietary; no license is granted.** See [LICENSE](LICENSE) and [NOTICE](NOTICE) for separate component licenses.

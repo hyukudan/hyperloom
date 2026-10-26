@@ -43,6 +43,8 @@ class Cluster:
 MAX_CONFIG_BYTES = 256 * 1024
 BROKER_HOST = re.compile(r"(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}"
                          r"[A-Za-z0-9])?)*|[0-9A-Fa-f:.]{2,45}")
+DEFAULT_DEVICE_POLICIES = ({"name_contains": "4090", "excluded": True, "require_identity": True,
+                            "reason": "RTX 4090 is excluded by policy"},)
 PRESETS = Path(__file__).with_name("presets")
 
 
@@ -256,7 +258,7 @@ def parse(obj: dict) -> Cluster:
             raise ConfigError("devices: expected list")
         ids = set()
         for device in devices:
-            record(device, "device", ("id",), ("type", "uuid", "excluded", "name", "memory_gib", "pci", "arch", "driver"))
+            record(device, "device", ("id",), ("type", "uuid", "excluded", "name", "memory_gib", "pci", "arch", "driver", "pc_big_conflict"))
             did = identifier(device["id"], "device.id")
             if did in ids:
                 raise ConfigError("duplicate device id")
@@ -266,6 +268,8 @@ def parse(obj: dict) -> Cluster:
                     text(device[key], f"device.{key}")
             if "excluded" in device:
                 boolean(device["excluded"], "device.excluded")
+            if "pc_big_conflict" in device:
+                boolean(device["pc_big_conflict"], "device.pc_big_conflict")
             if "memory_gib" in device:
                 number(device["memory_gib"], "device.memory_gib", 0, 1048576)
         device_count += len(devices)

@@ -82,28 +82,28 @@ half-byte refusal are superseded by this section. All regression inputs and proc
 | D: Claude new 2, legacy input errors | `hyperloom/recipes/session.py:89` and `:313` catch only RecipeError from the routing check and dispatch to the legacy evaluator/picker, preserving backend errors and per-candidate refused rows. | `tests/test_placement_legacy_equality.py:125`, `test_legacy_unreadable_input_matches_ddc5640`: 24 comparisons execute ddc5640 functions for missing/malformed recipe, profile and override inputs, both evaluate/pick, and stub/core backends. The old pick comparison uses the old evaluate function too. | None for this finding. |
 | E: Claude new 3, real controller recovery | `tests/test_placement_lifecycle.py:24` removes the fake `_down_state`. The fake helper process holds a real helper.lock until the real stop_service writes its stop marker. | `test_placement_start_owns_handlers_watcher_and_rollback[controller-death]` runs real up_watch, `_down_state`, stop_service and OS locks; asserts the stop marker, terminal stopped state, helper exit, ownership-file removal and dead owner. Other lifecycle faults retain their assertions. | CPU process-boundary evidence; native/GPU qualification remains external. |
 
-Before production edits, `D:/tmp/hl-placement-round13-red.log` reproduced the decimal/half-byte, mixed-fact,
+Before production edits, `<external>/hl-placement-round13-red.log` reproduced the decimal/half-byte, mixed-fact,
 stale-profile policy, legacy error and mocked-recovery failures. After supplying the missing router capability
-fixture, `D:/tmp/hl-placement-round13-red-admission.log` reproduced both admission failures and all four mixed
+fixture, `<external>/hl-placement-round13-red-admission.log` reproduced both admission failures and all four mixed
 selection/prepare cases against the unchanged code. The controller-death regression first failed on the missing
 helper stop marker with the old mocked recovery action, then passed with the real recovery functions.
 
 The full Python 3.13 baseline completed before production edits: **46 failed, 2618 passed, 69 skipped**, one warning,
-in 567.24 s (`D:/tmp/hl-placement-round13-before.log`). `D:/tmp/hl-placement-round13-failures.log` checks its exact
+in 567.24 s (`<external>/hl-placement-round13-before.log`). `<external>/hl-placement-round13-failures.log` checks its exact
 failure-ID equality with the supplied pytest-fix6.log. Focused validation including G6: **1090 passed, 1 skipped**
-(`D:/tmp/hl-placement-round13-green.log`). The optional real-core test remains skipped without its configured binary
+(`<external>/hl-placement-round13-green.log`). The optional real-core test remains skipped without its configured binary
 and golden directory. The offline a919c257 parser audit still passes: **97 options / 43 source files**
-(`D:/tmp/hl-placement-round13-parser.log`).
+(`<external>/hl-placement-round13-parser.log`).
 
 Final full suite: **46 failed, 3648 passed, 69 skipped** in 482.15 s
-(`D:/tmp/hl-placement-round13-after.log`). The exact failing-ID sets for fix6, before and after are equal, with no
-added or missing failures (`D:/tmp/hl-placement-round13-failures.log`). The 1,030 added cases all pass. The lifecycle
+(`<external>/hl-placement-round13-after.log`). The exact failing-ID sets for fix6, before and after are equal, with no
+added or missing failures (`<external>/hl-placement-round13-failures.log`). The 1,030 added cases all pass. The lifecycle
 module was also rerun after adding failure-path cleanup for its fake helper thread: **6 passed**
-(`D:/tmp/hl-placement-round13-lifecycle.log`). G6's **21 rows remain byte-identical** in the fresh-interpreter test;
+(`<external>/hl-placement-round13-lifecycle.log`). G6's **21 rows remain byte-identical** in the fresh-interpreter test;
 the unchanged restored oracle hashes to `40489d24e0a9b64d9b6186b2742d2fff734e4d66e310dd1776d8b62c340168e7`
-(`D:/tmp/hl-placement-round13-artifacts.log`).
+(`<external>/hl-placement-round13-artifacts.log`).
 
-TEMP/TMP are unchanged at `C:/Users/Usuario/AppData/Local/Temp`. This round's logs live directly under `D:/tmp`,
+TEMP/TMP are unchanged at `<system-temp>`. This round's logs live directly under `<external>`,
 outside git. All modified files use LF. No commit, push, engine/GPU work or network access was performed.
 
 Engine-dependent open points remain as previously disclosed: no published placement-capable replica or GPU
@@ -114,14 +114,14 @@ qualification, and context-v1 persistence awaits the realised checkpoint-1 JSONL
 Base: `cf14941c51eec51d8acfe6e76292d2bfd1ac385b`, contract rev 21c. This round addresses the portal hold,
 selection invalidation after admission, pre-hold probe disclosure and the requested `fab4234` failure baseline.
 All new launch and grant-boundary coverage is CPU-only. Logs and the archive export are outside git, under
-`D:/tmp/cluster-opus-spec/wave4/placement/hl/`.
+`<external>/cluster-opus-spec/wave4/placement/hl/`.
 
 | Item | Change (file:line) | Regression coverage | Open points |
 |---|---|---|---|
 | A: Claude 3 finding 1, portal PC hold | `hyperloom/web/api.py:1736` retains preflight's resources; `:1758` uses them for an actual placement request. Legacy starts retain the profile nodes/router resources. | `tests/test_placement_admission_selection.py:84`, `test_portal_holds_selected_resources_without_prefill`: a real API mutation and SQLite admission hold exactly the PC without a prefill service and refuse its benchmark with HTTP 409; legacy holds exactly the nodes/router and remains allowed beside that PC benchmark. | None for this finding. Snapshot launches retain their conservative holds. |
 | B: Sol 13 item 8 / Claude 3 finding 2, reselection race | `hyperloom/recipes/preflight.py:304` captures the prepared selection. `hyperloom/recipes/launch.py:272` records original recipe path, effective digest, placement/legacy kind and resources; `:294` refuses differences with `recipe selection changed after admission; retry`. `hyperloom/cli.py:726` binds that record to admission and `:419` passes it to `up`; `hyperloom/web/api.py:1806` carries the portal admission through its in-process or detached CLI hand-off (`:1476`). `hyperloom/orchestrate.py:668` checks after final preparation and before either launch's state publication; `hyperloom/recipes/launch.py:309` also guards placement entry. | `tests/test_placement_admission_selection.py:105`, `test_admitted_selection_survives_grant_cutoff`: real grant startup cutoff, auto-pick, prepare and SQLite holds, with fake native adapter/render. Expiry from 600 s remaining to 59 s selects legacy while a node benchmark holds halo-1; CLI, portal and detached argv/child-admission paths refuse without launch state or artifact publication. Unchanged selections pass all three hand-offs. `tests/test_placement_lifecycle.py:255` additionally launches an unchanged admitted selection through real placement supervision with its CPU fake child. Snapshot paths map to original inputs before comparison. | None for this race. No resource union or grant/window extension is used. |
 | C: Claude 3 finding 3, pre-hold live probes | `docs/api.md:20` explicitly discloses read-only live node fact probes for legacy auto-selection in a mixed directory before admission. | `tests/test_placement_admission_selection.py:170`, `test_mixed_legacy_preflight_documents_live_probes_before_hold`: checks the disclosure and observes only the node benchmark hold during each source sample, followed by the normal benchmark refusal. | This probe-order difference is intentional and now explicit. Pure-legacy directories retain their previous order. |
-| D: product's fab4234 baseline by test name and cause | `D:/tmp/cluster-opus-spec/wave4/placement/hl/pytest-fab4234-compare.md` lists all 46 failing IDs, whether each fails at fab4234, exact first-error equality, first/terminal exception-type equality and the observed cause. The export is `fab4234-tree`, produced by `git archive fab4234`, without another worktree. | Full Python 3.13 suites: cf14941 before edits **46 failed, 3648 passed, 69 skipped**; archived fab4234 **46 failed, 1574 passed, 57 skipped**. All failing IDs equal fix6. All exception types match; 39 first error lines match exactly and seven differ only in the tree root or temporary router-log path. Assertions verify the per-ID/block mapping and all 46 normalized causes. | No HEAD-only failures in this baseline. The shared missing-dependency/planner/router failures remain; this is baseline evidence, not a green-suite claim. |
+| D: product's fab4234 baseline by test name and cause | `<external>/cluster-opus-spec/wave4/placement/hl/pytest-fab4234-compare.md` lists all 46 failing IDs, whether each fails at fab4234, exact first-error equality, first/terminal exception-type equality and the observed cause. The export is `fab4234-tree`, produced by `git archive fab4234`, without another worktree. | Full Python 3.13 suites: cf14941 before edits **46 failed, 3648 passed, 69 skipped**; archived fab4234 **46 failed, 1574 passed, 57 skipped**. All failing IDs equal fix6. All exception types match; 39 first error lines match exactly and seven differ only in the tree root or temporary router-log path. Assertions verify the per-ID/block mapping and all 46 normalized causes. | No HEAD-only failures in this baseline. The shared missing-dependency/planner/router failures remain; this is baseline evidence, not a green-suite claim. |
 
 Before production edits, `pytest-round14-red.log` reproduced A, all three B hand-offs and the missing C disclosure:
 **5 failed, 4 passed**. The CLI/in-process portal reached the forbidden first state write; the detached path
@@ -133,7 +133,7 @@ Focused validation: **1184 passed** (`pytest-round14-green.log`), followed by **
 remain byte-identical** in the fresh-interpreter test; the restored oracle SHA-256 remains
 `40489d24e0a9b64d9b6186b2742d2fff734e4d66e310dd1776d8b62c340168e7`, with no fixture change.
 
-The before/fab4234 full runs used `C:/Python313/python.exe -m pytest -q -p no:cacheprovider`, with unchanged
+The before/fab4234 full runs used `python3.13 -m pytest -q -p no:cacheprovider`, with unchanged
 TEMP/TMP outside the repository. This round makes no contract, native-engine, capability, grant, measurement or
 G6 oracle change. No commit, push, GPU work or network access was performed.
 
@@ -152,3 +152,63 @@ fix6, before, after and fab4234, with no added or missing failures. All first an
 new regression cases all pass. `pytest-round14-artifacts.log` records G6 equality, unchanged HEAD/branch,
 unchanged external TEMP/TMP and LF for every modified file. The full per-ID report includes the final run and the
 disclosed intermittent SSE attempt; its source-equality hashes are in `pytest-round14-sse-source-equality.log`.
+
+## Lead review of f1626ff (contract rev 21c, section 7.1)
+
+All requested findings are addressed in this worktree. The adapter retains its null engine SHA and empty
+capabilities. This is CPU integration evidence, with no engine, CUDA or live driver qualification. No submodule
+initialisation, network access, commit, push or additional worktree was used. Logs are outside git in the system
+temporary directory; TEMP/TMP were not changed.
+
+The first regression run (`hl-placement-lead-red.log`) reproduced all 14 initial review cases before the existing
+production paths were changed. Later checks expanded the signal cases to include Markdown ledger syntax,
+partial records, unreadable counters and total cache bytes. `hl-placement-prefs-red.log` separately reproduced
+the disappearance of a known preference store before that edge case was fixed.
+
+In the following table, test names without a module prefix are in `tests/test_placement_lead_review.py`.
+
+| Item | Change (file:line) | Regression coverage | Open points |
+|---|---|---|---|
+| M1: live PC-BIG admission | `hyperloom/pc_big.py:30` reuses the legacy PRO lock path, `rtx.pro_busy`, the whole-ledger reader, and the turn ledger parser/state reader. The preference store is opened read-only. Held/busy/open/partial/unreadable signals refuse. `hyperloom/recipes/grants.py:64` and `hyperloom/recipes/measurements.py:74` check before CUDA work. | `test_m1_each_live_signal_refuses_probe_before_cuda` checks probe acquisition, placement grant admission and pre-start policy validation against each signal, with a forbidden CUDA loader. | None for admission. Optional unconfigured sensors are documented in `placement-grants.md`; configured unreadable sensors refuse. |
+| M1: windows opening after admission | `hyperloom/recipes/grants.py:166` carries the live guard into supervision; `hyperloom/placement_supervision.py:14` checks it at runtime, including watchdog memory checks. Once seen, a store or ledger preference cannot disappear and disable the guard. | `test_m1_watchdog_stops_when_live_window_opens` opens each live signal after admission and verifies one fake-child kill; `test_m1_known_preferences_cannot_disappear_or_clear_the_ledger` covers removed settings/storage. | Detection occurs on the next bounded watchdog sample; it does not acquire or extend a PC-BIG window. |
+| M2: driver-free identity and gate ordering | `hyperloom/windows_adapters.py:6` gets LUIDs from DXGI and PCI addresses from read-only D3DKMT queries. `hyperloom/gpu_counters.py:44` joins them to NVML UUIDs without nvcuda/cuInit. `hyperloom/recipes/measurements.py:109` and `hyperloom/rtx.py:779` construct observers after every lock and gate. | `test_m2_measurement_observer_follows_lock_and_gate`, `test_m2_service_observer_follows_lock_and_gate`, `test_m2_passive_luid_mapping_never_loads_cuda`; `tests/test_placement_counter_identity.py` retains reversed-inventory and incomplete/duplicate mapping refusals; `tests/test_windows_adapters.py:10` checks COM/query ABI and cleanup with fakes. | Live WDDM driver behavior remains unqualified under this task's no-GPU constraint. |
+| Privacy: local paths | Portable placeholders replace machine-specific roots in this document, `tests/fixtures/render/README.md` and the older phase task document. `tests/test_placement_privacy.py:65` now scans documentation Markdown, shipped source string literals and shipped JSON metadata. | `test_docs_and_source_literals_have_no_local_identity`, `test_privacy_patterns_cover_docs_and_decoded_source_strings`, and the committed-artifact privacy test. | None. Runtime identities remain local. |
+| Privacy: named agents | `hyperloom/replica_gate.py:73`, `hyperloom/recipes/runtime.py:42`, the placement preset's release-owner metadata, `docs/replica-fidelity.md` and `docs/placement-render.md` use generic engine/release-owner roles. | The same committed-artifact scan catches the original handles in strings and documentation. | None. The release publication requirement is unchanged. |
+| Portal busy ordering | `hyperloom/web/api.py:1730` checks the active job before preflight and retains the later mutex check for admission races. | `test_portal_busy_precedes_preflight` forbids preflight while another job is active. | None. |
+| Portal 400 audit/redaction | `hyperloom/web/api.py:1745` audits the complete local refusal, then returns only a placement error code (when present) and a generic message. Argument construction/parsing is inside the audited preflight boundary. | `test_portal_400_audits_full_reason_and_redacts_response` verifies audit detail and response omission of a path and PID; `tests/test_placement_command_preflight.py` retains real missing/corrupt snapshot 400 checks with the new public envelope. | None. |
+| Planner/pick audit | `hyperloom/web/features/planner.py:28` marks what-if, placement, solve and pick as audited, using the existing success/refusal audit mechanism. | `test_planner_actions_are_audited` verifies all four registrations. | None. |
+| Solver cache bounds | `hyperloom/recipes/solver.py:19` caps selections at 64 files / 64 MiB, rejects a single oversized record, and evicts oldest writes under the runtime lock. | `test_solver_cache_evicts_oldest_by_count_and_bytes` and `test_solver_cache_total_byte_limit_evicts_oldest`. | Evicted selections require a fresh solve before pick; documented in `placement-solver.md`. |
+| Passive PRO/device lock checks | `hyperloom/procs.py:132` reads Windows mandatory-lock state or Linux flock inventory; `hyperloom/recipes/preflight.py:86` uses it without taking the device lock. | `test_preflight_lock_probe_never_acquires` forbids the lock factory, refuses a real held lock and admits its unlocked stale file. | None. The helper still acquires its lifetime locks at launch. |
+| Device policy flag / legacy equality | `hyperloom/config.py:269` accepts `pc_big_conflict`; `hyperloom/pc_big.py:11` applies it by configured UUID, defaulting to conflict for devices other than the configured PRO. `grants.py` and `measurements.py` have no model-name test. `hyperloom/config.py:44` retains the legacy unconfigured-4090 default exclusion and identity requirement; `device_policy.py:5` applies that data policy. | `test_policy_uses_configured_conflict_flag_with_arbitrary_names`, existing cross-view policy cases and the unchanged G6 oracle. | The policy/default distinction and unchanged legacy exclusion are explained in `placement-grants.md`. |
+| Ambiguous configuration | `hyperloom/device_policy.py:14` excludes multiple configured matches instead of falling back to a permissive policy. Measurement acquisition also requires exactly one configured UUID. | `test_device_policy_ambiguous_identity_is_excluded`; documented in `placement-grants.md`. | None. |
+| Temporary directories | Placement/content/core/edit test fixtures use the default `tempfile` location, with no repository-root override. | `test_test_directories_and_runner_are_portable` scans every test module for the original override. | None; TEMP/TMP are unchanged. |
+| Linux path portability | `tests/test_placement_render.py:77` normalizes separators before replacing the runtime root. `tests/test_placement_lifecycle.py:141` simulates the Windows service filesystem with native temporary paths. | Existing `PlacementRenderTests.test_single_and_two_gpu_goldens` and `test_01_evaluate_prepare_up_and_real_watchdog_with_fake_child` pass on Linux. | Linux validation uses Python 3.12; the required full before/after suites use Windows Python 3.13. |
+| Test runner | `pyproject.toml:12` declares the pytest test extra; `.github/workflows/ci.yml:41` installs it and runs pytest; README and test instructions agree. Existing unittest classes remain supported. | `test_test_directories_and_runner_are_portable` verifies the runner/dependency agreement; full pytest collects both styles. | Chose the permitted pytest option because 22 existing modules use fixtures/parameterization; a broad rewrite to unittest would add unrelated test migration risk. No runtime dependency was added. |
+
+Validation: the full Python 3.13 baseline is **46 failed, 3657 passed, 69 skipped** in 465.62 s
+(`hl-placement-before313.log`). Its failing IDs equal the supplied 46-ID `pytest-fix6.log` set exactly
+(`hl-placement-failure-comparison.log`). Focused final validation: **184 passed**
+(`hl-placement-final-focused.log`). The final full-suite result is recorded below after completion.
+
+Linux validation: **31 passed** (`hl-placement-linux-final.log`), covering rendering, the integrated fake
+lifecycle, lead-review safety/privacy regressions and the adapter ABI test. Native Linux Git cannot resolve this
+Windows worktree's git pointer, so the final run routes only its read-only Git invocations through Windows Git;
+no git configuration or worktree was changed. The distro had no pytest installed; the run used existing
+pure-Python runner packages read-only, with plugin autoload and bytecode writes disabled. An earlier run passed
+the other 30 tests with the git-dependent scan deselected (`hl-placement-linux.log`).
+
+G6 remains **21 cases byte-identical** to the frozen eb9ae96 oracle. Its fixture is unchanged and its restored
+SHA-256 remains `40489d24e0a9b64d9b6186b2742d2fff734e4d66e310dd1776d8b62c340168e7`.
+The earlier interrupted after-run was stopped to add the separately reproduced preference-disappearance case;
+it is not used as final validation evidence. The first complete after attempt reported **47 failed, 3674 passed,
+69 skipped** (`hl-placement-after313-attempt1.log`): its only additional failure was
+`tests/test_web_recipes.py::JobTests::test_deploy_job_binds_the_planned_snapshot`, whose old assertion expected
+private preflight text in the public API response. `tests/test_web_recipes.py:663` now checks the redacted envelope
+and verifies the complete original reason in the local audit. The isolated test passes
+(`hl-placement-portal-envelope.log`); the final complete run below supersedes that attempt.
+
+Final full Python 3.13 suite: **46 failed, 3675 passed, 69 skipped** in 526.95 s
+(`hl-placement-after313.log`). `hl-placement-failure-comparison.log` asserts exact equality of the reference,
+before and final after failing-ID sets: all 46 IDs match, with no added or missing failures. The 18 additional
+cases pass. The empty TensorMeld submodule remains untouched. The final privacy scan and `git diff --check` pass;
+all changed/new files use LF. HEAD remains f1626ff on hl/placement, with no commit or push.

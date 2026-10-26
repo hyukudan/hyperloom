@@ -1,6 +1,6 @@
 """CPU-only placement rendering and local realised-context ingestion.
 
-The opt-in decode adapter has no release pin until claudeinfo-release publishes one. Neither rendering nor
+The opt-in decode adapter has no release pin until the release owner publishes one. Neither rendering nor
 ingestion describes an engine, reads model data, acquires a grant or starts a process.
 """
 from __future__ import annotations
@@ -40,7 +40,7 @@ def qualified(data):
     if data.get("schema") != "hyperloom/placement-adapter-v1" or data.get("engine") != "strix-cuda-ds41-replica":
         raise RecipeError("PL_E_CAPABILITY unsupported placement engine (schema only for legacy adapters)")
     if not isinstance(data.get("engine_sha"), str) or not re.fullmatch(r"[0-9a-f]{40}", data["engine_sha"]):
-        raise RecipeError("PL_E_CAPABILITY placement release is unpublished; waiting for claudeinfo-release pinned sha")
+        raise RecipeError("PL_E_CAPABILITY placement release is unpublished; waiting for a SHA pinned by the release owner")
     if data["engine_sha"] != replica_args.AUDITED_REVISION:
         raise RecipeError("PL_E_CAPABILITY placement release differs from the audited replica parser revision")
 

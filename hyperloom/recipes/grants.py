@@ -5,7 +5,7 @@ import time
 import re
 
 from ..config import ConfigError, number, record, text
-from .. import rtx
+from .. import pc_big, rtx
 from .reader import RecipeError, placement_mode
 
 HOST_MAX_GIB = 74
@@ -62,9 +62,14 @@ def _active(window, now, *, starting=False):
 
 
 def pc_big_deadline(cluster, selected, *, now):
-    """Earliest known PC-BIG conflict for a turn touching a 4090, including future windows."""
-    if not any("4090" in row.get("name", "") for row in selected):
-        return None
+    """Earliest live or scheduled PC-BIG conflict, selected by configured policy rather than model name."""
+    try:
+        guard = pc_big.context(cluster, selected)
+        if guard is None:
+            return None
+        pc_big.require_clear(guard)
+    except rtx.ServiceError as exc:
+        raise RecipeError("PL_E_GRANT " + str(exc)) from exc
     cuda = cluster.pc.get("cuda", {})
     windows = [g["window"] for g in cuda.get("grants", [])]
     if cuda.get("host_grant"):
@@ -139,7 +144,7 @@ def check(cluster, recipe, binding, report, hosts, *, now=None, touched=None, an
     if host_grant is not None:
         ends.append(rtx.expires(host_grant["window"]["expires_at"], "host grant expires_at"))
     if deadline is not None and ends and deadline < min(ends):
-        raise RecipeError("PL_E_GRANT no 4090 turn may overlap a PC-BIG window")
+        raise RecipeError("PL_E_GRANT selected device turn may not overlap a PC-BIG window")
     return used
 
 
@@ -157,4 +162,5 @@ def policy(cluster, recipe, route, binding, report, plan, hosts, *, now):
             "host_pageable_gib": host["pageable_budget_bytes"] / rtx.GIB,
             "host_grant": cluster.pc.get("cuda", {}).get("host_grant"),
             "free_commit_floor_gib": max(4, recipe["limits"]["host_free_commit_floor_gib"]),
-            "pc_big_deadline": pc_big_deadline(cluster, devices, now=now)}
+            "pc_big_deadline": pc_big_deadline(cluster, devices, now=now),
+            "pc_big_guard": pc_big.context(cluster, devices)}

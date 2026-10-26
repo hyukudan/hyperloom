@@ -28,10 +28,10 @@ _facts_cache = {}
 def register(reg):
     from hyperloom.cliext import planner as cli_planner
     reg.get("planner", page)
-    reg.post("planner/whatif", whatif)
-    reg.post("planner/placement", placement)
-    reg.post("planner/solve", solve)
-    reg.post("planner/pick", pick)
+    reg.post("planner/whatif", whatif, audited=True)
+    reg.post("planner/placement", placement, audited=True)
+    reg.post("planner/solve", solve, audited=True)
+    reg.post("planner/pick", pick, audited=True)
     reg.capability("planner-whatif", True, "recipe variants side by side on saved hardware facts (nothing deployed)")
     from hyperloom.recipes import facts as recipe_facts
     available, why = cli_planner.planner_available()

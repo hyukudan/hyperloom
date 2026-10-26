@@ -673,8 +673,10 @@ class JobTests(unittest.TestCase):
             cluster = orchestrate.load_cluster(self.env.config)
             digest = service.plan(cluster, "ds-user", "ds41-rtx", source=self.source)["inputs"]
             with mock.patch.object(commands, "live_source", return_value=self.source):
-                with self.assertRaisesRegex(APIError, "running profiles are none"):
-                    self.api.mutate("recipes/deploy", {"inputs": digest, "stop": ["qwen-replicas"]})
+                with mock.patch.object(self.api, "_audit", wraps=self.api._audit) as audit:
+                    with self.assertRaisesRegex(APIError, "preflight refused; see local audit"):
+                        self.api.mutate("recipes/deploy", {"inputs": digest, "stop": ["qwen-replicas"]})
+                    self.assertIn("running profiles are none", audit.call_args.args[2]["error"])
                 self.orch.down.assert_not_called()
                 job = self.wait(self.api.mutate("recipes/deploy", {"inputs": digest}))
         self.assertEqual(job["state"], "succeeded", job["error"])
@@ -714,11 +716,13 @@ class JobTests(unittest.TestCase):
         self.assertIn("deploy cancelled", finished["error"])
         self.orch.up.assert_not_called()
         # The API forwards every up argument to the CLI, which refuses what a snapshot launch does not take.
-        with self.assertRaisesRegex(APIError, "planned snapshot as it is"):
+        with self.assertRaisesRegex(APIError, "preflight refused; see local audit"):
             self.api.mutate("up", {"recipe_inputs": digest, "node": ["halo-1"],
                                    "recipe_set": ["limits.host_free_ram_floor_gib=1"]})
-        with self.assertRaisesRegex(APIError, "no snapshot"):
-            self.api.mutate("recipes/deploy", {"inputs": "0" * 64})
+        with mock.patch.object(self.api, "_audit", wraps=self.api._audit) as audit:
+            with self.assertRaisesRegex(APIError, "preflight refused; see local audit"):
+                self.api.mutate("recipes/deploy", {"inputs": "0" * 64})
+            self.assertIn("no snapshot", audit.call_args.args[2]["error"])
         with self.assertRaises(APIError):
             self.api.mutate("recipes/deploy", {"inputs": digest, "stop": "qwen-replicas"})
         with self.assertRaises(APIError):

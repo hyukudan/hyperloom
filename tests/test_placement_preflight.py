@@ -20,7 +20,7 @@ from tests.test_recipes_grants import NOW, window
 
 class PreflightTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(dir=Path.cwd())
+        self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.uuid = "GPU-" + str(uuid.uuid4())

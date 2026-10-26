@@ -16,7 +16,7 @@ import sys
 import time
 from types import SimpleNamespace
 
-from .. import gpu_counters, placement_supervision, procs, rtx
+from .. import gpu_counters, pc_big, placement_supervision, procs, rtx
 from ..winproc import no_window
 from . import content_cache, grants, probe
 from .reader import RecipeError
@@ -77,17 +77,9 @@ def gpu_grant(cluster, row, *, now):
     grant = next((g for g in entries if grants.uuid_key(g["uuid"]) == grants.uuid_key(row["uuid"])), None)
     if grant is None or not grants._active(grant["window"], now, starting=True) or grant["vram_cap_gib"] <= 0:
         raise RecipeError("PL_E_GRANT measurement requires a current grant for this UUID (lab mode included)")
-    windows = [g["window"] for g in entries]
-    if cuda.get("host_grant"):
-        windows.append(grants.parse_host_grant(cuda["host_grant"])["window"])
-    # The child has a hard 60 s deadline: do not let a known PC-BIG window start during that turn either.
-    big = any(w["kind"] == "PC-BIG" and rtx.expires(w["starts_at"], "probe window") < now + 60
-              and rtx.expires(w["expires_at"], "probe window") > now for w in windows)
-    reservation = cuda.get("reservation")
-    if reservation:
-        big = big or "window_s" in reservation or rtx.reservation_end(reservation, now) > now
-    if "4090" in row["name"] and big:
-        raise RecipeError("PL_E_GRANT no 4090 measurement during a PC-BIG window")
+    deadline = grants.pc_big_deadline(cluster, [row], now=now)
+    if deadline is not None and deadline <= now + 60:
+        raise RecipeError("PL_E_GRANT no measurement during a PC-BIG window")
     return grant
 
 
@@ -105,10 +97,15 @@ def _gpu(row, grant, *, clock=time.time, lock_factory=rtx.device_lock, gate_runn
          popen=subprocess.Popen, job_factory=None):
     policy = {"grants": [grant], "caps_gib": {grant["uuid"]: grant["vram_cap_gib"]},
               "caps_bytes": {grants.uuid_key(grant["uuid"]): int(grant["vram_cap_gib"] * rtx.GIB)},
-              "host_pinned_gib": 0, "host_pageable_gib": 0, "free_commit_floor_gib": 4}
+              "host_pinned_gib": 0, "host_pageable_gib": 0, "free_commit_floor_gib": 4,
+              "pc_big_guard": row.get("_pc_big_guard")}
     end = min(clock() + 60, rtx.expires(grant["window"]["expires_at"], "probe grant"))
     spec = SimpleNamespace(placement_supervision=policy, deadline=end, free_commit_floor_gib=4)
     with ExitStack() as stack:
+        placement_supervision.validate(policy, now=clock(), starting=True, memory=rtx.memory_status())
+        placement_supervision.acquire(policy, stack, lock_factory=lock_factory, gate_runner=gate_runner,
+                                      verify=lambda u: _idle(u), log=lambda _: None, now=clock())
+        placement_supervision.validate(policy, now=clock(), starting=True)
         observer = observer_factory()
         owned = [True]
         stack.callback(lambda: observer.close() if owned[0] else None)
@@ -116,10 +113,6 @@ def _gpu(row, grant, *, clock=time.time, lock_factory=rtx.device_lock, gate_runn
         if (grants.uuid_key(row["uuid"]) not in sample
                 or any(type(v) is not int or v < 0 for v in sample.values())):
             raise RecipeError("PL_E_CAPABILITY measurement observer cannot attribute the selected GPU")
-        placement_supervision.validate(policy, now=clock(), starting=True, memory=rtx.memory_status())
-        placement_supervision.acquire(policy, stack, lock_factory=lock_factory, gate_runner=gate_runner,
-                                      verify=lambda u: _idle(u), log=lambda _: None, now=clock())
-        placement_supervision.validate(policy, now=clock(), starting=True)
         env = dict(os.environ, CUDA_VISIBLE_DEVICES=row["uuid"], CUDA_DEVICE_ORDER="PCI_BUS_ID")
         job = (job_factory or procs._WindowsJob)() if os.name == "nt" or job_factory else None
         if job is not None:
@@ -226,7 +219,7 @@ def acquire(cluster, mode, *, runtime, uuid=None, xfer_sha256=None, store_id=Non
     if mode == "xfer":
         configured = [d for m in cluster.machines.values() if m.access == "local" for d in m.devices
                       if not d.get("excluded", False) and uuid and grants.uuid_key(d.get("uuid", "")) == grants.uuid_key(uuid)]
-        if not configured:
+        if len(configured) != 1:
             raise RecipeError("PL_E_UNKNOWN_DEVICE probe UUID must be configured and non-excluded")
         # Refuse missing grants before even querying inventory.
         gpu_grant(cluster, {"uuid": uuid, "name": ""}, now=clock())
@@ -234,7 +227,7 @@ def acquire(cluster, mode, *, runtime, uuid=None, xfer_sha256=None, store_id=Non
                 if grants.uuid_key(r["uuid"]) == grants.uuid_key(uuid)]
         if len(rows) != 1:
             raise RecipeError("PL_E_UNKNOWN_DEVICE measurement UUID is absent or ambiguous")
-        row = rows[0]
+        row = dict(rows[0], _pc_big_guard=pc_big.context(cluster, rows))
         grant = gpu_grant(cluster, row, now=clock())
         identity = key(row["uuid"], row.get("driver"), xfer_sha256, store_id)
         result = gpu_runner(row, grant)

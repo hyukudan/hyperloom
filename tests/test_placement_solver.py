@@ -15,7 +15,7 @@ from tests import test_recipes
 
 class SolverTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(dir=Path.cwd())
+        self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.recipe = self.root / "recipe.json"

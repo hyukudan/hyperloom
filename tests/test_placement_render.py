@@ -18,7 +18,7 @@ from tests.replica_fake import startup_args
 
 class PlacementRenderTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(dir=Path.cwd())
+        self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.data = runtime.preset()
@@ -70,7 +70,7 @@ class PlacementRenderTests(unittest.TestCase):
             request = runtime.Request("local", self.files, policy, argv=tuple(self.argv))
             with mock.patch.object(runtime, "preset", return_value=self.data), mock.patch.object(rtx.time, "time", return_value=NOW):
                 spec = rtx.render_placement_service(SimpleNamespace(machines={"local": machine}), request, api_key="0" * 64)
-            argv = [str(a).replace(str(self.root), "<runtime>").replace("\\", "/") for a in spec.redacted]
+            argv = [str(a).replace("\\", "/").replace(str(self.root).replace("\\", "/"), "<runtime>") for a in spec.redacted]
             env = {key: spec.env[key] for key in ("CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER")}
             env = {k: v.replace(self.uuids[0], "<anchor-uuid>").replace(self.uuids[1], "<assist-uuid>")
                    for k, v in env.items()}
@@ -78,7 +78,7 @@ class PlacementRenderTests(unittest.TestCase):
             self.assertEqual(spec.placement, self.document)
 
     def test_unpublished_and_unsupported_engines_refuse(self):
-        with self.assertRaisesRegex(RecipeError, "claudeinfo-release"):
+        with self.assertRaisesRegex(RecipeError, "release owner"):
             runtime.render(self.files, binary="unused")
         for engine in ("ds41-rtx-prefill", "hip", "other"):
             self.document["engine"] = engine

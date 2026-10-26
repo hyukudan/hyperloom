@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 
-from . import gpu_counters, rtx
+from . import gpu_counters, pc_big, rtx
 from .recipes import grants
 from .config import number
 
@@ -11,6 +11,7 @@ from .config import number
 def validate(policy, *, now, starting=False, memory=None):
     """Validate an exact cap for each granted UUID and the aggregate pinned/pageable host charge."""
     entries = grants.parse_grants(policy["grants"])
+    pc_big.require_clear(policy.get("pc_big_guard"))
     big = policy.get("pc_big_deadline")
     if big is not None and now + (60 if starting else 0) >= big:
         raise rtx.ServiceError("placement turn reaches a PC-BIG window")

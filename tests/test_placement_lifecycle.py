@@ -137,6 +137,8 @@ def test_01_evaluate_prepare_up_and_real_watchdog_with_fake_child(tmp_path, file
     from hyperloom.recipes import service
     from tests.replica_fake import FakeReplica as FakeChild
 
+    # Simulate the Windows service filesystem using the test host's native paths.
+    monkeypatch.setattr(rtx, "PureWindowsPath", Path)
     artifacts, document = files
     data = dict(runtime.preset(), engine_sha=runtime.replica_args.AUDITED_REVISION, capabilities=["placement-v1"])
     recipe_doc = test_recipes.PlacementSchemaTests.document()

@@ -776,6 +776,11 @@ def service_run(spec_path, *, child_factory=procs.LocalChild, watchdog_factory=W
         if spec.placement_supervision is not None:
             from . import gpu_counters, placement_supervision
             placement_supervision.validate(spec.placement_supervision, now=time.time(), starting=True, memory=memory())
+            info = placement_supervision.acquire(spec.placement_supervision, devices, lock_factory=lock_factory,
+                                                  gate_runner=gate_runner,
+                                                  verify=verify_device if verify is verify_pro else verify,
+                                                  log=log, now=time.time(),
+                                                  release=lambda lock: cleanup_step("device", lock.close))
             # Availability is tested before any engine is started. Counters may enumerate GPUs but never run work.
             observer = (observer_factory or gpu_counters.Observer)()
             sample = observer.sample(os.getpid())
@@ -784,11 +789,6 @@ def service_run(spec_path, *, child_factory=procs.LocalChild, watchdog_factory=W
                 raise ServiceError("granted GPU missing from attributable counters")
             if spec.pro_uuid.lower() not in caps:
                 raise ServiceError("placement anchor has no grant")
-            info = placement_supervision.acquire(spec.placement_supervision, devices, lock_factory=lock_factory,
-                                                  gate_runner=gate_runner,
-                                                  verify=verify_device if verify is verify_pro else verify,
-                                                  log=log, now=time.time(),
-                                                  release=lambda lock: cleanup_step("device", lock.close))
             for item in info:
                 cap_bytes = spec.placement_supervision.get("caps_bytes", {}).get(item["uuid"].lower())
                 if (item.get("memory_total_mib") is not None

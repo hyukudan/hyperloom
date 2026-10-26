@@ -1,4 +1,5 @@
 """Every tracked recipe/profile/receipt/fixture passes the same portable-data rule, without exceptions."""
+import ast
 import hashlib
 import ipaddress
 import json
@@ -17,6 +18,8 @@ PRIVATE_KEYS = frozenset(("uuid", "pci", "pci_path", "hostname", "host_id", "use
 PLACEHOLDER = re.compile(r"<[a-z][a-z0-9-]*>")
 ADDRESS = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?!\w|\.\d)|"
                      r"(?<![\w:])(?:[0-9a-fA-F]*:){2,}[0-9a-fA-F:.]*(?:%[\w.~-]+)?(?![\w:])")
+LOCAL_IDENTITY = re.compile(r"(?i)[a-z]:[\\/](?:users[\\/]|tmp[\\/]|python\d+\b)|"
+                            r"\bclaude[a-z]+(?:-[a-z0-9]+)+\b")
 
 
 def addresses(value):
@@ -70,6 +73,14 @@ def findings():
             doc = text
         if private(doc):
             found[name] = hashlib.sha256(raw).hexdigest()
+    for path in [*ROOT.glob("docs/*.md"), ROOT / "tests/fixtures/render/README.md",
+                 *ROOT.glob("hyperloom/**/*.py"), *ROOT.glob("hyperloom/**/*.json")]:
+        raw = path.read_bytes()
+        text = raw.decode("utf-8")
+        values = [text] if path.suffix != ".py" else [node.value for node in ast.walk(ast.parse(text))
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)]
+        if any(LOCAL_IDENTITY.search(value) for value in values):
+            found[path.relative_to(ROOT).as_posix()] = hashlib.sha256(raw).hexdigest()
     return found
 
 

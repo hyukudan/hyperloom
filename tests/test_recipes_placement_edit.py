@@ -191,7 +191,7 @@ class PlacementEditTests(unittest.TestCase):
         if not executable:
             self.skipTest("set HYPERLOOM_TS_RECIPE for CPU layer/copy parity")
         backend = core.CoreBackend(core.Core(executable))
-        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "base.json"
             path.write_bytes(self.text.encode())
             override = Path(tmp) / "edits.json"

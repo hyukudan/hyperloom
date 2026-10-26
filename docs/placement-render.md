@@ -1,7 +1,7 @@
 # Placement rendering
 
 The opt-in `rtx-decode-ds41-placement` adapter is for the RTX-alone DS decode replica. Its `engine_sha` is deliberately
-null until claudeinfo-release publishes the pinned release. Rendering also requires an explicit `placement-v1`
+null until the release owner publishes the pinned release. Rendering also requires an explicit `placement-v1`
 capability for that release. The selected replica at a919c257 does not parse the placement flags, so the shipped
 capability list is empty. A published SHA alone does not enable launch.
 Qualification also requires the published SHA to equal `replica_args.AUDITED_REVISION`, bound to the snapshot

@@ -5,11 +5,34 @@ from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
+import threading
 
 from . import commands, content_cache, core, placement, reader, service, session
 from .reader import RecipeError
 
 SCHEMA = "hyperloom/solver-selection-v1"
+MAX_PLAN_FILES = 64
+MAX_PLAN_BYTES = 64 * 1024 * 1024
+_plan_lock = threading.Lock()
+
+
+def _save_plan(digest, record):
+    """Bound local selections by count and encoded bytes; evict oldest writes first."""
+    size = len(content_cache._json(record))
+    if size > MAX_PLAN_BYTES or size > content_cache.MAX_JSON_BYTES:
+        raise RecipeError("PL_E_SCHEMA solver plan exceeds cache size limit")
+    directory = commands.runtime_dir() / "solver-plans"
+    with _plan_lock, service.runtime_lock():
+        files = sorted(directory.glob("*.json"), key=lambda p: (p.stat().st_mtime_ns, p.name))
+        target = directory / (digest + ".json")
+        files = [p for p in files if p != target]
+        sizes = {p: p.stat().st_size for p in files}
+        total = sum(sizes.values()) + size
+        while files and (len(files) >= MAX_PLAN_FILES or total > MAX_PLAN_BYTES):
+            oldest = files.pop(0)
+            oldest.unlink()
+            total -= sizes[oldest]
+        content_cache._write(target, record)
 
 
 def rows(document):
@@ -174,7 +197,7 @@ def solve(cluster, ref, route, bundle, *, layers=None, backend=None):
     _check(snapshot)
     digest = content_cache._sha(snapshot)
     record = {"snapshot": snapshot, "result": result.document, "table": result.text}
-    content_cache._write(commands.runtime_dir() / "solver-plans" / (digest + ".json"), record)
+    _save_plan(digest, record)
     return {"selection": digest, "solver": result.document, "rows": shown, "table": result.text,
             "saved": False, "note": "Choose a row explicitly; no assist or grant is enabled by solving."}
 

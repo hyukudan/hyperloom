@@ -70,7 +70,7 @@ def _oracle(directory, service):
         return document, paths, expected
     except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
         raise ServiceError("replica oracle unavailable or invalid: " + str(exc)
-                           + "; obtain the release-bound native reference bundle from claudesoporte-wdsrtx") from exc
+                           + "; obtain the release-bound native reference bundle from the engine owner") from exc
 
 
 def fidelity_gate(service, prompts):

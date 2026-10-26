@@ -1965,16 +1965,24 @@ class API:
             self._audit(action, arguments, {"state": "refused", "error": str(exc)})
             raise
         priority = action in ("down", "cancel")
+        # Reject an occupied portal before any live node/preflight probes. The reservation below repeats this
+        # check under the same mutex to cover another request arriving during passive admission.
+        with self._job_lock:
+            if self._active and not priority:
+                self._audit(action, arguments, {"state": "refused", "error": "another mutating job is running"})
+                raise APIError("another mutating job is running", 409)
         checked_resources, selected = None, None
         if action == "recipes/deploy" or (action == "up" and (arguments.get("recipe") or arguments.get("recipe_inputs"))):
             from hyperloom.recipes import preflight
-            argv = self._deploy_argv(arguments) if action == "recipes/deploy" else self._recipe_up_argv(arguments)
-            parsed = cli.build_parser(recipe_web.RaisingParser).parse_args(argv)
             try:
+                argv = self._deploy_argv(arguments) if action == "recipes/deploy" else self._recipe_up_argv(arguments)
+                parsed = cli.build_parser(recipe_web.RaisingParser).parse_args(argv)
                 checked_resources = preflight.cli(parsed, load_cluster=self._recipe_loader)
                 selected = getattr(parsed, "_prepared_selection", None)
             except (OSError, ValueError, RuntimeError) as exc:
-                raise APIError(str(exc), 400) from exc
+                self._audit(action, arguments, {"state": "refused", "error": str(exc)})
+                code = re.match(r"PL_[EW]_[A-Z_]+\b", str(exc))
+                raise APIError((code[0] + ": " if code else "") + "placement preflight refused; see local audit", 400) from exc
         occupying = action in ("up", "install", "recipes/deploy", "recipes/probe")
         # A stop: down, and every cancel that is not a feature job's (a profile's cancel and an up's or a deploy's
         # cancel stop a profile, or may).

@@ -27,3 +27,21 @@ An explicit destination requiring that assist is Tierstream's refusal. A 4090 tu
 any configured PC-BIG window (including a future one) is refused. The earliest conflict is also carried into supervision.
 These checks do not enable the legacy prefill service to consume placement-mode recipes. All operational UUIDs, paths, grants
 and probe documents belong in local configuration/runtime storage; committed examples use portable identities.
+
+`machines[].devices[].pc_big_conflict` is an optional boolean policy flag. It defaults to true for local devices
+other than `pc.cuda.pro_uuid`, independent of the observed model name. An explicit false is an operator policy
+choice; it does not grant a turn or remove that device's lock, idle check or gate. A conflicting device is refused
+when the PRO's existing `pcbig-<uuid>.lock` is held, `rtx.pro_busy` reports activity, or the ledger has any open
+PC-BIG start (including stale starts). The ledger path is the existing `prefs` / `turns/ledger_path` preference
+in the configuration directory's telemetry store. Each signal is checked before measurements/admission and again
+throughout supervision; partial ledger lines and unreadable configured signals refuse. An absent optional
+preference store/path configures no ledger signal. `pc.cuda.pro_uuid` identifies the PRO lock and busy sensor.
+Once observed, a preference store or ledger setting cannot disappear and silently disable supervision.
+Checks never acquire the PRO lock or write the ledger/preferences.
+
+Ambiguous configuration (multiple device records matching one physical card) is excluded in both portal views
+and refused by placement/measurement selection. The legacy unconfigured-4090 exclusion remains in
+`config.DEFAULT_DEVICE_POLICIES`: it requires a physical identity match before a configured policy may override
+exclusion. A same-name card cannot inherit another card's flags. Other classes retain their legacy name fallback.
+This default affects legacy inventory/views; explicitly configured placement candidates keep their existing
+non-excluded, UUID-bound selection rule. G6 argv/environment/release/refusal bytes remain unchanged.

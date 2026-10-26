@@ -183,7 +183,7 @@ class TierstreamParityTests(unittest.TestCase):
         # The upstream CPU harness constructs components/recipes from the abstract vectors and compares every
         # allocation and prediction with the frozen expected files. Run it on the contract's own goldens;
         # no reference arithmetic is imported into Hyperloom, and the external worktree remains read-only.
-        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             data = Path(tmp) / "tests/data/placement"
             data.mkdir(parents=True)
             for directory in ("g4", "sv1", "calib"):

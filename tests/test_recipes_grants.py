@@ -154,7 +154,7 @@ class StrictCoreTests(unittest.TestCase):
         self.recipe["match"]["devices"][1].update(name="class-1", uuid=self.ids[1])
 
     def bind(self):
-        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "recipe.json"
             path.write_text(json.dumps(self.recipe), encoding="utf-8")
             return self.backend.match(path, session.Layers(), self.report(), None)
