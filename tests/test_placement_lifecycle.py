@@ -7,6 +7,8 @@ from types import SimpleNamespace
 from unittest import mock
 import hashlib
 import json
+import os
+import socket
 import threading
 
 import pytest
@@ -132,11 +134,13 @@ def test_placement_start_owns_handlers_watcher_and_rollback(tmp_path, monkeypatc
         assert calls[-1] == "handlers-closed"
 
 
-def test_01_evaluate_prepare_up_and_real_watchdog_with_fake_child(tmp_path, files, identity, monkeypatch):
+@pytest.mark.parametrize("handover", [False, True])
+def test_01_evaluate_prepare_up_and_real_watchdog_with_fake_child(tmp_path, files, identity, monkeypatch, request, handover):
     from hyperloom import admission, cli, gpu_counters, orchestrate, secrets
     from hyperloom.recipes import service
     from tests.replica_fake import FakeReplica as FakeChild
 
+    monkeypatch.setattr(service, "config_dir", lambda: tmp_path)
     # Simulate the Windows service filesystem using the test host's native paths.
     monkeypatch.setattr(rtx, "PureWindowsPath", Path)
     artifacts, document = files
@@ -194,14 +198,40 @@ def test_01_evaluate_prepare_up_and_real_watchdog_with_fake_child(tmp_path, file
     monkeypatch.setattr(rtx.time, "time", lambda: NOW)
     values = {identity.lower(): 0}
     observer = mock.Mock()
-    observer.sample.side_effect = lambda pid: dict(values)
+    old = {}
+    observer.sample.side_effect = lambda pid: {identity.lower(): (4 * rtx.GIB if old else 0) if pid == os.getpid()
+                                               else values[identity.lower()]}
+    monkeypatch.setattr(rtx, "compute_apps", lambda: [])
+    monkeypatch.setattr(rtx, "device_used_mib", lambda _: 4096 if old else
+                        (values[identity.lower()] + (1 << 20) - 1) // (1 << 20))
     monkeypatch.setattr(gpu_counters, "Observer", lambda: observer)
     dog = placement_supervision.Watchdog
     monkeypatch.setattr(placement_supervision, "Watchdog", lambda *a, **kw: dog(*a, clock=lambda: NOW, **kw))
     inputs = {"routes": {"decode": dict(components=ref, selected_content=selected, receipts=str(artifacts.receipts),
                                       argv=startup_args(model)[1:])}}
     options = launch.Options(str(path), placement_inputs=inputs)
-    prepared = launch.prepare(cluster, "decode", options, router="local", vram_cap_gib=None, state_dir=tmp_path)
+    actual_lock = rtx.device_lock
+    if handover:
+        cluster.pc["cuda"]["pro_uuid"] = identity
+        cluster.machines["local"].devices[0]["pc_big_conflict"] = True
+        monkeypatch.setattr(rtx, "device_lock_path", lambda _: tmp_path / "device.lock")
+        old_lock = actual_lock(identity).acquire()
+        request.addfinalizer(old_lock.close)
+        old_directory = tmp_path / "old-helper"
+        old_helper = procs.InstanceLock(old_directory / "helper.lock").acquire()
+        request.addfinalizer(old_helper.close)
+        old_port = socket.socket()
+        request.addfinalizer(old_port.close)
+        old_port.bind(("127.0.0.1", 0))
+        old_port.listen()
+        inputs["port"] = old_port.getsockname()[1]
+        record = dict(directory=str(old_directory), device=identity, pid=os.getpid(), port=inputs["port"],
+                      placement_supervision={"caps_bytes": {identity.lower(): 90 * rtx.GIB}})
+        content_cache._write(old_directory / "state.json", dict(state="ready", pid=os.getpid(),
+                                                               device=[dict(uuid=identity)]))
+        old["old"] = dict(profile="old", token="reviewed-controller", prefill_service=record)
+    prepared = launch.prepare(cluster, "decode", options, router="local", vram_cap_gib=None, state_dir=tmp_path,
+                              **({"reviewed": old} if handover else {}))
     assert prepared.evaluation.ok and prepared.evaluation.decision["placement"]
     assert prepared.placement_request.supervision["caps_bytes"] == {identity.lower(): 90 * rtx.GIB}
     assert not prepared.placement_request.files.placement.exists()  # pure admission never publishes
@@ -213,9 +243,14 @@ def test_01_evaluate_prepare_up_and_real_watchdog_with_fake_child(tmp_path, file
     gates, locks, closes, threads, watchers = [], [], [], [], []
     def device_lock(key):
         locks.append(key)
-        item = mock.Mock()
-        item.acquire.return_value = item
-        item.close.side_effect = lambda: closes.append(key)
+        if handover:
+            item = actual_lock(key)
+            close = item.close
+            item.close = lambda: (closes.append(key), close())[-1]
+        else:
+            item = mock.Mock()
+            item.acquire.return_value = item
+            item.close.side_effect = lambda: closes.append(key)
         return item
     FakeChild.instances = []
     def detached(argv, logfile):
@@ -232,34 +267,57 @@ def test_01_evaluate_prepare_up_and_real_watchdog_with_fake_child(tmp_path, file
         thread.start()
         return SimpleNamespace(poll=lambda: None if thread.is_alive() else 0)
     monkeypatch.setattr(orchestrate, "_detached", detached)
-    # The CLI must hold the PC for the real selected placement Request, even without a prefill-service profile.
-    content_cache._write(tmp_path / "placement-inputs" / ("d" * 64 + ".json"), inputs)
-    monkeypatch.setattr(cli, "_cluster", lambda _: cluster)
-    monkeypatch.setattr(service, "locate", lambda *a, **kw: path)
-    monkeypatch.setattr(service, "deployment_profile", lambda *a: "decode")
-    database = admission.Admission(":memory:")
-    monkeypatch.setattr(admission, "for_config", lambda _: database)
-    args = cli.build_parser().parse_args(["up", "decode", "--recipe", str(path),
-                                         "--config", str(tmp_path / "config.json")])
-    try:
-        release = cli._admission_hold(args)
+    if not handover:
+        # The CLI must hold the PC for the real selected placement Request, even without a prefill-service profile.
+        content_cache._write(tmp_path / "placement-inputs" / ("d" * 64 + ".json"), inputs)
+        monkeypatch.setattr(cli, "_cluster", lambda _: cluster)
+        monkeypatch.setattr(service, "locate", lambda *a, **kw: path)
+        monkeypatch.setattr(service, "deployment_profile", lambda *a: "decode")
+        database = admission.Admission(":memory:")
+        monkeypatch.setattr(admission, "for_config", lambda _: database)
+        args = cli.build_parser().parse_args(["up", "decode", "--recipe", str(path),
+                                             "--config", str(tmp_path / "config.json")])
         try:
-            assert database.holds()[0]["resources"] == ["local"]
+            release = cli._admission_hold(args)
+            try:
+                assert database.holds()[0]["resources"] == ["local"]
+            finally:
+                release()
+            database.acquire("bench", {"local"}, label="PC benchmark")
+            with pytest.raises(RuntimeError, match="benchmark"):
+                cli._admission_hold(args)
         finally:
-            release()
-        database.acquire("bench", {"local"}, label="PC benchmark")
-        with pytest.raises(RuntimeError, match="benchmark"):
-            cli._admission_hold(args)
-    finally:
-        database.close()
+            database.close()
     prepared_calls = len(calls)
     try:
-        state = orchestrate.up(cluster, "decode", recipe=options,
-                               admitted_selection=launch.selection(cluster, "decode", prepared))
+        if handover:
+            intent = dict(service.DEFAULT_INTENT, profile="decode")
+            monkeypatch.setattr(service, "options_from_inputs", lambda *a: (cluster, intent, options))
+            monkeypatch.setattr(service, "_states", lambda: old)
+            monkeypatch.setattr(service, "runtime_dir", lambda: tmp_path)
+            (tmp_path / "recipe-inputs" / ("a" * 64)).mkdir(parents=True)
+            def down(profile):
+                assert profile == "old"
+                assert procs.lock_held(rtx.device_lock_path(identity))
+                old_lock.close()
+                old_helper.close()
+                old_port.close()
+                old.clear()
+                return {"state": "stopped"}
+            controller = SimpleNamespace(check_launch=orchestrate.check_launch, down=down, up=orchestrate.up)
+            result = service.deploy("a" * 64, stop=["old"], source=source, orchestrate=controller)
+            assert result["stopped"] == [{"profile": "old", "down": {"state": "stopped"}}]
+            state = result["up"]
+            assert procs.lock_held(rtx.device_lock_path(identity))
+            serialized = json.dumps(prepared.record()) + json.dumps(state)
+            assert '"owners"' not in serialized and '"observer"' not in serialized
+        else:
+            state = orchestrate.up(cluster, "decode", recipe=options,
+                                   admitted_selection=launch.selection(cluster, "decode", prepared))
         assert state["phase"] == "running"
-        assert gates == [entry["gate"]] and locks == [identity.lower()]
+        assert gates == [entry["gate"]] and [u.lower() for u in locks] == [identity.lower()]
         assert orchestrate.endpoint("decode")["protocol"] == "ds41-replica-spool-v1"
-        assert len(calls) == prepared_calls + 1
+        assert len(calls) == prepared_calls + (4 if handover else 1)
         values[identity.lower()] = 90 * rtx.GIB + 1
         threads[0].join(5)
         assert not threads[0].is_alive()

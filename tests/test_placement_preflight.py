@@ -10,12 +10,62 @@ import unittest
 from unittest import mock
 import uuid
 
+import pytest
+
 from hyperloom import admission, cli, orchestrate, procs, rtx
 from hyperloom.recipes import apply, commands, core, launch, measurements, preflight, reader, service, session
 from hyperloom.recipes.reader import RecipeError
 from hyperloom.web.api import API, APIError
 from tests import test_recipes
 from tests.test_recipes_grants import NOW, window
+
+
+@pytest.mark.parametrize("failure", [None, "core", "foreign", "sample"])
+def test_handover_admission_owns_one_observer(tmp_path, monkeypatch, failure):
+    fixture = PreflightTests()
+    fixture.setUp()
+    try:
+        fixture.cluster.pc["cuda"]["pro_uuid"] = fixture.uuid
+        fixture.cluster.machines = {"local": SimpleNamespace(access="local", devices=[dict(
+            uuid=fixture.uuid, pc_big_conflict=True)])}
+        directory = tmp_path / "old-helper"
+        directory.mkdir()
+        (directory / "state.json").write_bytes(json.dumps(dict(
+            state="ready", pid=42, device=[dict(uuid=fixture.uuid)])).encode())
+        reviewed = {"old": dict(token="reviewed-controller", prefill_service=dict(
+            directory=str(directory), pid=42, device=fixture.uuid, port=8096))}
+        monkeypatch.setattr(rtx, "device_lock_path", lambda _: tmp_path / "device.lock")
+        monkeypatch.setattr(service, "config_dir", lambda: tmp_path)
+        monkeypatch.setattr(rtx, "compute_apps", lambda: [(fixture.uuid, 777, 4096)] if failure == "foreign" else [])
+        monkeypatch.setattr(rtx, "device_used_mib", lambda _: 4096)
+        monkeypatch.setattr(procs, "check_port", lambda *a: None)
+        created = []
+        def observe():
+            observer = mock.Mock()
+            observer.sample.side_effect = lambda pid: ({} if failure == "sample" and pid != 42 else
+                                                       {fixture.uuid.lower(): 4 * rtx.GIB if pid == 42 else 0})
+            created.append(observer)
+            return observer
+        if failure == "core":
+            fixture.backend.place.side_effect = RecipeError("PL_E_BUDGET synthetic refusal")
+        with ExitStack() as stack:
+            helper = procs.InstanceLock(directory / "helper.lock").acquire()
+            stack.callback(helper.close)
+            lock = rtx.device_lock(fixture.uuid).acquire()
+            stack.callback(lock.close)
+            def check():
+                return preflight.check(fixture.cluster, "fake", session.Layers(), fixture.backend, fixture.recipe,
+                    fixture.bound, fixture.report, fixture.raw, "a" * 64, inputs=fixture.inputs, cache=fixture.cache,
+                    now=NOW, observer_factory=observe, reviewed=reviewed)
+            if failure:
+                with pytest.raises(RecipeError):
+                    check()
+            else:
+                check()
+        assert len(created) == 1
+        created[0].close.assert_called_once()
+    finally:
+        fixture.doCleanups()
 
 
 class PreflightTests(unittest.TestCase):

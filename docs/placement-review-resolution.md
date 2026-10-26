@@ -286,3 +286,43 @@ branch is AST-equal (`hl-placement-r17-legacy-ast.log`). Against 658d62f, only t
 
 Logs remain outside git. TEMP/TMP were not changed; the empty submodule is untouched. No network, GPU work,
 additional worktree, commit or push was used.
+
+## Follow-up of ce445cc: residual brackets and real-renderer handover
+
+Contract rev 21c. Both reviews' remaining findings are addressed below. The clean Python 3.13 baseline completed
+before any tracked edit: **46 failed, 3712 passed, 69 skipped** in 467.62 s. Its failing IDs equal the supplied
+46-ID reference exactly (`hl-placement-r18-before313.log`, `hl-placement-r18-failure-comparison.log`).
+
+CPU reproductions first confirmed false refusal during own growth, hidden foreign N/A activity during own release,
+and acceptance of a negative total (`hl-placement-r18-residual-repro.log`). The regression run reproduced the real
+launch/RTX renderer's ownership loss and the sampling defects (`hl-placement-r18-red.log`). After correcting a test
+fixture's lock cleanup, observer lifetime regressions separately reproduced repeated construction on success and
+refusal (`hl-placement-r18-observer-red.log`).
+
+| Item | Change (file:line) | Regression | Open points |
+|---|---|---|---|
+| A: both residual sampling findings | `hyperloom/pc_big.py:59` brackets each device total with two samples per owned PID, summing per-PID maxima/minima. Definite foreign activity refuses; definite clear state proceeds. Ambiguity resamples immediately for at most three brackets, then raises `CounterUnavailable`. Negative/non-integer totals and totals more than one MiB below the lower attribution also refuse. `hyperloom/recipes/preflight.py:176` uses the same bounded check for reviewed idle admission. | `tests/test_pc_big_sampling.py:19`, `test_residual_brackets_bound_each_owned_pid`: growth without a kill, release with persistent foreign N/A activity refused on the second bracket, stable clear/foreign cases, crossing PID changes, persistent ambiguity, invalid totals, rounding tolerance, missing samples on either side, watchdog strikes/recovery, and unchanged full-process cap enforcement. Runs at pre-start, handover and watchdog boundaries. | No live WDDM qualification under the no-GPU constraint. Three unavailable watchdog checks still stop the turn; admission/start refuse immediately. |
+| B: ownership lost at the real renderer | `hyperloom/recipes/launch.py:161` re-verifies reviewed owners and passes them transiently through `render_placement`, `hyperloom/rtx.py:274` and `:358` into validation. No ownership is added to a policy, Request, ServiceSpec or saved record. Fresh unowned validation and device-lock acquisition after stopping remain mandatory. | `tests/test_placement_lifecycle.py:138`, `test_01_evaluate_prepare_up_and_real_watchdog_with_fake_child[True]`: complete deployment through real preparation, runtime decision, launch/RTX rendering, reviewed stop, fresh admission, real snapshot pin and replacement helper/watchdog. Synthetic qualified release metadata, CPU core/process/counter fakes and real device/helper locks exercise the entire path. Saved state has no owner/observer exemptions; replacement cap overflow still stops the child. Existing after-stop lock/port refusal cases remain covered. | The production release remains unpublished and refused. No renderer is replaced by this regression. |
+| C: repeated handover observers | `hyperloom/recipes/preflight.py:18` owns one observer per reviewed admission in an `ExitStack`; `hyperloom/recipes/grants.py:64`, `:85`, `:160` and supervision/idle checks borrow it. `hyperloom/recipes/preflight.py:167` registers cleanup at construction. The observer factory remains available for CPU tests. | `tests/test_placement_preflight.py:24`, `test_handover_admission_owns_one_observer`: exactly one construction and close on success, core refusal, foreign activity and a final missing sample. | None. Borrowed observers are never closed by a callee. |
+
+Focused validation: **1219 passed, 2 skipped** (`hl-placement-r18-focused.log`). The handover regression with its
+real snapshot pin additionally passes both ordinary and reviewed startup (`hl-placement-r18-handover.log`).
+The observer fixture was then strengthened to exercise every grant/supervision check. Replaying HEAD's modules in
+memory reproduced six constructions on successful admission; the final implementation constructs and closes one
+(`hl-placement-r18-observer-final-red.log`, `hl-placement-r18-observer-final.log`). An incomplete after-run was
+stopped for that fixture improvement and is not used as final evidence.
+
+Final full Python 3.13 suite: **46 failed, 3759 passed, 69 skipped** in 473.88 s
+(`hl-placement-r18-after313.log`). The reference, clean baseline and final after failing-ID sets are exactly equal:
+all 46 pre-existing failures, none added or missing. All **47 additional cases pass**
+(`hl-placement-r18-failure-comparison.log`). Both full runs emit background admission-thread warnings; the final
+run also records a `StopIteration` when an existing admission thread encounters the fidelity test's patched sleep.
+Those warnings remain an open test-isolation point; the admission-thread implementation is unchanged.
+
+G6 retains all **21 cases byte-identically** to the unchanged frozen oracle. Legacy reservation, gate, busy-query
+and watchdog definitions are AST-equal to eb9ae96; the device-lock definition matches after inlining its path
+helper, and the legacy helper acquisition/gate/verify branch matches. `service_run` and the legacy rendering body
+also remain AST-equal to HEAD (`hl-placement-r18-legacy-artifacts.log`). Privacy, LF and `git diff --check` pass.
+
+Logs remain outside git. TEMP/TMP were not changed, and the submodule remains empty. HEAD is still ce445cc on
+hl/placement. No network, GPU work, additional worktree, commit or push was used.

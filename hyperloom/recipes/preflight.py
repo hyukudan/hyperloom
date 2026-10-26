@@ -5,11 +5,12 @@ validation. The qualified adapter remains a separate release prerequisite; no pr
 """
 from __future__ import annotations
 
+from contextlib import ExitStack
 import os
 from pathlib import Path
 import time
 
-from .. import gpu_counters, placement_supervision, procs, rtx
+from .. import gpu_counters, pc_big, placement_supervision, procs, rtx
 from . import commands, content_cache, facts, grants, reader, session, sysmem
 from .reader import RecipeError
 
@@ -19,106 +20,105 @@ def check(cluster, path, layers, backend, recipe, bound, report, raw, effective_
     """All Hyperloom-determinable placement refusals. No leases, locks, gates, helpers or children."""
     now = time.time() if now is None else now
     owners, ports, reclaimable = _reviewed_resources(reviewed, cluster)
-    hosts = {host: dict(memory) for host, memory in raw["hosts"].items()}
-    for host, credit in reclaimable.items():
-        for key in ("free_ram_gib", "free_commit_gib"):
-            if hosts.get(host, {}).get(key) is not None:
-                hosts[host][key] += credit / rtx.GIB
-    # Hypothetical credit belongs only to the reviewed pre-stop checks, never the physical sample or new policy.
-    used = grants.check(cluster, recipe, bound["binding"], report, hosts, now=now, anchors_only=True, owners=owners,
-                        observer_factory=observer_factory)
-    rows = {grants.uuid_key(r.get("uuid", "")): r for r in report["devices"]}
-    for uuid in used:
-        row = rows[uuid]
-        if any(not row.get(k) or row[k] == "unknown" for k in ("uuid", "driver", "arch", "platform")):
-            raise RecipeError("PL_E_STALE placement device identity is unknown")
-        sysmem.require(raw.get("sysmem_policy", "unknown"), placement=True, platform=row["platform"])
-    if inputs is None:
-        if not content_cache._digest(effective_sha):
-            raise RecipeError("PL_E_STALE placement needs a current effective recipe identity")
-        inputs = content_cache._read(commands.runtime_dir() / "placement-inputs" / (effective_sha + ".json"),
-                                     "PL_E_MISSING_DESCRIPTOR")
-    if not isinstance(inputs, dict) or not isinstance(inputs.get("routes"), dict):
-        raise RecipeError("PL_E_MISSING_DESCRIPTOR invalid cached placement inputs")
-    routes = inputs["routes"]
-    cache = cache or commands.components_store()
-    plans, policies = {}, {}
-    used = {}
-    for route in recipe["routes"]:
-        if not route.get("enabled", True) or not reader.placement_mode(route):
-            continue
-        saved = routes.get(route["id"])
-        if not isinstance(saved, dict):
-            raise RecipeError("PL_E_MISSING_DESCRIPTOR missing cached configuration for " + route["id"])
-        components = cache.load(saved.get("components"), selected=saved.get("selected_content"))
-        # One authoritative place call per enabled configuration. No Python sizing/capability fallback.
-        plans[route["id"]] = backend.place(path, layers, route=route["id"], probe=report, components=components,
-                                            context=saved.get("context"), desc=saved.get("desc"),
-                                            identity=identity).document
-        plan = plans[route["id"]]
-        if not isinstance(plan.get("devices"), list) or not plan["devices"] or not isinstance(plan.get("host"), dict):
-            raise RecipeError("PL_E_SCHEMA core returned no touched devices or host budgets")
-        policy = grants.policy(cluster, recipe, route, bound["binding"], report, plan, hosts, now=now, owners=owners,
-                               observer_factory=observer_factory)
-        policies[route["id"]] = policy
-        used.update({grants.uuid_key(g["uuid"]): g for g in policy["grants"]})
-        for device in plan["devices"]:
-            row = rows.get(grants.uuid_key(device["uuid"]), {})
+    with ExitStack() as stack:
+        observer = _open_observer(stack, observer_factory) if owners else None
+        hosts = {host: dict(memory) for host, memory in raw["hosts"].items()}
+        for host, credit in reclaimable.items():
+            for key in ("free_ram_gib", "free_commit_gib"):
+                if hosts.get(host, {}).get(key) is not None:
+                    hosts[host][key] += credit / rtx.GIB
+        # Hypothetical credit belongs only to the reviewed pre-stop checks, never the physical sample or new policy.
+        used = grants.check(cluster, recipe, bound["binding"], report, hosts, now=now, anchors_only=True, owners=owners,
+                            observer=observer, observer_factory=observer_factory)
+        rows = {grants.uuid_key(r.get("uuid", "")): r for r in report["devices"]}
+        for uuid in used:
+            row = rows[uuid]
             if any(not row.get(k) or row[k] == "unknown" for k in ("uuid", "driver", "arch", "platform")):
                 raise RecipeError("PL_E_STALE placement device identity is unknown")
             sysmem.require(raw.get("sysmem_policy", "unknown"), placement=True, platform=row["platform"])
-        pinned, pageable = policy["host_pinned_gib"], policy["host_pageable_gib"]
-        route_hosts = {m["host"] for sid in route["devices"] for m in bound["binding"][sid]}
-        for host in route_hosts:
-            memory = hosts.get(host, {})
-            status = {"free_physical_gib": memory.get("free_ram_gib", float("nan")),
-                      "free_commit_gib": memory.get("free_commit_gib", float("nan"))}
+        if inputs is None:
+            if not content_cache._digest(effective_sha):
+                raise RecipeError("PL_E_STALE placement needs a current effective recipe identity")
+            inputs = content_cache._read(commands.runtime_dir() / "placement-inputs" / (effective_sha + ".json"),
+                                         "PL_E_MISSING_DESCRIPTOR")
+        if not isinstance(inputs, dict) or not isinstance(inputs.get("routes"), dict):
+            raise RecipeError("PL_E_MISSING_DESCRIPTOR invalid cached placement inputs")
+        routes = inputs["routes"]
+        cache = cache or commands.components_store()
+        plans, policies = {}, {}
+        used = {}
+        for route in recipe["routes"]:
+            if not route.get("enabled", True) or not reader.placement_mode(route):
+                continue
+            saved = routes.get(route["id"])
+            if not isinstance(saved, dict):
+                raise RecipeError("PL_E_MISSING_DESCRIPTOR missing cached configuration for " + route["id"])
+            components = cache.load(saved.get("components"), selected=saved.get("selected_content"))
+            # One authoritative place call per enabled configuration. No Python sizing/capability fallback.
+            plans[route["id"]] = backend.place(path, layers, route=route["id"], probe=report, components=components,
+                                                context=saved.get("context"), desc=saved.get("desc"),
+                                                identity=identity).document
+            plan = plans[route["id"]]
+            if not isinstance(plan.get("devices"), list) or not plan["devices"] or not isinstance(plan.get("host"), dict):
+                raise RecipeError("PL_E_SCHEMA core returned no touched devices or host budgets")
+            policy = grants.policy(cluster, recipe, route, bound["binding"], report, plan, hosts, now=now, owners=owners,
+                                   observer=observer, observer_factory=observer_factory)
+            policies[route["id"]] = policy
+            used.update({grants.uuid_key(g["uuid"]): g for g in policy["grants"]})
+            for device in plan["devices"]:
+                row = rows.get(grants.uuid_key(device["uuid"]), {})
+                if any(not row.get(k) or row[k] == "unknown" for k in ("uuid", "driver", "arch", "platform")):
+                    raise RecipeError("PL_E_STALE placement device identity is unknown")
+                sysmem.require(raw.get("sysmem_policy", "unknown"), placement=True, platform=row["platform"])
+            pinned, pageable = policy["host_pinned_gib"], policy["host_pageable_gib"]
+            route_hosts = {m["host"] for sid in route["devices"] for m in bound["binding"][sid]}
+            for host in route_hosts:
+                memory = hosts.get(host, {})
+                status = {"free_physical_gib": memory.get("free_ram_gib", float("nan")),
+                          "free_commit_gib": memory.get("free_commit_gib", float("nan"))}
+                try:
+                    placement_supervision.validate(policy, now=now, starting=True, memory=status, owners=owners,
+                                                   observer=observer, observer_factory=observer_factory)
+                    floor = max(recipe["limits"]["host_free_ram_floor_gib"],
+                                max((p.get("host_available_floor_gib", 0) for p in route["placement"].values()), default=0))
+                    if status["free_physical_gib"] - pinned - pageable < floor:
+                        raise rtx.ServiceError("placement host charge would cross available RAM floor")
+                except (rtx.ServiceError, ValueError, TypeError) as exc:
+                    raise RecipeError("PL_E_FREE " + str(exc)) from exc
+        for uuid in sorted(used):
+            # Probe an existing OS lock only. A missing lock must not create the runtime directory or lock file.
+            if uuid not in owners:
+                try:
+                    if procs.lock_held(rtx.device_lock_path(used[uuid]["uuid"])):
+                        raise procs.ProcessError("device lock is held")
+                except (procs.ProcessError, OSError) as exc:
+                    raise RecipeError("PL_E_BUSY device lock is already held or unavailable") from exc
             try:
-                placement_supervision.validate(policy, now=now, starting=True, memory=status, owners=owners,
-                                               observer_factory=observer_factory)
-                floor = max(recipe["limits"]["host_free_ram_floor_gib"],
-                            max((p.get("host_available_floor_gib", 0) for p in route["placement"].values()), default=0))
-                if status["free_physical_gib"] - pinned - pageable < floor:
-                    raise rtx.ServiceError("placement host charge would cross available RAM floor")
-            except (rtx.ServiceError, ValueError, TypeError) as exc:
-                raise RecipeError("PL_E_FREE " + str(exc)) from exc
-    for uuid in sorted(used):
-        # Probe an existing OS lock only. A missing lock must not create the runtime directory or lock file.
-        if uuid not in owners:
-            try:
-                if procs.lock_held(rtx.device_lock_path(used[uuid]["uuid"])):
-                    raise procs.ProcessError("device lock is held")
-            except (procs.ProcessError, OSError) as exc:
-                raise RecipeError("PL_E_BUSY device lock is already held or unavailable") from exc
+                reason = (_handover_busy(used[uuid]["uuid"], owners[uuid], observer)
+                          if uuid in owners else (busy or rtx.pro_busy)(used[uuid]["uuid"]))
+            except rtx.ServiceError as exc:
+                raise RecipeError("PL_E_BUSY device idle state unknown: " + str(exc)) from exc
+            if reason:
+                raise RecipeError("PL_E_BUSY " + reason)
+        port = inputs.get("port", 8096)
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise RecipeError("PL_E_SCHEMA placement port must be an integer in 1..65535")
         try:
-            reason = (_handover_busy(used[uuid]["uuid"], owners[uuid], observer_factory)
-                      if uuid in owners else (busy or rtx.pro_busy)(used[uuid]["uuid"]))
-        except rtx.ServiceError as exc:
-            raise RecipeError("PL_E_BUSY device idle state unknown: " + str(exc)) from exc
-        if reason:
-            raise RecipeError("PL_E_BUSY " + reason)
-    port = inputs.get("port", 8096)
-    if type(port) is not int or not 1 <= port <= 65535:
-        raise RecipeError("PL_E_SCHEMA placement port must be an integer in 1..65535")
-    try:
-        procs.check_port("127.0.0.1", port)
-    except procs.ProcessError as exc:
-        if not procs.port_owned("127.0.0.1", port, ports.get(port, ())):
-            raise RecipeError("PL_E_BUSY " + str(exc)) from exc
-    observer = None
-    try:
-        observer = (observer_factory or gpu_counters.Observer)()
-        sample = observer.sample(os.getpid())
-        if not used.keys() <= sample.keys() or any(type(v) is not int or v < 0 for v in sample.values()):
-            raise gpu_counters.CounterError("attributable GPU counters unavailable")
-    except (gpu_counters.CounterError, OSError) as exc:
-        raise RecipeError("PL_E_CAPABILITY " + str(exc)) from exc
-    finally:
-        if observer is not None:
-            observer.close()
-    if admission is not None:
-        admission.update(inputs=inputs, policies=policies)
-    return plans
+            procs.check_port("127.0.0.1", port)
+        except procs.ProcessError as exc:
+            if not procs.port_owned("127.0.0.1", port, ports.get(port, ())):
+                raise RecipeError("PL_E_BUSY " + str(exc)) from exc
+        try:
+            if observer is None:
+                observer = _open_observer(stack, observer_factory)
+            sample = observer.sample(os.getpid())
+            if not used.keys() <= sample.keys() or any(type(v) is not int or v < 0 for v in sample.values()):
+                raise gpu_counters.CounterError("attributable GPU counters unavailable")
+        except (gpu_counters.CounterError, OSError) as exc:
+            raise RecipeError("PL_E_CAPABILITY " + str(exc)) from exc
+        if admission is not None:
+            admission.update(inputs=inputs, policies=policies)
+        return plans
 
 
 def _reviewed_resources(reviewed, cluster):
@@ -164,31 +164,28 @@ def _reviewed_resources(reviewed, cluster):
     return owners, ports, reclaimable
 
 
-def _handover_busy(uuid, pids, observer_factory):
-    """Subtract only the reviewed child's attributable bytes for this idle check, never for a placement cap."""
+def _open_observer(stack, observer_factory):
+    try:
+        observer = (observer_factory or gpu_counters.Observer)()
+    except (gpu_counters.CounterError, OSError) as exc:
+        raise RecipeError("PL_E_CAPABILITY " + str(exc)) from exc
+    stack.callback(observer.close)
+    return observer
+
+
+def _handover_busy(uuid, pids, observer):
+    """Subtract reviewed attribution only for idle checks, never for a placement cap."""
     key = grants.uuid_key(uuid)
-    apps = rtx.compute_apps()
+    apps = pc_big._gpu_query(rtx.compute_apps)
     foreign = [pid for gpu, pid, used in apps if grants.uuid_key(gpu) == key and pid not in pids
                and used is not None and used > rtx.PRO_IDLE_MIB]
     if foreign:
         return f"foreign compute processes {sorted(foreign)}"
-    observer = None
     try:
-        observer = (observer_factory or gpu_counters.Observer)()
-        owned = 0
-        for pid in pids:
-            sample = observer.sample(pid)
-            if key not in sample or type(sample[key]) is not int or sample[key] < 0:
-                raise gpu_counters.CounterError("reviewed process GPU counters unavailable")
-            owned += sample[key]
-        residual = rtx.device_used_mib(uuid) * (1 << 20) - owned
-        if residual > rtx.PRO_IDLE_MIB * (1 << 20):
+        if pc_big.owned_busy(uuid, pids, observer):
             return "device memory not attributable to the reviewed deployment"
     except (gpu_counters.CounterError, OSError) as exc:
         raise rtx.ServiceError(str(exc)) from exc
-    finally:
-        if observer is not None:
-            observer.close()
     return None
 
 

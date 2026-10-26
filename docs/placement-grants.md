@@ -47,18 +47,24 @@ spelling, including on case-sensitive filesystems; normalized comparison keys ne
 The guard therefore checks compute processes on
 those PROs and excludes only the helper and child PIDs. Assist process rows never trigger this PRO guard. WDDM
 desktop rows with N/A memory alone are ignored. Foreign numeric PRO use above the idle threshold refuses, as does
-PRO device memory minus the observer's attributable bytes for the turn's own PIDs above that threshold. This
-subtraction applies only to PC-BIG detection; placement caps still cover the full attributable process usage.
+PRO device memory above the bounded attribution for the turn's own PIDs. Each device-total read is bracketed by
+two attributable samples per PID. The sum of each PID's larger sample proves foreign activity above the idle
+threshold; the sum of each PID's smaller sample proves clear state at or below it. Ambiguous brackets are resampled
+immediately, up to three brackets. Persistent ambiguity or an invalid total (negative, non-integer, or more than
+one MiB below the smaller attribution) is an unavailable counter. This subtraction applies only to PC-BIG detection;
+placement caps still cover the full attributable process usage.
 The guard retains the ledger check and refuses unreadable state. The watchdog checks unowned PRO locks on each
 full tick (about two seconds), with ledger and GPU queries at five-second intervals, independently of the
-half-second host-memory checks. GPU query failures receive three consecutive attempts; admission refuses the
+half-second host-memory checks. Unavailable GPU counters receive three consecutive attempts; admission refuses the
 first failure. Lock failures refuse on the next full tick and ledger failures on the next ledger check.
 Per-process placement cap/attribution failures still stop immediately.
 
 Planned replacement may passively account for a reviewed old service's lock and child PID only while its recorded
 ready state, PID, exact device set and held helper lifetime lock prove ownership. Foreign PRO processes and ledger
 windows still refuse. The later device idle check additionally subtracts only that reviewed child's attributable
-memory. This pre-stop ownership is never written into the replacement policy: after the controller stops the old
+memory using the same brackets. Preflight owns one observer and lends it to all admission checks, closing it on
+success or refusal. Verified owners pass transiently through pre-stop launch/RTX rendering and validation.
+This pre-stop ownership is never written into the replacement policy: after the controller stops the old
 service, the replacement must pass fresh unowned checks and acquire every device lock before starting. A stale
 review, mismatched state or unreleased old lock cannot authorize a new helper.
 

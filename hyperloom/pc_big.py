@@ -46,7 +46,7 @@ def context(cluster, selected, *, anchors=()):
 
 
 class CounterUnavailable(rtx.ServiceError):
-    """Only live GPU query failures may receive bounded watchdog retries."""
+    """Live GPU query failures and incoherent totals receive bounded watchdog retries."""
 
 
 def _gpu_query(query, *args):
@@ -54,6 +54,37 @@ def _gpu_query(query, *args):
         return query(*args)
     except (OSError, ValueError, RuntimeError, IndexError) as exc:
         raise CounterUnavailable("PC-BIG GPU counters unavailable; turn refused") from exc
+
+
+def owned_busy(uuid, pids, observer):
+    """Bracket the device total with per-PID attribution; ambiguous intervals never prove idle."""
+    key = uuid.lower()
+    pids = sorted(pids)
+    def attributed():
+        result = {}
+        for pid in pids:
+            sample = observer.sample(pid)
+            if key not in sample or type(sample[key]) is not int or sample[key] < 0:
+                raise gpu_counters.CounterError("owned PRO attributable counters unavailable")
+            result[pid] = sample[key]
+        return result
+    for _ in range(3):
+        before = attributed()
+        used = _gpu_query(rtx.device_used_mib, uuid)
+        if type(used) is not int or used < 0:
+            raise CounterUnavailable("PC-BIG device total is invalid; turn refused")
+        after = attributed()
+        hi = sum(max(before[pid], after[pid]) for pid in pids)
+        lo = sum(min(before[pid], after[pid]) for pid in pids)
+        total = used * (1 << 20)
+        # The device counter reports whole MiB; tolerate at most one MiB of rounding below attribution.
+        if total + (1 << 20) < lo:
+            raise CounterUnavailable("PC-BIG device total is below attribution; turn refused")
+        if total - hi > rtx.PRO_IDLE_MIB * (1 << 20):
+            return True
+        if total - lo <= rtx.PRO_IDLE_MIB * (1 << 20):
+            return False
+    raise CounterUnavailable("PC-BIG attribution changed across device totals; turn refused")
 
 
 def active(guard, *, owners=None, observer=None, observer_factory=None, locks_only=False):
@@ -90,14 +121,7 @@ def active(guard, *, owners=None, observer=None, observer_factory=None, locks_on
                     observer = (observer_factory or gpu_counters.Observer)()
                     stack.callback(observer.close)
                 for pro in sorted(owned_pros):
-                    attributed = 0
-                    for pid in owners[pro]:
-                        sample = observer.sample(pid)
-                        if pro not in sample or type(sample[pro]) is not int or sample[pro] < 0:
-                            raise gpu_counters.CounterError("owned PRO attributable counters unavailable")
-                        attributed += sample[pro]
-                    used = _gpu_query(rtx.device_used_mib, pros[pro])
-                    if used * (1 << 20) - attributed > rtx.PRO_IDLE_MIB * (1 << 20):
+                    if owned_busy(pros[pro], owners[pro], observer):
                         return True
             for pro in pros:
                 if pro not in owners and _gpu_query(rtx.pro_busy, pros[pro]):

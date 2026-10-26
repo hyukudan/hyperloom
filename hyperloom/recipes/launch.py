@@ -173,7 +173,8 @@ def prepare(cluster, profile, options, *, router, vram_cap_gib, state_dir, sourc
             raise RecipeError("the placement decode replica is loopback-only: use --router local")
         request = runtime.request(evaluation.decision)
         # Pure render (including artifact/release checks) before any state, helper or gate exists.
-        spec = render_placement(cluster, profile, request, api_key="0" * 64)
+        owners, _, _ = preflight._reviewed_resources(reviewed, cluster)
+        spec = render_placement(cluster, profile, request, api_key="0" * 64, owners=owners)
         table = {"effective_sha256": evaluation.effective_sha256, "state": {"file": None}, "routes": []}
         return Launch(evaluation, production and not evaluation.effective.untuned, True, None, None, None,
                       table, spec.placement, options.layers, options.inputs, options.digest, request)
@@ -309,10 +310,10 @@ def router_prefill(launch, cluster, profile, key_file):
     return block
 
 
-def render_placement(cluster, profile, request, *, api_key):
+def render_placement(cluster, profile, request, *, api_key, owners=None):
     """Pure rendering of already admitted local artifacts, before any launch-state or lease mutation."""
     return rtx.render_service(cluster, profile, api_key=api_key, handoff_api_key="0" * 64,
-                              free_physical_gib=0, placement_request=request)
+                              free_physical_gib=0, placement_request=request, placement_owners=owners)
 
 
 def selection(cluster, profile, launch, *, router="local", resources=None):
