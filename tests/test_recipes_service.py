@@ -51,7 +51,7 @@ class BuiltinTests(unittest.TestCase):
                  for p in service.BUILTIN_DIR.rglob("*.toml")}
         self.assertEqual(files, manifest["files"])
         self.assertTrue(all(b"\r\n" not in p.read_bytes() for p in service.BUILTIN_DIR.rglob("*.toml")))
-        upstream = os.environ.get("HYPERLOOM_STRIX_STREAM")
+        upstream = os.environ.get("HYPERLOOM_TIERSTREAM") or os.environ.get("HYPERLOOM_STRIX_STREAM")   # a checkout
         if upstream:
             for name in files:
                 source = Path(upstream) / "recipes" / "examples" / name
@@ -363,6 +363,37 @@ class WriteTests(unittest.TestCase):
             self.assertEqual(Path(stored["path"]).parent, service.receipts_dir().resolve())
             with self.assertRaisesRegex(RecipeError, "needs"):
                 service.save_receipt(None, "bad", json.dumps({"host": "x"}))
+
+    def test_layers_read_both_schema_spellings_and_write_the_legacy_one(self):
+        """tierstream/* layer ids are the same kinds as strix-stream/* (dispatch by kind, not by string); the layers
+        the portal builds keep the legacy id and a given document is stored as it was given."""
+        with isolated():
+            saved = service.save_layer(None, "qwen-floor", QWEN, [("limits.host_free_ram_floor_gib", 6.0)])
+            layer = json.loads(Path(saved["path"]).read_text(encoding="utf-8"))
+            self.assertEqual(layer["schema"], "strix-stream/recipe-overrides-v1")
+            renamed = json.dumps(dict(layer, schema="tierstream/recipe-overrides-v1"))
+            again = service.save_layer(None, "ts-floor", text=renamed)
+            self.assertEqual(again["recipe"], "qwen3.8-flash-next-lab")
+            self.assertEqual(Path(again["path"]).read_bytes(), renamed.encode("utf-8"))
+            # Checked like an overrides layer: resolved with its recipe.
+            bad = json.dumps(dict(layer, schema="tierstream/recipe-overrides-v1",
+                                  set={"routes.prefill_rtx.execute": "tp"}))
+            with self.assertRaisesRegex(RecipeError, "not a settable path|is not settable"):
+                service.save_layer(None, "ts-bad", text=bad)
+            # A tuning profile in either spelling is checked as a profile: bound to the recipe file's sha256.
+            for schema in ("strix-stream/recipe-profile-v1", "tierstream/recipe-profile-v1"):
+                profile = {"schema": schema, "recipe": layer["recipe"], "recipe_sha256": "0" * 64, "source": "tune",
+                           "set": {}}
+                with self.assertRaisesRegex(reader.StaleProfile, "tuned on another version"):
+                    service.save_layer(None, "ts-profile", text=json.dumps(profile))
+            for schema in ("tierstream/recipe-v1", "tierstream/recipe-overrides-v2", "strix-stream/recipe-profile-v2"):
+                with self.assertRaisesRegex(RecipeError, "schema must be strix-stream/recipe-profile-v1 or "
+                                            "tierstream/recipe-profile-v1 or strix-stream/recipe-overrides-v1 or "
+                                            "tierstream/recipe-overrides-v1"):
+                    service.save_layer(None, "ts-unknown", text=json.dumps(dict(layer, schema=schema)))
+            rows = {r["name"]: r["schema"] for r in service.layer_files()}
+            self.assertEqual(rows, {"qwen-floor.json": "strix-stream/recipe-overrides-v1",
+                                    "ts-floor.json": "tierstream/recipe-overrides-v1"})
 
     def test_receipts_never_write_into_a_read_only_source(self):
         with isolated() as env:

@@ -40,7 +40,7 @@ DEVICES = re.compile(r"(?i)(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³]|conin\
 MAX_SAVE_BYTES = 256 * 1024
 MAX_FILES = 512                  # recipe files read per directory by the catalog (the portal's GETs are bounded)
 MAX_FILE_BYTES = 1024 * 1024     # a recipe file larger than this is listed as an error, not read
-OVERRIDES_SCHEMA = "strix-stream/recipe-overrides-v1"
+OVERRIDES_SCHEMA = "strix-stream/recipe-overrides-v1"   # written in the legacy spelling (tierstream/* is read too)
 # Known x-predicted metrics: (label, unit, kind). Unknown metrics are shown as they are, never dropped.
 METRICS = {"ttft_s": ("TTFT", "s", "speed"), "decode_tok_s": ("decode", "tok/s", "speed"),
            "decode_agg_tok_s": ("decode, aggregate", "tok/s", "speed"),
@@ -1445,14 +1445,16 @@ def save_layer(cluster, layer_name, recipe_ref=None, sets=(), *, text=None, repl
         if sets:
             raise RecipeError("--set builds an overrides layer for --recipe; --from takes a whole layer document")
         tree = reader.load_text(text, layer_name)
-        if tree.get("schema") not in (reader.PROFILE_SCHEMA, reader.OVERRIDES_SCHEMA):
-            raise RecipeError(f"layer {layer_name}: schema must be {reader.PROFILE_SCHEMA} or {reader.OVERRIDES_SCHEMA}")
+        kind = reader.legacy_id(tree.get("schema"))     # tierstream/* ids are the same kinds; the text is stored as given
+        if kind not in (reader.PROFILE_SCHEMA, reader.OVERRIDES_SCHEMA):
+            raise RecipeError(f"layer {layer_name}: schema must be {reader.spellings(reader.PROFILE_SCHEMA)} or "
+                              f"{reader.spellings(reader.OVERRIDES_SCHEMA)}")
         row = next((r for r in catalog(cluster) if r["name"] == tree.get("recipe") and not r["error"]), None)
         if row is None:
             raise RecipeError(f'layer {layer_name}: no recipe named "{tree.get("recipe")}" in the catalog')
         recipe_text = session.read_text(row["path"])
         recipe = reader.parse(recipe_text, Path(row["path"]).name)
-        if tree["schema"] == reader.OVERRIDES_SCHEMA:
+        if kind == reader.OVERRIDES_SCHEMA:
             _resolve_text(recipe_text, Path(row["path"]).name, backend=backend, extra=[(layer_name + ".layer", text)])
         else:
             try:

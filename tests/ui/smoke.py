@@ -326,6 +326,14 @@ def fixture_server(args):
                                          recipe_session.saved_source(directory / "run" / "facts" / "fixture.json")))
         (config_file.parent / "recipes").mkdir(exist_ok=True)
         (config_file.parent / "recipes" / "qwen3.8-flash-next.fixture.toml").write_text(FIXTURE_RECIPE, encoding="utf-8")
+        # Layers in the renamed (tierstream/*) spelling: the page sorts them by kind like the legacy ids.
+        (config_file.parent / "recipes" / "layers").mkdir()
+        (config_file.parent / "recipes" / "layers" / "fixture-tuned.toml").write_text(
+            'schema = "tierstream/recipe-profile-v1"\nrecipe = "qwen-fixture-two"\nrecipe_sha256 = "' + "0" * 64
+            + '"\nsource = "tune"\n[set]\n', encoding="utf-8")
+        (config_file.parent / "recipes" / "layers" / "fixture-floor.toml").write_text(
+            'schema = "tierstream/recipe-overrides-v1"\nrecipe = "qwen-fixture-two"\nsource = "fixture"\n'
+            '[set]\n"limits.host_free_ram_floor_gib" = 6\n', encoding="utf-8")
         stack.enter_context(patch.object(render, "router_policies", lambda: ("nodes", "rtx", "auto", "routes")))
         stack.enter_context(patch.object(render, "check_route_table", lambda table: None))
         # The fixture's engine states its prefill bounds (one prefill of up to 8 prompts, whole prompts), so the
@@ -337,7 +345,7 @@ def fixture_server(args):
             ctx = real_context(cluster, profile)
             return dataclasses.replace(ctx, limits=dict(ctx.limits, prefill_batch=(8, None), prefill_chunk=0))
         stack.enter_context(patch.object(recipe_facts, "context", fixture_context))
-        os.environ.update(HYPERLOOM_RECIPE_STUB="1", HYPERLOOM_SS_RECIPE="")
+        os.environ.update(HYPERLOOM_RECIPE_STUB="1", HYPERLOOM_TS_RECIPE="", HYPERLOOM_SS_RECIPE="")
         os.environ["HYPERLOOM_UI_INPROCESS"] = "1"  # patched backends: keep jobs in this process
         return cli.main(["ui", "--port", str(args.port), "--no-browser"])
 
@@ -621,6 +629,9 @@ def recipes_walkthrough(client, server):
                     "el.dispatchEvent(new Event('change', {bubbles: true})); })()")
     click('[data-recipe-action=open][data-id="qwen3.8-flash-next.fixture"]')
     wait("!!document.querySelector('[data-recipe-action=plan]') && /qwen-fixture-two/.test(document.body.innerText)")
+    wait("[...document.querySelectorAll('#recipe-tuning option')].some(o => o.value === 'fixture-tuned.toml')"
+         " && !!document.querySelector('[data-layer=\"fixture-floor.toml\"]')"
+         " && !document.querySelector('[data-layer=\"fixture-tuned.toml\"]')")
     click('[data-recipe-action="plan"]')
     wait("!document.querySelector('[data-recipe-action=deploy]').disabled")
     click('[data-recipe-action="deploy"]')
