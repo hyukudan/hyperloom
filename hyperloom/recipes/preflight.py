@@ -25,7 +25,7 @@ def check(cluster, path, layers, backend, recipe, bound, report, raw, effective_
             if hosts.get(host, {}).get(key) is not None:
                 hosts[host][key] += credit / rtx.GIB
     # Hypothetical credit belongs only to the reviewed pre-stop checks, never the physical sample or new policy.
-    used = grants.check(cluster, recipe, bound["binding"], report, hosts, now=now, anchors_only=True)
+    used = grants.check(cluster, recipe, bound["binding"], report, hosts, now=now, anchors_only=True, owners=owners)
     rows = {grants.uuid_key(r.get("uuid", "")): r for r in report["devices"]}
     for uuid in used:
         row = rows[uuid]
@@ -57,7 +57,7 @@ def check(cluster, path, layers, backend, recipe, bound, report, raw, effective_
         plan = plans[route["id"]]
         if not isinstance(plan.get("devices"), list) or not plan["devices"] or not isinstance(plan.get("host"), dict):
             raise RecipeError("PL_E_SCHEMA core returned no touched devices or host budgets")
-        policy = grants.policy(cluster, recipe, route, bound["binding"], report, plan, hosts, now=now)
+        policy = grants.policy(cluster, recipe, route, bound["binding"], report, plan, hosts, now=now, owners=owners)
         policies[route["id"]] = policy
         used.update({grants.uuid_key(g["uuid"]): g for g in policy["grants"]})
         for device in plan["devices"]:
@@ -72,7 +72,7 @@ def check(cluster, path, layers, backend, recipe, bound, report, raw, effective_
             status = {"free_physical_gib": memory.get("free_ram_gib", float("nan")),
                       "free_commit_gib": memory.get("free_commit_gib", float("nan"))}
             try:
-                placement_supervision.validate(policy, now=now, starting=True, memory=status)
+                placement_supervision.validate(policy, now=now, starting=True, memory=status, owners=owners)
                 floor = max(recipe["limits"]["host_free_ram_floor_gib"],
                             max((p.get("host_available_floor_gib", 0) for p in route["placement"].values()), default=0))
                 if status["free_physical_gib"] - pinned - pageable < floor:

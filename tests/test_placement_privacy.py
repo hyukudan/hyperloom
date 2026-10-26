@@ -19,7 +19,8 @@ PLACEHOLDER = re.compile(r"<[a-z][a-z0-9-]*>")
 ADDRESS = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?!\w|\.\d)|"
                      r"(?<![\w:])(?:[0-9a-fA-F]*:){2,}[0-9a-fA-F:.]*(?:%[\w.~-]+)?(?![\w:])")
 LOCAL_IDENTITY = re.compile(r"(?i)[a-z]:[\\/](?:users[\\/]|tmp[\\/]|python\d+\b)|"
-                            r"\bclaude[a-z]+(?:-[a-z0-9]+)+\b")
+                            r"/(?:mnt/[a-z]/|home/[\w.-]+/)|"
+                            r"\b(?:claude|codex)[a-z0-9]*(?:[-_][a-z0-9]+)*\b|\b(?:sol|opus)(?:[-_][a-z0-9]+)*\b")
 
 
 def addresses(value):
@@ -73,8 +74,9 @@ def findings():
             doc = text
         if private(doc):
             found[name] = hashlib.sha256(raw).hexdigest()
-    for path in [*ROOT.glob("docs/*.md"), ROOT / "tests/fixtures/render/README.md",
-                 *ROOT.glob("hyperloom/**/*.py"), *ROOT.glob("hyperloom/**/*.json")]:
+    for path in [*ROOT.glob("*.md"), *ROOT.glob("docs/**/*.md"), *ROOT.glob("tests/**/*.md"),
+                 *ROOT.glob("hyperloom/**/*.py"), *ROOT.glob("hyperloom/**/*.json"),
+                 *ROOT.glob("hyperloom/recipes/examples/**/*.toml")]:
         raw = path.read_bytes()
         text = raw.decode("utf-8")
         values = [text] if path.suffix != ".py" else [node.value for node in ast.walk(ast.parse(text))

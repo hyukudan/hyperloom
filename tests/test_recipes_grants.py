@@ -11,7 +11,7 @@ import unittest
 from unittest import mock
 import uuid
 
-from hyperloom import config
+from hyperloom import config, rtx
 from hyperloom.recipes import apply, core, devices, grants, reader, session
 from tests import test_recipes
 from tests.test_config import example
@@ -25,6 +25,9 @@ def window(kind="device"):
 
 class GrantTests(unittest.TestCase):
     def setUp(self):
+        idle = mock.patch.object(rtx, "pro_busy", return_value=None)
+        idle.start()
+        self.addCleanup(idle.stop)
         self.uuid = "GPU-" + str(uuid.uuid4())
         self.aux = "GPU-" + str(uuid.uuid4())
         self.recipe = reader.parse(json.dumps(test_recipes.PlacementSchemaTests.document()))

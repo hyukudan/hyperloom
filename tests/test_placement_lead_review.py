@@ -111,6 +111,7 @@ class LeadReviewTests(unittest.TestCase):
                         ledger.write_text("- 12:00 operator: PC-BIG start\n", encoding="utf-8")
                     else:
                         ledger.unlink()
+                    dog._pc_big_next = 0
                     dog._thread.join(2)
                     self.assertEqual(killed, [1])
                     self.assertIn("PC-BIG", dog.reason)
@@ -314,5 +315,7 @@ class LeadReviewTests(unittest.TestCase):
             import tomllib
             config = tomllib.loads((root / "pyproject.toml").read_text())
             self.assertTrue(any("pytest" in item for item in config["project"]["optional-dependencies"]["test"]))
+            self.assertEqual(config["tool"]["pytest"]["ini_options"]["testpaths"], ["tests"])
+            self.assertIn("third_party", config["tool"]["pytest"]["ini_options"]["norecursedirs"])
         else:
             self.fail("fixture-based placement tests must run in CI")

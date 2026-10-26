@@ -71,13 +71,13 @@ def approved(window, *, now):
     return rtx.expires(interval["expires_at"], "probe.window.expires_at")
 
 
-def gpu_grant(cluster, row, *, now):
+def gpu_grant(cluster, row, *, now, guard=None):
     cuda = cluster.pc.get("cuda", {})
     entries = grants.parse_grants(cuda.get("grants", []))
     grant = next((g for g in entries if grants.uuid_key(g["uuid"]) == grants.uuid_key(row["uuid"])), None)
     if grant is None or not grants._active(grant["window"], now, starting=True) or grant["vram_cap_gib"] <= 0:
         raise RecipeError("PL_E_GRANT measurement requires a current grant for this UUID (lab mode included)")
-    deadline = grants.pc_big_deadline(cluster, [row], now=now)
+    deadline = grants.pc_big_deadline(cluster, [row], now=now, guard=guard)
     if deadline is not None and deadline <= now + 60:
         raise RecipeError("PL_E_GRANT no measurement during a PC-BIG window")
     return grant
@@ -105,7 +105,8 @@ def _gpu(row, grant, *, clock=time.time, lock_factory=rtx.device_lock, gate_runn
         placement_supervision.validate(policy, now=clock(), starting=True, memory=rtx.memory_status())
         placement_supervision.acquire(policy, stack, lock_factory=lock_factory, gate_runner=gate_runner,
                                       verify=lambda u: _idle(u), log=lambda _: None, now=clock())
-        placement_supervision.validate(policy, now=clock(), starting=True)
+        placement_supervision.validate(policy, now=clock(), starting=True,
+                                      owners={grants.uuid_key(grant["uuid"]): {os.getpid()}})
         observer = observer_factory()
         owned = [True]
         stack.callback(lambda: observer.close() if owned[0] else None)
@@ -222,16 +223,20 @@ def acquire(cluster, mode, *, runtime, uuid=None, xfer_sha256=None, store_id=Non
         if len(configured) != 1:
             raise RecipeError("PL_E_UNKNOWN_DEVICE probe UUID must be configured and non-excluded")
         # Refuse missing grants before even querying inventory.
-        gpu_grant(cluster, {"uuid": uuid, "name": ""}, now=clock())
+        try:
+            guard = pc_big.context(cluster, [{"uuid": uuid}])
+        except rtx.ServiceError as exc:
+            raise RecipeError("PL_E_GRANT " + str(exc)) from exc
+        gpu_grant(cluster, {"uuid": uuid, "name": ""}, now=clock(), guard=guard)
         rows = [r for r in (inventory() if inventory is not None else probe.nvidia_gpus(placement=True))
                 if grants.uuid_key(r["uuid"]) == grants.uuid_key(uuid)]
         if len(rows) != 1:
             raise RecipeError("PL_E_UNKNOWN_DEVICE measurement UUID is absent or ambiguous")
-        row = dict(rows[0], _pc_big_guard=pc_big.context(cluster, rows))
-        grant = gpu_grant(cluster, row, now=clock())
+        row = dict(rows[0], _pc_big_guard=guard)
+        grant = gpu_grant(cluster, row, now=clock(), guard=guard)
         identity = key(row["uuid"], row.get("driver"), xfer_sha256, store_id)
         result = gpu_runner(row, grant)
-        gpu_grant(cluster, row, now=clock())
+        gpu_grant(cluster, row, now=clock(), guard=guard)
     else:
         # Store figures are host-only; the explicit sentinel keeps GPU and store identities disjoint.
         identity = key("host-store", "none", xfer_sha256, store_id)

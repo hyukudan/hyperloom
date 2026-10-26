@@ -196,10 +196,13 @@ def test_14_core_half_byte_budget_is_carried_exactly(tmp_path, files, identity):
     assert "placement cap" in dog.check()
 
 
-def test_03_admission_refuses_future_big_overlap(identity):
+def test_03_admission_refuses_future_big_overlap(identity, request):
     from tests.test_recipes_grants import GrantTests
     helper = GrantTests()
     helper.setUp()
+    request.addfinalizer(helper.doCleanups)
+    helper.cluster.machines = {"local": SimpleNamespace(access="local", devices=[
+        dict(uuid=helper.uuid, pc_big_conflict=True)])}
     helper.report["devices"][0]["name"] = "RTX " + str(4090)
     future = grant(identity)
     future["window"] = dict(window("PC-BIG"), starts_at="2030-01-01T00:02:00Z")

@@ -5,16 +5,16 @@
   "path": "recipes/examples",
   "commit": "4f95e1dded949c5212d6f5685ae890673c67edd1"
  },
- "note": "Vendored read-only copies of strix-stream recipes/examples at the commit below, line endings normalized to LF (hyperloom stores text as LF); otherwise byte-identical except one evidence file name with a lab author tag (qsplit/qbatch.md). Update by copying from strix-stream and re-recording the hashes; tests check them.",
+ "note": "Vendored read-only copies of strix-stream recipes/examples at the commit below, line endings normalized to LF (hyperloom stores text as LF); local provenance references are scrubbed for distribution. Update by copying from strix-stream, retaining the privacy scrub and re-recording the hashes; tests check them and compare executable content with upstream when available.",
  "files": {
-  "deepseek-v4.1-flash.lab-hetero.toml": "4ccde72625d1115012bd45c84a96384ddd564be365720af2917c9931bd7f188a",
+  "deepseek-v4.1-flash.lab-hetero.toml": "1a640ddecce3269f148739ac13d9c030496ed2153f530d2d00a432d17e6ab813",
   "deepseek-v4.1-flash.lab.toml": "cfee1c28fc16a8383bd875d6d8b7773dcd82b73eb48e0fe924ae6e30c1483fc5",
   "minimax-m3.1-flash.lab.toml": "22cebf000c8286118cc5cfe49c37f5360edacff07f6f7b6f2d71cec3dd80c472",
-  "pending/deepseek-v4.1-flash.card32.toml": "5049030a950cdd874ddfabebea53c00f42b36e067b82e8ce95408e50bb2d26f0",
-  "pending/deepseek-v4.1-flash.lab-rtx-replica.toml": "68d247fc6d6e039bfef635b8acd6bc64a4c0e9fbf9b2dbe985c41ecd3ef0cfae",
-  "pending/glm-5.3-flash.lab.toml": "d642ba416f689030391c140ce755a84553cb3269f72030ab216af102cb25f306",
-  "pending/minimax-m3.1-flash.card32.toml": "c574ca0525ae5b33f84dc99960620c42593beb88fafa47bf4d3f4675e6bd87a7",
+  "pending/deepseek-v4.1-flash.card32.toml": "5136a3f66486661e47158d410a58f328a0ae2d1bceebb7e80c322385d453189d",
+  "pending/deepseek-v4.1-flash.lab-rtx-replica.toml": "7c76854f679374a565f66e38a7846ab3a06ec35fe8a70d0afe0034be8f070bf1",
+  "pending/glm-5.3-flash.lab.toml": "e5abb381065512d1079da8772aab58f29de8c88c7e54a8b98a673ce26b5fd437",
+  "pending/minimax-m3.1-flash.card32.toml": "3208b578922ac508b610b2bc87d0d93a96e2801d610bc3f3ae261f4d2afd9a1d",
   "pending/minimax-m3.1-flash.morehostram.toml": "440b2068743e37864b174589028081b738de2e755c965a806c23f55312ef865a",
-  "qwen3.8-flash-next.lab.toml": "ee0f60361a589027329bb69e33abf14c55bd5bac784cec4524667382d961b752"
+  "qwen3.8-flash-next.lab.toml": "a8e96c23f3ef67420e5b20834ab790e034307199df4a513d13d52d973cd1fc41"
  }
 }

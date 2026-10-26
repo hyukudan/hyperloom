@@ -781,10 +781,12 @@ def service_run(spec_path, *, child_factory=procs.LocalChild, watchdog_factory=W
                                                   verify=verify_device if verify is verify_pro else verify,
                                                   log=log, now=time.time(),
                                                   release=lambda lock: cleanup_step("device", lock.close))
+            owners = {u.lower(): {os.getpid()} for u in spec.placement_supervision["caps_gib"]}
             # Availability is tested before any engine is started. Counters may enumerate GPUs but never run work.
             observer = (observer_factory or gpu_counters.Observer)()
             sample = observer.sample(os.getpid())
-            _, caps = placement_supervision.validate(spec.placement_supervision, now=time.time(), starting=True)
+            _, caps = placement_supervision.validate(spec.placement_supervision, now=time.time(), starting=True,
+                                                    owners=owners)
             if not caps.keys() <= sample.keys():
                 raise ServiceError("granted GPU missing from attributable counters")
             if spec.pro_uuid.lower() not in caps:
@@ -795,7 +797,8 @@ def service_run(spec_path, *, child_factory=procs.LocalChild, watchdog_factory=W
                         and cap_bytes is not None and cap_bytes > item["memory_total_mib"] * (1 << 20)):
                     raise ServiceError("placement cap exceeds device physical capacity")
             # Gate commands can take time; recheck every deadline and the physical/commit floors before spawn.
-            placement_supervision.validate(spec.placement_supervision, now=time.time(), starting=True, memory=memory())
+            placement_supervision.validate(spec.placement_supervision, now=time.time(), starting=True, memory=memory(),
+                                           owners=owners)
         else:
             device = lock_factory(spec.pro_uuid).acquire()
             if spec.gate:

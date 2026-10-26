@@ -1,6 +1,8 @@
 """Configured placement candidates; Tierstream owns selectors, aliases and required/optional assignment."""
 from copy import deepcopy
 
+from ..device_policy import resolve
+
 from .grants import uuid_key
 from .reader import RecipeError
 
@@ -14,7 +16,7 @@ def candidates(cluster, ctx, inventory, facts):
     for mid in dict.fromkeys([ctx.pc, *ctx.nodes]):
         machine = cluster.machines[mid]
         for device in machine.devices:
-            if device.get("excluded", False):
+            if resolve(device, machine.devices, placement=True)["excluded"]:
                 continue
             kind = "cuda" if device.get("type") in ("nvidia", "cuda") else "hip"
             if kind == "cuda":

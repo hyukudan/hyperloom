@@ -10,7 +10,7 @@ schema = "strix-stream/recipe-v1"
 name = "deepseek-v4.1-flash-lab-hetero"
 description = "DeepSeek V4.1 Flash: R1 decode with dense + the W1 hot-expert set on the RTX PRO, cold experts on the pair (static placement)"
 x-status = "measured (static placement); refill mode not expressible in v1"
-x-schema = "wave4/recipes/core/schema-draft-5.md (Sol GO)"
+x-schema = "wave4/recipes/core/schema-draft-5.md (reviewed)"
 x-benefit = "not needed: every RTX group is rank = list (the measured ownership), the pair takes the rest"
 x-descriptor = "RTX side: dense of all 40 layers as fixed bytes (W1 reserve 9.55 GiB = 8.64 GB dense + state/buffers); pair side: attention + shared on each rank; same (layer, expert) identity"
 

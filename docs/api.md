@@ -102,7 +102,7 @@ Every recipe answer has this shape:
   "schema": "hyperloom/recipes-<operation>-v1",
   "server_time": 1792877018.27,
   "operation": "validate",
-  "cli": "hyperloom recipe validate qwen3.8-flash-next.lab --config /home/op/.config/hyperloom/cluster.json",
+  "cli": "hyperloom recipe validate qwen3.8-flash-next.lab --config <config>/cluster.json",
   "exit_code": 0,
   "ok": true,
   "result": { "...": "the command's JSON output" },
@@ -186,7 +186,7 @@ hyperloom recipe list --model qwen3.8-flash-next
 
 ```json
 {"schema": "hyperloom/recipes-list-v1", "operation": "list", "exit_code": 0, "ok": true,
- "cli": "hyperloom recipe list --model qwen3.8-flash-next --config /home/op/.config/hyperloom/cluster.json",
+ "cli": "hyperloom recipe list --model qwen3.8-flash-next --config <config>/cluster.json",
  "result": {
   "recipes": [{
     "id": "qwen3.8-flash-next.lab", "name": "qwen3.8-flash-next-lab", "model": "qwen3.8-flash-next",
@@ -200,7 +200,7 @@ hyperloom recipe list --model qwen3.8-flash-next
                    "value": 2.94, "at_prompt_tokens": 8192, "basis": "measured", "evidence": "qw-rtx-8k"}]}],
   "models": {"qwen3.8-flash-next": ["qwen-replicas"], "deepseek-v4.1-flash": ["ds41-pair", "ds41-rtx"]},
   "layers": [], "receipts": [], "facts": [],
-  "user_dir": "/home/op/.config/hyperloom/recipes",
+  "user_dir": "<config>/recipes",
   "builtin": {"repo": "strix-stream", "path": "recipes/examples", "commit": "4f95e1dd..."}},
  "error": null}
 ```
@@ -375,7 +375,7 @@ POST recipes/save {"id": "qwen3.8-flash-next.fast", "base": "qwen3.8-flash-next.
 POST recipes/save {"id": "qwen3.8-flash-next.mine", "text": "...", "replace": "<sha256 it had when read>"}
 POST recipes/delete {"id": "qwen3.8-flash-next.mine", "sha256": "<sha256 it had when read>"}
 -> {"exit_code": 0, "result": {"id": "qwen3.8-flash-next.fast", "name": "qwen-fast",
-                               "path": "/home/op/.config/hyperloom/recipes/qwen3.8-flash-next.fast.json",
+                               "path": "<config>/recipes/qwen3.8-flash-next.fast.json",
                                "sha256": "...", "replaced": false, "reader": "core ..."}}
 ```
 

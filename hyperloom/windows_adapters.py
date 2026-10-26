@@ -63,6 +63,7 @@ def dxgi_adapters():
                     check(gdi.D3DKMTQueryAdapterInfo(C.byref(query)))
                     if address.bus > 255 or address.device > 31 or address.function > 7:
                         raise OSError("invalid adapter PCI address")
+                    # D3DKMT exposes no PCI domain; this Windows adapter mapping assumes domain zero.
                     pci = f"0000:{address.bus:02x}:{address.device:02x}.{address.function}".encode("ascii")
                     result.append((pci, (desc.luid.high & 0xffffffff, desc.luid.low)))
                 finally:

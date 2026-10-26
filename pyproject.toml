@@ -19,6 +19,10 @@ hloom = "hyperloom.cli:main"
 [tool.setuptools.packages.find]
 include = ["hyperloom*"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["third_party", ".*"]
+
 [tool.setuptools.package-data]
 hyperloom = ["presets/*.json", "web/static/*", "web/static/pages/*", "web/static/assets/*", "bench/data/*.json", "recipes/builtin.json", "recipes/examples/*.toml", "recipes/examples/pending/*.toml"]
 

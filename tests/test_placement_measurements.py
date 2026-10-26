@@ -27,7 +27,8 @@ class MeasurementTests(unittest.TestCase):
         self.grant = {"uuid": self.uuid, "vram_cap_gib": 4, "approval": "operator test", "window": window(),
                       "gate": [sys.executable, "fake-gate"]}
         machine = SimpleNamespace(access="local", devices=[{"uuid": self.uuid}])
-        self.cluster = SimpleNamespace(pc={"cuda": {"grants": [self.grant]}}, machines={"local": machine})
+        self.cluster = SimpleNamespace(pc={"cuda": {"grants": [self.grant], "pro_uuid": self.uuid}},
+                                       machines={"local": machine})
         self.approval = {"approval": "operator test", **{k: v for k, v in window().items() if k != "kind"}}
         self.identity = m.key(self.uuid, self.row["driver"], "a" * 64, "store-test")
         self.samples = [{"h2d_mbps": v, "d2h_mbps": 10 * v, "h2d_lat_ns": 100 * v}
@@ -95,6 +96,7 @@ class MeasurementTests(unittest.TestCase):
 
     def test_4090_refused_for_device_host_and_legacy_big_windows(self):
         self.row["name"] = "RTX " + str(4000 + 90)
+        self.cluster.machines["local"].devices[0]["pc_big_conflict"] = True
         run = mock.Mock(side_effect=AssertionError("measurement"))
         cuda = self.cluster.pc["cuda"]
         for source in ("device", "host", "reservation"):

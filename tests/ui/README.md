@@ -1,7 +1,7 @@
 # Portal smoke and keyboard review
 
 Run from the repository root, with Python 3.11 or newer. Everything uses the
-standard library. These commands need no GPU, SSH server, credentials, downloads,
+standard library plus the pytest test extra (`python -m pip install -e '.[test]'`). These commands need no GPU, SSH server, credentials, downloads,
 or network beyond 127.0.0.1.
 
 ```powershell
@@ -11,7 +11,7 @@ python tests/ui/smoke.py --keyboard
 python tests/ui/smoke.py --keyboard-only
 python tests/ui/smoke.py --contrast-only
 python -m pytest -q
-wsl -e bash -lc 'cd /mnt/d/tmp/hyperloom && python3 -m pytest -q'
+wsl -e bash -lc 'cd "<repository>" && python3 -m pytest -q'
 ```
 
 `smoke.py` finds Google Chrome or Chromium in the usual Windows installation

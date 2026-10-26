@@ -2,16 +2,21 @@
 from __future__ import annotations
 
 import math
+import os
+import time
 
 from . import gpu_counters, pc_big, rtx
 from .recipes import grants
 from .config import number
 
+PC_BIG_CHECK_S = 5
 
-def validate(policy, *, now, starting=False, memory=None):
+
+def validate(policy, *, now, starting=False, memory=None, owners=None, check_pc_big=True):
     """Validate an exact cap for each granted UUID and the aggregate pinned/pageable host charge."""
     entries = grants.parse_grants(policy["grants"])
-    pc_big.require_clear(policy.get("pc_big_guard"))
+    if check_pc_big:
+        pc_big.require_clear(policy.get("pc_big_guard"), owners=owners)
     big = policy.get("pc_big_deadline")
     if big is not None and now + (60 if starting else 0) >= big:
         raise rtx.ServiceError("placement turn reaches a PC-BIG window")
@@ -62,9 +67,13 @@ def validate(policy, *, now, starting=False, memory=None):
 def acquire(policy, stack, *, lock_factory, gate_runner, verify, log, now, release=None):
     """The caller owns the ExitStack before acquisition: any lock/gate failure rolls back every held lock."""
     entries, _ = validate(policy, now=now, starting=True)
+    guard = policy.get("pc_big_guard") or {}
+    pros = guard.get("pro_uuids") or ([guard["pro_uuid"]] if guard.get("pro_uuid") else [])
+    lock_ids = {grants.uuid_key(pro): pro for pro in pros}
     info = []
     for uuid in sorted(entries):
-        lock = lock_factory(uuid).acquire()
+        # Legacy lock filenames retain configured spelling on case-sensitive filesystems.
+        lock = lock_factory(lock_ids.get(uuid, uuid)).acquire()
         if release is None:
             stack.callback(lock.close)
         else:
@@ -81,11 +90,14 @@ def acquire(policy, stack, *, lock_factory, gate_runner, verify, log, now, relea
 class Watchdog(rtx.Watchdog):
     """No baseline subtraction, including WDDM N/A. Observer failure immediately stops the owned process."""
 
-    def __init__(self, spec, pid, kill, log, *, observer=None, **kwargs):
+    def __init__(self, spec, pid, kill, log, *, observer=None, pc_big_clock=time.monotonic, **kwargs):
         super().__init__(spec, pid, kill, log, **kwargs)
         self.policy = spec.placement_supervision
         self.observer = observer
         self._cleanup_errors = []
+        self._pc_big_next = 0
+        self.pc_big_clock = pc_big_clock
+        self.owners = {u.lower(): {os.getpid(), pid} for u in self.policy["caps_gib"]}
 
     def start(self):
         if self.observer is None:
@@ -127,7 +139,7 @@ class Watchdog(rtx.Watchdog):
         reason, memory = super().check_memory()
         if reason is None:
             try:
-                validate(self.policy, now=self.clock())
+                validate(self.policy, now=self.clock(), check_pc_big=False)
                 if memory["free_commit_gib"] < self.policy["free_commit_floor_gib"]:
                     reason = "placement free commit below floor"
                 if not all(math.isfinite(v) for v in memory.values()):
@@ -141,7 +153,19 @@ class Watchdog(rtx.Watchdog):
         line = {"t": round(self.clock(), 1), "pid": self.pid, **memory}
         if reason is None:
             try:
-                _, caps = validate(self.policy, now=self.clock())
+                now = self.clock()
+                _, caps = validate(self.policy, now=now, check_pc_big=False)
+                checkpoint = self.pc_big_clock()
+                if checkpoint >= self._pc_big_next:
+                    self._pc_big_next = checkpoint + PC_BIG_CHECK_S
+                    try:
+                        pc_big.require_clear(self.policy.get("pc_big_guard"), owners=self.owners)
+                        self.smi_failures = 0
+                    except pc_big.CounterUnavailable as exc:
+                        self.smi_failures += 1
+                        line["smi"] = str(exc)
+                        if self.smi_failures >= rtx.SMI_FAILURES_MAX:
+                            reason = "PC-BIG GPU counters failed persistently; turn refused"
                 sample = self.observer.sample(self.pid)
                 line["vram_bytes"] = sample
                 if not caps.keys() <= sample.keys():
@@ -162,6 +186,8 @@ class Watchdog(rtx.Watchdog):
                         reason = "per-process VRAM exceeds placement cap"
                         break
             except gpu_counters.CounterError as exc:
+                reason = str(exc)
+            except (ValueError, RuntimeError) as exc:
                 reason = str(exc)
         if reason:
             line["kill"] = reason

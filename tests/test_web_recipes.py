@@ -674,7 +674,7 @@ class JobTests(unittest.TestCase):
             digest = service.plan(cluster, "ds-user", "ds41-rtx", source=self.source)["inputs"]
             with mock.patch.object(commands, "live_source", return_value=self.source):
                 with mock.patch.object(self.api, "_audit", wraps=self.api._audit) as audit:
-                    with self.assertRaisesRegex(APIError, "preflight refused; see local audit"):
+                    with self.assertRaisesRegex(APIError, "recipe preflight refused: .*running profiles are none"):
                         self.api.mutate("recipes/deploy", {"inputs": digest, "stop": ["qwen-replicas"]})
                     self.assertIn("running profiles are none", audit.call_args.args[2]["error"])
                 self.orch.down.assert_not_called()
@@ -716,11 +716,11 @@ class JobTests(unittest.TestCase):
         self.assertIn("deploy cancelled", finished["error"])
         self.orch.up.assert_not_called()
         # The API forwards every up argument to the CLI, which refuses what a snapshot launch does not take.
-        with self.assertRaisesRegex(APIError, "preflight refused; see local audit"):
+        with self.assertRaisesRegex(APIError, "recipe preflight refused: .*--recipe-inputs"):
             self.api.mutate("up", {"recipe_inputs": digest, "node": ["halo-1"],
                                    "recipe_set": ["limits.host_free_ram_floor_gib=1"]})
         with mock.patch.object(self.api, "_audit", wraps=self.api._audit) as audit:
-            with self.assertRaisesRegex(APIError, "preflight refused; see local audit"):
+            with self.assertRaisesRegex(APIError, "recipe preflight refused: .*no snapshot"):
                 self.api.mutate("recipes/deploy", {"inputs": "0" * 64})
             self.assertIn("no snapshot", audit.call_args.args[2]["error"])
         with self.assertRaises(APIError):

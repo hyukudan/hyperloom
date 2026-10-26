@@ -29,15 +29,33 @@ These checks do not enable the legacy prefill service to consume placement-mode 
 and probe documents belong in local configuration/runtime storage; committed examples use portable identities.
 
 `machines[].devices[].pc_big_conflict` is an optional boolean policy flag. It defaults to true for local devices
-other than `pc.cuda.pro_uuid`, independent of the observed model name. An explicit false is an operator policy
+other than the derived PRO identities, independent of the observed model name. An explicit false is an operator policy
 choice; it does not grant a turn or remove that device's lock, idle check or gate. A conflicting device is refused
 when the PRO's existing `pcbig-<uuid>.lock` is held, `rtx.pro_busy` reports activity, or the ledger has any open
 PC-BIG start (including stale starts). The ledger path is the existing `prefs` / `turns/ledger_path` preference
 in the configuration directory's telemetry store. Each signal is checked before measurements/admission and again
 throughout supervision; partial ledger lines and unreadable configured signals refuse. An absent optional
-preference store/path configures no ledger signal. `pc.cuda.pro_uuid` identifies the PRO lock and busy sensor.
+preference store/path configures no ledger signal. PRO identities come from `pc.cuda.pro_uuid`, configured local
+prefill-service profile devices and bound placement anchors. Every derived PRO is checked. A conflicting probe
+without any reliable PRO identity refuses `PL_E_GRANT`; omitting the optional UUID never disables live checks.
 Once observed, a preference store or ledger setting cannot disappear and silently disable supervision.
 Checks never acquire the PRO lock or write the ledger/preferences.
+
+After acquiring all selected locks, a placement helper skips the lock check for its own PROs. A legacy PC-BIG
+helper cannot acquire the same lock until the turn releases it. PRO lock acquisition preserves the configured UUID
+spelling, including on case-sensitive filesystems; normalized comparison keys never select a different lock file.
+The guard therefore checks compute processes on
+those PROs and excludes only the helper and child PIDs; foreign processes with N/A memory also refuse. It retains
+the ledger check and refuses unreadable state. The watchdog rechecks these signals every five seconds, independently
+of the half-second host-memory checks. GPU query failures receive three consecutive attempts; lock and ledger
+failures refuse on the next PC-BIG check. Per-process placement cap/attribution failures still stop immediately.
+
+Planned replacement may passively account for a reviewed old service's lock and child PID only while its recorded
+ready state, PID, exact device set and held helper lifetime lock prove ownership. Foreign PRO processes and ledger
+windows still refuse. The later device idle check additionally subtracts only that reviewed child's attributable
+memory. This pre-stop ownership is never written into the replacement policy: after the controller stops the old
+service, the replacement must pass fresh unowned checks and acquire every device lock before starting. A stale
+review, mismatched state or unreleased old lock cannot authorize a new helper.
 
 Ambiguous configuration (multiple device records matching one physical card) is excluded in both portal views
 and refused by placement/measurement selection. The legacy unconfigured-4090 exclusion remains in

@@ -117,6 +117,7 @@ For the complete security model and limitations, see [Technical overview — Sec
 
 Install the test extra with `python -m pip install -e ".[test]"`, then run `python -m pytest -q`.
 Pytest runs both the existing unittest classes and the placement fixture/parameter tests on Windows and Linux.
+Root discovery is limited to `tests/`; `third_party` is excluded, including when its submodules are populated.
 The pinned TensorMeld submodule must be available for router/parser and planner tests.
 
 ## License

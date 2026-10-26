@@ -224,6 +224,17 @@ def _value(check):
     return check.get("value") if isinstance(check, dict) and check.get("status") == "ok" else None
 
 
+def _preflight_reason(exc):
+    """Keep the actionable recipe refusal without returning local paths or process identities."""
+    value = redact(str(exc))
+    value = re.sub(r'''["'](?:[A-Za-z]:[\\/]|/|\\\\)[^"'\n]*["']''', "<path>", value)
+    value = re.sub(r'''(?:[A-Za-z]:[\\/]|/(?=[\w.~-])|\\\\)[^\r\n,;\]\)"']*''', "<path>", value)
+    value = re.sub(r"(?i)\b(?:process(?:es)?|pids?)\s*(?:[=:]\s*)?(?:\[[^\]]*\]|\d+(?:\s*,\s*\d+)*)",
+                   "processes <redacted>", value)
+    value = re.sub(r"(?i)\bGPU-[0-9a-f-]{36}\b", "<device>", value)
+    return value[:500]
+
+
 def _finite(value):
     return type(value) in (float, int) and math.isfinite(value)
 
@@ -1981,8 +1992,7 @@ class API:
                 selected = getattr(parsed, "_prepared_selection", None)
             except (OSError, ValueError, RuntimeError) as exc:
                 self._audit(action, arguments, {"state": "refused", "error": str(exc)})
-                code = re.match(r"PL_[EW]_[A-Z_]+\b", str(exc))
-                raise APIError((code[0] + ": " if code else "") + "placement preflight refused; see local audit", 400) from exc
+                raise APIError("recipe preflight refused: " + _preflight_reason(exc) + "; see local audit", 400) from exc
         occupying = action in ("up", "install", "recipes/deploy", "recipes/probe")
         # A stop: down, and every cancel that is not a feature job's (a profile's cancel and an up's or a deploy's
         # cancel stop a profile, or may).
