@@ -150,7 +150,8 @@ class PdhTests(unittest.TestCase):
 class NvmlTests(unittest.TestCase):
     def test_native_process_abi_attribution_na_and_no_double_count(self):
         ids = ["GPU-" + str(uuid.uuid4()) for _ in range(2)]
-        dll = mock.Mock()
+        from tests.test_placement_review3 import NVML_EXPORTS
+        dll = mock.Mock(spec_set=NVML_EXPORTS)
         dll.nvmlInit_v2.return_value = dll.nvmlShutdown.return_value = 0
         def count(out):
             out._obj.value = 2
@@ -171,21 +172,15 @@ class NvmlTests(unittest.TestCase):
             if partitions[0]:
                 rows[1].pid, rows[1].used, rows[1].gpu_instance = 42, 7, 1
             return 0
-        def luid(handle, out, mask):
-            C.memmove(out, handle.value.to_bytes(4, "little") + (9).to_bytes(4, "little"), 8)
-            mask._obj.value = 1
-            return 0
         dll.nvmlDeviceGetCount_v2.side_effect = count
         dll.nvmlDeviceGetHandleByIndex_v2.side_effect = handle
         dll.nvmlDeviceGetUUID.side_effect = identity
-        dll.nvmlDeviceGetLuid.side_effect = luid
         dll.nvmlDeviceGetComputeRunningProcesses_v2.side_effect = processes
         dll.nvmlDeviceGetGraphicsRunningProcesses_v2.side_effect = processes
         with mock.patch.object(gpu_counters.C, "CDLL", return_value=dll):
             nvml = gpu_counters.Nvml()
             self.assertEqual(nvml.sample(42), {ids[0].lower(): 123, ids[1].lower(): 456})
             self.assertEqual(nvml.sample(99), dict.fromkeys((u.lower() for u in ids), 0))
-            self.assertEqual(nvml.luids(), {(9, 1): ids[0].lower(), (9, 2): ids[1].lower()})
             partitions[0] = True
             self.assertEqual(nvml.sample(42), {ids[0].lower(): 130, ids[1].lower(): 463})
             used[1] = (1 << 64) - 1

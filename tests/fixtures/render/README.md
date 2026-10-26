@@ -62,6 +62,9 @@ generation at eb9ae96 was byte-identical; the integrated branch matched all
 21 cases when this oracle was introduced. Paths and identities here are
 portable fixture data. The privacy gate has no historical exemptions; all 22
 previously exempt fixtures reconstruct their original bytes in memory.
+IPv4 and IPv6 literals, including documentation and loopback addresses, also use portable placeholders. The
+privacy gate validates address candidates in values and mapping keys with `ipaddress`; documentation ranges have
+no exemption. Address substitutions expand only in memory before parser or byte comparisons.
 
 The qwen-replicas-w5, ds41-pair-w5 and minimax-pair goldens use the same abstraction (docs/adapters.md):
 qwen-replicas-w5 equals the qwen-replicas line; ds41-pair-w5 is the ds41-pair argv with the w5 identity

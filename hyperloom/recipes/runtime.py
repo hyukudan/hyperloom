@@ -137,6 +137,13 @@ def decision(cluster, recipe, ctx, bound, effective_sha, plans, admitted):
     if (release.get("engine_commit") != data["engine_sha"] or
             release.get("binaries", {}).get(binary.name) != plan["build_sha256"] or not Path(binary).is_file()):
         raise RecipeError("PL_E_STALE placement release binary or manifest is unavailable")
+    try:
+        with Path(binary).open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    except OSError as exc:
+        raise RecipeError("PL_E_STALE placement release binary is unreadable") from exc
+    if digest != plan["build_sha256"]:
+        raise RecipeError("PL_E_STALE placement release binary digest differs from the admitted build")
     return {"placement": True, "decode": {"id": route["id"], "flags": {}}, "prefill": [],
             "service": {"start": True, "why": None}, "running": [], "requirements": [],
             "effective_sha256": effective_sha, "machine": ctx.pc, "argv": list(argv),

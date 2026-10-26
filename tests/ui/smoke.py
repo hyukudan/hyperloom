@@ -198,7 +198,7 @@ def fixture_server(args):
     running = {"value": not args.blocked}
     cancelled = threading.Event()
     fixture_path = ROOT / "tests/fixtures/adapters"
-    router_status = json.loads((fixture_path / "router-status.json").read_text(encoding="utf-8"))
+    router_status = json.loads(read_fixture(fixture_path / "router-status.json"))
     router_status["replicas"] = [router_status["replicas"][0]]
     router_status["replicas"][0]["endpoint"] = "127.0.0.1:18501"
     engine_status = json.loads((fixture_path / "engine-status.json").read_text(encoding="utf-8"))

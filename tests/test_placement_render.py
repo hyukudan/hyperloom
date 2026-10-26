@@ -12,6 +12,7 @@ import uuid
 from hyperloom.recipes import apply, content_cache, launch, runtime
 from hyperloom.recipes.reader import RecipeError
 from hyperloom import rtx
+from tests.portable_fixtures import read_fixture
 
 
 class PlacementRenderTests(unittest.TestCase):
@@ -47,7 +48,7 @@ class PlacementRenderTests(unittest.TestCase):
 
     def test_single_and_two_gpu_goldens(self):
         from tests.test_recipes_grants import NOW, window
-        golden = json.loads((Path(__file__).parent / "fixtures/render/placement.json").read_bytes())
+        golden = json.loads(read_fixture(Path(__file__).parent / "fixtures/render/placement.json"))
         all_devices = deepcopy(self.document["devices"])
         for count in (1, 2):
             self.document["devices"] = deepcopy(all_devices[:count])

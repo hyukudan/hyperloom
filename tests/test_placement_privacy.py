@@ -1,5 +1,6 @@
 """Every tracked recipe/profile/receipt/fixture passes the same portable-data rule, without exceptions."""
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -14,11 +15,23 @@ PHYSICAL = re.compile(r"GPU-[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}
 ABSOLUTE = re.compile(r"(?:^|[\s\"'=,])(?:[A-Za-z]:[\\/]|/(?!/)[\w.-]+/)")
 PRIVATE_KEYS = frozenset(("uuid", "pci", "pci_path", "hostname", "host_id", "user", "username"))
 PLACEHOLDER = re.compile(r"<[a-z][a-z0-9-]*>")
+ADDRESS = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?!\w|\.\d)|"
+                     r"(?<![\w:])(?:[0-9a-fA-F]*:){2,}[0-9a-fA-F:.]*(?:%[\w.~-]+)?(?![\w:])")
+
+
+def addresses(value):
+    for match in ADDRESS.finditer(value):
+        candidate = match[0].rstrip(".")
+        try:
+            ipaddress.ip_address(candidate)
+        except ValueError:
+            continue
+        yield candidate
 
 
 def private(value, key=""):
     if isinstance(value, dict):
-        return any((k in PRIVATE_KEYS and v not in (None, "", [], {}) and
+        return any(next(addresses(k), None) or (k in PRIVATE_KEYS and v not in (None, "", [], {}) and
                     not (isinstance(v, str) and PLACEHOLDER.fullmatch(v))) or private(v, k)
                    for k, v in value.items())
     if isinstance(value, list):
@@ -26,7 +39,7 @@ def private(value, key=""):
     if isinstance(value, str):
         if key == "host" and value and not PLACEHOLDER.fullmatch(value):
             return True
-        if PHYSICAL.search(value) or ABSOLUTE.search(value):
+        if PHYSICAL.search(value) or ABSOLUTE.search(value) or next(addresses(value), None):
             return True
         for variable in ("USERNAME", "COMPUTERNAME"):
             local = os.environ.get(variable, "")
@@ -62,7 +75,7 @@ def findings():
 
 class PrivacyTests(unittest.TestCase):
     def test_tracked_artifacts_add_no_identity_or_path_bearing_data(self):
-        self.assertEqual(findings(), {}, "artifact carries UUID, PCI, host, user or absolute path; use portable placeholders")
+        self.assertEqual(findings(), {}, "artifact carries UUID, PCI, IP, host, user or absolute path; use portable placeholders")
 
     def test_strict_rule_catches_identity_paths_and_host_user_fields(self):
         import uuid

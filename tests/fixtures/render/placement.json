@@ -1,11 +1,11 @@
 {
   "1": {
-    "argv": ["<runtime>/cuda/111111111111/bin/strix-cuda-ds41-replica.exe", "--host", "127.0.0.1", "--port", "8096", "--api-key", "<redacted>", "--exact", "--placement", "<runtime>/placement.json", "--content-manifest", "<runtime>/manifest.json", "--receipts", "<runtime>/receipts.json"],
+    "argv": ["<runtime>/cuda/111111111111/bin/strix-cuda-ds41-replica.exe", "--host", "<ipv4-loopback>", "--port", "8096", "--api-key", "<redacted>", "--exact", "--placement", "<runtime>/placement.json", "--content-manifest", "<runtime>/manifest.json", "--receipts", "<runtime>/receipts.json"],
     "env": {"CUDA_DEVICE_ORDER": "PCI_BUS_ID", "CUDA_VISIBLE_DEVICES": "<anchor-uuid>"},
     "release": "1111111111111111111111111111111111111111"
   },
   "2": {
-    "argv": ["<runtime>/cuda/111111111111/bin/strix-cuda-ds41-replica.exe", "--host", "127.0.0.1", "--port", "8096", "--api-key", "<redacted>", "--exact", "--placement", "<runtime>/placement.json", "--content-manifest", "<runtime>/manifest.json", "--receipts", "<runtime>/receipts.json"],
+    "argv": ["<runtime>/cuda/111111111111/bin/strix-cuda-ds41-replica.exe", "--host", "<ipv4-loopback>", "--port", "8096", "--api-key", "<redacted>", "--exact", "--placement", "<runtime>/placement.json", "--content-manifest", "<runtime>/manifest.json", "--receipts", "<runtime>/receipts.json"],
     "env": {"CUDA_DEVICE_ORDER": "PCI_BUS_ID", "CUDA_VISIBLE_DEVICES": "<anchor-uuid>,<assist-uuid>"},
     "release": "1111111111111111111111111111111111111111"
   }

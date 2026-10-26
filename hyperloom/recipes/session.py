@@ -75,20 +75,50 @@ def evaluate(cluster, profile, path, layers, source, backend=None, *, placement_
     document (the backend's) is used for binding, match, admission and the decision."""
     backend = backend or core.StubBackend()
     ctx = facts.context(cluster, profile)
-    base = resolve(path, Layers(), backend=backend).recipe   # structure only: binding never depends on layers
+    base = resolve(path, Layers(), backend=backend).recipe
+    # Profiles need a measured identity. Overrides and --set can already activate placement before probing.
+    structural = Layers(overrides=layers.overrides, sets=layers.sets, workload=layers.workload)
+    preliminary = resolve(path, structural, backend=backend).recipe if layers.overrides or layers.sets else base
     if hasattr(source, "placement"):
-        source.placement = any(reader.placement_mode(r) for r in base["routes"])
+        source.placement = any(reader.placement_mode(r) for r in preliminary["routes"])
     inventory, gathered, raw, notes = source(ctx)
     ctx.limits = dict(ctx.limits or {}, node_runtime=facts.current_runtime(cluster, ctx, gathered.get("node_runtime")))
-    if any(reader.placement_mode(r) for r in base["routes"]):
-        return _placement_evaluation(cluster, path, layers, backend, ctx, base, inventory, gathered, raw, notes,
+    if any(reader.placement_mode(r) for r in preliminary["routes"]):
+        return _placement_evaluation(cluster, path, layers, backend, ctx, preliminary, inventory, gathered, raw, notes,
                                      placement_inputs=placement_inputs)
-    bound = apply.bind(base, ctx, inventory)
-    report = apply.probe_report(base, bound, gathered)
+    # A profile can activate a CUDA-only recipe for which the legacy HIP/service binder cannot build an identity.
+    # Field names choose only the provisional identity path; the core still validates freshness and activation.
+    profile_fields = reader.load_text(read_text(layers.profile), str(layers.profile)).get("set", {}) \
+        if layers.profile else {}
+    profile_placement = isinstance(backend, core.CoreBackend) and isinstance(profile_fields, dict) and any(
+        len(parts := name.split(".")) >= 3 and parts[0] == "routes" and parts[2] in ("assist", "components")
+        for name in profile_fields)
+    if profile_placement:
+        report = devices.candidates(cluster, ctx, inventory, gathered)
+        _, binding, _ = backend.match(path, structural, report, None)
+        bound = devices.bound(preliminary, ctx, binding or {d["id"]: [] for d in preliminary["match"]["devices"]})
+    else:
+        bound = apply.bind(base, ctx, inventory)
+        report = apply.probe_report(base, bound, gathered)
     identity = dict(report, binding=bound["binding"], workload=layers.workload,
                     descriptors=apply.descriptors(bound, ctx))
     resolved = resolve(path, layers, identity, backend)
     recipe = resolved.recipe
+    if any(reader.placement_mode(r) for r in recipe["routes"]):
+        # A fresh profile can introduce placement only after identity validation. Upgrade the live policy sample.
+        if hasattr(source, "placement"):
+            source.placement = True
+            inventory, gathered, raw, notes = source(ctx)
+        return _placement_evaluation(cluster, path, layers, backend, ctx, recipe, inventory, gathered, raw, notes,
+                                     placement_inputs=placement_inputs, identity=identity)
+    if profile_placement:
+        # A refused placement profile leaves the original legacy evaluation, including its binding, intact.
+        bound = apply.bind(base, ctx, inventory)
+        report = apply.probe_report(base, bound, gathered)
+        identity = dict(report, binding=bound["binding"], workload=layers.workload,
+                        descriptors=apply.descriptors(bound, ctx))
+        resolved = resolve(path, layers, identity, backend)
+        recipe = resolved.recipe
     if isinstance(backend, core.CoreBackend):
         problems, binding, effective_sha = backend.match(path, layers, report, identity)
         if not problems and binding != bound["binding"]:
@@ -111,11 +141,12 @@ def evaluate(cluster, profile, path, layers, source, backend=None, *, placement_
 
 
 def _placement_evaluation(cluster, path, layers, backend, ctx, base, inventory, gathered, raw, notes,
-                          *, placement_inputs=None):
+                          *, placement_inputs=None, identity=None):
     if not isinstance(backend, core.CoreBackend):
         raise RecipeError("placement binding requires a compatible ts-recipe core")
     report = apply.probe_report(base, None, gathered, cluster=cluster, ctx=ctx, inventory=inventory)
-    problems, binding, effective_sha = backend.match(path, Layers(), report, None)
+    structural = Layers(overrides=layers.overrides, sets=layers.sets, workload=layers.workload)
+    problems, binding, effective_sha = backend.match(path, layers if identity is not None else structural, report, identity)
     bound = devices.bound(base, ctx, binding or {d["id"]: [] for d in base["match"]["devices"]})
     identity = dict(report, binding=bound["binding"], workload=layers.workload,
                     descriptors=apply.descriptors(bound, ctx))
@@ -254,10 +285,16 @@ def pick(cluster, profile, directories, layers, source, backend=None):
         source.placement = any(not row["error"] and row["model"] == ctx.model and any(
             reader.placement_mode(r) for r in row["recipe"]["routes"]) for row in choices)
 
+    policy_for_candidates = getattr(source, "placement", False)
+
     def once(c):
-        if "v" not in cached:
-            cached["v"] = source(c)
-        return cached["v"]
+        if hasattr(source, "placement"):
+            source.placement = policy_for_candidates or once.placement
+        policy = getattr(source, "placement", False)
+        if policy not in cached:
+            cached[policy] = source(c)
+        return cached[policy]
+    once.placement = policy_for_candidates
     rows, passing = [], []
     for row in choices:
         out = {"path": row["path"], "name": row["name"]}

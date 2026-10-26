@@ -1,4 +1,4 @@
-"""Read-only, attributable GPU memory observers. No CUDA calls or device-total estimates."""
+"""Read-only, attributable GPU memory observers. No contexts or device-total estimates."""
 from __future__ import annotations
 
 import ctypes as C
@@ -40,19 +40,46 @@ class Nvml:
         return result
 
     def luids(self):
+        """Join the context-free CUDA LUID inventory to NVML UUIDs by PCI identity, never ordinal."""
         result = {}
         try:
-            for uuid, handle in self.devices():
+            cuda = C.WinDLL("nvcuda.dll")
+            cuda.cuInit.argtypes = [C.c_uint]
+            cuda.cuDeviceGetCount.argtypes = [C.POINTER(C.c_int)]
+            cuda.cuDeviceGet.argtypes = [C.POINTER(C.c_int), C.c_int]
+            cuda.cuDeviceGetLuid.argtypes = [C.POINTER(C.c_char), C.POINTER(C.c_uint), C.c_int]
+            cuda.cuDeviceGetPCIBusId.argtypes = [C.POINTER(C.c_char), C.c_int, C.c_int]
+            for name in ("cuInit", "cuDeviceGetCount", "cuDeviceGet", "cuDeviceGetLuid", "cuDeviceGetPCIBusId"):
+                getattr(cuda, name).restype = C.c_int
+            self.dll.nvmlDeviceGetHandleByPciBusId_v2.argtypes = [C.c_char_p, C.POINTER(C.c_void_p)]
+            self.dll.nvmlDeviceGetHandleByPciBusId_v2.restype = C.c_int
+            self.dll.nvmlDeviceGetUUID.argtypes = [C.c_void_p, C.POINTER(C.c_char), C.c_uint]
+            self.dll.nvmlDeviceGetUUID.restype = C.c_int
+            _check(cuda.cuInit(0))
+            count = C.c_int()
+            _check(cuda.cuDeviceGetCount(C.byref(count)))
+            expected, seen = {uuid for uuid, _ in self.devices()}, set()
+            for index in range(count.value):
+                device, handle = C.c_int(), C.c_void_p()
+                pci, uuid = C.create_string_buffer(32), C.create_string_buffer(96)
+                _check(cuda.cuDeviceGet(C.byref(device), index))
+                _check(cuda.cuDeviceGetPCIBusId(pci, len(pci), device))
+                _check(self.dll.nvmlDeviceGetHandleByPciBusId_v2(pci.value, C.byref(handle)))
+                _check(self.dll.nvmlDeviceGetUUID(handle, uuid, len(uuid)))
+                identity = uuid.value.decode("ascii").lower()
                 luid, mask = C.create_string_buffer(8), C.c_uint()
-                _check(self.dll.nvmlDeviceGetLuid(handle, luid, C.byref(mask)))
+                _check(cuda.cuDeviceGetLuid(luid, C.byref(mask), device))
                 # PDH spells the LUID as high-part then low-part, each in hexadecimal.
                 low, high = int.from_bytes(luid.raw[:4], "little"), int.from_bytes(luid.raw[4:], "little")
                 key = (high, low)
-                if key in result:
-                    raise CounterError("adapter LUID is ambiguous")
-                result[key] = uuid
-        except AttributeError as exc:
-            raise CounterError("NVML adapter LUID mapping unavailable") from exc
+                if not mask.value or key == (0, 0) or key in result or identity in seen or identity not in expected:
+                    raise CounterError("adapter LUID mapping is unavailable or ambiguous")
+                seen.add(identity)
+                result[key] = identity
+            if seen != expected:
+                raise CounterError("adapter LUID mapping is incomplete")
+        except (OSError, AttributeError, UnicodeError) as exc:
+            raise CounterError("CUDA/NVML adapter LUID mapping unavailable") from exc
         return result
 
     def sample(self, pid):
