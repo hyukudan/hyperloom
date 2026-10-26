@@ -1,5 +1,6 @@
 """Test doubles for the observability package: launch records, HTTP answers, a clock and a portal API."""
 
+from tests.portable_fixtures import read_fixture
 import ipaddress
 import json
 import socket
@@ -27,7 +28,7 @@ NODE1, NODE2 = doc_address(1), doc_address(2)
 
 
 def fixture(name):
-    text = (HERE / name).read_text(encoding="utf-8")
+    text = read_fixture(HERE / name)
     return json.loads(text) if name.endswith(".json") else text
 
 

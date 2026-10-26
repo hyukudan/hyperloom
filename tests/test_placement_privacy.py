@@ -1,8 +1,4 @@
-"""No new physical identities or paths in tracked recipe/profile/receipt/fixture data.
-
-Historical synthetic fixtures (including the immutable eb9ae96 oracle) are pinned by byte hash, not directory
-exemptions. Any changed or new artifact must pass the strict rule. Logs and operational documents stay local.
-"""
+"""Every tracked recipe/profile/receipt/fixture passes the same portable-data rule, without exceptions."""
 import hashlib
 import json
 import os
@@ -13,20 +9,22 @@ import tomllib
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-BASELINE = Path(__file__).with_name("fixtures") / "privacy-legacy.json"
 PHYSICAL = re.compile(r"GPU-[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}|"
                       r"\b[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]\b")
 ABSOLUTE = re.compile(r"(?:^|[\s\"'=,])(?:[A-Za-z]:[\\/]|/(?!/)[\w.-]+/)")
 PRIVATE_KEYS = frozenset(("uuid", "pci", "pci_path", "hostname", "host_id", "user", "username"))
+PLACEHOLDER = re.compile(r"<[a-z][a-z0-9-]*>")
 
 
 def private(value, key=""):
     if isinstance(value, dict):
-        return any((k in PRIVATE_KEYS and v not in (None, "", [], {})) or private(v, k) for k, v in value.items())
+        return any((k in PRIVATE_KEYS and v not in (None, "", [], {}) and
+                    not (isinstance(v, str) and PLACEHOLDER.fullmatch(v))) or private(v, k)
+                   for k, v in value.items())
     if isinstance(value, list):
         return any(private(v, key) for v in value)
     if isinstance(value, str):
-        if key == "host" and value:
+        if key == "host" and value and not PLACEHOLDER.fullmatch(value):
             return True
         if PHYSICAL.search(value) or ABSOLUTE.search(value):
             return True
@@ -42,7 +40,7 @@ def artifacts():
                            cwd=ROOT, capture_output=True, check=True).stdout.decode().split("\0")
     for name in sorted(set(paths)):
         path = Path(name)
-        if (path.suffix.lower() in (".json", ".toml", ".csv", ".jsonl", ".log", ".txt")
+        if ((ROOT / path).is_file() and path.suffix.lower() in (".json", ".toml", ".csv", ".jsonl", ".log", ".txt")
                 and (name.startswith("tests/fixtures/") or
                      any(part in ("recipes", "profiles", "receipts", "run") for part in path.parts))):
             yield name, ROOT / path
@@ -64,9 +62,7 @@ def findings():
 
 class PrivacyTests(unittest.TestCase):
     def test_tracked_artifacts_add_no_identity_or_path_bearing_data(self):
-        legacy = json.loads(BASELINE.read_bytes())
-        self.assertEqual(findings(), legacy,
-                         "new/changed artifact carries UUID, PCI, host, user or absolute path; sanitize a separate fixture")
+        self.assertEqual(findings(), {}, "artifact carries UUID, PCI, host, user or absolute path; use portable placeholders")
 
     def test_strict_rule_catches_identity_paths_and_host_user_fields(self):
         import uuid

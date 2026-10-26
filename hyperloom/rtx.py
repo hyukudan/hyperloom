@@ -380,17 +380,26 @@ def render_placement_service(cluster, request, *, api_key):
     if policy.get("host_grant") is not None:
         windows.append(policy["host_grant"]["window"])
     deadline = min(expires(w["expires_at"], "placement grant expires_at") for w in windows)
+    if policy.get("pc_big_deadline") is not None:
+        deadline = min(deadline, policy["pc_big_deadline"])
     anchor = next((d for d in document["devices"] if d.get("role") == "anchor"), None)
     if anchor is None:
         raise ConfigError("PL_E_SCHEMA placement has no anchor")
+    budgets = {uuid_key(d["uuid"]): d.get("budget_bytes") for d in document["devices"]}
+    if any(type(b) is not int or b <= 0 for b in budgets.values()):
+        raise ConfigError("PL_E_SCHEMA placement requires integer device budgets")
+    if "caps_bytes" not in policy:
+        policy["caps_bytes"] = budgets
     for device in document["devices"]:
-        if device.get("budget_bytes") != int(round(policy["caps_gib"][uuid_key(device["uuid"])] * GIB)):
+        if device.get("budget_bytes") != policy["caps_bytes"].get(uuid_key(device["uuid"])):
             raise ConfigError("PL_E_GRANT supervised cap differs from placement budget")
+    manifest = Path(binary).parent.parent / "MANIFEST.json"
+    sha = read_json(manifest).get("binaries", {}).get(binary.name) if manifest.is_file() else None
     return ServiceSpec(data["name"], request.machine, anchor["uuid"], request.port, argv,
                        dict(child_env(os.environ), **explicit), redact(argv, data["secret_flags"]),
                        deadline, policy["caps_gib"][uuid_key(anchor["uuid"])],
                        policy.get("free_commit_floor_gib", 4), data["ready_timeout_s"], {},
-                       document.get("build_sha256"), document, placement_supervision=policy)
+                       sha, document, placement_supervision=policy)
 
 
 # Device selection and behaviour switches of the CUDA runtime are never inherited (the preset sets its own);
@@ -747,8 +756,9 @@ def service_run(spec_path, *, child_factory=procs.LocalChild, watchdog_factory=W
                                                   verify=verify_device if verify is verify_pro else verify,
                                                   log=log, now=time.time())
             for item in info:
+                cap_bytes = spec.placement_supervision.get("caps_bytes", {}).get(item["uuid"].lower())
                 if (item.get("memory_total_mib") is not None
-                        and caps[item["uuid"].lower()] * 1024 > item["memory_total_mib"]):
+                        and cap_bytes is not None and cap_bytes > item["memory_total_mib"] * (1 << 20)):
                     raise ServiceError("placement cap exceeds device physical capacity")
             # Gate commands can take time; recheck every deadline and the physical/commit floors before spawn.
             placement_supervision.validate(spec.placement_supervision, now=time.time(), starting=True, memory=memory())

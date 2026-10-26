@@ -61,7 +61,23 @@ def _active(window, now, *, starting=False):
             and rtx.expires(window["expires_at"], "window.expires_at") > now + (60 if starting else 0))
 
 
-def check(cluster, recipe, binding, report, hosts, *, now=None):
+def pc_big_deadline(cluster, selected, *, now):
+    """Earliest known PC-BIG conflict for a turn touching a 4090, including future windows."""
+    if not any("4090" in row.get("name", "") for row in selected):
+        return None
+    cuda = cluster.pc.get("cuda", {})
+    windows = [g["window"] for g in cuda.get("grants", [])]
+    if cuda.get("host_grant"):
+        windows.append(cuda["host_grant"]["window"])
+    starts = [max(now, rtx.expires(w["starts_at"], "PC-BIG starts_at")) for w in windows
+              if w["kind"] == "PC-BIG" and rtx.expires(w["expires_at"], "PC-BIG expires_at") > now]
+    reservation = cuda.get("reservation")
+    if reservation and ("window_s" in reservation or rtx.reservation_end(reservation, now) > now):
+        starts.append(now)
+    return min(starts) if starts else None
+
+
+def check(cluster, recipe, binding, report, hosts, *, now=None, touched=None, anchors_only=False):
     """Validate every enabled route's anchor and nonzero assists. Return the grants used, without clamping.
 
     Tierstream supplies binding (including alias merging and strict selectors). Inactive assists consume no grant.
@@ -72,27 +88,26 @@ def check(cluster, recipe, binding, report, hosts, *, now=None):
     grants = parse_grants(cuda.get("grants", []))
     by_uuid = {uuid_key(g["uuid"]): g for g in grants}
     rows = {row["id"]: row for row in report["devices"]}
-    big = any(g["window"]["kind"] == "PC-BIG" and _active(g["window"], now) for g in grants)
-    reservation = cuda.get("reservation")
-    if reservation is not None:
-        # A legacy relative reservation is conservatively busy; only its gate knows the ledger's actual slot.
-        big = big or "window_s" in reservation or rtx.reservation_end(reservation, now) > now
     host_grant = cuda.get("host_grant")
     if host_grant is not None:
         parse_host_grant(host_grant)
-        big = big or (host_grant["window"]["kind"] == "PC-BIG" and _active(host_grant["window"], now))
+    touched = None if touched is None else {uuid_key(u) for u in touched}
     used = {}
     for route in recipe["routes"]:
         if not route.get("enabled", True) or not placement_mode(route):
             continue
         budgets = {sid: route["placement"][sid]["device_gib"] for sid in route["devices"]}
-        budgets.update({sid: a["device_gib"] for sid, a in route.get("assist", {}).items() if a["device_gib"] > 0})
+        if not anchors_only:
+            budgets.update({sid: a["device_gib"] for sid, a in route.get("assist", {}).items()
+                            if a["device_gib"] > 0 and binding.get(sid)})
         for sid, budget in budgets.items():
             members = binding.get(sid, [])
             if not members:
                 raise RecipeError(f"PL_E_UNKNOWN_DEVICE {sid}: enabled device is unbound")
             for member in members:
                 row = rows[member["id"]]
+                if touched is not None and uuid_key(row.get("uuid", "")) not in touched:
+                    continue
                 if row["kind"] != "cuda":
                     raise RecipeError(f"PL_E_CAPABILITY {sid}: placement grants currently support CUDA only")
                 uuid = row.get("uuid")
@@ -103,8 +118,6 @@ def check(cluster, recipe, binding, report, hosts, *, now=None):
                     raise RecipeError(f"PL_E_GRANT {sid}: grant is not open or expires within 60 s")
                 if budget > grant["vram_cap_gib"]:
                     raise RecipeError(f"PL_E_GRANT {sid}: device_gib {budget:g} above grant {grant['vram_cap_gib']:g}")
-                if "4090" in row["name"] and big:
-                    raise RecipeError(f"PL_E_GRANT {sid}: no 4090 work during a PC-BIG window")
                 used[uuid_key(uuid)] = grant
         for sid in route["devices"]:
             placement = route["placement"][sid]
@@ -118,4 +131,30 @@ def check(cluster, recipe, binding, report, hosts, *, now=None):
                 free = hosts.get(member["host"], {}).get("free_ram_gib")
                 if free is None or free * (1 << 30) < HOST_START_BYTES:
                     raise RecipeError("PL_E_GRANT MemAvailable must be at least 82 GB before start")
+    if touched is not None and used.keys() != touched:
+        raise RecipeError("PL_E_GRANT core touched a device without an enabled, bound grant")
+    deadline = pc_big_deadline(cluster, [row for row in rows.values()
+                                       if uuid_key(row.get("uuid", "")) in used], now=now)
+    ends = [rtx.expires(g["window"]["expires_at"], "grant expires_at") for g in used.values()]
+    if host_grant is not None:
+        ends.append(rtx.expires(host_grant["window"]["expires_at"], "host grant expires_at"))
+    if deadline is not None and ends and deadline < min(ends):
+        raise RecipeError("PL_E_GRANT no 4090 turn may overlap a PC-BIG window")
     return used
+
+
+def policy(cluster, recipe, route, binding, report, plan, hosts, *, now):
+    """Carry Tierstream's integer budgets and the complete operator-window constraint into supervision."""
+    devices = plan.get("devices", [])
+    used = check(cluster, recipe, binding, report, hosts, now=now, touched=[d["uuid"] for d in devices])
+    budgets = {sid: route["placement"][sid]["device_gib"] for sid in route["devices"]}
+    budgets.update({sid: a["device_gib"] for sid, a in route.get("assist", {}).items()})
+    host = plan["host"]
+    return {"grants": list(used.values()),
+            "caps_gib": {uuid_key(d["uuid"]): budgets[d["set"]] for d in devices},
+            "caps_bytes": {uuid_key(d["uuid"]): d["budget_bytes"] for d in devices},
+            "host_pinned_gib": host["pinned_budget_bytes"] / rtx.GIB,
+            "host_pageable_gib": host["pageable_budget_bytes"] / rtx.GIB,
+            "host_grant": cluster.pc.get("cuda", {}).get("host_grant"),
+            "free_commit_floor_gib": max(4, recipe["limits"]["host_free_commit_floor_gib"]),
+            "pc_big_deadline": pc_big_deadline(cluster, devices, now=now)}

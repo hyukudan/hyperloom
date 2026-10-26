@@ -24,7 +24,13 @@ by the contract, same-size changes with deliberately preserved mtime are outside
 The placement bridge accepts the reference as `components` with `selected_content=paths`. Solver choices may each
 carry their own reference and `selected_content`. Both resolve from cache before invoking the CPU Tierstream core;
 literal cached documents/files retain the bridge's existing API. `launch.Options` accepts the same local sidecar
-for preflight validation before evaluation. It does not enable placement launching, which remains gated on the
-later adapter/supervision work. `placement.desc.load_inputs` returns desc-v1 and cached components-v1 separately:
+for preflight validation before evaluation. Placement launch uses the separate opt-in decode adapter and requires
+its published release. `placement.desc.load_inputs` returns desc-v1 and cached components-v1 separately:
 no reference is inserted into desc-v1, so its hash and legacy plan identity remain unchanged. Legacy header caches
-also use `mtime_ns`; older second-resolution entries must be explicitly refreshed.
+retain their original `mtime` comparison; records with `mtime_ns` from the initial placement branch also load.
+`descriptors.PlacementStore` uses a separate `placement-headers-v1` directory and schema with nanosecond identity.
+Placement's separate versioned header, manifest and component caches always check nanosecond mtimes.
+
+`hyperloom probe --manifest --file FILE --window WINDOW.json` invokes the packaged CPU `ts-recipe manifest --full`
+only within the approved window. The child has the window's remaining time as its timeout; expired or failed
+acquisitions publish nothing. Successful, validated manifests are saved in the local manifest store.

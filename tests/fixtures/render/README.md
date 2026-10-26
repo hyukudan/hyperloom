@@ -51,12 +51,17 @@ python -m pytest -q tests/test_legacy_render.py
 ```
 
 The generator imports Hyperloom only from `--source` in a fresh interpreter.
-The test renders the current checkout and compares LF JSON bytes against the
-frozen file; it never regenerates the oracle. Any difference needs reporting
+The stored fixture uses portable placeholders. `tests/portable_fixtures.py`
+reconstructs its original values only in memory; the reconstructed bytes retain
+SHA-256 `40489d24e0a9b64d9b6186b2742d2fff734e4d66e310dd1776d8b62c340168e7`.
+The generator saves portable output by default; `--raw` is for local comparison
+only. The test renders with `--raw` and compares LF JSON bytes against the
+reconstructed frozen file; it never regenerates the oracle. Any difference needs reporting
 and product review, not an automatic golden update. A second independent
 generation at eb9ae96 was byte-identical; the integrated branch matched all
 21 cases when this oracle was introduced. Paths and identities here are
-synthetic fixture data, never local hardware or deployment identities.
+portable fixture data. The privacy gate has no historical exemptions; all 22
+previously exempt fixtures reconstruct their original bytes in memory.
 
 The qwen-replicas-w5, ds41-pair-w5 and minimax-pair goldens use the same abstraction (docs/adapters.md):
 qwen-replicas-w5 equals the qwen-replicas line; ds41-pair-w5 is the ds41-pair argv with the w5 identity

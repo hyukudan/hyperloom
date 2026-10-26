@@ -1,4 +1,5 @@
 """G6: every shipped legacy line stays equal to the independent eb9ae96 oracle."""
+from tests.portable_fixtures import read_fixture
 import json
 from pathlib import Path
 import subprocess
@@ -16,12 +17,12 @@ class LegacyRenderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="hl-g6-") as tmp:
             actual = Path(tmp) / "render.json"
             subprocess.run([sys.executable, str(ROOT / "tests/legacy_render.py"), "--source", str(ROOT),
-                            "--output", str(actual)], check=True, capture_output=True, text=True, timeout=60)
-            self.assertEqual(actual.read_bytes(), FIXTURE.read_bytes(),
+                            "--output", str(actual), "--raw"], check=True, capture_output=True, text=True, timeout=60)
+            self.assertEqual(actual.read_bytes(), read_fixture(FIXTURE).encode("utf-8"),
                              "legacy render differs from eb9ae96; report the diff before changing the oracle")
 
     def test_oracle_covers_every_shipped_preset_and_cap(self):
-        doc = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        doc = json.loads(read_fixture(FIXTURE))
         self.assertEqual(doc["oracle"], "eb9ae96")
         presets = {p.stem for p in (ROOT / "hyperloom/presets").glob("*.json")
                    if "argv" in json.loads(p.read_text(encoding="utf-8"))}

@@ -11,10 +11,18 @@ from .config import number
 def validate(policy, *, now, starting=False, memory=None):
     """Validate an exact cap for each granted UUID and the aggregate pinned/pageable host charge."""
     entries = grants.parse_grants(policy["grants"])
+    big = policy.get("pc_big_deadline")
+    if big is not None and now + (60 if starting else 0) >= big:
+        raise rtx.ServiceError("placement turn reaches a PC-BIG window")
     by_uuid = {grants.uuid_key(g["uuid"]): g for g in entries}
     caps = {grants.uuid_key(k): v for k, v in policy["caps_gib"].items()}
     if not by_uuid or len(caps) != len(policy["caps_gib"]) or caps.keys() != by_uuid.keys():
         raise rtx.ServiceError("placement requires one cap per granted UUID")
+    if "caps_bytes" in policy:
+        byte_caps = policy["caps_bytes"]
+        if (byte_caps.keys() != caps.keys() or
+                any(type(v) is not int or v <= 0 for v in byte_caps.values())):
+            raise rtx.ServiceError("placement requires integer byte caps for every touched GPU")
     for uuid, grant in by_uuid.items():
         cap = caps[uuid]
         number(cap, "placement cap", 0, 1024)
@@ -118,7 +126,13 @@ class Watchdog(rtx.Watchdog):
                     if uuid not in caps and used > 0:
                         reason = "process active on an ungranted GPU"
                         break
-                    if uuid in caps and used > caps[uuid] * rtx.GIB:
+                    limit = self.policy.get("caps_bytes", {}).get(uuid)
+                    if limit is None and uuid in caps:
+                        # Explicit microbenchmarks have grant caps, without a Tierstream placement document.
+                        if getattr(self.spec, "placement", None) is not None:
+                            raise gpu_counters.CounterError("placement integer budget unavailable")
+                        limit = caps[uuid] * rtx.GIB
+                    if uuid in caps and used > limit:
                         reason = "per-process VRAM exceeds placement cap"
                         break
             except gpu_counters.CounterError as exc:

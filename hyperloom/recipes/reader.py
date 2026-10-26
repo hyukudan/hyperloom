@@ -318,7 +318,7 @@ def _placement(obj, route, where):
 
 
 def placement_mode(route):
-    """Only nonempty assist/component tables activate placement, as in Tierstream."""
+    """Only a non-empty assist / components table opts in, as in Tierstream (contract rev 21c, section 2)."""
     return bool(route.get("assist") or route.get("components"))
 
 
@@ -362,9 +362,10 @@ def _route_placement(raw, route, devices, where):
                 raise RecipeError(f"{path}: PL_E_UNKNOWN_COMPONENT not a component id")
             _check_keys(value, set(fields), path)
             entries[ident] = _fields(value, fields, path)
-        if entries:
-            order = sorted(entries) if key == "assist" else [c for c in COMPONENT_IDS if c in entries]
-            route[key] = {ident: entries[ident] for ident in order}
+        if not entries:
+            continue  # an empty table carries no placement content: the route stays legacy, canonical form unchanged
+        order = sorted(entries) if key == "assist" else [c for c in COMPONENT_IDS if c in entries]
+        route[key] = {ident: entries[ident] for ident in order}
     for key in ("max_rows", "max_sequences"):
         if key in raw:
             route[key] = _value(_int(1, 65536), raw[key], f"{where}.{key}")

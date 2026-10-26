@@ -169,6 +169,38 @@ def _store(path, window, *, clock=time.time, measure=probe.read_bandwidth):
     return median(samples, STORE_METHOD)
 
 
+def manifest(cluster, files, window, *, clock=time.time, run=subprocess.run):
+    """Full-read CPU acquisition owned by ts-recipe, bounded by the operator's approved deadline."""
+    from . import core
+    end = approved(window, now=clock())
+    executable = core.locate(cluster)
+    if executable is None:
+        raise RecipeError("PL_E_CAPABILITY probe --manifest requires ts-recipe")
+    argv = [str(executable), "manifest", "--full", *[str(Path(p).resolve()) for p in files]]
+    remaining = end - clock()
+    if remaining <= 0:
+        raise RecipeError("PL_E_GRANT manifest window has expired")
+    try:
+        result = run(argv, capture_output=True, text=True, timeout=remaining, **no_window())
+    except subprocess.TimeoutExpired as exc:
+        raise RecipeError("PL_E_GRANT manifest stopped at the approved window deadline") from exc
+    except OSError as exc:
+        raise RecipeError("PL_E_CAPABILITY ts-recipe manifest unavailable") from exc
+    approved(window, now=clock())
+    if result.returncode:
+        raise RecipeError(result.stderr.rstrip() or "PL_E_STALE ts-recipe manifest refused")
+    try:
+        if len(result.stdout.encode("utf-8")) > content_cache.MAX_JSON_BYTES:
+            raise ValueError("manifest too large")
+        document = json.loads(result.stdout)
+        entries = content_cache.ManifestStore._entries(document)
+        if set(entries) != {os.path.normcase(str(Path(p).resolve())) for p in files}:
+            raise ValueError("manifest differs from requested files")
+    except (ValueError, TypeError) as exc:
+        raise RecipeError("PL_E_STALE invalid ts-recipe manifest output") from exc
+    return document
+
+
 def acquire(cluster, mode, *, runtime, uuid=None, xfer_sha256=None, store_id=None, files=(), window=None,
             clock=time.time, inventory=probe.nvidia_gpus, gpu_runner=_gpu, store_runner=_store,
             manifest_runner=None):

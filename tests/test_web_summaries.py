@@ -1,4 +1,5 @@
 """Portal summaries against sanitized captured field shapes; no hardware access."""
+from tests.portable_fixtures import read_fixture
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,7 +15,7 @@ FIXTURE = Path(__file__).parent / "fixtures" / "web" / "inspection.json"
 
 class SummaryTests(unittest.TestCase):
     def setUp(self):
-        self.inspection = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        self.inspection = json.loads(read_fixture(FIXTURE))
         machines = {mid: config.Machine(mid, "windows" if mid == "workstation" else "linux",
                     "local" if mid == "workstation" else "ssh", "192.0.2." + str(i + 10), mid, 22,
                     "/opt/hyperloom/" + mid, True, [{"id": "gpu"}])

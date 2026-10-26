@@ -1,10 +1,10 @@
 [
   {
-    "machine_id": "halo-1",
+    "machine_id": "<node-1>",
     "role": "replica",
     "argv": [
-      "/opt/hyperloom/releases/000000000000/bin/strix-hip-decode-token",
-      "/opt/assets/qwen.gguf",
+      "<posix>/opt/hyperloom/releases/000000000000/bin/strix-hip-decode-token",
+      "<posix>/opt/assets/qwen.gguf",
       "11",
       "22",
       "33",
@@ -19,7 +19,7 @@
       "1",
       "--mtp",
       "--mtp-sidecar",
-      "/opt/assets/sidecar.gguf",
+      "<posix>/opt/assets/sidecar.gguf",
       "--mtp-sidecar-logical-name",
       "mtp-Qwen3.8-Flash-Next-shared-distillG-Q8_0.gguf",
       "--mtp-sidecar-sha256",
@@ -73,7 +73,7 @@
       "--mtp-max-logit-error",
       "0",
       "--mtp-golden",
-      "/opt/assets/mtp.golden",
+      "<posix>/opt/assets/mtp.golden",
       "--mtp-golden-sha256",
       "5db345508f79bda1af87a8c929ea463ca914f17dec3dd3b02273daf6ed7ce413",
       "--parallel-hyper-mix",
@@ -125,7 +125,7 @@
       "--mtp-window-qsa-rows",
       "--mtp-draft-chain",
       "--mtp-draft-vocab",
-      "auto:/opt/assets/qwen-vocab",
+      "auto:<posix>/opt/assets/qwen-vocab",
       "--mtp-draft-context-vocab",
       "4096",
       "--mtp-draft-q4",
@@ -165,7 +165,7 @@
       "--http-bind",
       "192.0.2.10",
       "--http-api-key-file",
-      "/opt/hyperloom/secrets/engine.key"
+      "<posix>/opt/hyperloom/secrets/engine.key"
     ],
     "env": {
       "STRIX_COHORT_ROWS": "32",
@@ -191,11 +191,11 @@
     "ready": "qwen-stderr"
   },
   {
-    "machine_id": "halo-2",
+    "machine_id": "<node-2>",
     "role": "replica",
     "argv": [
-      "/opt/hyperloom/releases/000000000000/bin/strix-hip-decode-token",
-      "/opt/assets/qwen.gguf",
+      "<posix>/opt/hyperloom/releases/000000000000/bin/strix-hip-decode-token",
+      "<posix>/opt/assets/qwen.gguf",
       "11",
       "22",
       "33",
@@ -210,7 +210,7 @@
       "1",
       "--mtp",
       "--mtp-sidecar",
-      "/opt/assets/sidecar.gguf",
+      "<posix>/opt/assets/sidecar.gguf",
       "--mtp-sidecar-logical-name",
       "mtp-Qwen3.8-Flash-Next-shared-distillG-Q8_0.gguf",
       "--mtp-sidecar-sha256",
@@ -264,7 +264,7 @@
       "--mtp-max-logit-error",
       "0",
       "--mtp-golden",
-      "/opt/assets/mtp.golden",
+      "<posix>/opt/assets/mtp.golden",
       "--mtp-golden-sha256",
       "5db345508f79bda1af87a8c929ea463ca914f17dec3dd3b02273daf6ed7ce413",
       "--parallel-hyper-mix",
@@ -316,7 +316,7 @@
       "--mtp-window-qsa-rows",
       "--mtp-draft-chain",
       "--mtp-draft-vocab",
-      "auto:/opt/assets/qwen-vocab",
+      "auto:<posix>/opt/assets/qwen-vocab",
       "--mtp-draft-context-vocab",
       "4096",
       "--mtp-draft-q4",
@@ -356,7 +356,7 @@
       "--http-bind",
       "192.0.2.11",
       "--http-api-key-file",
-      "/opt/hyperloom/secrets/engine.key"
+      "<posix>/opt/hyperloom/secrets/engine.key"
     ],
     "env": {
       "STRIX_COHORT_ROWS": "32",

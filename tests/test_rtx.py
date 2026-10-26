@@ -1,4 +1,5 @@
 """Phase 3a: the RTX prefill service preset, reservation, render, watchdog, helper and acceptance checks."""
+from tests.portable_fixtures import read_fixture
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -16,7 +17,7 @@ from hyperloom.config import ConfigError, parse
 from hyperloom.render import render_router, validate_router
 from tests.test_config import example
 
-DS41_SIZES = json.loads((Path(__file__).parent / "fixtures" / "vramplan" / "ds41-sizes.json").read_text())
+DS41_SIZES = json.loads(read_fixture(Path(__file__).parent / "fixtures" / "vramplan" / "ds41-sizes.json"))
 _PATCHES = []
 
 

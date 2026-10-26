@@ -26,6 +26,7 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+from tests.portable_fixtures import read_fixture
 ROUTES = ("devices", "topology", "models", "recipes", "engines", "stats", "logs", "settings")
 TITLES = ("Devices", "Topology & links", "Models & placement", "Recipes & profiles", "Engines", "Live stats", "Logs",
           "Settings & pairing")
@@ -175,7 +176,7 @@ def fixture_server(args):
            "install_root": "/opt/hyperloom/halo-1", "lab_mode": True, "devices": [{"id": "gpu"}]}], "assets": assets,
            "profiles": {"qwen-replicas": {"nodes": ["halo-1"]}}, "router": {}, "pc": {}}
     cluster = config.Cluster({machine.id: machine}, assets, raw["profiles"], {}, {}, raw)
-    inspection = json.loads((ROOT / "tests/fixtures/web/inspection.json").read_text(encoding="utf-8"))
+    inspection = json.loads(read_fixture(ROOT / "tests/fixtures/web/inspection.json"))
     for mid, system, access, address in (("workstation", "windows", "local", "192.0.2.20"),
                                           ("halo-2", "linux", "ssh", "192.0.2.11")):
         cluster.machines[mid] = config.Machine(mid, system, access, address, mid, 22,

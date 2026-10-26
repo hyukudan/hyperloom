@@ -1,4 +1,5 @@
 """Engine adapter registry, the w5/MiniMax presets, unpublished-source bundles, and the MiniMax pair lifecycle."""
+from tests.portable_fixtures import read_fixture
 from copy import deepcopy
 from dataclasses import asdict
 import hashlib
@@ -162,7 +163,7 @@ class PresetRenderTests(unittest.TestCase):
         cluster = parse(self.obj)
         for name in NEW:
             with self.subTest(name=name):
-                expected = json.loads((FIXTURES / (name + ".golden.json")).read_text(encoding="utf-8"))
+                expected = json.loads(read_fixture(FIXTURES / (name + ".golden.json")))
                 self.assertEqual([asdict(p) for p in render_processes(cluster, name)], expected)
 
     def test_qwen_w5_is_the_rfix_line_and_ds41_w5_the_dense_trellis_identity(self):
@@ -505,7 +506,7 @@ class LifecycleTests(unittest.TestCase):
         """qwen-replicas, ds41-pair and ds41-pair-long declare no components: their install payload (recipe with
         required_flags and options, and components) is pinned to what main computes, so their release ids stay
         main's. The expected values were computed by main's install path (tests/fixtures/main_recipes.json)."""
-        expected = json.loads((ROOT / "tests" / "fixtures" / "main_recipes.json").read_text(encoding="utf-8"))["presets"]
+        expected = json.loads(read_fixture(ROOT / "tests" / "fixtures" / "main_recipes.json"))["presets"]
         self.assertEqual(sorted(expected), ["ds41-pair", "ds41-pair-long", "qwen-replicas"])
         obj = cluster_obj()
         for row in obj["machines"][1:]:

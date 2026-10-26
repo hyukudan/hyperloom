@@ -11,7 +11,7 @@ import time
 
 from .. import engines, render, rtx
 from ..config import ConfigError
-from . import apply, commands, core, descriptors, facts, probe, session
+from . import apply, commands, core, descriptors, facts, probe, runtime, session
 from .reader import RecipeError
 
 STUB_ENV = "HYPERLOOM_RECIPE_STUB"
@@ -47,6 +47,7 @@ class Launch:
     layers: session.Layers | None = None
     inputs: list = field(default_factory=list)
     digest: str | None = None
+    placement_request: runtime.Request | None = None
 
     def record(self):
         """What the profile state keeps about the recipe (shown by `hyperloom status` and `recipe active`): the
@@ -149,7 +150,7 @@ def prepare(cluster, profile, options, *, router, vram_cap_gib, state_dir, sourc
     placement = preflight.includes(options)
     if not placement:
         check_router()
-    source = source or commands.live_source(cluster)
+    source = source or commands.live_source(cluster, placement=placement)
     if options.recipe == "auto":
         dirs = options.dirs if options.exact_dirs else commands.recipe_dirs(cluster, options.dirs)
         chosen, rows = session.pick(cluster, profile, dirs, options.layers, source, backend)
@@ -164,6 +165,15 @@ def prepare(cluster, profile, options, *, router, vram_cap_gib, state_dir, sourc
     why = refusal_of(evaluation)
     if why is not None:
         raise RecipeError(why)
+    if evaluation.decision.get("placement"):
+        if router != "local":
+            raise RecipeError("the placement decode replica is loopback-only: use --router local")
+        request = runtime.request(evaluation.decision)
+        # Pure render (including artifact/release checks) before any state, helper or gate exists.
+        spec = render_placement(cluster, profile, request, api_key="0" * 64)
+        table = {"effective_sha256": evaluation.effective_sha256, "state": {"file": None}, "routes": []}
+        return Launch(evaluation, production and not evaluation.effective.untuned, True, None, None, None,
+                      table, spec.placement, options.layers, options.inputs, options.digest, request)
     if placement:
         check_router()
     decision = evaluation.decision
@@ -300,6 +310,57 @@ def render_placement(cluster, profile, request, *, api_key):
     """Pure rendering of already admitted local artifacts, before any launch-state or lease mutation."""
     return rtx.render_service(cluster, profile, api_key=api_key, handoff_api_key="0" * 64,
                               free_physical_gib=0, placement_request=request)
+
+
+def up_placement(cluster, profile, launch, *, deadline_s, cancelled=None):
+    """The RTX-alone decode path: no remote engines or parked-import/prefill router are involved."""
+    from dataclasses import replace
+    import uuid
+    from .. import orchestrate, procs, secrets
+
+    request = launch.placement_request
+    spec = render_placement(cluster, profile, request,
+                            api_key=secrets.ensure(orchestrate._secret_name(profile, "router")))
+    spec = replace(spec, deadline=min(spec.deadline, time.time() + deadline_s))
+    path = orchestrate._state_path(profile)
+    lock = procs.InstanceLock(path.with_suffix(".lock")).acquire()
+    owned = False
+    state = {"profile": profile, "leases": [], "router": None, "machines": {}, "keys": [],
+             "known_hosts": str(orchestrate._known_hosts()), "token": uuid.uuid4().hex,
+             "phase": "starting", "production": launch.production, "diagnostic": [],
+             "recipe": launch.record(), "deadline": spec.deadline, "started_at": time.time(),
+             "nodes": [], "devices": list(spec.placement_supervision["caps_bytes"])}
+    def check():
+        if cancelled is not None and cancelled():
+            raise orchestrate.OrchestrationError("profile stop requested")
+        orchestrate._check_stop(path)
+    try:
+        if path.exists():
+            raise orchestrate.OrchestrationError("profile has saved running state; run down before up")
+        if cancelled is not None and cancelled():
+            raise orchestrate.OrchestrationError("profile stop requested")
+        path.with_suffix(".stop").unlink(missing_ok=True)
+        request.files.publish()
+        owned = True
+        orchestrate._write(path, state)
+        state["prefill_service"] = rtx.prepare_service(spec)
+        orchestrate._write(path, state)
+        rtx.launch_service(state["prefill_service"], spec, detached=orchestrate._detached,
+                           owner={"state_path": str(path), "token": state["token"]}, check=check)
+        check()
+        state["phase"] = "running"
+        orchestrate._write(path, state)
+        return state
+    except BaseException:
+        if owned:
+            try:
+                orchestrate._down_state(state)
+                path.unlink(missing_ok=True)
+            except Exception:
+                orchestrate._write(path, state)
+        raise
+    finally:
+        lock.close()
 
 
 def ingest_context(realised, destination):

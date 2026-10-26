@@ -1,4 +1,5 @@
 """Model library, control side: roots, the RTX big-job ledger guard and the held verification."""
+from tests.portable_fixtures import read_fixture
 import hashlib
 import json
 import os
@@ -140,8 +141,7 @@ class RootsTests(unittest.TestCase):
 
 class RecordedReplyTests(unittest.TestCase):
     def test_a_recorded_node_reply_passes_through_with_its_root_source(self):
-        reply = json.loads((Path(__file__).resolve().parent / "fixtures" / "library" / "models-reply.json")
-                           .read_text(encoding="utf-8"))
+        reply = json.loads(read_fixture(Path(__file__).resolve().parent / "fixtures" / "library" / "models-reply.json"))
         store = Store(":memory:")
         self.addCleanup(store.close)
         store.put("prefs", "library/roots", {"halo-2": ["/opt/lab/models"]})

@@ -1,5 +1,6 @@
 """Node verb `host` (fleet package): sections from a fixture tree, payload rules, bounds, loopback engine reads."""
 
+from tests.portable_fixtures import read_fixture
 import http.server
 import importlib.util
 import json
@@ -241,7 +242,7 @@ class HostVerbTests(unittest.TestCase):
 
     def test_recorded_node_answers_have_every_section(self):
         for name in ("host-halo-1.json", "host-halo-2.json"):
-            answer = json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+            answer = json.loads(read_fixture(FIXTURES / name))
             self.assertEqual(answer["verb"], "host")
             self.assertEqual({k for k, v in answer["checks"].items() if v["status"] == "ok"},
                              {"boot_id", "uptime_s", "load", "cpu", "memory", "gpus", "sensors", "disks", "diskstats",

@@ -9,7 +9,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import re
 
 from . import content_cache
@@ -30,10 +30,17 @@ def preset():
 
 
 def qualified(data):
-    if data.get("schema") != "hyperloom/placement-adapter-v1" or data.get("engine") != "ds41-rtx-decode":
+    if data.get("schema") != "hyperloom/placement-adapter-v1" or data.get("engine") != "strix-cuda-ds41-replica":
         raise RecipeError("PL_E_CAPABILITY unsupported placement engine (schema only for legacy adapters)")
     if not isinstance(data.get("engine_sha"), str) or not re.fullmatch(r"[0-9a-f]{40}", data["engine_sha"]):
         raise RecipeError("PL_E_CAPABILITY placement release is unpublished; waiting for claudeinfo-release pinned sha")
+
+
+def executable(cluster, machine, data=None):
+    data = preset() if data is None else data
+    qualified(data)
+    root = PureWindowsPath(cluster.machines[machine].install_root)
+    return root / "cuda" / data["engine_sha"][:12] / "bin" / (data["binary"] + ".exe")
 
 
 @dataclass(frozen=True)
@@ -41,9 +48,11 @@ class Files:
     placement: Path
     manifest: Path
     receipts: Path
+    manifest_sha256: str | None = None
+    document: dict | None = None
 
     def read(self):
-        document = content_cache._read(self.placement, "PL_E_STALE")
+        document = deepcopy(self.document) if self.document is not None else content_cache._read(self.placement, "PL_E_STALE")
         manifest = content_cache._read(self.manifest, "PL_E_STALE")
         receipts = content_cache._read(self.receipts, "PL_E_STALE")
         if document.get("schema") != "tierstream/placement-v1":
@@ -52,7 +61,7 @@ class Files:
             raise RecipeError("PL_E_STALE expected cached content-manifest-v1")
         if receipts.get("schema") != "tierstream/receipts-v1":
             raise RecipeError("PL_E_STALE expected cached receipts-v1")
-        if document.get("manifest_sha256") != content_cache._sha(manifest):
+        if self.manifest_sha256 is not None and self.manifest_sha256 != content_cache._sha(manifest):
             raise RecipeError("PL_E_STALE placement content manifest identity changed")
         if document.get("receipts_sha256") != hashlib.sha256(Path(self.receipts).read_bytes()).hexdigest():
             raise RecipeError("PL_E_STALE placement receipts identity changed")
@@ -66,6 +75,12 @@ class Files:
                 raise RecipeError("PL_E_STALE selected content changed; run hyperloom probe --manifest")
         return document
 
+    def publish(self):
+        """Publish only the already admitted core bytes after pure rendering has succeeded."""
+        self.read()
+        if self.document is not None:
+            content_cache._write(self.placement, self.document)
+
     def argv(self):
         return ["--placement", str(self.placement), "--content-manifest", str(self.manifest),
                 "--receipts", str(self.receipts)]
@@ -78,6 +93,63 @@ class Request:
     supervision: dict
     port: int = 8096
     argv: tuple = ()
+
+
+def decision(cluster, recipe, ctx, bound, effective_sha, plans, admitted):
+    """One opt-in RTX-alone decode process, using the admitted core plan and local cache sidecars."""
+    from . import commands, reader
+    data = preset()
+    qualified(data)
+    routes = [r for r in recipe["routes"] if r.get("enabled", True)]
+    if len(routes) != 1 or routes[0]["phase"] != "decode" or not reader.placement_mode(routes[0]):
+        raise RecipeError("PL_E_CAPABILITY the RTX-alone adapter requires one placement decode route")
+    route = routes[0]
+    plan = plans[route["id"]]
+    if (plan.get("engine") != data["engine"] or plan.get("effective_sha256") != effective_sha
+            or plan.get("route") != route["id"]):
+        raise RecipeError("PL_E_STALE core placement does not identify this decode configuration")
+    if any(d.get("host") != ctx.pc for d in plan["devices"]):
+        raise RecipeError("PL_E_CAPABILITY RTX-alone placement requires local devices")
+    saved = admitted["inputs"]["routes"][route["id"]]
+    cache = commands.components_store()
+    record = cache.record(saved["components"], selected=saved["selected_content"])
+    if (plan.get("build_sha256") != record["reference"]["build_sha256"] or
+            plan.get("receipts_sha256") != record["reference"]["receipts_sha256"]):
+        raise RecipeError("PL_E_STALE placement differs from the admitted components descriptor")
+    manifest = cache.manifests.directory / (record["manifest_sha256"] + ".json")
+    receipts = saved.get("receipts")
+    if not isinstance(receipts, str):
+        raise RecipeError("PL_E_STALE placement requires its local receipts file")
+    receipts = str(Path(receipts).resolve())
+    files = Files(commands.runtime_dir() / "placements" / (content_cache._sha(plan) + ".json"), manifest,
+                  Path(receipts), record["manifest_sha256"], plan)
+    selected = record["selected"]
+    target = selected.get("model", selected.get("target"))
+    if target is None:
+        raise RecipeError("PL_E_STALE placement requires selected model content")
+    extra = saved.get("argv", [])
+    if not isinstance(extra, list) or any(not isinstance(a, str) for a in extra):
+        raise RecipeError("PL_E_SCHEMA placement argv must be an array of strings")
+    argv = (str(target), *extra)
+    binary = executable(cluster, ctx.pc, data)
+    render(files, binary=binary, argv=argv, data=data)
+    release = content_cache._read(Path(binary).parent.parent / "MANIFEST.json", "PL_E_STALE")
+    if (release.get("engine_commit") != data["engine_sha"] or
+            release.get("binaries", {}).get(binary.name) != plan["build_sha256"] or not Path(binary).is_file()):
+        raise RecipeError("PL_E_STALE placement release binary or manifest is unavailable")
+    return {"placement": True, "decode": {"id": route["id"], "flags": {}}, "prefill": [],
+            "service": {"start": True, "why": None}, "running": [], "requirements": [],
+            "effective_sha256": effective_sha, "machine": ctx.pc, "argv": list(argv),
+            "files": {"placement": str(files.placement), "manifest": str(manifest), "receipts": receipts,
+                      "manifest_sha256": files.manifest_sha256, "document": plan},
+            "supervision": admitted["policies"][route["id"]]}
+
+
+def request(decision):
+    files = decision["files"]
+    return Request(decision["machine"], Files(Path(files["placement"]), Path(files["manifest"]),
+                   Path(files["receipts"]), files["manifest_sha256"], files["document"]),
+                   decision["supervision"], argv=tuple(decision["argv"]))
 
 
 def visibility(document):

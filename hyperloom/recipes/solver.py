@@ -69,11 +69,17 @@ def _capture(cluster, ref, route, bundle, layers):
     recipe_bytes = path.read_bytes()
     sources = {str(path.resolve()): hashlib.sha256(recipe_bytes).hexdigest()}
     request = _read_source(bundle_path, sources)
-    if set(request) - {"probe", "inputs", "desc", "context", "identity"} or not {"probe", "inputs"} <= request.keys():
+    if set(request) - {"probe", "inputs", "desc", "context", "identity", "measurement_keys"} or not {"probe", "inputs"} <= request.keys():
         raise RecipeError("PL_E_SCHEMA solver input bundle needs probe and inputs")
-    for key in ("probe", "inputs", "desc", "context", "identity"):
+    for key in ("probe", "inputs", "desc", "context", "identity", "measurement_keys"):
         if key in request:
             request[key] = _materialize(request[key], sources, directory=bundle_path.parent)
+    measurement_keys = request.pop("measurement_keys", {})
+    measurement_probe = deepcopy(request["probe"])
+    measurement_keys = _measurement_keys(measurement_probe, measurement_keys)
+    request["probe"] = placement.cached_measurements(measurement_probe, measurement_keys)
+    for choice in request["inputs"].get("choices", []):
+        choice["probe_xfer"] = deepcopy(request["probe"]["probe_xfer"])
     # Cache references are resolved here, not reopened in a later pick against another manifest/configuration.
     cached_components = []
     for choice in request["inputs"].get("choices", []):
@@ -91,7 +97,33 @@ def _capture(cluster, ref, route, bundle, layers):
     return {"schema": SCHEMA, "recipe": recipe_bytes.decode("utf-8"), "recipe_ref": str(ref), "route": route,
             "request": request, "sources": sources, "layers": layer_docs, "sets": layers.sets,
             "workload": layers.workload, "config_sha256": service.config_sha256(),
-            "cached_components": cached_components}
+            "cached_components": cached_components, "measurement_keys": measurement_keys,
+            "measurement_probe": measurement_probe}
+
+
+def _measurement_keys(probe, keys):
+    """Bind core-supplied xfer identities to the current probe's physical GPU/driver and store identity."""
+    if not isinstance(keys, dict):
+        raise RecipeError("PL_E_SCHEMA measurement_keys must be a table")
+    current = {}
+    for sid, supplied in keys.items():
+        if not isinstance(supplied, dict) or set(supplied) != {"uuid", "driver", "xfer_sha256", "store_id"}:
+            raise RecipeError("PL_E_SCHEMA invalid measurement key")
+        identity = deepcopy(supplied)
+        if sid == "store":
+            identity.update(uuid="host-store", driver="none")
+        else:
+            devices = [d for d in probe.get("devices", []) if str(d.get("uuid", "")).lower() ==
+                       str(identity["uuid"]).lower()]
+            identity["driver"] = devices[0].get("driver", "unknown") if len(devices) == 1 else "unknown"
+        store = probe.get("file_store")
+        xfer = probe.get("xfer_sha256", {}).get(sid) if isinstance(probe.get("xfer_sha256"), dict) else None
+        if store is not None:
+            identity["store_id"] = store
+        if xfer is not None:
+            identity["xfer_sha256"] = xfer
+        current[sid] = identity
+    return current
 
 
 def _check(snapshot):
@@ -107,6 +139,12 @@ def _check(snapshot):
     for cached in snapshot["cached_components"]:
         if commands.components_store().load(cached["reference"], selected=cached["selected"]) != cached["document"]:
             raise RecipeError("PL_E_STALE solver components changed; solve again")
+    if "measurement_probe" in snapshot:
+        if _measurement_keys(snapshot["measurement_probe"], snapshot["measurement_keys"]) != snapshot["measurement_keys"]:
+            raise RecipeError("PL_E_STALE solver measurement identity changed; solve again")
+        current = placement.cached_measurements(snapshot["measurement_probe"], snapshot["measurement_keys"])
+        if current != snapshot["request"]["probe"]:
+            raise RecipeError("PL_E_STALE solver measurements changed; solve again")
 
 
 def _run(snapshot, backend, *, pick=None):

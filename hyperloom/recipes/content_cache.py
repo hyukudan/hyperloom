@@ -11,6 +11,8 @@ import json
 import os
 from pathlib import Path
 import re
+import tempfile
+import time
 
 from .reader import RecipeError
 
@@ -74,9 +76,23 @@ def _write(path, value):
     if len(data) > MAX_JSON_BYTES:
         raise RecipeError("PL_E_MISSING_DESCRIPTOR cache document too large")
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_bytes(data)
-    temporary.replace(path)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent, prefix=path.name + ".", suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(data)
+        for attempt in range(10):
+            try:
+                temporary.replace(path)
+                break
+            except PermissionError as exc:
+                # Windows can briefly retain the replaced destination's handle during concurrent publication.
+                if getattr(exc, "winerror", None) not in (5, 32, 33) or attempt == 9:
+                    raise
+                time.sleep(min(.01 * 2 ** attempt, .1))
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _selected(paths):
@@ -158,7 +174,7 @@ class ComponentsStore:
                 or document.get("receipts_sha256") != ref["receipts_sha256"]):
             raise RecipeError("PL_E_MISSING_DESCRIPTOR components build or receipts do not match the cache key")
 
-    def load(self, ref, *, selected):
+    def record(self, ref, *, selected):
         ref = _reference(ref)
         record = _read(self.directory / (_sha(ref) + ".json"), "PL_E_MISSING_DESCRIPTOR")
         document = record.get("document")
@@ -168,4 +184,7 @@ class ComponentsStore:
         if record.get("selected") != _selected(selected):
             raise RecipeError("PL_E_STALE selected content differs from the cached configuration")
         self.manifests.validate(record.get("manifest_sha256"), selected)
-        return deepcopy(document)
+        return deepcopy(record)
+
+    def load(self, ref, *, selected):
+        return self.record(ref, selected=selected)["document"]

@@ -5,8 +5,8 @@
       "processes": [
         {
           "argv": [
-            "/opt/hyperloom/releases/000000000000/bin/strix-deepseek41-serve",
-            "/opt/assets/ds41.gguf",
+            "<posix>/opt/hyperloom/releases/000000000000/bin/strix-deepseek41-serve",
+            "<posix>/opt/assets/ds41.gguf",
             "--rank",
             "0",
             "--transport",
@@ -14,32 +14,32 @@
             "--prefill-path",
             "device",
             "--dspark",
-            "/opt/assets/dspark.gguf",
+            "<posix>/opt/assets/dspark.gguf",
             "--dspark-vocab",
-            "auto:/opt/assets/ds41-vocab",
+            "auto:<posix>/opt/assets/ds41-vocab",
             "--http-bind",
             "192.0.2.10",
             "--http-port",
             "18431",
             "--http-api-key-file",
-            "/opt/hyperloom/secrets/engine.key"
+            "<posix>/opt/hyperloom/secrets/engine.key"
           ],
           "env": {
             "STRIX_DS41_CB4": "1",
-            "STRIX_DS41_OVERLAY": "/opt/assets/overlay.gguf",
-            "STRIX_DS41_TRELLIS": "/opt/assets/ours-K4",
+            "STRIX_DS41_OVERLAY": "<posix>/opt/assets/overlay.gguf",
+            "STRIX_DS41_TRELLIS": "<posix>/opt/assets/ours-K4",
             "STRIX_DS41_TRELLIS_HEADOUT": "1",
-            "STRIX_DS41_TRELLIS_MIX": "head=/opt/assets/ours-K5",
+            "STRIX_DS41_TRELLIS_MIX": "head=<posix>/opt/assets/ours-K5",
             "STRIX_DS41_TRELLIS_SITES": "shexp,head"
           },
-          "machine_id": "halo-1",
+          "machine_id": "<node-1>",
           "ready": "ds41-json",
           "role": "rank0"
         },
         {
           "argv": [
-            "/opt/hyperloom/releases/000000000000/bin/strix-deepseek41-serve",
-            "/opt/assets/ds41.gguf",
+            "<posix>/opt/hyperloom/releases/000000000000/bin/strix-deepseek41-serve",
+            "<posix>/opt/assets/ds41.gguf",
             "--rank",
             "1",
             "--transport",
@@ -47,25 +47,25 @@
             "--prefill-path",
             "device",
             "--dspark",
-            "/opt/assets/dspark.gguf",
+            "<posix>/opt/assets/dspark.gguf",
             "--dspark-vocab",
-            "auto:/opt/assets/ds41-vocab",
+            "auto:<posix>/opt/assets/ds41-vocab",
             "--http-bind",
             "192.0.2.11",
             "--http-port",
             "18431",
             "--http-api-key-file",
-            "/opt/hyperloom/secrets/engine.key"
+            "<posix>/opt/hyperloom/secrets/engine.key"
           ],
           "env": {
             "STRIX_DS41_CB4": "1",
-            "STRIX_DS41_OVERLAY": "/opt/assets/overlay.gguf",
-            "STRIX_DS41_TRELLIS": "/opt/assets/ours-K4",
+            "STRIX_DS41_OVERLAY": "<posix>/opt/assets/overlay.gguf",
+            "STRIX_DS41_TRELLIS": "<posix>/opt/assets/ours-K4",
             "STRIX_DS41_TRELLIS_HEADOUT": "1",
-            "STRIX_DS41_TRELLIS_MIX": "head=/opt/assets/ours-K5",
+            "STRIX_DS41_TRELLIS_MIX": "head=<posix>/opt/assets/ours-K5",
             "STRIX_DS41_TRELLIS_SITES": "shexp,head"
           },
-          "machine_id": "halo-2",
+          "machine_id": "<node-2>",
           "ready": "ds41-json",
           "role": "rank1"
         }
@@ -92,7 +92,7 @@
           "Ninja",
           "-DCMAKE_BUILD_TYPE=Release",
           "-DCMAKE_HIP_ARCHITECTURES=gfx1151",
-          "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++",
+          "-DCMAKE_HIP_COMPILER=<posix>/opt/rocm/core-10.1/bin/amdclang++",
           "-DSTRIX_ENABLE_HIP_RUNTIME=ON",
           "-DSTRIX_ENABLE_EXPERIMENTAL_Q4K_A8_RUNTIME=ON"
         ],
@@ -148,7 +148,7 @@
           "Ninja",
           "-DCMAKE_BUILD_TYPE=Release",
           "-DCMAKE_HIP_ARCHITECTURES=gfx1151",
-          "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++",
+          "-DCMAKE_HIP_COMPILER=<posix>/opt/rocm/core-10.1/bin/amdclang++",
           "-DSTRIX_ENABLE_HIP_RUNTIME=ON",
           "-DSTRIX_ENABLE_EXPERIMENTAL_Q4K_A8_RUNTIME=ON"
         ],
@@ -204,7 +204,7 @@
           "Ninja",
           "-DCMAKE_BUILD_TYPE=Release",
           "-DCMAKE_HIP_ARCHITECTURES=gfx1151",
-          "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++",
+          "-DCMAKE_HIP_COMPILER=<posix>/opt/rocm/core-10.1/bin/amdclang++",
           "-DSTRIX_ENABLE_HIP_RUNTIME=ON",
           "-DSTRIX_ENABLE_EXPERIMENTAL_Q4K_A8_RUNTIME=ON"
         ],
@@ -237,8 +237,8 @@
       "processes": [
         {
           "argv": [
-            "/opt/hyperloom/releases/000000000000/bin/strix-deepseek41-serve",
-            "/opt/assets/ds41.gguf",
+            "<posix>/opt/hyperloom/releases/000000000000/bin/strix-deepseek41-serve",
+            "<posix>/opt/assets/ds41.gguf",
             "--rank",
             "0",
             "--transport",
@@ -246,15 +246,15 @@
             "--prefill-path",
             "device",
             "--dspark",
-            "/opt/assets/dspark.gguf",
+            "<posix>/opt/assets/dspark.gguf",
             "--dspark-vocab",
-            "auto:/opt/assets/ds41-vocab",
+            "auto:<posix>/opt/assets/ds41-vocab",
             "--http-bind",
             "192.0.2.10",
             "--http-port",
             "18431",
             "--http-api-key-file",
-            "/opt/hyperloom/secrets/engine.key",
+            "<posix>/opt/hyperloom/secrets/engine.key",
             "--context",
             "33024",
             "--slots",
@@ -262,20 +262,20 @@
           ],
           "env": {
             "STRIX_DS41_CB4": "1",
-            "STRIX_DS41_OVERLAY": "/opt/assets/overlay.gguf",
-            "STRIX_DS41_TRELLIS": "/opt/assets/ours-K4",
+            "STRIX_DS41_OVERLAY": "<posix>/opt/assets/overlay.gguf",
+            "STRIX_DS41_TRELLIS": "<posix>/opt/assets/ours-K4",
             "STRIX_DS41_TRELLIS_HEADOUT": "1",
-            "STRIX_DS41_TRELLIS_MIX": "head=/opt/assets/ours-K5",
+            "STRIX_DS41_TRELLIS_MIX": "head=<posix>/opt/assets/ours-K5",
             "STRIX_DS41_TRELLIS_SITES": "shexp,head"
           },
-          "machine_id": "halo-1",
+          "machine_id": "<node-1>",
           "ready": "ds41-json",
           "role": "rank0"
         },
         {
           "argv": [
-            "/opt/hyperloom/releases/000000000000/bin/strix-deepseek41-serve",
-            "/opt/assets/ds41.gguf",
+            "<posix>/opt/hyperloom/releases/000000000000/bin/strix-deepseek41-serve",
+            "<posix>/opt/assets/ds41.gguf",
             "--rank",
             "1",
             "--transport",
@@ -283,15 +283,15 @@
             "--prefill-path",
             "device",
             "--dspark",
-            "/opt/assets/dspark.gguf",
+            "<posix>/opt/assets/dspark.gguf",
             "--dspark-vocab",
-            "auto:/opt/assets/ds41-vocab",
+            "auto:<posix>/opt/assets/ds41-vocab",
             "--http-bind",
             "192.0.2.11",
             "--http-port",
             "18431",
             "--http-api-key-file",
-            "/opt/hyperloom/secrets/engine.key",
+            "<posix>/opt/hyperloom/secrets/engine.key",
             "--context",
             "33024",
             "--slots",
@@ -299,13 +299,13 @@
           ],
           "env": {
             "STRIX_DS41_CB4": "1",
-            "STRIX_DS41_OVERLAY": "/opt/assets/overlay.gguf",
-            "STRIX_DS41_TRELLIS": "/opt/assets/ours-K4",
+            "STRIX_DS41_OVERLAY": "<posix>/opt/assets/overlay.gguf",
+            "STRIX_DS41_TRELLIS": "<posix>/opt/assets/ours-K4",
             "STRIX_DS41_TRELLIS_HEADOUT": "1",
-            "STRIX_DS41_TRELLIS_MIX": "head=/opt/assets/ours-K5",
+            "STRIX_DS41_TRELLIS_MIX": "head=<posix>/opt/assets/ours-K5",
             "STRIX_DS41_TRELLIS_SITES": "shexp,head"
           },
-          "machine_id": "halo-2",
+          "machine_id": "<node-2>",
           "ready": "ds41-json",
           "role": "rank1"
         }
@@ -332,7 +332,7 @@
           "Ninja",
           "-DCMAKE_BUILD_TYPE=Release",
           "-DCMAKE_HIP_ARCHITECTURES=gfx1151",
-          "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++",
+          "-DCMAKE_HIP_COMPILER=<posix>/opt/rocm/core-10.1/bin/amdclang++",
           "-DSTRIX_ENABLE_HIP_RUNTIME=ON",
           "-DSTRIX_ENABLE_EXPERIMENTAL_Q4K_A8_RUNTIME=ON"
         ],
@@ -388,7 +388,7 @@
           "Ninja",
           "-DCMAKE_BUILD_TYPE=Release",
           "-DCMAKE_HIP_ARCHITECTURES=gfx1151",
-          "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++",
+          "-DCMAKE_HIP_COMPILER=<posix>/opt/rocm/core-10.1/bin/amdclang++",
           "-DSTRIX_ENABLE_HIP_RUNTIME=ON",
           "-DSTRIX_ENABLE_EXPERIMENTAL_Q4K_A8_RUNTIME=ON"
         ],
@@ -444,7 +444,7 @@
           "Ninja",
           "-DCMAKE_BUILD_TYPE=Release",
           "-DCMAKE_HIP_ARCHITECTURES=gfx1151",
-          "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++",
+          "-DCMAKE_HIP_COMPILER=<posix>/opt/rocm/core-10.1/bin/amdclang++",
           "-DSTRIX_ENABLE_HIP_RUNTIME=ON",
           "-DSTRIX_ENABLE_EXPERIMENTAL_Q4K_A8_RUNTIME=ON"
         ],
@@ -477,8 +477,8 @@
       "processes": [
         {
           "argv": [
-            "/opt/hyperloom/releases/000000000000/bin/strix-deepseek41-serve",
-            "/opt/assets/ds41.gguf",
+            "<posix>/opt/hyperloom/releases/000000000000/bin/strix-deepseek41-serve",
+            "<posix>/opt/assets/ds41.gguf",
             "--rank",
             "0",
             "--transport",
@@ -486,33 +486,33 @@
             "--prefill-path",
             "device",
             "--dspark",
-            "/opt/assets/dspark.gguf",
+            "<posix>/opt/assets/dspark.gguf",
             "--dspark-vocab",
-            "auto:/opt/assets/ds41-vocab",
+            "auto:<posix>/opt/assets/ds41-vocab",
             "--http-bind",
             "192.0.2.10",
             "--http-port",
             "18431",
             "--http-api-key-file",
-            "/opt/hyperloom/secrets/engine.key"
+            "<posix>/opt/hyperloom/secrets/engine.key"
           ],
           "env": {
             "STRIX_DS41_CB4": "1",
-            "STRIX_DS41_OVERLAY": "/opt/assets/overlay.gguf",
-            "STRIX_DS41_TRELLIS": "/opt/assets/ours-K4",
+            "STRIX_DS41_OVERLAY": "<posix>/opt/assets/overlay.gguf",
+            "STRIX_DS41_TRELLIS": "<posix>/opt/assets/ours-K4",
             "STRIX_DS41_TRELLIS_DENSE_FULL": "1",
             "STRIX_DS41_TRELLIS_HEADOUT": "1",
-            "STRIX_DS41_TRELLIS_MIX": "head=/opt/assets/ours-K5",
+            "STRIX_DS41_TRELLIS_MIX": "head=<posix>/opt/assets/ours-K5",
             "STRIX_DS41_TRELLIS_SITES": "all"
           },
-          "machine_id": "halo-1",
+          "machine_id": "<node-1>",
           "ready": "ds41-json",
           "role": "rank0"
         },
         {
           "argv": [
-            "/opt/hyperloom/releases/000000000000/bin/strix-deepseek41-serve",
-            "/opt/assets/ds41.gguf",
+            "<posix>/opt/hyperloom/releases/000000000000/bin/strix-deepseek41-serve",
+            "<posix>/opt/assets/ds41.gguf",
             "--rank",
             "1",
             "--transport",
@@ -520,26 +520,26 @@
             "--prefill-path",
             "device",
             "--dspark",
-            "/opt/assets/dspark.gguf",
+            "<posix>/opt/assets/dspark.gguf",
             "--dspark-vocab",
-            "auto:/opt/assets/ds41-vocab",
+            "auto:<posix>/opt/assets/ds41-vocab",
             "--http-bind",
             "192.0.2.11",
             "--http-port",
             "18431",
             "--http-api-key-file",
-            "/opt/hyperloom/secrets/engine.key"
+            "<posix>/opt/hyperloom/secrets/engine.key"
           ],
           "env": {
             "STRIX_DS41_CB4": "1",
-            "STRIX_DS41_OVERLAY": "/opt/assets/overlay.gguf",
-            "STRIX_DS41_TRELLIS": "/opt/assets/ours-K4",
+            "STRIX_DS41_OVERLAY": "<posix>/opt/assets/overlay.gguf",
+            "STRIX_DS41_TRELLIS": "<posix>/opt/assets/ours-K4",
             "STRIX_DS41_TRELLIS_DENSE_FULL": "1",
             "STRIX_DS41_TRELLIS_HEADOUT": "1",
-            "STRIX_DS41_TRELLIS_MIX": "head=/opt/assets/ours-K5",
+            "STRIX_DS41_TRELLIS_MIX": "head=<posix>/opt/assets/ours-K5",
             "STRIX_DS41_TRELLIS_SITES": "all"
           },
-          "machine_id": "halo-2",
+          "machine_id": "<node-2>",
           "ready": "ds41-json",
           "role": "rank1"
         }
@@ -568,7 +568,7 @@
           "Ninja",
           "-DCMAKE_BUILD_TYPE=Release",
           "-DCMAKE_HIP_ARCHITECTURES=gfx1151",
-          "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++",
+          "-DCMAKE_HIP_COMPILER=<posix>/opt/rocm/core-10.1/bin/amdclang++",
           "-DSTRIX_ENABLE_HIP_RUNTIME=ON",
           "-DSTRIX_ENABLE_EXPERIMENTAL_Q4K_A8_RUNTIME=ON"
         ],
@@ -628,7 +628,7 @@
           "Ninja",
           "-DCMAKE_BUILD_TYPE=Release",
           "-DCMAKE_HIP_ARCHITECTURES=gfx1151",
-          "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++",
+          "-DCMAKE_HIP_COMPILER=<posix>/opt/rocm/core-10.1/bin/amdclang++",
           "-DSTRIX_ENABLE_HIP_RUNTIME=ON",
           "-DSTRIX_ENABLE_EXPERIMENTAL_Q4K_A8_RUNTIME=ON"
         ],
@@ -688,7 +688,7 @@
           "Ninja",
           "-DCMAKE_BUILD_TYPE=Release",
           "-DCMAKE_HIP_ARCHITECTURES=gfx1151",
-          "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++",
+          "-DCMAKE_HIP_COMPILER=<posix>/opt/rocm/core-10.1/bin/amdclang++",
           "-DSTRIX_ENABLE_HIP_RUNTIME=ON",
           "-DSTRIX_ENABLE_EXPERIMENTAL_Q4K_A8_RUNTIME=ON"
         ],
@@ -723,8 +723,8 @@
       "processes": [
         {
           "argv": [
-            "/opt/hyperloom/releases/000000000000/bin/strix-deepseek41-serve",
-            "/opt/assets/ds41.gguf",
+            "<posix>/opt/hyperloom/releases/000000000000/bin/strix-deepseek41-serve",
+            "<posix>/opt/assets/ds41.gguf",
             "--rank",
             "0",
             "--transport",
@@ -732,15 +732,15 @@
             "--prefill-path",
             "device",
             "--dspark",
-            "/opt/assets/dspark.gguf",
+            "<posix>/opt/assets/dspark.gguf",
             "--dspark-vocab",
-            "auto:/opt/assets/ds41-vocab",
+            "auto:<posix>/opt/assets/ds41-vocab",
             "--http-bind",
             "192.0.2.10",
             "--http-port",
             "18431",
             "--http-api-key-file",
-            "/opt/hyperloom/secrets/engine.key",
+            "<posix>/opt/hyperloom/secrets/engine.key",
             "--context",
             "33024",
             "--slots",
@@ -748,20 +748,20 @@
           ],
           "env": {
             "STRIX_DS41_CB4": "1",
-            "STRIX_DS41_OVERLAY": "/opt/assets/overlay.gguf",
-            "STRIX_DS41_TRELLIS": "/opt/assets/ours-K4",
+            "STRIX_DS41_OVERLAY": "<posix>/opt/assets/overlay.gguf",
+            "STRIX_DS41_TRELLIS": "<posix>/opt/assets/ours-K4",
             "STRIX_DS41_TRELLIS_HEADOUT": "1",
-            "STRIX_DS41_TRELLIS_MIX": "head=/opt/assets/ours-K5",
+            "STRIX_DS41_TRELLIS_MIX": "head=<posix>/opt/assets/ours-K5",
             "STRIX_DS41_TRELLIS_SITES": "shexp,head"
           },
-          "machine_id": "halo-1",
+          "machine_id": "<node-1>",
           "ready": "ds41-json",
           "role": "rank0"
         },
         {
           "argv": [
-            "/opt/hyperloom/releases/000000000000/bin/strix-deepseek41-serve",
-            "/opt/assets/ds41.gguf",
+            "<posix>/opt/hyperloom/releases/000000000000/bin/strix-deepseek41-serve",
+            "<posix>/opt/assets/ds41.gguf",
             "--rank",
             "1",
             "--transport",
@@ -769,15 +769,15 @@
             "--prefill-path",
             "device",
             "--dspark",
-            "/opt/assets/dspark.gguf",
+            "<posix>/opt/assets/dspark.gguf",
             "--dspark-vocab",
-            "auto:/opt/assets/ds41-vocab",
+            "auto:<posix>/opt/assets/ds41-vocab",
             "--http-bind",
             "192.0.2.11",
             "--http-port",
             "18431",
             "--http-api-key-file",
-            "/opt/hyperloom/secrets/engine.key",
+            "<posix>/opt/hyperloom/secrets/engine.key",
             "--context",
             "33024",
             "--slots",
@@ -785,13 +785,13 @@
           ],
           "env": {
             "STRIX_DS41_CB4": "1",
-            "STRIX_DS41_OVERLAY": "/opt/assets/overlay.gguf",
-            "STRIX_DS41_TRELLIS": "/opt/assets/ours-K4",
+            "STRIX_DS41_OVERLAY": "<posix>/opt/assets/overlay.gguf",
+            "STRIX_DS41_TRELLIS": "<posix>/opt/assets/ours-K4",
             "STRIX_DS41_TRELLIS_HEADOUT": "1",
-            "STRIX_DS41_TRELLIS_MIX": "head=/opt/assets/ours-K5",
+            "STRIX_DS41_TRELLIS_MIX": "head=<posix>/opt/assets/ours-K5",
             "STRIX_DS41_TRELLIS_SITES": "shexp,head"
           },
-          "machine_id": "halo-2",
+          "machine_id": "<node-2>",
           "ready": "ds41-json",
           "role": "rank1"
         }
@@ -818,7 +818,7 @@
           "Ninja",
           "-DCMAKE_BUILD_TYPE=Release",
           "-DCMAKE_HIP_ARCHITECTURES=gfx1151",
-          "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++",
+          "-DCMAKE_HIP_COMPILER=<posix>/opt/rocm/core-10.1/bin/amdclang++",
           "-DSTRIX_ENABLE_HIP_RUNTIME=ON",
           "-DSTRIX_ENABLE_EXPERIMENTAL_Q4K_A8_RUNTIME=ON"
         ],
@@ -847,8 +847,8 @@
       },
       "service": {
         "argv": [
-          "C:\\hyperloom\\cuda\\9211b07e13c6\\bin\\strix-cuda-ds41-prefill-service.exe",
-          "C:/hyperloom/assets/ds41.gguf",
+          "<drive-c>\\hyperloom\\cuda\\9211b07e13c6\\bin\\strix-cuda-ds41-prefill-service.exe",
+          "<drive-c>/hyperloom/assets/ds41.gguf",
           "--host",
           "127.0.0.1",
           "--port",
@@ -874,7 +874,7 @@
         "engine_sha": "9211b07e13c64ab80ae04fcbfcbeab50fe0cbf04",
         "env": {
           "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
-          "CUDA_VISIBLE_DEVICES": "GPU-00000000-0000-0000-0000-000000000001"
+          "CUDA_VISIBLE_DEVICES": "<gpu-g6>"
         }
       },
       "vram_cap_gib": null
@@ -883,8 +883,8 @@
       "processes": [
         {
           "argv": [
-            "/opt/hyperloom/releases/000000000000/bin/strix-deepseek41-serve",
-            "/opt/assets/ds41.gguf",
+            "<posix>/opt/hyperloom/releases/000000000000/bin/strix-deepseek41-serve",
+            "<posix>/opt/assets/ds41.gguf",
             "--rank",
             "0",
             "--transport",
@@ -892,15 +892,15 @@
             "--prefill-path",
             "device",
             "--dspark",
-            "/opt/assets/dspark.gguf",
+            "<posix>/opt/assets/dspark.gguf",
             "--dspark-vocab",
-            "auto:/opt/assets/ds41-vocab",
+            "auto:<posix>/opt/assets/ds41-vocab",
             "--http-bind",
             "192.0.2.10",
             "--http-port",
             "18431",
             "--http-api-key-file",
-            "/opt/hyperloom/secrets/engine.key",
+            "<posix>/opt/hyperloom/secrets/engine.key",
             "--context",
             "33024",
             "--slots",
@@ -908,20 +908,20 @@
           ],
           "env": {
             "STRIX_DS41_CB4": "1",
-            "STRIX_DS41_OVERLAY": "/opt/assets/overlay.gguf",
-            "STRIX_DS41_TRELLIS": "/opt/assets/ours-K4",
+            "STRIX_DS41_OVERLAY": "<posix>/opt/assets/overlay.gguf",
+            "STRIX_DS41_TRELLIS": "<posix>/opt/assets/ours-K4",
             "STRIX_DS41_TRELLIS_HEADOUT": "1",
-            "STRIX_DS41_TRELLIS_MIX": "head=/opt/assets/ours-K5",
+            "STRIX_DS41_TRELLIS_MIX": "head=<posix>/opt/assets/ours-K5",
             "STRIX_DS41_TRELLIS_SITES": "shexp,head"
           },
-          "machine_id": "halo-1",
+          "machine_id": "<node-1>",
           "ready": "ds41-json",
           "role": "rank0"
         },
         {
           "argv": [
-            "/opt/hyperloom/releases/000000000000/bin/strix-deepseek41-serve",
-            "/opt/assets/ds41.gguf",
+            "<posix>/opt/hyperloom/releases/000000000000/bin/strix-deepseek41-serve",
+            "<posix>/opt/assets/ds41.gguf",
             "--rank",
             "1",
             "--transport",
@@ -929,15 +929,15 @@
             "--prefill-path",
             "device",
             "--dspark",
-            "/opt/assets/dspark.gguf",
+            "<posix>/opt/assets/dspark.gguf",
             "--dspark-vocab",
-            "auto:/opt/assets/ds41-vocab",
+            "auto:<posix>/opt/assets/ds41-vocab",
             "--http-bind",
             "192.0.2.11",
             "--http-port",
             "18431",
             "--http-api-key-file",
-            "/opt/hyperloom/secrets/engine.key",
+            "<posix>/opt/hyperloom/secrets/engine.key",
             "--context",
             "33024",
             "--slots",
@@ -945,13 +945,13 @@
           ],
           "env": {
             "STRIX_DS41_CB4": "1",
-            "STRIX_DS41_OVERLAY": "/opt/assets/overlay.gguf",
-            "STRIX_DS41_TRELLIS": "/opt/assets/ours-K4",
+            "STRIX_DS41_OVERLAY": "<posix>/opt/assets/overlay.gguf",
+            "STRIX_DS41_TRELLIS": "<posix>/opt/assets/ours-K4",
             "STRIX_DS41_TRELLIS_HEADOUT": "1",
-            "STRIX_DS41_TRELLIS_MIX": "head=/opt/assets/ours-K5",
+            "STRIX_DS41_TRELLIS_MIX": "head=<posix>/opt/assets/ours-K5",
             "STRIX_DS41_TRELLIS_SITES": "shexp,head"
           },
-          "machine_id": "halo-2",
+          "machine_id": "<node-2>",
           "ready": "ds41-json",
           "role": "rank1"
         }
@@ -978,7 +978,7 @@
           "Ninja",
           "-DCMAKE_BUILD_TYPE=Release",
           "-DCMAKE_HIP_ARCHITECTURES=gfx1151",
-          "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++",
+          "-DCMAKE_HIP_COMPILER=<posix>/opt/rocm/core-10.1/bin/amdclang++",
           "-DSTRIX_ENABLE_HIP_RUNTIME=ON",
           "-DSTRIX_ENABLE_EXPERIMENTAL_Q4K_A8_RUNTIME=ON"
         ],
@@ -1007,8 +1007,8 @@
       },
       "service": {
         "argv": [
-          "C:\\hyperloom\\cuda\\9211b07e13c6\\bin\\strix-cuda-ds41-prefill-service.exe",
-          "C:/hyperloom/assets/ds41.gguf",
+          "<drive-c>\\hyperloom\\cuda\\9211b07e13c6\\bin\\strix-cuda-ds41-prefill-service.exe",
+          "<drive-c>/hyperloom/assets/ds41.gguf",
           "--host",
           "127.0.0.1",
           "--port",
@@ -1034,7 +1034,7 @@
         "engine_sha": "9211b07e13c64ab80ae04fcbfcbeab50fe0cbf04",
         "env": {
           "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
-          "CUDA_VISIBLE_DEVICES": "GPU-00000000-0000-0000-0000-000000000001"
+          "CUDA_VISIBLE_DEVICES": "<gpu-g6>"
         }
       },
       "vram_cap_gib": 90
@@ -1066,7 +1066,7 @@
           "Ninja",
           "-DCMAKE_BUILD_TYPE=Release",
           "-DCMAKE_HIP_ARCHITECTURES=gfx1151",
-          "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++",
+          "-DCMAKE_HIP_COMPILER=<posix>/opt/rocm/core-10.1/bin/amdclang++",
           "-DSTRIX_ENABLE_HIP_RUNTIME=ON",
           "-DSTRIX_ENABLE_EXPERIMENTAL_Q4K_A8_RUNTIME=ON"
         ],
@@ -1099,8 +1099,8 @@
       "processes": [
         {
           "argv": [
-            "/opt/hyperloom/releases/000000000000/bin/strix-minimax-serve",
-            "/models/minimax",
+            "<posix>/opt/hyperloom/releases/000000000000/bin/strix-minimax-serve",
+            "<posix>/models/minimax",
             "--rank",
             "0",
             "--transport",
@@ -1121,14 +1121,14 @@
             "4096"
           ],
           "env": {},
-          "machine_id": "halo-1",
+          "machine_id": "<node-1>",
           "ready": "minimax-stdout",
           "role": "rank0"
         },
         {
           "argv": [
-            "/opt/hyperloom/releases/000000000000/bin/strix-minimax-serve",
-            "/models/minimax",
+            "<posix>/opt/hyperloom/releases/000000000000/bin/strix-minimax-serve",
+            "<posix>/models/minimax",
             "--rank",
             "1",
             "--transport",
@@ -1149,7 +1149,7 @@
             "4096"
           ],
           "env": {},
-          "machine_id": "halo-2",
+          "machine_id": "<node-2>",
           "ready": "minimax-stdout",
           "role": "rank1"
         }
@@ -1178,7 +1178,7 @@
           "Ninja",
           "-DCMAKE_BUILD_TYPE=Release",
           "-DCMAKE_HIP_ARCHITECTURES=gfx1151",
-          "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++",
+          "-DCMAKE_HIP_COMPILER=<posix>/opt/rocm/core-10.1/bin/amdclang++",
           "-DSTRIX_ENABLE_HIP_RUNTIME=ON",
           "-DSTRIX_ENABLE_EXPERIMENTAL_Q4K_A8_RUNTIME=ON"
         ],
@@ -1189,7 +1189,7 @@
             "Ninja",
             "-DCMAKE_BUILD_TYPE=Release",
             "-DCMAKE_HIP_ARCHITECTURES=gfx1151",
-            "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++",
+            "-DCMAKE_HIP_COMPILER=<posix>/opt/rocm/core-10.1/bin/amdclang++",
             "-DSTRIX_ENABLE_HIP_RUNTIME=ON",
             "-DSTRIX_FAMILY_MINIMAX=ON"
           ],
@@ -1245,7 +1245,7 @@
           "Ninja",
           "-DCMAKE_BUILD_TYPE=Release",
           "-DCMAKE_HIP_ARCHITECTURES=gfx1151",
-          "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++",
+          "-DCMAKE_HIP_COMPILER=<posix>/opt/rocm/core-10.1/bin/amdclang++",
           "-DSTRIX_ENABLE_HIP_RUNTIME=ON",
           "-DSTRIX_ENABLE_EXPERIMENTAL_Q4K_A8_RUNTIME=ON"
         ],
@@ -1256,7 +1256,7 @@
             "Ninja",
             "-DCMAKE_BUILD_TYPE=Release",
             "-DCMAKE_HIP_ARCHITECTURES=gfx1151",
-            "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++",
+            "-DCMAKE_HIP_COMPILER=<posix>/opt/rocm/core-10.1/bin/amdclang++",
             "-DSTRIX_ENABLE_HIP_RUNTIME=ON",
             "-DSTRIX_FAMILY_MINIMAX=ON"
           ],
@@ -1312,7 +1312,7 @@
           "Ninja",
           "-DCMAKE_BUILD_TYPE=Release",
           "-DCMAKE_HIP_ARCHITECTURES=gfx1151",
-          "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++",
+          "-DCMAKE_HIP_COMPILER=<posix>/opt/rocm/core-10.1/bin/amdclang++",
           "-DSTRIX_ENABLE_HIP_RUNTIME=ON",
           "-DSTRIX_ENABLE_EXPERIMENTAL_Q4K_A8_RUNTIME=ON"
         ],
@@ -1323,7 +1323,7 @@
             "Ninja",
             "-DCMAKE_BUILD_TYPE=Release",
             "-DCMAKE_HIP_ARCHITECTURES=gfx1151",
-            "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++",
+            "-DCMAKE_HIP_COMPILER=<posix>/opt/rocm/core-10.1/bin/amdclang++",
             "-DSTRIX_ENABLE_HIP_RUNTIME=ON",
             "-DSTRIX_FAMILY_MINIMAX=ON"
           ],
@@ -1354,8 +1354,8 @@
       "processes": [
         {
           "argv": [
-            "/opt/hyperloom/releases/000000000000/bin/strix-hip-decode-token",
-            "/opt/assets/qwen.gguf",
+            "<posix>/opt/hyperloom/releases/000000000000/bin/strix-hip-decode-token",
+            "<posix>/opt/assets/qwen.gguf",
             "11",
             "22",
             "33",
@@ -1370,7 +1370,7 @@
             "1",
             "--mtp",
             "--mtp-sidecar",
-            "/opt/assets/sidecar.gguf",
+            "<posix>/opt/assets/sidecar.gguf",
             "--mtp-sidecar-logical-name",
             "mtp-Qwen3.8-Flash-Next-shared-distillG-Q8_0.gguf",
             "--mtp-sidecar-sha256",
@@ -1424,7 +1424,7 @@
             "--mtp-max-logit-error",
             "0",
             "--mtp-golden",
-            "/opt/assets/mtp.golden",
+            "<posix>/opt/assets/mtp.golden",
             "--mtp-golden-sha256",
             "5db345508f79bda1af87a8c929ea463ca914f17dec3dd3b02273daf6ed7ce413",
             "--parallel-hyper-mix",
@@ -1476,7 +1476,7 @@
             "--mtp-window-qsa-rows",
             "--mtp-draft-chain",
             "--mtp-draft-vocab",
-            "auto:/opt/assets/qwen-vocab",
+            "auto:<posix>/opt/assets/qwen-vocab",
             "--mtp-draft-context-vocab",
             "4096",
             "--mtp-draft-q4",
@@ -1516,7 +1516,7 @@
             "--http-bind",
             "192.0.2.10",
             "--http-api-key-file",
-            "/opt/hyperloom/secrets/engine.key"
+            "<posix>/opt/hyperloom/secrets/engine.key"
           ],
           "env": {
             "STRIX_COHORT_ROWS": "32",
@@ -1539,14 +1539,14 @@
             "STRIX_QSA_WINDOW_POOLED": "1",
             "STRIX_QWEN_SHARED_DOWN_NARROW": "0"
           },
-          "machine_id": "halo-1",
+          "machine_id": "<node-1>",
           "ready": "qwen-stderr",
           "role": "replica"
         },
         {
           "argv": [
-            "/opt/hyperloom/releases/000000000000/bin/strix-hip-decode-token",
-            "/opt/assets/qwen.gguf",
+            "<posix>/opt/hyperloom/releases/000000000000/bin/strix-hip-decode-token",
+            "<posix>/opt/assets/qwen.gguf",
             "11",
             "22",
             "33",
@@ -1561,7 +1561,7 @@
             "1",
             "--mtp",
             "--mtp-sidecar",
-            "/opt/assets/sidecar.gguf",
+            "<posix>/opt/assets/sidecar.gguf",
             "--mtp-sidecar-logical-name",
             "mtp-Qwen3.8-Flash-Next-shared-distillG-Q8_0.gguf",
             "--mtp-sidecar-sha256",
@@ -1615,7 +1615,7 @@
             "--mtp-max-logit-error",
             "0",
             "--mtp-golden",
-            "/opt/assets/mtp.golden",
+            "<posix>/opt/assets/mtp.golden",
             "--mtp-golden-sha256",
             "5db345508f79bda1af87a8c929ea463ca914f17dec3dd3b02273daf6ed7ce413",
             "--parallel-hyper-mix",
@@ -1667,7 +1667,7 @@
             "--mtp-window-qsa-rows",
             "--mtp-draft-chain",
             "--mtp-draft-vocab",
-            "auto:/opt/assets/qwen-vocab",
+            "auto:<posix>/opt/assets/qwen-vocab",
             "--mtp-draft-context-vocab",
             "4096",
             "--mtp-draft-q4",
@@ -1707,7 +1707,7 @@
             "--http-bind",
             "192.0.2.11",
             "--http-api-key-file",
-            "/opt/hyperloom/secrets/engine.key"
+            "<posix>/opt/hyperloom/secrets/engine.key"
           ],
           "env": {
             "STRIX_COHORT_ROWS": "32",
@@ -1730,7 +1730,7 @@
             "STRIX_QSA_WINDOW_POOLED": "1",
             "STRIX_QWEN_SHARED_DOWN_NARROW": "0"
           },
-          "machine_id": "halo-2",
+          "machine_id": "<node-2>",
           "ready": "qwen-stderr",
           "role": "replica"
         }
@@ -1757,7 +1757,7 @@
           "Ninja",
           "-DCMAKE_BUILD_TYPE=Release",
           "-DCMAKE_HIP_ARCHITECTURES=gfx1151",
-          "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++",
+          "-DCMAKE_HIP_COMPILER=<posix>/opt/rocm/core-10.1/bin/amdclang++",
           "-DSTRIX_ENABLE_HIP_RUNTIME=ON",
           "-DSTRIX_ENABLE_EXPERIMENTAL_Q4K_A8_RUNTIME=ON"
         ],
@@ -1901,7 +1901,7 @@
           "Ninja",
           "-DCMAKE_BUILD_TYPE=Release",
           "-DCMAKE_HIP_ARCHITECTURES=gfx1151",
-          "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++",
+          "-DCMAKE_HIP_COMPILER=<posix>/opt/rocm/core-10.1/bin/amdclang++",
           "-DSTRIX_ENABLE_HIP_RUNTIME=ON",
           "-DSTRIX_ENABLE_EXPERIMENTAL_Q4K_A8_RUNTIME=ON"
         ],
@@ -2045,7 +2045,7 @@
           "Ninja",
           "-DCMAKE_BUILD_TYPE=Release",
           "-DCMAKE_HIP_ARCHITECTURES=gfx1151",
-          "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++",
+          "-DCMAKE_HIP_COMPILER=<posix>/opt/rocm/core-10.1/bin/amdclang++",
           "-DSTRIX_ENABLE_HIP_RUNTIME=ON",
           "-DSTRIX_ENABLE_EXPERIMENTAL_Q4K_A8_RUNTIME=ON"
         ],
@@ -2166,8 +2166,8 @@
       "processes": [
         {
           "argv": [
-            "/opt/hyperloom/releases/000000000000/bin/strix-hip-decode-token",
-            "/opt/assets/qwen.gguf",
+            "<posix>/opt/hyperloom/releases/000000000000/bin/strix-hip-decode-token",
+            "<posix>/opt/assets/qwen.gguf",
             "11",
             "22",
             "33",
@@ -2182,7 +2182,7 @@
             "1",
             "--mtp",
             "--mtp-sidecar",
-            "/opt/assets/sidecar.gguf",
+            "<posix>/opt/assets/sidecar.gguf",
             "--mtp-sidecar-logical-name",
             "mtp-Qwen3.8-Flash-Next-shared-distillG-Q8_0.gguf",
             "--mtp-sidecar-sha256",
@@ -2236,7 +2236,7 @@
             "--mtp-max-logit-error",
             "0",
             "--mtp-golden",
-            "/opt/assets/mtp.golden",
+            "<posix>/opt/assets/mtp.golden",
             "--mtp-golden-sha256",
             "5db345508f79bda1af87a8c929ea463ca914f17dec3dd3b02273daf6ed7ce413",
             "--parallel-hyper-mix",
@@ -2288,7 +2288,7 @@
             "--mtp-window-qsa-rows",
             "--mtp-draft-chain",
             "--mtp-draft-vocab",
-            "auto:/opt/assets/qwen-vocab",
+            "auto:<posix>/opt/assets/qwen-vocab",
             "--mtp-draft-context-vocab",
             "4096",
             "--mtp-draft-q4",
@@ -2328,7 +2328,7 @@
             "--http-bind",
             "192.0.2.10",
             "--http-api-key-file",
-            "/opt/hyperloom/secrets/engine.key"
+            "<posix>/opt/hyperloom/secrets/engine.key"
           ],
           "env": {
             "STRIX_COHORT_ROWS": "32",
@@ -2351,14 +2351,14 @@
             "STRIX_QSA_WINDOW_POOLED": "1",
             "STRIX_QWEN_SHARED_DOWN_NARROW": "0"
           },
-          "machine_id": "halo-1",
+          "machine_id": "<node-1>",
           "ready": "qwen-stderr",
           "role": "replica"
         },
         {
           "argv": [
-            "/opt/hyperloom/releases/000000000000/bin/strix-hip-decode-token",
-            "/opt/assets/qwen.gguf",
+            "<posix>/opt/hyperloom/releases/000000000000/bin/strix-hip-decode-token",
+            "<posix>/opt/assets/qwen.gguf",
             "11",
             "22",
             "33",
@@ -2373,7 +2373,7 @@
             "1",
             "--mtp",
             "--mtp-sidecar",
-            "/opt/assets/sidecar.gguf",
+            "<posix>/opt/assets/sidecar.gguf",
             "--mtp-sidecar-logical-name",
             "mtp-Qwen3.8-Flash-Next-shared-distillG-Q8_0.gguf",
             "--mtp-sidecar-sha256",
@@ -2427,7 +2427,7 @@
             "--mtp-max-logit-error",
             "0",
             "--mtp-golden",
-            "/opt/assets/mtp.golden",
+            "<posix>/opt/assets/mtp.golden",
             "--mtp-golden-sha256",
             "5db345508f79bda1af87a8c929ea463ca914f17dec3dd3b02273daf6ed7ce413",
             "--parallel-hyper-mix",
@@ -2479,7 +2479,7 @@
             "--mtp-window-qsa-rows",
             "--mtp-draft-chain",
             "--mtp-draft-vocab",
-            "auto:/opt/assets/qwen-vocab",
+            "auto:<posix>/opt/assets/qwen-vocab",
             "--mtp-draft-context-vocab",
             "4096",
             "--mtp-draft-q4",
@@ -2519,7 +2519,7 @@
             "--http-bind",
             "192.0.2.11",
             "--http-api-key-file",
-            "/opt/hyperloom/secrets/engine.key"
+            "<posix>/opt/hyperloom/secrets/engine.key"
           ],
           "env": {
             "STRIX_COHORT_ROWS": "32",
@@ -2542,7 +2542,7 @@
             "STRIX_QSA_WINDOW_POOLED": "1",
             "STRIX_QWEN_SHARED_DOWN_NARROW": "0"
           },
-          "machine_id": "halo-2",
+          "machine_id": "<node-2>",
           "ready": "qwen-stderr",
           "role": "replica"
         }
@@ -2570,7 +2570,7 @@
           "Ninja",
           "-DCMAKE_BUILD_TYPE=Release",
           "-DCMAKE_HIP_ARCHITECTURES=gfx1151",
-          "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++",
+          "-DCMAKE_HIP_COMPILER=<posix>/opt/rocm/core-10.1/bin/amdclang++",
           "-DSTRIX_ENABLE_HIP_RUNTIME=ON",
           "-DSTRIX_ENABLE_EXPERIMENTAL_Q4K_A8_RUNTIME=ON"
         ],
@@ -2714,7 +2714,7 @@
           "Ninja",
           "-DCMAKE_BUILD_TYPE=Release",
           "-DCMAKE_HIP_ARCHITECTURES=gfx1151",
-          "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++",
+          "-DCMAKE_HIP_COMPILER=<posix>/opt/rocm/core-10.1/bin/amdclang++",
           "-DSTRIX_ENABLE_HIP_RUNTIME=ON",
           "-DSTRIX_ENABLE_EXPERIMENTAL_Q4K_A8_RUNTIME=ON"
         ],
@@ -2858,7 +2858,7 @@
           "Ninja",
           "-DCMAKE_BUILD_TYPE=Release",
           "-DCMAKE_HIP_ARCHITECTURES=gfx1151",
-          "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++",
+          "-DCMAKE_HIP_COMPILER=<posix>/opt/rocm/core-10.1/bin/amdclang++",
           "-DSTRIX_ENABLE_HIP_RUNTIME=ON",
           "-DSTRIX_ENABLE_EXPERIMENTAL_Q4K_A8_RUNTIME=ON"
         ],

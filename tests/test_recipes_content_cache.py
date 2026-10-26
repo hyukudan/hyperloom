@@ -163,7 +163,7 @@ class ContentCacheTests(unittest.TestCase):
         self.assertFalse((self.root / "launch-state").exists())
 
     def test_header_cache_detects_nanosecond_changes(self):
-        store = descriptors.Store(self.runtime / "descriptors")
+        store = descriptors.PlacementStore(self.runtime / "descriptors")
         with mock.patch.object(modelfiles, "read", return_value=({}, [])):
             store.save(self.model)
         stat = self.model.stat()

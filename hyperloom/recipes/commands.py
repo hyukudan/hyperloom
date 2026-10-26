@@ -43,7 +43,8 @@ def measure_command(cluster, args):
     mode = "xfer" if args.xfer else "store" if args.store else "manifest"
     return measurements.acquire(cluster, mode, runtime=runtime_dir(), uuid=args.uuid,
                                 xfer_sha256=args.xfer_sha256, store_id=args.store_id,
-                                files=args.file, window=args.window)
+                                files=args.file, window=args.window,
+                                manifest_runner=lambda files, window: measurements.manifest(cluster, files, window))
 
 
 def recipe_dirs(cluster, extra=()):
@@ -61,9 +62,17 @@ def node_call(cluster):
     return call
 
 
-def live_source(cluster, measure_disks=False):
+def live_source(cluster, measure_disks=False, *, placement=False):
     def source(ctx):
-        return facts.gather(cluster, ctx, call=node_call(cluster), cache=cache(), measure_disks=measure_disks)
+        executable = None
+        if source.placement:
+            from . import runtime
+            data = runtime.preset()
+            if data.get("engine_sha") is not None:
+                executable = runtime.executable(cluster, ctx.pc, data)
+        return facts.gather(cluster, ctx, call=node_call(cluster), cache=cache(), measure_disks=measure_disks,
+                            **({"release_executable": executable} if executable is not None else {}))
+    source.placement = placement
     return source
 
 

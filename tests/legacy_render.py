@@ -1,6 +1,10 @@
 """CPU-only G6 oracle generator; see fixtures/render/README.md."""
 from __future__ import annotations
 
+if __package__:
+    from .portable_fixtures import read_fixture, sanitize
+else:
+    from portable_fixtures import read_fixture, sanitize
 import argparse
 from dataclasses import asdict
 import json
@@ -55,7 +59,7 @@ def capture(root):
                                                    "bytes": 0, "sha256": "0" * 64}}
     obj["profiles"]["ds41-rtx"] = dict(obj["profiles"]["ds41-pair-long"],
         prefill_service={"preset": "rtx-prefill-ds41", "machine": "workstation", "device": "rtx-pro"})
-    sizes = json.loads((fixtures / "vramplan/ds41-sizes.json").read_text(encoding="utf-8"))
+    sizes = json.loads(read_fixture(fixtures / "vramplan/ds41-sizes.json"))
     cluster = config.parse(obj)
     rows = []
     for name in sorted(cluster.profiles):
@@ -97,9 +101,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--raw", action="store_true", help="local byte comparison only; never commit this output")
     args = parser.parse_args()
     result = capture(args.source.resolve())
-    args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+    text = json.dumps(result, indent=2, sort_keys=True) + "\n"
+    args.output.write_text(text if args.raw else sanitize(text), encoding="utf-8", newline="\n")
 
 
 if __name__ == "__main__":

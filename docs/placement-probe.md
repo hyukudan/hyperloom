@@ -18,7 +18,8 @@ without a hostname. The pinned policy and store provenance require explicit loca
 `unknown`. No transfer, storage or full-manifest measurements are added here. The later explicitly gated probe
 commands own those measurements and cache refreshes.
 
-`facts.gather(release_executable=...)` performs the advisory NVAPI DRS read for the exact release executable.
+The live placement source resolves the published decode release executable and passes it to
+`facts.gather(release_executable=...)` for the advisory NVAPI DRS read of that exact release.
 It creates/loads a DRS session, finds the executable's profile, enumerates settings and destroys the session;
 it exposes no settings/profile mutation or save function. A basename alone is insufficient: the returned application
 must match the full release path or explicitly scope its filename to that directory. The driver read runs in a

@@ -721,6 +721,8 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
         from .recipes import launch as recipe_launch
         launch = recipe_launch.prepare(cluster, profile, recipe, router=router, vram_cap_gib=vram_cap_gib,
                                        state_dir=_state_path(profile).parent)
+        if getattr(launch, "placement_request", None) is not None:
+            return recipe_launch.up_placement(cluster, profile, launch, deadline_s=deadline_s, cancelled=cancelled)
         if not launch.service_start:
             service = None  # every prefill stays on the nodes (the why is recorded); no PRO lease, no start
     if service is not None and router != "local":
@@ -1021,6 +1023,9 @@ def endpoint(profile, config_path=None):
     state = _read(_state_path(profile))
     if config_path is not None and not owns(state, config_path):
         raise OrchestrationError(f"{profile}: launched from another configuration")
+    if state.get("recipe", {}).get("deploy", {}).get("placement") and state.get("prefill_service"):
+        return {"url": _url({"address": "127.0.0.1", "port": state["prefill_service"]["port"]}, ""),
+                "key_name": _secret_name(profile, "router")}
     if not state.get("router"):
         raise OrchestrationError("profile router has not started")
     return {"url": _url(state["router"]["endpoint"], ""),

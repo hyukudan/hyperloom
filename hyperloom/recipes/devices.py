@@ -53,11 +53,11 @@ def bound(recipe, ctx, binding):
     for device in recipe["match"]["devices"]:
         sid = device["id"]
         members = binding.get(sid, [])
-        if device["kind"] == "hip" and sid in executing:
+        if sid in executing:
             roles[sid] = "decode"
-        elif ctx.service is not None and any(m["id"] == ctx.service["uuid"] for m in members):
-            roles[sid] = "service"
+        elif members and any(sid in route.get("assist", {}) for route in recipe["routes"]):
+            roles[sid] = "assist"
         else:
             roles[sid] = "idle"
-            why[sid] = "placement adapter is not enabled"
+            why[sid] = "device set is unbound or unused"
     return {"binding": binding, "roles": roles, "why": why}

@@ -15,10 +15,10 @@ from .reader import RecipeError
 
 
 def check(cluster, path, layers, backend, recipe, bound, report, raw, effective_sha, *, inputs=None,
-          cache=None, observer_factory=None, busy=None, now=None):
+          cache=None, observer_factory=None, busy=None, now=None, admission=None):
     """All Hyperloom-determinable placement refusals. No leases, locks, gates, helpers or children."""
     now = time.time() if now is None else now
-    used = grants.check(cluster, recipe, bound["binding"], report, raw["hosts"], now=now)
+    used = grants.check(cluster, recipe, bound["binding"], report, raw["hosts"], now=now, anchors_only=True)
     rows = {grants.uuid_key(r.get("uuid", "")): r for r in report["devices"]}
     for uuid in used:
         row = rows[uuid]
@@ -34,7 +34,8 @@ def check(cluster, path, layers, backend, recipe, bound, report, raw, effective_
         raise RecipeError("PL_E_MISSING_DESCRIPTOR invalid cached placement inputs")
     routes = inputs["routes"]
     cache = cache or commands.components_store()
-    plans = {}
+    plans, policies = {}, {}
+    used = {}
     for route in recipe["routes"]:
         if not route.get("enabled", True) or not reader.placement_mode(route):
             continue
@@ -46,13 +47,18 @@ def check(cluster, path, layers, backend, recipe, bound, report, raw, effective_
         plans[route["id"]] = backend.place(path, layers, route=route["id"], probe=report, components=components,
                                             context=saved.get("context"), desc=saved.get("desc"),
                                             identity=dict(report, binding=bound["binding"])).document
-        pinned = max((p["host_pinned_gib"] for p in route["placement"].values()), default=0)
-        pageable = max((p.get("host_pageable_gib", 0) for p in route["placement"].values()), default=0)
-        policy = {"grants": list(used.values()),
-                  "caps_gib": {u: g["vram_cap_gib"] for u, g in used.items()},
-                  "host_pinned_gib": pinned, "host_pageable_gib": pageable,
-                  "host_grant": cluster.pc.get("cuda", {}).get("host_grant"),
-                  "free_commit_floor_gib": max(4, recipe["limits"]["host_free_commit_floor_gib"])}
+        plan = plans[route["id"]]
+        if not isinstance(plan.get("devices"), list) or not plan["devices"] or not isinstance(plan.get("host"), dict):
+            raise RecipeError("PL_E_SCHEMA core returned no touched devices or host budgets")
+        policy = grants.policy(cluster, recipe, route, bound["binding"], report, plan, raw["hosts"], now=now)
+        policies[route["id"]] = policy
+        used.update({grants.uuid_key(g["uuid"]): g for g in policy["grants"]})
+        for device in plan["devices"]:
+            row = rows.get(grants.uuid_key(device["uuid"]), {})
+            if any(not row.get(k) or row[k] == "unknown" for k in ("uuid", "driver", "arch", "platform")):
+                raise RecipeError("PL_E_STALE placement device identity is unknown")
+            sysmem.require(raw.get("sysmem_policy", "unknown"), placement=True, platform=row["platform"])
+        pinned, pageable = policy["host_pinned_gib"], policy["host_pageable_gib"]
         hosts = {m["host"] for sid in route["devices"] for m in bound["binding"][sid]}
         for host in hosts:
             memory = raw["hosts"].get(host, {})
@@ -84,15 +90,19 @@ def check(cluster, path, layers, backend, recipe, bound, report, raw, effective_
     finally:
         if observer is not None:
             observer.close()
+    if admission is not None:
+        admission.update(inputs=inputs, policies=policies)
     return plans
 
 
 def includes(options):
     """Conservative routing check, never an admission decision or a second placement planner."""
-    paths = ([p for d in options.dirs if Path(d).is_dir() for p in Path(d).iterdir()
-              if p.suffix in session.SUFFIXES] if options.recipe == "auto" else [Path(options.recipe)])
-    for path in paths:
-        recipe = reader.parse(session.read_text(path), str(path))
+    candidates = (session.candidates(options.dirs) if options.recipe == "auto" else
+                  [{"recipe": reader.parse(session.read_text(options.recipe), options.recipe), "error": None}])
+    for candidate in candidates:
+        if candidate["error"]:
+            continue
+        recipe = candidate["recipe"]
         if any(reader.placement_mode(r) for r in recipe["routes"]):
             return True
     # Read only the layer's field names: profile freshness and values remain the authoritative reader's job.

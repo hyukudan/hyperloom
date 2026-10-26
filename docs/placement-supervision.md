@@ -2,9 +2,10 @@ Placement supervision (set 7)
 =============================
 
 The service helper accepts an optional `ServiceSpec.placement_supervision` policy. It contains operator `grants`,
-one `caps_gib` entry per granted UUID, aggregate `host_pinned_gib` and `host_pageable_gib`, the operator `host_grant`,
+one `caps_gib` entry and a core-produced integer `caps_bytes` entry per granted UUID, aggregate `host_pinned_gib` and `host_pageable_gib`, the operator `host_grant`,
 and `free_commit_floor_gib`. UUID keys are compared case-insensitively. Caps above grants are refused without
-clamping. Fixed operator window boundaries are rechecked throughout the process lifetime; no window is opened.
+clamping. VRAM comparisons use the integer bytes without converting GiB in Python. Fixed operator window boundaries
+and the earliest configured PC-BIG conflict are rechecked throughout the process lifetime; no window is opened.
 
 Before spawn, pinned plus pageable must fit the host grant and available physical memory; MemAvailable must be at
 least 82 GB, and the charge must leave the configured commit floor. Runtime checks retain the legacy physical-RAM
@@ -19,8 +20,8 @@ observer failures refuse/stop the process. Activity on an ungranted adapter stop
 never used for a placement cap. Device totals remain available for passive identity/capacity/idle checks.
 
 Legacy rendering, visibility checks, watchdog sampling and its fallback remain unchanged when the policy is absent.
-Placement visibility/fidelity evidence uses attributable counters. The placement adapter remains disabled pending
-the later release, admission and rendering steps. Engine checkpoint/accounting validation remains authoritative.
+Placement visibility/fidelity evidence uses attributable counters. The complete opt-in decode launch path remains
+guarded by the shipped unpublished release pin. Engine checkpoint/accounting validation remains authoritative.
 
 CPU-only tests: `python -m pytest -q tests/test_placement_supervision.py tests/test_rtx.py tests/test_no_window.py`.
 Native driver behavior is not qualified by these fake-counter/process tests. Operational policy documents and

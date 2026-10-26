@@ -2,8 +2,15 @@
 
 `hyperloom solve RECIPE --route ROUTE --bundle NAME` runs the packaged `ts-recipe solve` on cached CPU inputs.
 `NAME` names a local `run/solver-inputs/NAME.json` containing `probe`, `inputs`, and optional `desc`, `context`, and
-`identity`. The inputs use Tierstream's solver input schema; each configuration supplies its exact cached components.
+`identity` and `measurement_keys`. The inputs use Tierstream's solver input schema; each configuration supplies its exact cached components.
 JSON document references are relative to the bundle. This command never acquires descriptors or measurements.
+
+`measurement_keys` maps executing set ids (plus `store` for host storage) to local
+`{uuid, driver, xfer_sha256, store_id}` identities. The xfer SHA is Tierstream's xfer-v1 identity. Current probe
+UUID/driver, `file_store`, and per-set `xfer_sha256` take precedence over old cache keys; unknown identities and
+exact-key misses supply no figures. Solving replaces inline transfer figures with matching cache hits, freezes
+those figures and provenance in its snapshot, and passes them to every core choice. Pick rechecks that snapshot;
+changed cached measurements require another solve. Missing measurements remain `unpredicted`.
 
 The CLI and web planner display the core's original row order, placement/refusal, predictions, estimates and
 `unpredicted`. Solving saves a local selection snapshot, not a recipe. To save a reviewed row, use
@@ -23,12 +30,11 @@ The `recipes.service.plan` API also accepts `solver_bundle` and `solver_route` f
 
 Snapshots, placement documents, content manifests and realised logs stay under the local runtime directory.
 New placement fixtures use placeholders; tests construct UUIDs, PCI addresses and absolute paths at runtime. No
-signed operational document is rewritten for publication. Web device exclusion follows configuration `excluded`,
-with no GPU model-name exclusion.
+signed operational document is rewritten for publication. Both web device views share physical identity resolution
+(UUID, PCI, configured id). A name fallback is retained for other device classes; an unmatched 4090 always retains
+legacy exclusion and cannot inherit another 4090's flags through its name.
 
 `tests/test_placement_privacy.py` scans tracked and newly added recipe/profile/receipt/fixture data for UUIDs, PCI,
-host/user fields, local host/user names and absolute paths. There are 22 historical synthetic fixtures that already
-contain such values, including the frozen eb9ae96 G6 oracle. `tests/fixtures/privacy-legacy.json` pins their exact
-existing bytes; changed and new fixtures receive no exemption. Therefore this gate proves no new privacy-bearing
-artifacts, not a repository-wide zero-identifiers claim. Removing the historical exceptions conflicts with keeping
-the legacy render goldens unchanged and remains a separate migration.
+host/user fields, local host/user names and absolute paths. No artifact is exempt. The 22 historical fixtures,
+including the frozen eb9ae96 G6 oracle, use portable placeholders. Tests reconstruct their original values in
+memory; all 22 retain their original byte hashes after reconstruction. The historical allowlist has been removed.

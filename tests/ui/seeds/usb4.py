@@ -2,6 +2,7 @@
 20 Gb/s five hours ago, a 20 min offline gap) and the recorded node reports of both nodes served in place of
 the node call, with data-ring interrupts growing at a steady rate and an engine group whose counters advance."""
 
+from tests.portable_fixtures import read_fixture
 import copy
 import json
 from pathlib import Path
@@ -29,7 +30,7 @@ def seed(store, now):
 
 def patches(directory, now):
     from hyperloom.web.features import usb4
-    reports = {name: json.loads((FIXTURES / f"node-{name}.json").read_text(encoding="utf-8"))
+    reports = {name: json.loads(read_fixture(FIXTURES / f"node-{name}.json"))
                for name in ("halo-1", "halo-2")}
     started = time.time()
 

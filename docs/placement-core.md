@@ -7,6 +7,11 @@ operations. A layer can create an absent assist or component table; the effectiv
 in one layer are refused. Profile guards protect a tuned route's layout, including assists, components, row and
 sequence counts, and host budgets. Optional devices use `{"unbound": true}` profile identity markers when absent.
 
+Table presence activates placement, including `assist = {}` or `components = {}`. Hyperloom preserves these tables
+through normalization. A core that drops them from its effective recipe is refused before binding, so it cannot
+silently apply legacy admission or identity rules. Tierstream must retain presence in `RRoute`, set it while parsing
+the tables, and emit present empty tables in canonical JSON; its current vector-contents predicate is insufficient.
+
 `hyperloom.recipes.placement.place` and `.solve` accept cached input documents or paths and return
 `PlacementOutput(document, text)`. They require the authoritative core. Discovery uses `pc.recipe_core`, then
 `HYPERLOOM_TS_RECIPE`, then `ts-recipe` on PATH, followed by legacy `HYPERLOOM_SS_RECIPE` / `ss-recipe` discovery.
@@ -16,8 +21,8 @@ support is also refused; there is no Python placement planner or diagnostic-stub
 Every place/solve invocation uses a private `--json-out` file. `--explain` (place) and `--table` (solve) provide
 display text from that same invocation. JSON is required even when stdout contains a display or happens to be
 valid JSON. Core placement errors, including `PL_E_*` prefixes and detail lines, pass through unchanged.
-This bridge does not run an engine, refresh caches, measure hardware, or enable placement launches. The legacy
-adapter's placement refusal remains until the later admission/rendering work is complete.
+This bridge does not run an engine, refresh caches or measure hardware. The separate opt-in decode adapter owns
+placement launches and still requires its published release; the legacy prefill adapter remains legacy.
 
 CPU validation with an existing compatible Tierstream build:
 

@@ -1,3 +1,4 @@
+from tests.portable_fixtures import read_fixture
 from copy import deepcopy
 from dataclasses import asdict
 import json
@@ -43,7 +44,7 @@ class AdvancedKnobTests(unittest.TestCase):
     def test_production_values_render_the_golden_line(self):
         for profile, advanced in (("ds41-pair", {"dspark_max_inflight": 4, "dspark_ranks": 2, "serve_sched": "interleave"}),
                                   ("qwen-replicas", {"mtp_ngram_draft": "auto"})):
-            expected = json.loads((FIXTURES / f"{profile}.golden.json").read_text())
+            expected = json.loads(read_fixture(FIXTURES / f"{profile}.golden.json"))
             processes, launch = self.render(profile, advanced)
             self.assertEqual([asdict(p) for p in processes], expected)
             self.assertEqual((launch["production"], launch["advanced"]), (True, {}))

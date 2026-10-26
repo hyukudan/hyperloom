@@ -206,7 +206,8 @@ class PlacementSchemaTests(unittest.TestCase):
         self.assertEqual({k: parsed["match"]["devices"][1][k] for k in ("uuid", "pci", "index")},
                          {"uuid": GPU, "pci": "0000:06:00.0", "index": 1})
 
-    def test_activation_requires_nonempty_assist_or_components(self):
+    def test_activation_requires_a_non_empty_assist_or_components_table(self):
+        # Contract rev 21c: empty tables (or ones holding only x- notes) carry no placement content and stay legacy.
         for tables in ({}, {"assist": {}, "components": {}}, {"components": {"x-note": {}}}):
             doc = self.document()
             route = doc["routes"][0]

@@ -1,7 +1,7 @@
 {
   "schema": "hyperloom/placement-adapter-v1",
   "name": "rtx-decode-ds41-placement",
-  "engine": "ds41-rtx-decode",
+  "engine": "strix-cuda-ds41-replica",
   "engine_sha": null,
   "release_owner": "claudeinfo-release",
   "release_note": "Opt-in RTX-alone DS decode replica. Rendering is refused until the release owner publishes the pinned SHA. No local engine SHA qualifies this preset.",

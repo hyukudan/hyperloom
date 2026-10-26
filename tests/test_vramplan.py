@@ -1,4 +1,5 @@
 """VRAM placement planner: header readers, the planner, and each family's memory model."""
+from tests.portable_fixtures import read_fixture
 import gzip
 import json
 from pathlib import Path
@@ -304,7 +305,7 @@ class QwenTests(unittest.TestCase):
         self.assertLess(qwen.state_bytes(8192, False), qwen.state_bytes(32768, False))
 
 
-DS41 = json.loads((FIXTURES / "ds41-sizes.json").read_text())
+DS41 = json.loads(read_fixture(FIXTURES / "ds41-sizes.json"))
 
 
 class DeepSeekTests(unittest.TestCase):
@@ -440,7 +441,7 @@ class DescriptorTests(unittest.TestCase):
 
     def test_same_plans_as_strix_stream(self):
         from hyperloom.placement import desc as D
-        cases = json.loads((GOLDEN / "ss-plan-expected.json").read_text())["cases"]
+        cases = json.loads(read_fixture(GOLDEN / "ss-plan-expected.json"))["cases"]
         self.assertEqual(len(cases), 34)
         self.assertEqual({c["expected"].get("refused") for c in cases}, {None, "nothing-fits", "host"})
         for case in cases:
@@ -462,7 +463,7 @@ class DescriptorTests(unittest.TestCase):
 
     def test_dynamic_slots_same_tiers_conservative_peak(self):
         from hyperloom.placement import desc as D
-        for case in json.loads((GOLDEN / "ss-plan-expected.json").read_text())["dynamic_cases"]:
+        for case in json.loads(read_fixture(GOLDEN / "ss-plan-expected.json"))["dynamic_cases"]:
             with self.subTest(cap=case["cap_gib"]):
                 d = self.desc(case["descriptor"])
                 model = D.model(d, dynamic_slots_per_layer=case["dynamic_slots"])

@@ -21,6 +21,9 @@ overrides those metadata fields. Unconfigured observed GPUs are omitted. No name
 report. Tierstream performs strict selector validation, alias merging, PCI ordering, required assignment, and then
 optional assignment. Missing compatible core support refuses placement; there is no Python binding fallback.
 
-Placement launch remains disabled until the placement adapter and supervision steps are complete. These checks
-do not enable the legacy prefill service to consume placement-mode recipes. All operational UUIDs, paths, grants
+Placement launch requires the published opt-in decode release; the shipped null pin still refuses. Grant checks
+cover the core's touched devices: an absent optional assist consumes no grant even with a positive configured budget.
+An explicit destination requiring that assist is Tierstream's refusal. A 4090 turn whose lifetime would overlap
+any configured PC-BIG window (including a future one) is refused. The earliest conflict is also carried into supervision.
+These checks do not enable the legacy prefill service to consume placement-mode recipes. All operational UUIDs, paths, grants
 and probe documents belong in local configuration/runtime storage; committed examples use portable identities.

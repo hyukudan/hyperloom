@@ -386,20 +386,8 @@ def _accelerator(raw, doctor, gpu, declared):
         row["memory_free_bytes"] = row["memory_total_bytes"] - row["memory_used_bytes"]
     if not amd and _finite(row["memory_total_bytes"]) and _finite(row["memory_free_bytes"]):
         row["memory_used_bytes"] = row["memory_total_bytes"] - row["memory_free_bytes"]
-    policies = [device for device in declared if any(
-        device.get(key) and str(device[key]).casefold() == str(value).casefold()
-        for key, value in (("id", raw.get("id")), ("uuid", raw.get("uuid") or raw.get("id")),
-                           ("pci", raw.get("pci"))))]
-    if not policies:
-        policies = [device for device in declared if device.get("name") == raw.get("name") and raw.get("name")]
-    policy = policies[0] if len(policies) == 1 else {}
-    # An explicit configuration flag decides; a device the configuration does not mention keeps the legacy rule
-    # (the RTX 4090 is never offered by itself).
-    legacy = "4090" in (row["name"] or "")
-    row["excluded"] = policy.get("excluded", legacy)
-    row["policy_reason"] = policy.get("reason") or (
-        ("excluded by configuration" if "excluded" in policy else "RTX 4090 is excluded by policy")
-        if row["excluded"] else None)
+    from ..device_policy import resolve
+    row.update(resolve(dict(raw, name=row["name"]), declared))
     return _missing(row, ("id", "name", "memory_used_bytes", "memory_total_bytes", "memory_free_bytes", "utilization_pct",
                           "temperature_c", "power_w", "driver", "runtime", "kernel", "usb4_driver", "layout", "policy_reason"))
 

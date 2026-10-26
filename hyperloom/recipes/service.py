@@ -979,7 +979,7 @@ def plan(cluster, ref, profile, *, layers=None, source=None, inputs=None, solver
     preview = {"label": "preview only: up would refuse (see up.refused)", "evaluation": evaluation.summary()}
     if evaluation.ok:
         service = dict(evaluation.decision["service"], plan=None)
-        if service["start"]:
+        if service["start"] and not evaluation.decision.get("placement"):
             cap, host = launch._service_budget(evaluation)
             service.update(vram_cap_gib=cap, host_gib=host)
             service["plan"], why = launch.plan_service(cluster, profile, cap, host)

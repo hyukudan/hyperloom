@@ -42,7 +42,9 @@ class PreflightTests(unittest.TestCase):
         self.cache = mock.Mock()
         self.cache.load.return_value = {"schema": "tierstream/components-v1"}
         self.backend = mock.Mock()
-        self.backend.place.return_value = core.PlacementOutput({"authoritative": True}, "")
+        self.backend.place.return_value = core.PlacementOutput({"authoritative": True,
+            "devices": [{"uuid": self.uuid, "set": "anchor", "budget_bytes": 90 * rtx.GIB}],
+            "host": {"pinned_budget_bytes": 68 * rtx.GIB, "pageable_budget_bytes": 2 * rtx.GIB}}, "")
         self.observer = mock.Mock()
         self.observer.sample.return_value = {self.uuid.lower(): 0}
 
@@ -105,7 +107,7 @@ class PreflightTests(unittest.TestCase):
 
     def test_core_receives_exact_cached_document_and_idle_observer_fail_closed(self):
         plans = self.check()
-        self.assertEqual(plans[self.rid], {"authoritative": True})
+        self.assertEqual(plans[self.rid], self.backend.place.return_value.document)
         self.assertEqual(self.backend.place.call_args.kwargs["components"], self.cache.load.return_value)
         self.observer.close.assert_called_once()
         for busy in (lambda _: "busy", mock.Mock(side_effect=rtx.ServiceError("N/A"))):

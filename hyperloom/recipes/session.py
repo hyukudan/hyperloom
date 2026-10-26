@@ -76,6 +76,8 @@ def evaluate(cluster, profile, path, layers, source, backend=None, *, placement_
     backend = backend or core.StubBackend()
     ctx = facts.context(cluster, profile)
     base = resolve(path, Layers(), backend=backend).recipe   # structure only: binding never depends on layers
+    if hasattr(source, "placement"):
+        source.placement = any(reader.placement_mode(r) for r in base["routes"])
     inventory, gathered, raw, notes = source(ctx)
     ctx.limits = dict(ctx.limits or {}, node_runtime=facts.current_runtime(cluster, ctx, gathered.get("node_runtime")))
     if any(reader.placement_mode(r) for r in base["routes"]):
@@ -123,18 +125,19 @@ def _placement_evaluation(cluster, path, layers, backend, ctx, base, inventory, 
         if not problems:
             bound = devices.bound(resolved.recipe, ctx, binding)
     availability = facts.availability(resolved.recipe, bound, raw)
-    refusal = None
+    refusal, decision = None, None
     if not problems:
         try:
-            from . import preflight
-            preflight.check(cluster, path, layers, backend, resolved.recipe, bound, report, raw, effective_sha,
-                            inputs=placement_inputs)
-            # Placement launch stays unavailable until its adapter and supervision are complete.
-            apply.refuse_unsupported(resolved.recipe)
+            from . import preflight, runtime
+            admitted = {}
+            plans = preflight.check(cluster, path, layers, backend, resolved.recipe, bound, report, raw, effective_sha,
+                                    inputs=placement_inputs, admission=admitted)
+            apply.refuse_unsupported(resolved.recipe, adapter=runtime.preset())
+            decision = runtime.decision(cluster, resolved.recipe, ctx, bound, effective_sha, plans, admitted)
         except RecipeError as exc:
             refusal = str(exc)
     return Evaluation(str(path), backend.label, resolved, effective_sha or "", ctx, bound, report, problems,
-                      availability, None, refusal, list(notes))
+                      availability, decision, refusal, list(notes))
 
 
 def saved_source(path):
@@ -245,13 +248,18 @@ def pick(cluster, profile, directories, layers, source, backend=None):
     Returns (chosen Evaluation or None, rows for every candidate with why it was or was not chosen)."""
     ctx = facts.context(cluster, profile)
     cached = {}
+    choices = candidates(directories)
+    if hasattr(source, "placement"):
+        # The shared sample must include the release policy even when a legacy candidate is evaluated first.
+        source.placement = any(not row["error"] and row["model"] == ctx.model and any(
+            reader.placement_mode(r) for r in row["recipe"]["routes"]) for row in choices)
 
     def once(c):
         if "v" not in cached:
             cached["v"] = source(c)
         return cached["v"]
     rows, passing = [], []
-    for row in candidates(directories):
+    for row in choices:
         out = {"path": row["path"], "name": row["name"]}
         if row["error"]:
             out["result"] = "invalid: " + row["error"]
