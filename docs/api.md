@@ -17,6 +17,9 @@ Placement retains these changes to the legacy interface:
 - Launch preflight runs before CLI admission holds, snapshot publication, pins and progress files. This keeps
   deterministic refusals free of launch state for legacy and placement recipes alike. The no-profile Phase 1a
   placeholder still prints before unused launch arguments are validated.
+  Legacy `--recipe auto` in a mixed directory containing placement candidates can run
+  read-only live fact probes on the nodes before the admission hold, even when a node benchmark later refuses
+  the launch. Pure-legacy directories keep their existing probe order.
 - The portal returns synchronous HTTP 400 refusals for invalid recipe launches/deploys before creating a job;
   the UI displays the refusal. Previously these could become asynchronous job failures.
 - A configured device's `excluded` flag controls its eligibility, including an explicitly included RTX 4090.

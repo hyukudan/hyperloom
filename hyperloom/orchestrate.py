@@ -745,7 +745,7 @@ def check_selection(cluster, mids, router, service, devices=None, vram_cap_gib=N
 
 
 def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s=1140, approval=None, queue_timeout_s=3600,
-       diagnostics=None, vram_cap_gib=None, recipe=None, cancelled=None):
+       diagnostics=None, vram_cap_gib=None, recipe=None, cancelled=None, admitted_selection=None):
     validate_command(deadline_s, approval, queue_timeout_s)
     settings, kind, defaults, engine, name, pair, diagnostics, mids = check_launch(
         cluster, profile, router, nodes, diagnostics=diagnostics, recipe=recipe is not None,
@@ -756,8 +756,10 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
         from .recipes import launch as recipe_launch
         launch = recipe_launch.prepare(cluster, profile, recipe, router=router, vram_cap_gib=vram_cap_gib,
                                        state_dir=_state_path(profile).parent)
+        recipe_launch.check_admission(cluster, profile, launch, admitted_selection, router=router)
         if getattr(launch, "placement_request", None) is not None:
-            return recipe_launch.up_placement(cluster, profile, launch, deadline_s=deadline_s, cancelled=cancelled)
+            return recipe_launch.up_placement(cluster, profile, launch, deadline_s=deadline_s, cancelled=cancelled,
+                **({"admitted_selection": admitted_selection} if admitted_selection is not None else {}))
         if not launch.service_start:
             service = None  # every prefill stays on the nodes (the why is recorded); no PRO lease, no start
     declared = check_selection(cluster, mids, router, service, devices, vram_cap_gib)

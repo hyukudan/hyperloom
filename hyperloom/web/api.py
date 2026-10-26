@@ -1709,6 +1709,8 @@ class API:
                 argv += [flag, str(args[key])]
         if args.get("_job"):
             argv += ["--job", args["_job"]]            # set by mutate: the job's cancel marker
+        if args.get("_admitted_selection") is not None:
+            argv += ["--admitted-selection", json.dumps(args["_admitted_selection"])]
         return argv
 
     def _cli_argv(self, action, args):
@@ -1963,12 +1965,14 @@ class API:
             self._audit(action, arguments, {"state": "refused", "error": str(exc)})
             raise
         priority = action in ("down", "cancel")
+        checked_resources, selected = None, None
         if action == "recipes/deploy" or (action == "up" and (arguments.get("recipe") or arguments.get("recipe_inputs"))):
             from hyperloom.recipes import preflight
             argv = self._deploy_argv(arguments) if action == "recipes/deploy" else self._recipe_up_argv(arguments)
             parsed = cli.build_parser(recipe_web.RaisingParser).parse_args(argv)
             try:
-                preflight.cli(parsed, load_cluster=self._recipe_loader)
+                checked_resources = preflight.cli(parsed, load_cluster=self._recipe_loader)
+                selected = getattr(parsed, "_prepared_selection", None)
             except (OSError, ValueError, RuntimeError) as exc:
                 raise APIError(str(exc), 400) from exc
         occupying = action in ("up", "install", "recipes/deploy", "recipes/probe")
@@ -1989,6 +1993,8 @@ class API:
                 if isinstance(profile, str) and profile else {"*"}
             if action == "up" and arguments.get("recipe_inputs"):
                 resources = {"*"}       # a snapshot launches with the placement it was planned on: hold everything
+            if checked_resources is not None:
+                resources = checked_resources
         jid = uuid.uuid4().hex
         with self._job_lock:
             if self._active and not priority:
@@ -2050,6 +2056,8 @@ class API:
             self._unaccept(jid, accepted)
         if action in ("recipes/deploy", "up"):
             arguments = dict(arguments, _job=jid)    # the launch's cancel marker is named by its job
+            if selected is not None:
+                arguments["_admitted_selection"] = dict(selected, resources=sorted(resources))
         def run():
             try:
                 result = self._execute(action, arguments)

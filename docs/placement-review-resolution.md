@@ -108,3 +108,47 @@ outside git. All modified files use LF. No commit, push, engine/GPU work or netw
 
 Engine-dependent open points remain as previously disclosed: no published placement-capable replica or GPU
 qualification, and context-v1 persistence awaits the realised checkpoint-1 JSONL location/ownership hand-off.
+
+## Follow-up of cf14941: Sol review 13 item 8 and Claude review 3
+
+Base: `cf14941c51eec51d8acfe6e76292d2bfd1ac385b`, contract rev 21c. This round addresses the portal hold,
+selection invalidation after admission, pre-hold probe disclosure and the requested `fab4234` failure baseline.
+All new launch and grant-boundary coverage is CPU-only. Logs and the archive export are outside git, under
+`D:/tmp/cluster-opus-spec/wave4/placement/hl/`.
+
+| Item | Change (file:line) | Regression coverage | Open points |
+|---|---|---|---|
+| A: Claude 3 finding 1, portal PC hold | `hyperloom/web/api.py:1736` retains preflight's resources; `:1758` uses them for an actual placement request. Legacy starts retain the profile nodes/router resources. | `tests/test_placement_admission_selection.py:84`, `test_portal_holds_selected_resources_without_prefill`: a real API mutation and SQLite admission hold exactly the PC without a prefill service and refuse its benchmark with HTTP 409; legacy holds exactly the nodes/router and remains allowed beside that PC benchmark. | None for this finding. Snapshot launches retain their conservative holds. |
+| B: Sol 13 item 8 / Claude 3 finding 2, reselection race | `hyperloom/recipes/preflight.py:304` captures the prepared selection. `hyperloom/recipes/launch.py:272` records original recipe path, effective digest, placement/legacy kind and resources; `:294` refuses differences with `recipe selection changed after admission; retry`. `hyperloom/cli.py:726` binds that record to admission and `:419` passes it to `up`; `hyperloom/web/api.py:1806` carries the portal admission through its in-process or detached CLI hand-off (`:1476`). `hyperloom/orchestrate.py:668` checks after final preparation and before either launch's state publication; `hyperloom/recipes/launch.py:309` also guards placement entry. | `tests/test_placement_admission_selection.py:105`, `test_admitted_selection_survives_grant_cutoff`: real grant startup cutoff, auto-pick, prepare and SQLite holds, with fake native adapter/render. Expiry from 600 s remaining to 59 s selects legacy while a node benchmark holds halo-1; CLI, portal and detached argv/child-admission paths refuse without launch state or artifact publication. Unchanged selections pass all three hand-offs. `tests/test_placement_lifecycle.py:255` additionally launches an unchanged admitted selection through real placement supervision with its CPU fake child. Snapshot paths map to original inputs before comparison. | None for this race. No resource union or grant/window extension is used. |
+| C: Claude 3 finding 3, pre-hold live probes | `docs/api.md:20` explicitly discloses read-only live node fact probes for legacy auto-selection in a mixed directory before admission. | `tests/test_placement_admission_selection.py:170`, `test_mixed_legacy_preflight_documents_live_probes_before_hold`: checks the disclosure and observes only the node benchmark hold during each source sample, followed by the normal benchmark refusal. | This probe-order difference is intentional and now explicit. Pure-legacy directories retain their previous order. |
+| D: product's fab4234 baseline by test name and cause | `D:/tmp/cluster-opus-spec/wave4/placement/hl/pytest-fab4234-compare.md` lists all 46 failing IDs, whether each fails at fab4234, exact first-error equality, first/terminal exception-type equality and the observed cause. The export is `fab4234-tree`, produced by `git archive fab4234`, without another worktree. | Full Python 3.13 suites: cf14941 before edits **46 failed, 3648 passed, 69 skipped**; archived fab4234 **46 failed, 1574 passed, 57 skipped**. All failing IDs equal fix6. All exception types match; 39 first error lines match exactly and seven differ only in the tree root or temporary router-log path. Assertions verify the per-ID/block mapping and all 46 normalized causes. | No HEAD-only failures in this baseline. The shared missing-dependency/planner/router failures remain; this is baseline evidence, not a green-suite claim. |
+
+Before production edits, `pytest-round14-red.log` reproduced A, all three B hand-offs and the missing C disclosure:
+**5 failed, 4 passed**. The CLI/in-process portal reached the forbidden first state write; the detached path
+reselected at its second admission instead of retaining the portal selection. The unchanged-selection controls and
+legacy portal control passed. The B portal cases isolate A's resource bug so it cannot mask the race.
+
+Focused validation: **1184 passed** (`pytest-round14-green.log`), followed by **85 passed, 1 skipped**
+(`pytest-round14-final-focused.log`) covering the final lifecycle change, legacy equality and G6. G6's **21 rows
+remain byte-identical** in the fresh-interpreter test; the restored oracle SHA-256 remains
+`40489d24e0a9b64d9b6186b2742d2fff734e4d66e310dd1776d8b62c340168e7`, with no fixture change.
+
+The before/fab4234 full runs used `C:/Python313/python.exe -m pytest -q -p no:cacheprovider`, with unchanged
+TEMP/TMP outside the repository. This round makes no contract, native-engine, capability, grant, measurement or
+G6 oracle change. No commit, push, GPU work or network access was performed.
+
+The first edited-HEAD full attempt (`pytest-cf14941-after-attempt1.log`) reported **47 failed, 3656 passed,
+69 skipped**: the extra SSE snapshot test raised `KeyError: 'overview'`. Its module immediately passed all six
+tests (`pytest-round14-sse-recheck.log`). The SSE test, registry and stream-projection sources are byte-identical
+at fab4234 and cf14941 and remain unmodified. An event-controlled reproduction in both trees confirms that an
+in-flight default registry load can overwrite the SSE fixture's isolated registry, removing the expected
+`why.overview` entry (`pytest-round14-sse-race-head.log`, `pytest-round14-sse-race-fab4234.log`). The comparison
+report discloses this intermittent failure and its cause; a fresh full run is recorded separately.
+
+Final full suite (`pytest-cf14941-after.log`): **46 failed, 3657 passed, 69 skipped** in 471.55 s. The SSE test
+passes in this run. `pytest-round14-failure-comparison.log` asserts exact equality of the 46 failing-ID sets for
+fix6, before, after and fab4234, with no added or missing failures. All first and terminal exception types and all
+46 first-error causes match both baselines after only tree-root/temporary-router-log path substitutions. The nine
+new regression cases all pass. `pytest-round14-artifacts.log` records G6 equality, unchanged HEAD/branch,
+unchanged external TEMP/TMP and LF for every modified file. The full per-ID report includes the final run and the
+disclosed intermittent SSE attempt; its source-equality hashes are in `pytest-round14-sse-source-equality.log`.

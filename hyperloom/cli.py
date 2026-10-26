@@ -392,7 +392,8 @@ def _up_command(args, orchestrate, load_cluster):
     approval = _module("hyperloom.recipes.commands")._approval(args)
     cluster = None if args.recipe_inputs is not None else (load_cluster or _cluster)(args.config)
     from .recipes import preflight
-    preflight.cli(args, load_cluster=lambda _: cluster)
+    if getattr(args, "admitted_selection", None) is None:
+        preflight.cli(args, load_cluster=lambda _: cluster)
     recipe = None
     if args.recipe_inputs is not None:
         service = _module("hyperloom.recipes.service")
@@ -419,7 +420,8 @@ def _up_command(args, orchestrate, load_cluster):
     launch = lambda cancelled=None: orchestrate.up(  # noqa: E731
         cluster, args.profile, router=args.router, nodes=args.node, devices=args.device, deadline_s=args.deadline,
         approval=approval, queue_timeout_s=args.queue_timeout, diagnostics=args.diagnostic,
-        vram_cap_gib=args.vram_cap_gib, recipe=recipe, **({"cancelled": cancelled} if cancelled else {}))
+        vram_cap_gib=args.vram_cap_gib, recipe=recipe, **({"cancelled": cancelled} if cancelled else {}),
+        **({"admitted_selection": args.admitted_selection} if getattr(args, "admitted_selection", None) else {}))
     try:
         if getattr(args, "job", None):
             # A portal job (with a recipe or without): its cancel marker is checked right after up owns the profile
@@ -516,6 +518,7 @@ def build_parser(parser_class=argparse.ArgumentParser):
     up.add_argument("--recipe-workload", help="the workload class this run serves (default: default)")
     up.add_argument("--recipe-inputs", metavar="DIGEST",
                     help="launch exactly a recipe snapshot that `hyperloom recipe plan` made (its `inputs` digest)")
+    up.add_argument("--admitted-selection", type=json.loads, help=argparse.SUPPRESS)
     up.add_argument("--job", help="a hex id; the file <config dir>/run/deploy-cancel/ID cancels this launch at its "
                                   "hand-over (the portal's cancel writes it)")
     down = commands.add_parser("down")
@@ -760,6 +763,12 @@ def _admission_hold(args):
                                                     getattr(args, "router", None) if args.command == "up" else None)
         except Exception:
             resources = {"*"}
+    selected = getattr(args, "_prepared_selection", None)
+    if selected is not None:
+        selected = dict(selected, resources=sorted(resources))
+        if getattr(args, "admitted_selection", None) is not None and args.admitted_selection != selected:
+            raise _module("hyperloom.recipes.reader").RecipeError("recipe selection changed after admission; retry")
+        args.admitted_selection = selected
     # The hold lives next to the configuration this command executes with (the portal's jobs pass the same one).
     try:
         database = admission.for_config(getattr(args, "config", None) or config_path())

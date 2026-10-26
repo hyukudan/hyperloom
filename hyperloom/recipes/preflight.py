@@ -299,5 +299,9 @@ def cli(args, *, load_cluster=None):
         options = launch.Options(path, layers, dirs)
         prepared = before_options(cluster, profile, options, router=args.router, cap=args.vram_cap_gib,
                                   nodes=args.node, diagnostics=args.diagnostic, devices=args.device)
-        if prepared is not None and prepared.placement_request is not None:
-            return {prepared.evaluation.context.pc}
+        if prepared is not None:
+            resources = {prepared.evaluation.context.pc} if prepared.placement_request is not None else None
+            args._prepared_selection = launch.selection(cluster, profile, prepared, router=args.router,
+                resources=resources if resources is not None or args.profile else {"*"})
+            if resources is not None:
+                return resources

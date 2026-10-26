@@ -252,7 +252,8 @@ def test_01_evaluate_prepare_up_and_real_watchdog_with_fake_child(tmp_path, file
         database.close()
     prepared_calls = len(calls)
     try:
-        state = orchestrate.up(cluster, "decode", recipe=options)
+        state = orchestrate.up(cluster, "decode", recipe=options,
+                               admitted_selection=launch.selection(cluster, "decode", prepared))
         assert state["phase"] == "running"
         assert gates == [entry["gate"]] and locks == [identity.lower()]
         assert orchestrate.endpoint("decode")["protocol"] == "ds41-replica-spool-v1"

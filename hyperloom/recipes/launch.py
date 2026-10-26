@@ -315,12 +315,44 @@ def render_placement(cluster, profile, request, *, api_key):
                               free_physical_gib=0, placement_request=request)
 
 
-def up_placement(cluster, profile, launch, *, deadline_s, cancelled=None):
+def selection(cluster, profile, launch, *, router="local", resources=None):
+    """The selected input (using its original path across snapshots), kind and admission resources."""
+    from .. import admission, orchestrate
+    path = launch.evaluation.path
+    key = lambda p: os.path.normcase(os.path.abspath(p))  # noqa: E731
+    for item in launch.inputs:
+        if item["role"] in ("recipe", "candidate") and key(item["path"]) == key(path):
+            path = item["original"]
+            break
+    placement = launch.placement_request is not None
+    if resources is None:
+        if placement:
+            resources = {launch.evaluation.context.pc}
+        else:
+            try:
+                resources = admission.profile_resources(cluster, profile, orchestrate, router)
+            except Exception:
+                resources = {"*"}
+    return {"path": key(path), "effective_sha256": launch.evaluation.effective_sha256,
+            "kind": "placement" if placement else "legacy", "resources": sorted(resources)}
+
+
+def check_admission(cluster, profile, launch, admitted, *, router="local"):
+    """Fresh preparation may refuse a launch, but may never change what the existing hold admitted."""
+    if admitted is not None:
+        # A conservative wildcard hold remains a wildcard after resolving the snapshot/profile.
+        resources = {"*"} if admitted["resources"] == ["*"] else None
+        if selection(cluster, profile, launch, router=router, resources=resources) != admitted:
+            raise RecipeError("recipe selection changed after admission; retry")
+
+
+def up_placement(cluster, profile, launch, *, deadline_s, cancelled=None, admitted_selection=None):
     """The RTX-alone decode path: no remote engines or parked-import/prefill router are involved."""
     from dataclasses import replace
     import uuid
     from .. import orchestrate, procs, secrets
 
+    check_admission(cluster, profile, launch, admitted_selection)
     request = launch.placement_request
     spec = render_placement(cluster, profile, request, api_key="0" * 64)
     spec = replace(spec, deadline=min(spec.deadline, time.time() + deadline_s))

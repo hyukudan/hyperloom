@@ -132,8 +132,9 @@ def test_placement_hold_includes_control_machine_without_prefill(tmp_path, monke
     monkeypatch.setattr(service, "locate", lambda *a, **kw: path)
     monkeypatch.setattr(service, "deployment_profile", lambda *a: "ds41-rtx")
     monkeypatch.setattr(orchestrate, "_state_path", lambda _: tmp_path / "state.json")
-    prepared = SimpleNamespace(placement_request=object() if placement else None,
-                               evaluation=SimpleNamespace(context=SimpleNamespace(pc="workstation")))
+    prepared = SimpleNamespace(placement_request=object() if placement else None, inputs=[],
+                               evaluation=SimpleNamespace(path=str(path), effective_sha256="d" * 64,
+                                                          context=SimpleNamespace(pc="workstation")))
     monkeypatch.setattr(launch, "prepare", mock.Mock(return_value=prepared))
     database = mock.Mock()
     monkeypatch.setattr(admission, "for_config", lambda _: database)
