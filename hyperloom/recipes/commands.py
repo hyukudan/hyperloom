@@ -12,7 +12,7 @@ import sys
 import tempfile
 
 from .. import orchestrate
-from . import core, descriptors, facts, probe, reader, session
+from . import content_cache, core, descriptors, facts, probe, reader, session
 from .reader import RecipeError
 
 
@@ -27,6 +27,14 @@ def cache():
 
 def store():
     return descriptors.Store(runtime_dir() / "descriptors")
+
+
+def components_store():
+    return content_cache.ComponentsStore(runtime_dir())
+
+
+def manifest_store():
+    return content_cache.ManifestStore(runtime_dir())
 
 
 def recipe_dirs(cluster, extra=()):

@@ -33,7 +33,7 @@ def _files(path):
     out = []
     for f in files:
         st = os.stat(f)
-        out.append({"file": str(f), "device": st.st_dev, "size": st.st_size, "mtime": int(st.st_mtime)})
+        out.append({"file": str(f), "device": st.st_dev, "size": st.st_size, "mtime_ns": st.st_mtime_ns})
     return out
 
 

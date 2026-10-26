@@ -29,6 +29,8 @@ class Options:
     exact_dirs: bool = False
     digest: str | None = None
     pin: Path | None = None          # the launch's pin on its snapshot (service.acquire_pin), released after up
+    components: dict | None = None  # local cache sidecar; never inserted in the recipe or desc-v1
+    selected_content: dict | None = None
 
 
 @dataclass
@@ -137,6 +139,8 @@ def plan_service(cluster, profile, cap, host, *, free_physical_gib=None):
 
 def prepare(cluster, profile, options, *, router, vram_cap_gib, state_dir, source=None):
     """Resolve, probe, match, plan and decide; refuse with every reason before any lease or process exists."""
+    if options.components is not None:
+        commands.components_store().load(options.components, selected=options.selected_content)
     backend, production = _backend(cluster)
     if vram_cap_gib is not None:
         raise RecipeError("--vram-cap-gib and --recipe both set the RTX cap: put it in the recipe (device_gib)")

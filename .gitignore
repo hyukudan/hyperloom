@@ -9,3 +9,5 @@ dist/
 *.log
 cluster.json
 secrets/
+**/run/components-v1/
+**/run/content-manifests/
