@@ -644,6 +644,17 @@ class DeployRefusalTests(unittest.TestCase):
             self.deploy(approval=approval)
         self.fake.down.assert_not_called()
 
+    def test_a_target_state_of_another_configuration_refuses_before_stopping(self):
+        state = orchestrate._state_path("ds41-rtx")
+        state.parent.mkdir(parents=True, exist_ok=True)
+        for owner in (None, orchestrate.config_record(self.env.root / "other" / "cluster.json")):
+            state.write_text(json.dumps({"profile": "ds41-rtx", "config": owner}), encoding="utf-8")
+            with self.assertRaisesRegex(service.Conflict, "another configuration"):
+                self.deploy()
+        state.unlink()
+        self.fake.down.assert_not_called()
+        self.fake.up.assert_not_called()
+
     def test_cancel_before_any_stop_and_before_the_launch(self):
         job = "ab12cd34"
         marker = service.cancel_marker(job)

@@ -375,10 +375,8 @@ def _version():
 
 def up_command(args, *, orchestrate=None, load_cluster=None):
     """`hyperloom up PROFILE ...` from its parsed arguments; the portal's in-process path calls this too."""
-    if args.recipe is None and args.recipe_inputs is None and not getattr(args, "job", None):
-        return _up_command(args, orchestrate, load_cluster)
-    # The recipe directories and a job's cancel files derive from --config for this call only (the portal runs
-    # requests on other threads).
+    # The launch state's configuration, the recipe directories and a job's cancel files derive from --config for this
+    # call only (the portal runs requests on other threads).
     with _module("hyperloom.recipes.service").configured(args.config):
         return _up_command(args, orchestrate, load_cluster)
 

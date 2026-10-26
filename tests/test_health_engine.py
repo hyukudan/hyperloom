@@ -406,11 +406,16 @@ class RuleTests(Base):
         runtime.mkdir()
         state = runtime / "route-state.json"
         state.write_text(json.dumps({"at": self.clock.now - 45}), encoding="utf-8")
-        record = {"profile": "qwen-replicas", "recipe": {"route_table": {"state_file": str(state)}}}
-        (runtime / "up-qwen-replicas.json").write_text(json.dumps(record), encoding="utf-8")
         from hyperloom import orchestrate, secrets
+        record = {"profile": "qwen-replicas", "recipe": {"route_table": {"state_file": str(state)}}}
         with mock.patch.object(secrets, "runtime_dir", lambda: runtime), \
                 mock.patch.object(orchestrate, "_state_path", lambda profile: runtime / ("up-" + profile + ".json")):
+            # Another configuration's launch, or one without the record, is not this portal's: no finding.
+            for owner in (None, orchestrate.config_record(Path(self.dir.name) / "other" / "cluster.json")):
+                (runtime / "up-qwen-replicas.json").write_text(json.dumps(dict(record, config=owner)), encoding="utf-8")
+                self.assertEqual(self.evaluate_rule("route-state-stale")[0], [])
+            record["config"] = orchestrate.config_record(self.api.config_path)
+            (runtime / "up-qwen-replicas.json").write_text(json.dumps(record), encoding="utf-8")
             self.assertEqual(self.verdicts("route-state-stale"), {"qwen-replicas": (True, "warning")})
             outside = Path(self.dir.name) / "elsewhere.json"
             outside.write_text(json.dumps({"at": self.clock.now}), encoding="utf-8")

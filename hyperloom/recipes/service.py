@@ -1055,6 +1055,10 @@ def _deploy_pinned(digest, stop, source, orchestrate, approval, progress):
     if sorted(set(stop)) != running:
         raise Conflict(f"the running profiles are {', '.join(running) or 'none'}, not the reviewed "
                        f"{', '.join(sorted(set(stop))) or 'none'}: review the switch again")
+    if profile not in running and default_orchestrate._state_path(profile).exists():
+        # Before anything is stopped: up would refuse this profile's saved state of another configuration (or one
+        # without the record) only after the switch had stopped the reviewed profiles.
+        raise Conflict(f"{profile} has a saved launch state of another configuration: stop it there first")
     orchestrate.check_launch(cluster, profile, intent["router"], recipe=True)
     check()
     with tempfile.TemporaryDirectory(prefix="hl-recipe-deploy-") as directory:

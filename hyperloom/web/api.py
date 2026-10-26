@@ -684,6 +684,8 @@ class API:
             owned = {}
             try:
                 owned = self.orchestrate._read(self.orchestrate._state_path(name))
+                if not orchestrate.owns(owned, self.config_path):
+                    raise KeyError("launched from another configuration")    # not this portal's launch
                 # Ownership records are authoritative for router placement.
                 row["launch"] = redact({key: owned[key] for key in ("router", "leases", "release_id") if key in owned})
                 row["router"] = (owned.get("router") or {}).get("machine")

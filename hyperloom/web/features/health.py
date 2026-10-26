@@ -676,6 +676,8 @@ def _route_state(ctx, p):
         except (OSError, ValueError):
             ctx.sources["route-state:" + profile] = "launch record unreadable"
             continue
+        if not orchestrate.owns(record, getattr(ctx.api, "config_path", None)):
+            continue                        # another configuration's launch (or one without the record)
         table = ((record.get("recipe") or {}).get("route_table") or {}) if isinstance(record, dict) else {}
         state_file = table.get("state_file") if isinstance(table, dict) else None
         if not isinstance(state_file, str) or not state_file:

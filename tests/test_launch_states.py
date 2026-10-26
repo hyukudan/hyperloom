@@ -119,6 +119,26 @@ class LaunchStatesTests(unittest.TestCase):
             self.assertEqual(sorted(orchestrate.status()), ["legacy", "prof-a", "prof-b"])   # no configuration: all
             self.assertEqual(sorted(polled), ["/opt/a", "/opt/b", "/opt/legacy"])
 
+    def test_status_by_name_on_b_never_polls_a_launch_of_a(self):
+        self.state("prof-a", self.config_a, machines={"node-a": {"install_root": "/opt/a"}})
+        self.state("legacy", machines={"node-legacy": {"install_root": "/opt/legacy"}})
+        with mock.patch.object(orchestrate, "_call", side_effect=AssertionError("polled")), \
+                mock.patch.object(orchestrate, "_http_json", side_effect=AssertionError("polled")):
+            for name in ("prof-a", "legacy"):
+                answer = orchestrate.status(name, config_path=self.config_b)
+                self.assertEqual((answer["state"], answer["why"]), ("stopped", "launched from another configuration"))
+
+    def test_cli_up_records_its_own_config_even_inside_another(self):
+        from hyperloom import cli
+        from hyperloom.recipes import service
+        seen = []
+        fake = SimpleNamespace(up=lambda *a, **kw: seen.append(service.configured_file()) or {"state": "running"})
+        args = cli.build_parser().parse_args(["up", "prof-b", "--config", str(self.config_b)])
+        cli.up_command(args, orchestrate=fake, load_cluster=lambda path: None)
+        with service.configured(self.config_a):                 # an ambient configuration never wins over --config
+            cli.up_command(args, orchestrate=fake, load_cluster=lambda path: None)
+        self.assertEqual(seen, [self.config_b.absolute()] * 2)
+
 
 if __name__ == "__main__":
     unittest.main()

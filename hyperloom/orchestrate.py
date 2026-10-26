@@ -75,22 +75,28 @@ def _config_key(path):
         return None
 
 
+def owns(state, config_path):
+    """Whether a launch state was launched from the configuration at ``config_path`` (its recorded path is the same
+    file); a state without the record, or not a state, belongs to none."""
+    record = state.get("config") if isinstance(state, dict) else None
+    recorded = record.get("path") if isinstance(record, dict) else None
+    wanted = _config_key(config_path)
+    return wanted is not None and isinstance(recorded, str) and _config_key(recorded) == wanted
+
+
 def launch_states(config_path, read=None):
     """{profile: state} of the saved launch states (the up-*.json files) launched from the configuration at
     ``config_path``, in profile order. A state that records another configuration, or none (written before launch
     states recorded it), is left out: a portal or a command on one configuration never shows or polls the profiles
     of another. ``read``: the state reader (default `_read`); an unreadable state is skipped."""
     read = read or _read
-    wanted = _config_key(config_path)
     found = {}
     for path in sorted(secrets.runtime_dir().glob("up-*.json")):
         try:
             state = read(path)
         except (OSError, ValueError):
             continue
-        record = state.get("config") if isinstance(state, dict) else None
-        recorded = record.get("path") if isinstance(record, dict) else None
-        if wanted is not None and isinstance(recorded, str) and _config_key(recorded) == wanted:
+        if owns(state, config_path):
             found[path.stem[3:]] = state
     return found
 
@@ -1242,15 +1248,18 @@ def down(profile, force=False):
 
 def status(profile=None, config_path=None):
     """One profile's status, or every saved launch's ({profile: status}); with ``config_path``, only the launches of
-    that configuration (`launch_states`): the others are neither listed nor polled."""
+    that configuration (`owns`): another configuration's launch (or one without the record) is neither listed nor
+    polled, and asked by name it answers stopped, with the reason."""
     if profile is None:
         names = (list(launch_states(config_path)) if config_path is not None
                  else [path.stem[3:] for path in secrets.runtime_dir().glob("up-*.json")])
-        return {name: status(name) for name in names}
+        return {name: status(name, config_path) for name in names}
     path = _state_path(profile)
     if not path.exists():
         return {"profile": profile, "state": "stopped"}
     state = _read(path)
+    if config_path is not None and not owns(state, config_path):
+        return {"profile": profile, "state": "stopped", "why": "launched from another configuration"}
     result = {"profile": profile, "nodes": {}, "router": None,
               "assets": state.get("assets", []), "asset_cache_note": assets.CACHE_NOTE, "launch": state.get("launch"),
               "unpublished_sources": (state.get("launch") or {}).get("unpublished_sources", []),
