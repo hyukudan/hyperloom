@@ -5,6 +5,7 @@ never invented. Disk reads are explicit operator actions (``measure=True``); oth
 """
 from __future__ import annotations
 
+import csv
 import json
 import mmap
 import os
@@ -41,21 +42,42 @@ def missing(why):
 
 # --- control machine ---------------------------------------------------------------------------------------------
 
-def nvidia_gpus(run=subprocess.run):
-    """[{uuid, name, memory_gib, used_gib}] for every NVIDIA GPU of this machine (nvidia-smi, passive)."""
-    try:
-        out = run(["nvidia-smi", "--query-gpu=uuid,name,memory.total,memory.used", "--format=csv,noheader,nounits"],
-                  capture_output=True, text=True, timeout=SMI_TIMEOUT_S, **no_window())
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise ProbeError(f"nvidia-smi unavailable: {exc}") from exc
-    if out.returncode != 0:
+def nvidia_gpus(run=subprocess.run, *, topology_reader=None):
+    """Passive identity and PCI capabilities. No context, transfer benchmark, or file measurement is created."""
+    from . import topology
+    topology_reader = topology_reader or topology.collect
+    base = "uuid,name,memory.total,memory.used"
+    identity = base + ",pci.bus_id,driver_version"
+    for fields in (identity + ",compute_cap,driver_model.current", identity, base):
+        try:
+            out = run(["nvidia-smi", "--query-gpu=" + fields, "--format=csv,noheader,nounits"],
+                      capture_output=True, text=True, timeout=SMI_TIMEOUT_S, **no_window())
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ProbeError(f"nvidia-smi unavailable: {exc}") from exc
+        if out.returncode == 0:
+            break
+    else:
         raise ProbeError("nvidia-smi failed: " + (out.stderr or out.stdout).strip()[:300])
     gpus = []
-    for line in out.stdout.splitlines():
-        cells = [c.strip() for c in line.split(",")]
-        if len(cells) == 4 and cells[2].isdigit() and cells[3].isdigit():
-            gpus.append({"uuid": cells[0], "name": cells[1], "memory_gib": int(cells[2]) / 1024,
-                         "used_gib": int(cells[3]) / 1024})
+    for cells in csv.reader(out.stdout.splitlines(), skipinitialspace=True):
+        cells = [c.strip() for c in cells]
+        if len(cells) not in (4, 6, 8) or not cells[2].isdigit() or not cells[3].isdigit():
+            continue
+        row = {"uuid": cells[0], "name": " ".join(cells[1].split()), "memory_gib": int(cells[2]) / 1024,
+               "used_gib": int(cells[3]) / 1024, "memory_bytes": int(cells[2]) * MIB,
+               "pci": "unknown", "arch": "unknown", "driver": "unknown",
+               "platform": "unknown" if os.name == "nt" else "linux"}
+        if len(cells) >= 6:
+            row["pci"] = topology.pci(cells[4])
+            row["driver"] = cells[5] if cells[5] and cells[5] != "N/A" else "unknown"
+        if len(cells) == 8:
+            cc = cells[6].split(".")
+            if len(cc) == 2 and all(c.isdigit() for c in cc):
+                row["arch"] = "sm_" + str(int(cc[0])) + str(int(cc[1]))
+            if os.name == "nt" and cells[7] in ("WDDM", "TCC"):
+                row["platform"] = "windows-" + cells[7].lower()
+        row.update(topology_reader(row["pci"]))
+        gpus.append(row)
     return gpus
 
 

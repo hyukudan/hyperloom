@@ -124,7 +124,11 @@ def _placement_evaluation(cluster, path, layers, backend, ctx, base, inventory, 
     refusal = None
     if not problems:
         try:
-            grants.check(cluster, resolved.recipe, bound["binding"], report, raw["hosts"])
+            used = grants.check(cluster, resolved.recipe, bound["binding"], report, raw["hosts"])
+            from . import sysmem
+            for row in report["devices"]:
+                if grants.uuid_key(row.get("uuid", "")) in used:
+                    sysmem.require(raw.get("sysmem_policy", "unknown"), placement=True, platform=row.get("platform"))
             # Placement launch stays unavailable until its adapter and supervision are complete.
             apply.refuse_unsupported(resolved.recipe)
         except RecipeError as exc:

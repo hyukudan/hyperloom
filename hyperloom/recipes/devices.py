@@ -40,6 +40,7 @@ def candidates(cluster, ctx, inventory, facts):
                     row[key] = deepcopy(values[key])
             rows.append(row)
     report = {"model": facts["model"], "devices": rows, "links": deepcopy(facts.get("links", []))}
+    report.update({key: deepcopy(facts.get(key, "unknown")) for key in ("xfer_host", "file_store", "engram_store")})
     if facts.get("model_sha256"):
         report["model_sha256"] = facts["model_sha256"]
     return report
