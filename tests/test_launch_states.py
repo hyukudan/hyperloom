@@ -138,6 +138,14 @@ class LaunchStatesTests(unittest.TestCase):
                     with self.assertRaisesRegex(orchestrate.OrchestrationError, "another configuration"):
                         orchestrate.logs(name, process, 10, config_path=self.config_b)
 
+    def test_endpoint_on_b_refuses_a_launch_of_a(self):
+        self.state("prof-a", self.config_a)
+        self.state("legacy")
+        for name in ("prof-a", "legacy"):
+            with self.assertRaisesRegex(orchestrate.OrchestrationError, "another configuration"):
+                orchestrate.endpoint(name, config_path=self.config_b)
+        self.assertEqual(orchestrate.endpoint("prof-a", config_path=self.config_a)["url"], "http://127.0.0.1:18600")
+
     def test_cli_up_records_its_own_config_even_inside_another(self):
         from hyperloom import cli
         from hyperloom.recipes import service

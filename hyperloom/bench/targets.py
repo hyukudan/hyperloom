@@ -258,7 +258,7 @@ def snapshot(api, parsed):
     allow-list entry, plus the resource set) is what a run then uses; the digest freezes it."""
     if parsed[0] == "profile":
         try:
-            located = api.orchestrate.endpoint(parsed[1])
+            located = api.orchestrate.endpoint(parsed[1], config_path=api.config_path)   # this portal's launch only
         except Exception as exc:
             raise PermissionError(f"profile {parsed[1]} has no running router: {exc}") from None
         material = {"profile": parsed[1], "url": located.get("url"), "key_name": located.get("key_name"),

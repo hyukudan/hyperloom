@@ -31,7 +31,7 @@ class Bench:
         features.reset(features.load(("bench",)))
         test.addCleanup(features.reset)
         orchestrator = mock.Mock()
-        orchestrator.endpoint.side_effect = lambda profile: {"url": f"http://127.0.0.1:{self.server.port}",
+        orchestrator.endpoint.side_effect = lambda profile, config_path=None: {"url": f"http://127.0.0.1:{self.server.port}",
                                                              "key_name": "key-router-fixture"}
         self.api = API(Path(self.dir.name) / "cluster.json", orchestrator=orchestrator, remote_module=mock.Mock(),
                        audit_path=Path(self.dir.name) / "audit.jsonl")

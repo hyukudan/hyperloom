@@ -970,8 +970,11 @@ def export_key(profile, destination):
     return {"key_name": name, "out": str(destination)}
 
 
-def endpoint(profile):
+def endpoint(profile, config_path=None):
+    """The profile's router URL and key name; with ``config_path``, only of a launch of that configuration (`owns`)."""
     state = _read(_state_path(profile))
+    if config_path is not None and not owns(state, config_path):
+        raise OrchestrationError(f"{profile}: launched from another configuration")
     if not state.get("router"):
         raise OrchestrationError("profile router has not started")
     return {"url": _url(state["router"]["endpoint"], ""),
