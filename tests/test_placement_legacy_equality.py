@@ -118,6 +118,36 @@ def test_legacy_context_error_precedes_reading_recipe_or_layers(tmp_path, monkey
     assert outcome(lambda: getattr(session, operation)(*args)) == expected
 
 
+@pytest.mark.parametrize("operation", ["evaluate", "pick"])
+@pytest.mark.parametrize("input_kind", ["recipe", "profile", "override"])
+@pytest.mark.parametrize("invalid", ["missing", "malformed"])
+@pytest.mark.parametrize("backend_kind", ["stub", "core"])
+def test_legacy_unreadable_input_matches_ddc5640(tmp_path, operation, input_kind, invalid, backend_kind):
+    from hyperloom.recipes import core
+    recipes = tmp_path / "recipes"
+    recipes.mkdir()
+    path = recipes / "legacy.toml"
+    path.write_text(test_recipes.PLAIN, encoding="utf-8")
+    bad = path if input_kind == "recipe" else tmp_path / "layer.toml"
+    if invalid == "malformed":
+        bad.write_text("broken [[[", encoding="utf-8")
+    else:
+        bad.unlink(missing_ok=True)
+    layers = session.Layers(**({"profile": bad} if input_kind == "profile" else
+                              {"overrides": [bad]} if input_kind == "override" else {}))
+    source = session.saved_source(test_recipes.saved_facts(tmp_path / "facts.json"))
+    backend = core.StubBackend()
+    if backend_kind == "core":
+        def run(*a, **kw):
+            return SimpleNamespace(returncode=1, stdout="", stderr="authoritative core input error")
+        backend = core.CoreBackend(core.Core("fake", run=run))
+    old = baseline(session, operation)
+    if operation == "pick":
+        old.__globals__["evaluate"] = baseline(session, "evaluate")
+    args = (test_recipes.fake_cluster(), "mm", path if operation == "evaluate" else [recipes], layers, source, backend)
+    assert outcome(lambda: getattr(session, operation)(*args)) == outcome(lambda: old(*args))
+
+
 @pytest.mark.parametrize("excluded", [False, True])
 def test_devices_document_summary_and_rules_match_baseline(tmp_path, monkeypatch, excluded):
     fixture = test_web_summaries.SummaryTests()

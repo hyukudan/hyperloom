@@ -21,11 +21,11 @@ from tests.test_recipes_grants import NOW, window
 
 
 @pytest.mark.parametrize("fault", ["controller-death", "cancelled", "launch", "existing", "ready"])
-def test_placement_start_owns_handlers_watcher_and_rollback(tmp_path, monkeypatch, fault):
+def test_placement_start_owns_handlers_watcher_and_rollback(tmp_path, monkeypatch, request, fault):
     path = tmp_path / "profile.json"
     spec = replace(test_rtx._binary_spec(), placement_supervision={"caps_bytes": {"synthetic": 1}})
-    request = SimpleNamespace(files=mock.Mock())
-    prepared = SimpleNamespace(placement_request=request, production=False, record=lambda: {})
+    placement_request = SimpleNamespace(files=mock.Mock())
+    prepared = SimpleNamespace(placement_request=placement_request, production=False, record=lambda: {})
     monkeypatch.setattr(launch, "render_placement", lambda *a, **kw: spec)
     monkeypatch.setattr(orchestrate, "_state_path", lambda _: path)
     monkeypatch.setattr(orchestrate, "_known_hosts", lambda: tmp_path / "known-hosts")
@@ -58,20 +58,43 @@ def test_placement_start_owns_handlers_watcher_and_rollback(tmp_path, monkeypatc
     helper = {"running": False}
     record = {"directory": str(tmp_path / "helper")}
     monkeypatch.setattr(rtx, "prepare_service", lambda _: record)
-    def down(state):
-        helper["running"] = False
-        calls.append("down")
-    monkeypatch.setattr(orchestrate, "_down_state", down)
+    threads = []
+    def stop_helpers():
+        directory = Path(record["directory"])
+        if directory.exists():
+            (directory / "stop").touch()
+        for thread in threads:
+            thread.join(5)
+    request.addfinalizer(stop_helpers)
     cancelled = [False]
     def start(saved, rendered, *, detached, owner, check):
         assert calls[:2] == ["handlers", "watcher"]
         assert orchestrate._read(path)["prefill_service"] == saved
         assert rtx._owner_alive(owner)
-        helper["running"] = True
+        directory = Path(saved["directory"])
+        directory.mkdir()
+        ready = threading.Event()
+        def process():
+            # Fake only the helper process: real stop_service must wait for its lifetime lock.
+            lifetime = real_lock(directory / "helper.lock").acquire()
+            try:
+                helper["running"] = True
+                ready.set()
+                while not (directory / "stop").exists():
+                    threading.Event().wait(.01)
+                helper["running"] = False
+            finally:
+                lifetime.close()
+        thread = threading.Thread(target=process)
+        threads.append(thread)
+        thread.start()
+        assert ready.wait(5)
         if fault == "controller-death":
             # An uncatchable controller death releases its instance lock. Run the real recovery loop then.
             locks[0].close()
             orchestrate.up_watch(path, owner["token"])
+            assert (Path(record["directory"]) / "stop").exists()
+            assert rtx._read(Path(record["directory"]) / "state.json")["state"] == "stopped"
             assert not helper["running"]
             assert not path.exists()
             assert not rtx._owner_alive(owner)
@@ -87,6 +110,7 @@ def test_placement_start_owns_handlers_watcher_and_rollback(tmp_path, monkeypatc
     if fault == "ready":
         assert launch.up_placement(None, "profile", prepared, deadline_s=600)["phase"] == "running"
         assert helper["running"]
+        orchestrate._down_state(orchestrate._read(path))
     else:
         message = {"existing": "saved running state", "cancelled": "stop requested",
                    "launch": "launch failed", "controller-death": "controller died"}[fault]
@@ -95,18 +119,22 @@ def test_placement_start_owns_handlers_watcher_and_rollback(tmp_path, monkeypatc
         assert not helper["running"]
         if fault == "existing":
             assert path.read_bytes() == b'{"existing":true}'
-            request.files.publish.assert_not_called()
+            placement_request.files.publish.assert_not_called()
             assert "watcher" not in calls
         else:
             assert not path.exists()
     assert all(item.file is None for item in locks)
+    for thread in threads:
+        thread.join(5)
+        assert not thread.is_alive()
     if fault != "existing":
-        request.files.publish.assert_called_once_with()
+        placement_request.files.publish.assert_called_once_with()
         assert calls[-1] == "handlers-closed"
 
 
 def test_01_evaluate_prepare_up_and_real_watchdog_with_fake_child(tmp_path, files, identity, monkeypatch):
-    from hyperloom import gpu_counters, orchestrate, secrets
+    from hyperloom import admission, cli, gpu_counters, orchestrate, secrets
+    from hyperloom.recipes import service
     from tests.replica_fake import FakeReplica as FakeChild
 
     artifacts, document = files
@@ -202,12 +230,33 @@ def test_01_evaluate_prepare_up_and_real_watchdog_with_fake_child(tmp_path, file
         thread.start()
         return SimpleNamespace(poll=lambda: None if thread.is_alive() else 0)
     monkeypatch.setattr(orchestrate, "_detached", detached)
+    # The CLI must hold the PC for the real selected placement Request, even without a prefill-service profile.
+    content_cache._write(tmp_path / "placement-inputs" / ("d" * 64 + ".json"), inputs)
+    monkeypatch.setattr(cli, "_cluster", lambda _: cluster)
+    monkeypatch.setattr(service, "locate", lambda *a, **kw: path)
+    monkeypatch.setattr(service, "deployment_profile", lambda *a: "decode")
+    database = admission.Admission(":memory:")
+    monkeypatch.setattr(admission, "for_config", lambda _: database)
+    args = cli.build_parser().parse_args(["up", "decode", "--recipe", str(path),
+                                         "--config", str(tmp_path / "config.json")])
+    try:
+        release = cli._admission_hold(args)
+        try:
+            assert database.holds()[0]["resources"] == ["local"]
+        finally:
+            release()
+        database.acquire("bench", {"local"}, label="PC benchmark")
+        with pytest.raises(RuntimeError, match="benchmark"):
+            cli._admission_hold(args)
+    finally:
+        database.close()
+    prepared_calls = len(calls)
     try:
         state = orchestrate.up(cluster, "decode", recipe=options)
         assert state["phase"] == "running"
         assert gates == [entry["gate"]] and locks == [identity.lower()]
         assert orchestrate.endpoint("decode")["protocol"] == "ds41-replica-spool-v1"
-        assert len(calls) == 2
+        assert len(calls) == prepared_calls + 1
         values[identity.lower()] = 90 * rtx.GIB + 1
         threads[0].join(5)
         assert not threads[0].is_alive()

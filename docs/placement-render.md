@@ -21,8 +21,10 @@ with `CUDA_DEVICE_ORDER=PCI_BUS_ID`. Legacy rendering keeps its exact environmen
 The core engine identifier is `strix-cuda-ds41-replica`. Its placement-v1 document is kept intact; it does not carry
 a manifest hash. The components-cache sidecar binds and validates the manifest independently. Device byte budgets
 are carried from the core into rendering, physical-capacity checks and watchdog comparisons.
-Every touched UUID needs an integer byte cap with `caps_bytes <= caps_gib * GiB <= grant * GiB`; missing or
-inconsistent caps are refused without clamping, including a half-byte conversion that rounds above the GiB cap.
+Every touched UUID needs an integer byte cap bounded by both `gib_bytes(caps_gib)` and `gib_bytes(grant)`, where
+`gib_bytes(x) = floor(x * 1073741824.0 + 0.5)` matches Tierstream's round-half-up conversion. The GiB cap must also
+be no greater than its grant. Missing or inconsistent caps, including a one-byte overrun, are refused without
+clamping; a valid rounded budget such as 92.4 GiB is accepted.
 
 Evaluation returns an admitted decode decision containing the plan, artifact references and supervision policy.
 `up --recipe` launches that local decode replica through the existing owned service helper, locks, per-device

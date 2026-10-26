@@ -71,12 +71,11 @@ def resolve(path, layers, identity=None, backend=None):
     return (backend or core.StubBackend()).resolve(path, read_text(path), layers, identity)
 
 
-def _samples(source, *, placement=False):
+def _samples(source):
     """Gather once per explicit (placement, identity) policy, shared by auto candidates."""
     cached = {}
 
     def once(ctx, *, policy=(False, False)):
-        policy = (placement or policy[0], policy[1])
         if policy not in cached:
             cached[policy] = source(ctx, policy=policy) if any(policy) else source(ctx)
         return cached[policy]
@@ -90,7 +89,11 @@ def evaluate(cluster, profile, path, layers, source, backend=None, *, placement_
     """
     from . import preflight
     facts.context(cluster, profile)  # Preserve legacy profile errors before inspecting recipe/layer files.
-    if not preflight.includes(SimpleNamespace(recipe=str(path), layers=layers, dirs=[])):
+    try:
+        placement = preflight.includes(SimpleNamespace(recipe=str(path), layers=layers, dirs=[]))
+    except RecipeError:
+        placement = False  # Let the legacy backend report unreadable recipe/layer inputs in its original order.
+    if not placement:
         return _legacy_evaluate(cluster, profile, path, layers, source, backend)
     return _evaluate_placement_candidate(cluster, profile, path, layers, _samples(source), backend,
                                          placement_inputs=placement_inputs, reviewed=reviewed)
@@ -170,7 +173,7 @@ def _evaluate_placement_candidate(cluster, profile, path, layers, source, backen
         return _placement_evaluation(cluster, path, layers, backend, ctx, recipe, inventory, gathered, raw, notes,
                                      placement_inputs=placement_inputs, identity=identity, reviewed=reviewed)
     return _legacy_evaluate(cluster, profile, path, layers,
-                            lambda _: (inventory, gathered, raw, notes), backend)
+                            lambda c: source(c, policy=(False, False)), backend)
 
 
 def _placement_evaluation(cluster, path, layers, backend, ctx, base, inventory, gathered, raw, notes,
@@ -311,7 +314,11 @@ def specificity(recipe):
 def pick(cluster, profile, directories, layers, source, backend=None, *, reviewed=None):
     from . import preflight
     facts.context(cluster, profile)
-    if not preflight.includes(SimpleNamespace(recipe="auto", layers=layers, dirs=directories)):
+    try:
+        placement = preflight.includes(SimpleNamespace(recipe="auto", layers=layers, dirs=directories))
+    except RecipeError:
+        placement = False  # Preserve legacy per-candidate refusals for unreadable layers.
+    if not placement:
         return _legacy_pick(cluster, profile, directories, layers, source, backend)
     return _placement_pick(cluster, profile, directories, layers, source, backend, reviewed=reviewed)
 
@@ -357,8 +364,7 @@ def _placement_pick(cluster, profile, directories, layers, source, backend=None,
     Returns (chosen Evaluation or None, rows for every candidate with why it was or was not chosen)."""
     ctx = facts.context(cluster, profile)
     choices = candidates(directories)
-    once = _samples(source, placement=any(not row["error"] and row["model"] == ctx.model and any(
-        reader.placement_mode(r) for r in row["recipe"]["routes"]) for row in choices))
+    once = _samples(source)
     rows, passing = [], []
     for row in choices:
         out = {"path": row["path"], "name": row["name"]}

@@ -224,9 +224,9 @@ def before_options(cluster, profile, options, *, router="local", cap=None, sourc
     if not includes(options):
         return
     from . import launch
-    launch.prepare(cluster, profile, options, router=router, vram_cap_gib=cap,
-                   state_dir=orchestrate._state_path(profile).parent, source=source,
-                   **({"reviewed": reviewed} if reviewed is not None else {}))
+    return launch.prepare(cluster, profile, options, router=router, vram_cap_gib=cap,
+                          state_dir=orchestrate._state_path(profile).parent, source=source,
+                          **({"reviewed": reviewed} if reviewed is not None else {}))
 
 
 def snapshot(digest, profile=None, *, source=None, stop=None, approval=None, job=None):
@@ -297,7 +297,7 @@ def cli(args, *, load_cluster=None):
             args.recipe, cluster, for_up=True, extra=args.recipe_dir or []))
         profile = args.profile if path == "auto" else service.deployment_profile(cluster, path, args.profile)
         options = launch.Options(path, layers, dirs)
-        before_options(cluster, profile, options, router=args.router, cap=args.vram_cap_gib,
-                       nodes=args.node, diagnostics=args.diagnostic, devices=args.device)
-        if includes(options):
-            return {facts.control_machine(cluster)}
+        prepared = before_options(cluster, profile, options, router=args.router, cap=args.vram_cap_gib,
+                                  nodes=args.node, diagnostics=args.diagnostic, devices=args.device)
+        if prepared is not None and prepared.placement_request is not None:
+            return {prepared.evaluation.context.pc}

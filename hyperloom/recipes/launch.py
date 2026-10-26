@@ -151,7 +151,7 @@ def prepare(cluster, profile, options, *, router, vram_cap_gib, state_dir, sourc
     placement = preflight.includes(options)
     if not placement:
         check_router()
-    source = source or commands.live_source(cluster, placement=placement)
+    source = source or commands.live_source(cluster)
     if options.recipe == "auto":
         dirs = options.dirs if options.exact_dirs else commands.recipe_dirs(cluster, options.dirs)
         chosen, rows = session.pick(cluster, profile, dirs, options.layers, source, backend,

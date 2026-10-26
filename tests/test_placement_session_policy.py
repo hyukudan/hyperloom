@@ -1,6 +1,7 @@
 """Source policy is explicit and facts are sampled once per policy, including auto selection."""
 
 from pathlib import Path
+from copy import deepcopy
 from types import SimpleNamespace
 from unittest import mock
 import ast
@@ -13,13 +14,104 @@ import uuid
 import pytest
 
 from hyperloom import rtx, assets
-from hyperloom.recipes import apply, facts, sysmem
+from hyperloom.recipes import apply, facts, sysmem, probe, topology
 from hyperloom.recipes import commands, reader, session, content_cache, core, descriptors, launch, preflight, runtime
 
 from tests import test_recipes
 from tests.placement_fixtures import identity
-from tests.test_placement_legacy_equality import baseline_text
+from tests.test_placement_legacy_equality import baseline_text, baseline
 from tests.test_recipes_grants import NOW, window
+
+
+@pytest.mark.parametrize("name", ["NVIDIA RTX PRO 6000 Blackwell", "NVIDIA RTX   PRO 6000 Blackwell"])
+@pytest.mark.parametrize("caller", ["pick", "prepare"])
+def test_mixed_selection_preserves_real_legacy_probe_and_match(tmp_path, monkeypatch, name, caller):
+    cluster = test_recipes.fake_cluster()
+    path = tmp_path / "legacy.toml"
+    path.write_text(test_recipes.PLAIN, encoding="utf-8")
+    calls = []
+    def run(argv, **kw):
+        calls.append(argv)
+        extra = ", 0000:01:00.0, 600, 12.0, WDDM" if "pci.bus_id" in argv[1] else ""
+        return SimpleNamespace(returncode=0, stdout=f"{test_recipes.GPU}, {name}, 98304, 0{extra}\n")
+    nvidia = probe.nvidia_gpus
+    monkeypatch.setattr(probe, "nvidia_gpus", lambda **kw: nvidia(run, topology_reader=lambda _: {}, **kw))
+    monkeypatch.setattr(probe, "host_memory", lambda: dict(total_gib=128, free_gib=100, free_commit_gib=120))
+    monkeypatch.setattr(topology, "host", lambda: {})
+    def node(mid, verb):
+        if verb == "gpu":
+            return {"checks": {"amd": {"status": "ok", "value": [{
+                "product_name": {"status": "ok", "value": "AMD Radeon 8060S"},
+                "gtt_total_bytes": {"status": "ok", "value": 120 * rtx.GIB}}]},
+                "ram": {"status": "ok", "value": dict(total_bytes=128 * rtx.GIB, available_bytes=124 * rtx.GIB)}}}
+        return {"checks": {"interfaces": {"status": "ok", "value": [dict(state="up", negotiated_mbps=2500)]},
+                           "usb4": {"layout": {"status": "ok", "value": {}},
+                                    "streams": {"status": "ok", "value": {"openable": ["test"]}}}}}
+    monkeypatch.setattr(commands, "node_call", lambda _: node)
+    monkeypatch.setattr(commands, "cache", lambda: None)
+    monkeypatch.setattr(runtime, "preset", lambda: {"engine_sha": None})
+    monkeypatch.setattr(launch.render, "router_policies", lambda: ("routes",))
+    layers = session.Layers()
+    source = commands.live_source(cluster)
+    old = baseline(session, "evaluate")(cluster, "mm", path, layers, source)
+    assert len(calls) == 1
+    assert calls[0][1] == "--query-gpu=uuid,name,memory.total,memory.used"
+    assert old.ok == ("   " not in name)
+    expected, original_rows = session.pick(cluster, "mm", [tmp_path], layers, source)
+    calls.clear()
+    doc = test_recipes.PlacementSchemaTests.document()
+    doc["match"]["model"] = old.context.model
+    (tmp_path / "placement.json").write_text(json.dumps(doc), encoding="utf-8")
+    if caller == "pick":
+        chosen, rows = session.pick(cluster, "mm", [tmp_path], layers, source)
+        assert rows[0] == original_rows[0]
+        assert (chosen is None) == (expected is None)
+        if chosen is not None:
+            assert chosen.summary() == old.summary()
+    else:
+        monkeypatch.setattr(launch, "_backend", lambda _: (core.StubBackend(), False))
+        options = launch.Options("auto", layers, dirs=[tmp_path], exact_dirs=True)
+        if old.ok:
+            prepared = launch.prepare(cluster, "mm", options, router="local", vram_cap_gib=None, state_dir=tmp_path)
+            assert prepared.evaluation.summary() == old.summary()
+        else:
+            with pytest.raises(reader.RecipeError, match="no recipe fits"):
+                launch.prepare(cluster, "mm", options, router="local", vram_cap_gib=None, state_dir=tmp_path)
+    assert len(calls) == 2  # One legacy gather and one placement gather, with no policy override.
+    assert sum(argv[1] == "--query-gpu=uuid,name,memory.total,memory.used" for argv in calls) == 1
+
+
+def test_stale_placement_profile_gathers_separate_legacy_fallback(tmp_path, monkeypatch):
+    path = tmp_path / "legacy.toml"
+    path.write_text(test_recipes.PLAIN, encoding="utf-8")
+    profile = tmp_path / "profile.toml"
+    profile.write_text(test_recipes.profile_text(recipe_sha="0" * 64, set_lines=(
+        '"routes.decode_pair.components.drafter.device" = "pair"',)), encoding="utf-8")
+    cluster = test_recipes.fake_cluster()
+    legacy_source = session.saved_source(test_recipes.saved_facts(tmp_path / "facts.json"))
+    backend = core.CoreBackend(core.Core("fake"))
+    backend.resolve = core.StubBackend().resolve
+    backend.match = lambda *a: ([], test_recipes.BINDING, "a" * 64)
+    backend.select = lambda path, layers, resolved, state, sha, identity: reader.select(resolved.recipe, state, sha)
+    monkeypatch.setattr(session.devices, "candidates", lambda *a: test_recipes.FACTS)
+    policies = []
+    def source(ctx, *, policy=(False, False)):
+        policies.append(policy)
+        inventory, gathered, raw, notes = deepcopy(legacy_source(ctx))
+        if any(policy):
+            gathered["placement_sample"] = True
+        return inventory, gathered, raw, notes
+    original = session._legacy_evaluate
+    samples = []
+    def legacy(*args, **kw):
+        sample = args[4](facts.context(cluster, "mm"))
+        samples.append(sample)
+        return original(*args, **kw)
+    monkeypatch.setattr(session, "_legacy_evaluate", legacy)
+    result = session.evaluate(cluster, "mm", path, session.Layers(profile=profile), source, backend)
+    assert result.effective.untuned
+    assert policies == [(False, True), (False, False)]
+    assert "placement_sample" not in samples[0][1]
 
 
 def test_auto_samples_once_for_explicit_policy_without_callable_attributes(tmp_path, monkeypatch):
@@ -158,7 +250,7 @@ def test_16_effective_layer_selects_placement_and_policy(tmp_path, monkeypatch, 
     monkeypatch.setattr(session.apply, "deploy", lambda *args, **kw: {})
     source = mock.Mock(return_value=({}, {}, {}, []))
     observed = []
-    source.side_effect = lambda _, policy=(False, False): (observed.append(policy[0]) or ({}, {}, {}, []))
+    source.side_effect = lambda _, policy=(False, False): (observed.append(policy) or ({}, {}, {}, []))
     chosen = SimpleNamespace(ok=True, effective=SimpleNamespace(recipe=reader.parse(json.dumps(doc))))
     placement = mock.Mock(return_value=chosen)
     monkeypatch.setattr(session, "_placement_evaluation", placement)
@@ -168,12 +260,12 @@ def test_16_effective_layer_selects_placement_and_policy(tmp_path, monkeypatch, 
         result = session.evaluate(None, "decode", path, layers, source, backend)
     if layer_kind in ("stale-profile", "legacy"):
         placement.assert_not_called()
-        assert observed == [False]
+        assert observed == ([(False, True), (False, False)] if layer_kind == "stale-profile" else [(False, False)])
         assert result.decision == {}
         assert result.effective.untuned == (layer_kind == "stale-profile")
         return
     assert result is chosen
-    assert observed == ([False, True] if layer_kind == "profile" else [True])
+    assert observed == ([(False, True), (True, True)] if layer_kind == "profile" else [(True, False)])
     assert reader.placement_mode(placement.call_args.args[5]["routes"][0])
 
 

@@ -27,8 +27,11 @@ def validate(policy, *, now, starting=False, memory=None):
         number(cap, "placement cap", 0, 1024)
         if cap <= 0 or cap > grant["vram_cap_gib"]:
             raise rtx.ServiceError("placement cap exceeds grant or is disabled")
-        if byte_caps[uuid] > cap * rtx.GIB:
-            raise rtx.ServiceError("placement byte cap exceeds GiB cap")
+        # Tierstream recipe.cpp gib_bytes, used by place.cpp for budget_bytes: round half up, not round().
+        cap_bytes = math.floor(cap * rtx.GIB + 0.5)
+        grant_bytes = math.floor(grant["vram_cap_gib"] * rtx.GIB + 0.5)
+        if byte_caps[uuid] > cap_bytes or byte_caps[uuid] > grant_bytes:
+            raise rtx.ServiceError("placement byte cap exceeds GiB cap or grant")
         if not grants._active(grant["window"], now, starting=starting):
             raise rtx.ServiceError("placement device grant is not open or has expired")
     pinned, pageable = policy["host_pinned_gib"], policy["host_pageable_gib"]
