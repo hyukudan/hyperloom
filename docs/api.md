@@ -20,6 +20,8 @@ Placement retains these changes to the legacy interface:
   Legacy `--recipe auto` in a mixed directory containing placement candidates can run
   read-only live fact probes on the nodes before the admission hold, even when a node benchmark later refuses
   the launch. Pure-legacy directories keep their existing probe order.
+  If the final selection of such a launch differs from the admitted one (recipe, digest, kind or resources),
+  it is refused before any launch state with `recipe selection changed after admission; retry`.
 - The portal returns synchronous HTTP 400 refusals for invalid recipe launches/deploys before creating a job;
   the UI displays the refusal. Previously these could become asynchronous job failures.
 - A configured device's `excluded` flag controls its eligibility, including an explicitly included RTX 4090.
