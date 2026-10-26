@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import Path
+import re
 import time
 
 from .. import engines, render, rtx
@@ -47,6 +47,20 @@ FAMILY_PREFILL_CHUNK = {"ds41-pair": ("--prefill-rows", 4096),
 DECLARATION_SCHEMA = "hyperloom/engine-describe-v1"
 DESCRIBE_FLAG = {"ds41-pair": "--describe-capabilities-json"}     # the engine's memory declaration (:2100-2146)
 MAX_DECLARED_BYTES = 1 << 50
+MAX_RECEIPT_BYTES = 4 << 20     # a receipt file is read at most this far (the core's output cap)
+SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+
+
+def read_receipt(receipt_path):
+    """A receipt's raw bytes and its JSON, read at most MAX_RECEIPT_BYTES."""
+    with open(receipt_path, "rb") as stream:
+        raw = stream.read(MAX_RECEIPT_BYTES + 1)
+    if len(raw) > MAX_RECEIPT_BYTES:
+        raise probe.ProbeError(f"{receipt_path}: larger than {MAX_RECEIPT_BYTES >> 20} MiB")
+    try:
+        return raw, json.loads(raw)
+    except (ValueError, RecursionError) as exc:
+        raise probe.ProbeError(f"{receipt_path}: not JSON") from exc
 
 
 def control_machine(cluster):
@@ -205,7 +219,8 @@ def node_runtime(cluster, ctx, cache):
         else:
             out[row["machine"]] = {"gib": (entry["workspace_bytes"] + entry["state_bytes_per_slot"] * slots
                                            + entry["kv_pool_bytes"]) / probe.GIB,
-                                   "receipt_sha256": entry["receipt_sha256"], "launch_sha256": row["launch_sha256"]}
+                                   "receipt_sha256": entry["receipt_sha256"], "launch_sha256": row["launch_sha256"],
+                                   "executable_sha256": entry.get("executable_sha256")}
     return out
 
 
@@ -405,13 +420,11 @@ class Cache(probe.DiskCache):
     def put_declaration(self, machine, rank, launch, receipt_path):
         """Store a node's engine memory declaration: `hyperloom/engine-describe-v1` {machine, rank, launch_sha256,
         output = the engine's describe JSON}; refused unless it names this machine, rank and exact launch."""
-        raw = Path(receipt_path).read_bytes()
-        try:
-            receipt = json.loads(raw)
-        except (ValueError, RecursionError) as exc:
-            raise probe.ProbeError(f"{receipt_path}: not JSON") from exc
+        raw, receipt = read_receipt(receipt_path)
         if not isinstance(receipt, dict) or receipt.get("schema") != DECLARATION_SCHEMA:
             raise probe.ProbeError(f"{receipt_path}: expected {DECLARATION_SCHEMA}")
+        if type(receipt.get("rank")) is not int:
+            raise probe.ProbeError(f"{receipt_path}: rank must be an integer")
         if (receipt.get("machine"), receipt.get("rank"), receipt.get("launch_sha256")) != (machine, rank, launch):
             raise probe.ProbeError(f"{receipt_path}: names {receipt.get('machine')} rank {receipt.get('rank')} launch "
                                    f"{str(receipt.get('launch_sha256'))[:12]}, not {machine} rank {rank} launch "
@@ -421,7 +434,12 @@ class Cache(probe.DiskCache):
         if (not isinstance(output, dict) or output.get("schema") != "strix/engine-capabilities-v1"
                 or not isinstance(modes, list) or len(modes) != 1 or not isinstance(modes[0], dict)):
             raise probe.ProbeError(f"{receipt_path}: output must be one strix/engine-capabilities-v1 mode")
-        memory = [m for m in modes[0].get("memory") or [] if isinstance(m, dict) and m.get("rank") == rank]
+        executable = output.get("executable_sha256")
+        if not isinstance(executable, str) or not SHA256_HEX.fullmatch(executable):
+            raise probe.ProbeError(f"{receipt_path}: output.executable_sha256 must be a sha256 (the engine build that "
+                                   "declared it, compared with the release `up` starts)")
+        memory = [m for m in modes[0].get("memory") or []
+                  if isinstance(m, dict) and type(m.get("rank")) is int and m["rank"] == rank]
         if len(memory) != 1:
             raise probe.ProbeError(f"{receipt_path}: the declaration has no memory entry for rank {rank}")
         fields = {}
@@ -434,7 +452,7 @@ class Cache(probe.DiskCache):
         key = f"describe|{machine}|{launch}"
         data[key] = dict(fields, launch_sha256=launch, rank=rank, receipt=str(receipt_path),
                          receipt_sha256=hashlib.sha256(raw).hexdigest(),
-                         executable_sha256=output.get("executable_sha256"))
+                         executable_sha256=executable)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_name(self.path.name + ".tmp")
         temporary.write_text(json.dumps(data, indent=1, sort_keys=True), encoding="utf-8")
@@ -452,11 +470,7 @@ class Cache(probe.DiskCache):
     def put_evidence(self, machine, model_path, receipt_path):
         """Store a node's measured disk bandwidth from a receipt (JSON: disk_read_gbytes_ps, method "direct", host,
         path); refused unless the receipt names this machine and its model path."""
-        raw = Path(receipt_path).read_bytes()
-        try:
-            receipt = json.loads(raw)
-        except ValueError as exc:
-            raise probe.ProbeError(f"{receipt_path}: not JSON") from exc
+        raw, receipt = read_receipt(receipt_path)
         if not isinstance(receipt, dict) or not EVIDENCE_SCHEMA_KEYS <= receipt.keys():
             raise probe.ProbeError(f"{receipt_path}: needs {', '.join(sorted(EVIDENCE_SCHEMA_KEYS))}")
         if receipt["method"] != "direct":

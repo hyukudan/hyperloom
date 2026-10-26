@@ -62,11 +62,20 @@ LOOPBACK_UNAVAILABLE = "unavailable: engine bound to loopback on its node"
 
 
 def _binds_loopback(profile, status, cluster):
-    """True when the profile's engine family binds 127.0.0.1 on its node (no LAN listener to poll)."""
-    family = ((status or {}).get("launch") or {}).get("family")
+    """True when the profile's engine binds 127.0.0.1 on its node (no LAN listener to poll): the launched release's
+    bind (a key-file release binds the LAN), else its family's."""
+    launch = (status or {}).get("launch") or {}
+    family, preset = launch.get("family"), launch.get("preset")
     try:
-        if family is None and cluster is not None and profile in cluster.profiles:
-            family = config.family(cluster.profiles[profile].get("preset", profile))
+        if preset is None and family is None and cluster is not None and profile in cluster.profiles:
+            preset = cluster.profiles[profile].get("preset", profile)
+        if isinstance(preset, str):
+            try:
+                return engines.release_adapter(preset).bind == "loopback"
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+            if family is None:
+                family = config.family(preset)
         return family is not None and engines.adapter(family).bind == "loopback"
     except (OSError, ValueError, KeyError):
         return False

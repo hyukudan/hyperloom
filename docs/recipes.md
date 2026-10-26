@@ -41,6 +41,8 @@ hyperloom recipe pick     <profile> [--dir DIR]... [--facts FACTS.json] [layers]
   `--out` saves the facts so `validate`, `explain` and `pick` can run offline with `--facts`.
   `--describe-command` prints, for each node process, its launch sha256 and the exact command that makes the engine
   declare its memory for that launch (the launch line plus `--describe-capabilities-json`; DS only today).
+  hyperloom only renders it and never runs it. The engine opens the GPU to describe itself, so on lab nodes the
+  command must run inside a GPU turn, with the installed release binary and the node's key file path.
   `--declaration NODE=RECEIPT` stores that declaration (see *Node placements*).
 
 `--recipe-workload` names the workload class the run serves. A profile that was tuned for a different class is
@@ -160,7 +162,13 @@ refreshes it.
     within 0.05 GiB, the runtime the engine declares for the exact launch on every member (workspace + state per
     slot x slots + KV pool). The declaration is a receipt: `hyperloom/engine-describe-v1` `{machine, rank,
     launch_sha256, output}`, where `output` is the engine's `strix/engine-capabilities-v1` JSON. A changed flag,
-    engine build or asset is another launch, and its old receipt no longer counts. No receipt = refused.
+    engine build or asset is another launch, and its old receipt no longer counts. No receipt = refused. At its
+    default, `workspace_gib` is not checked and saved receipts play no part in the launch.
+  - `up` checks the final launch line again after it installs the release and pushes the node key files, before any
+    lease: it must be the launch the receipts were made for, and each receipt's `executable_sha256` must be the
+    binary hash in that release's manifest. A refusal there removes the launch state and the local router keys; the
+    node key files `up` just wrote stay on the nodes (the release id is only known at that point). They are the
+    profile's usual key files and the next `up` overwrites them.
 - **Prefill routes on the decode processes.** One process has one placement. A local prefill route must match the
   decode route in every field except three, each with its own rule:
   - `max_context_tokens` ≤ the decode route's;
@@ -172,12 +180,13 @@ refreshes it.
     `--known-prefix-prefill-rows`). `0` means whole prompt and matches no engine here.
 - **Node RAM charge.** Still the conservative model above: the device budget (`memory_min_gib` when `device_gib` is
   absent) + overhead. That refuses today's DS and Qwen lab examples on the nodes. A measured or enforced charge is
-  waiting for a decision (wave4 design-r14 v3, options A/B/C).
+  waiting for a decision.
 - **Hetero decode.** `execute = "hetero"` decode routes are refused: no hyperloom profile runs one.
 - **Batch on prefill routes.** Batch predicates on prefill routes are refused: the router cannot see how many
   sequences are in a step.
 - **MiniMax.** The MiniMax pair binds loopback, so its router must run on rank 0. Because recipes need the local
   router, `up --recipe` does not run it yet. A preset whose MiniMax serve takes an API key file declares
   `"serve_auth": "key-file"`. That release then binds the LAN with a key file, like DS and Qwen, and other releases
-  stay loopback. Its offload routes also wait for its serve-side hand-off contract and the
+  stay loopback. Its argv must pass the key (`--api-key-file {key_file}` or `--http-api-key-file {key_file}`);
+  without it the preset is refused. Its offload routes also wait for its serve-side hand-off contract and the
   `import-state-parked` capability.

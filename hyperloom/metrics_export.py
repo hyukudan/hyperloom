@@ -313,8 +313,20 @@ def launch_families(launches=None):
     return result
 
 
-def _loopback(family):
+def launch_presets(launches=None):
+    """{profile: preset} of each saved launch that records its preset (the release whose bind decides probing)."""
+    return {name: launch["preset"] for name, launch in (_launches() if launches is None else launches).items()
+            if isinstance(launch.get("preset"), str)}
+
+
+def _loopback(family, preset=None):
+    """The launched release's bind (a key-file release binds the LAN), else its family's."""
     from . import engines
+    if preset is not None:
+        try:
+            return engines.release_adapter(preset).bind == "loopback"
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
     try:
         return engines.adapter(family).bind == "loopback"
     except (ValueError, KeyError):
@@ -377,9 +389,11 @@ def collect(routers=None, fetch=_get, profile=None, deadline_s=SCRAPE_DEADLINE_S
     ({profile: commits}) and ``families`` ({profile: engine family}) default to the saved launch states. Replicas of
     a loopback-bound family are never probed: their address is 127.0.0.1 on their node, not on this machine."""
     routers = running_routers() if routers is None else routers
+    presets = {}
     if families is None:
         try:
-            families = launch_families()
+            saved = _launches()
+            families, presets = launch_families(saved), launch_presets(saved)
         except (OSError, RuntimeError):
             families = {}
     if profile is not None:
@@ -402,7 +416,7 @@ def collect(routers=None, fetch=_get, profile=None, deadline_s=SCRAPE_DEADLINE_S
     jobs = []
     for name, rid, node, raw_endpoint in replicas:
         labels = {"profile": name, "replica": rid, "machine": node}
-        if _loopback(families.get(name)):
+        if _loopback(families.get(name), presets.get(name)):
             for source in ("engine_metrics", "engine_status"):
                 _source(out, {**labels, "source": source, "reason": LOOPBACK_UNAVAILABLE}, False, None)
             continue

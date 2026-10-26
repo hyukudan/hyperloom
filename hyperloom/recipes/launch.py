@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import time
 
-from .. import render, rtx
+from .. import engines, render, rtx
 from ..config import ConfigError
 from . import apply, commands, core, descriptors, facts, probe, session
 from .reader import RecipeError
@@ -149,18 +149,31 @@ def prepare(cluster, profile, options, *, router, vram_cap_gib, state_dir, sourc
                   cap, host, table, plan)
 
 
-def verify_launch(launch, selected, profile, processes):
+def verify_launch(launch, selected, profile, processes, release_rows):
     """The final render `up` is about to start must be the launch whose engine declarations admission checked (the
-    release id and key paths are normalized away); refused before any lease otherwise."""
+    release id and key paths are normalized away), and each declaration must come from the executable of the release
+    being started (``release_rows``: {machine: its release listing row}); refused before any lease otherwise. Only
+    when admission checked them (a recipe workspace_gib set on the nodes): saved declarations are otherwise not part
+    of the decision."""
+    if not ((launch.evaluation.decision or {}).get("decode") or {}).get("runtime_checked"):
+        return
     rows = (launch.evaluation.context.limits or {}).get("node_runtime") or {}
-    checked = {mid: row["launch_sha256"] for mid, row in rows.items() if "gib" in row}
+    checked = {mid: row for mid, row in rows.items() if "gib" in row}
     if not checked:
         return
     final = {mid: sha for mid, (_, sha, _) in facts.launch_identities(selected, profile, processes).items()}
-    changed = sorted(mid for mid, sha in checked.items() if final.get(mid) != sha)
+    changed = sorted(mid for mid, row in checked.items() if final.get(mid) != row["launch_sha256"])
     if changed:
         raise RecipeError("the launch about to start differs from the one its engine declarations were checked for on "
                           + ", ".join(changed) + " (diagnostics or a changed flag); nothing was started")
+    binary = engines.release_adapter(selected.profiles[profile].get("preset", profile)).binary
+    for mid, row in sorted(checked.items()):
+        built = (((release_rows.get(mid) or {}).get("manifest") or {}).get("binaries") or {}).get(binary)
+        if built is None or row.get("executable_sha256") != built:
+            raise RecipeError(f"{mid}: the engine declaration was made by executable "
+                              f"{str(row.get('executable_sha256'))[:12]}, not the {binary} of the release being started "
+                              f"({str(built)[:12]}); run the describe command with the installed binary; nothing was "
+                              "started")
 
 
 def recheck_before_service(launch, cluster, *, memory=None, pro_busy=None):

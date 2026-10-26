@@ -311,6 +311,21 @@ class APITests(unittest.TestCase):
         self.assertEqual(fetched, ["/metrics"])
         self.assertEqual(rows["qwen-replicas"]["why"]["status"], "connection refused")
 
+    def test_a_key_file_release_binds_the_lan(self):
+        # The launched release decides the bind, not the family row (a key-file MiniMax release serves the LAN).
+        from hyperloom import engines
+        from hyperloom.web.api import _binds_loopback
+        real = engines.load_preset
+        keyed = dict(real("minimax-pair"), serve_auth="key-file",
+                     argv=real("minimax-pair")["argv"] + ["--api-key-file", "{key_file}"])
+        cluster = deepcopy(self.cluster)
+        cluster.profiles["mm"] = {"preset": "mm-keyed", "rank0": "halo-1", "rank1": "halo-1"}
+        with patch.object(engines, "load_preset", side_effect=lambda n: keyed if n == "mm-keyed" else real(n)):
+            self.assertFalse(_binds_loopback("mm", {"launch": {"family": "minimax-pair", "preset": "mm-keyed"}}, None))
+            self.assertFalse(_binds_loopback("mm", {}, cluster))
+            self.assertTrue(_binds_loopback("mm", {"launch": {"family": "minimax-pair", "preset": "minimax-pair"}},
+                                            None))
+
     def test_redaction_keeps_measurements_and_key_file_paths(self):
         value = redact({"api_key": "hidden", "generated_tokens": 123, "api_key_file": "/opt/key", "argv": ["--api-key", "hidden"]})
         self.assertEqual(value["generated_tokens"], 123)

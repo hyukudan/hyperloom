@@ -92,6 +92,25 @@ class ExportTests(unittest.TestCase):
         metrics_export.collect({"qwen": ROUTER}, fetch, launches={}, families={"qwen": "qwen-replicas"})
         self.assertIn(("192.0.2.1", "/metrics"), probed)
 
+    def test_a_key_file_release_of_a_loopback_family_is_probed(self):
+        # The launched release decides the bind: a key-file MiniMax release serves the LAN, the family row does not.
+        from hyperloom import engines
+        real = engines.load_preset
+        keyed = dict(real("minimax-pair"), serve_auth="key-file",
+                     argv=real("minimax-pair")["argv"] + ["--api-key-file", "{key_file}"])
+        (self.run_dir / "up-mm.json").write_text(json.dumps({"launch": {"family": "minimax-pair", "preset": "mm-keyed"}}),
+                                                 encoding="utf-8")
+        probed = []
+
+        def fetch(endpoint, suffix, text=False):
+            if suffix != "/api/status" or endpoint != ROUTER:
+                probed.append((endpoint["address"], suffix))
+            return fake_fetch(healthy())(endpoint, suffix, text)
+        with mock.patch.object(engines, "load_preset", side_effect=lambda n: keyed if n == "mm-keyed" else real(n)):
+            self.assertEqual(metrics_export.launch_presets(), {"mm": "mm-keyed"})
+            metrics_export.collect({"mm": ROUTER}, fetch, launches={})
+        self.assertIn(("192.0.2.1", "/metrics"), probed)
+
     def test_round_trip_through_prometheus_parser(self):
         text = metrics_export.collect({"qwen": ROUTER}, fake_fetch(healthy()))
         samples = prom.parse(text)

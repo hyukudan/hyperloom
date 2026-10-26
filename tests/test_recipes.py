@@ -779,7 +779,12 @@ class LaunchTests(unittest.TestCase):
                (dict(good, schema="x"), "expected hyperloom/engine-describe-v1"),
                (dict(good, output=dict(output, schema="x")), "one strix/engine-capabilities-v1 mode"),
                (dict(good, output=dict(output, modes=[output["modes"][0], output["modes"][0]])), "one strix"),
-               (dict(good, output={**output, "modes": [{"memory": [{"rank": 1}]}]}), "no memory entry for rank 0")]
+               (dict(good, output={**output, "modes": [{"memory": [{"rank": 1}]}]}), "no memory entry for rank 0"),
+               (dict(good, rank=False), "rank must be an integer"), (dict(good, rank=0.0), "rank must be an integer"),
+               (dict(good, output={**output, "modes": [{"memory": [dict(output["modes"][0]["memory"][0], rank=False)]}]}),
+                "no memory entry for rank 0"),
+               (dict(good, output={k: v for k, v in output.items() if k != "executable_sha256"}), "executable_sha256"),
+               (dict(good, output=dict(output, executable_sha256="E" * 64)), "executable_sha256")]
         for value, key in (("1" + "0" * 30, "workspace_bytes"), ("-1", "kv_pool_bytes"), ("1.5", "state_bytes_per_slot")):
             text = json.dumps(good).replace(f'"{key}": {good["output"]["modes"][0]["memory"][0][key]}', f'"{key}": {value}', 1)
             bad.append((json.loads(text), f"{key} must be an integer"))
@@ -787,13 +792,18 @@ class LaunchTests(unittest.TestCase):
             receipt.write_text(json.dumps(data))
             with self.subTest(why=why), self.assertRaisesRegex(probe.ProbeError, why):
                 cache.put_declaration("n1", 0, launch_sha, receipt)
+        receipt.write_bytes(json.dumps(good).encode() + b" " * facts.MAX_RECEIPT_BYTES)    # bounded read
+        with self.assertRaisesRegex(probe.ProbeError, "larger than 4 MiB"):
+            cache.put_declaration("n1", 0, launch_sha, receipt)
+        with self.assertRaisesRegex(probe.ProbeError, "larger than 4 MiB"):
+            cache.put_evidence("n1", "/m", receipt)
         # The runtime the check compares: workspace + state per slot x launched slots + KV pool.
         context = dataclasses.replace(ctx(), limits=dict(LIMITS, node_batch=2))
         rows = [{"machine": "n1", "rank": 0, "launch_sha256": launch_sha}, {"machine": "n2", "rank": 1,
                                                                             "launch_sha256": "f" * 64}]
         with mock.patch.object(facts, "describe_commands", return_value=rows):
             runtime = facts.node_runtime(fake_cluster(), dataclasses.replace(context, nodes=["n1", "n2"]), cache)
-        self.assertEqual(runtime["n1"]["gib"], 5.0)
+        self.assertEqual((runtime["n1"]["gib"], runtime["n1"]["executable_sha256"]), (5.0, "e" * 64))
         self.assertIn("no engine memory declaration for this exact launch", runtime["n2"]["why"])
 
     def test_describe_commands_are_the_exact_launch_plus_the_declaration_flag(self):
@@ -874,13 +884,26 @@ class LaunchTests(unittest.TestCase):
         self.assertIn("for another launch", out["halo-2"]["why"])
         # Sol-11 #1: up refuses a final render that is not the checked launch (before any lease).
         launch_obj = mock.Mock()
-        launch_obj.evaluation.context.limits = {"node_runtime": {m: {"gib": 7.6, "launch_sha256": s}
+        launch_obj.evaluation.context.limits = {"node_runtime": {m: {"gib": 7.6, "launch_sha256": s,
+                                                                     "executable_sha256": "e" * 64}
                                                                  for m, s in current.items()}}
+        launch_obj.evaluation.decision = {"decode": {"id": "decode", "runtime_checked": True}}
+        binary = render.preset(cluster.profiles["ds41-rtx"]["preset"])["binary"]
+        releases = {m: {"manifest": {"binaries": {binary: "e" * 64}}} for m in current}
         processes = render.render_processes(cluster, "ds41-rtx")
-        launch.verify_launch(launch_obj, cluster, "ds41-rtx", processes)                  # the checked launch: fine
+        launch.verify_launch(launch_obj, cluster, "ds41-rtx", processes, releases)        # the checked launch: fine
         altered = [type(p)(p.machine_id, p.role, p.argv + ["--extra"], p.env, p.ready) for p in processes]
         with self.assertRaisesRegex(RecipeError, "differs from the one its engine declarations were checked"):
-            launch.verify_launch(launch_obj, cluster, "ds41-rtx", altered)
+            launch.verify_launch(launch_obj, cluster, "ds41-rtx", altered, releases)
+        # The declaration must come from the executable of the release being started.
+        for rebuilt in ({**releases, "halo-2": {"manifest": {"binaries": {binary: "f" * 64}}}},
+                        {**releases, "halo-2": {"manifest": {}}}, {"halo-1": releases["halo-1"]}):
+            with self.subTest(releases=sorted(rebuilt)), self.assertRaisesRegex(
+                    RecipeError, "halo-2: the engine declaration was made by executable eeeeeeeeeeee"):
+                launch.verify_launch(launch_obj, cluster, "ds41-rtx", processes, rebuilt)
+        # workspace_gib at its default: admission checked no declaration, so none is re-checked here either.
+        launch_obj.evaluation.decision = {"decode": {"id": "decode", "runtime_checked": False}}
+        launch.verify_launch(launch_obj, cluster, "ds41-rtx", altered, {})
 
     def test_release_auth_binds_the_lan_only_for_that_release(self):
         from hyperloom import engines

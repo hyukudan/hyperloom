@@ -308,11 +308,17 @@ def check_local_prefill(route, decode, ctx):
         raise RecipeError(f"{where}.chunk_tokens: {shown} != the engine's prefill pieces of {chunk} rows")
 
 
+def runtime_checked(route, set_id):
+    """R4 applies: the route sets a non-default workspace_gib on that set (the default is never checked)."""
+    workspace = route["placement"][set_id]["workspace_gib"]
+    return workspace is not None and workspace != _defaults()["workspace_gib"]
+
+
 def check_runtime(route, set_id, ctx, bound):
     """R4: a non-default workspace_gib on the nodes must equal the engine's declared runtime for each deployed member
     (the engine sizes it itself; nothing applies it)."""
     placement = route["placement"][set_id]
-    if placement["workspace_gib"] is None or placement["workspace_gib"] == _defaults()["workspace_gib"]:
+    if not runtime_checked(route, set_id):
         return
     where = f"routes.{route['id']}.placement.{set_id}.workspace_gib"
     runtime = (ctx.limits or {}).get("node_runtime") or {}
@@ -508,7 +514,9 @@ def deploy(recipe, ctx, bound, availability, recipe_sha, select=None):
     if not any(p["admitted"] for p in prefill):
         raise RecipeError("no admissible prefill route at up (" +
                           "; ".join(f'{p["id"]}: {p["why"]}' for p in prefill) + ")")
-    return {"decode": {"id": decode["id"], "flags": decode_flags}, "prefill": prefill, "service": service,
+    return {"decode": {"id": decode["id"], "flags": decode_flags,
+                       "runtime_checked": runtime_checked(decode, decode["devices"][0])},
+            "prefill": prefill, "service": service,
             "running": running, "requirements": reqs, "effective_sha256": recipe_sha}
 
 
