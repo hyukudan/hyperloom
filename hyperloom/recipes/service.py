@@ -1079,7 +1079,7 @@ def deploy(digest, stop=(), *, source=None, orchestrate=None, approval=None, job
     so a cancel undoes only what the deploy did (a cancelled deploy's error says what it had stopped)."""
     from .. import orchestrate as default_orchestrate
     from . import preflight
-    preflight.snapshot(digest, source=source)
+    preflight.snapshot(digest, source=source, stop=stop)
     orchestrate = orchestrate or default_orchestrate
     with launch_progress(job, "deploy") as progress:
         return _deploy(digest, stop, source, orchestrate, approval, progress)
@@ -1092,7 +1092,7 @@ def _deploy(digest, stop, source, orchestrate, approval, progress):
 
 def _deploy_pinned(digest, stop, source, orchestrate, approval, progress):
     from .. import orchestrate as default_orchestrate
-    from . import commands, launch
+    from . import commands, launch, preflight
     check = progress.check
     cluster, intent, options = options_from_inputs(digest)
     profile = intent["profile"]
@@ -1101,7 +1101,8 @@ def _deploy_pinned(digest, stop, source, orchestrate, approval, progress):
     default_orchestrate._approval(intent["deadline_s"], approval)
     if type(intent["queue_timeout_s"]) is not int or not 60 <= intent["queue_timeout_s"] <= default_orchestrate.MAX_QUEUE_S:
         raise RecipeError("the snapshot's queue timeout is out of range")
-    running = sorted(_states())
+    reviewed = _states()
+    running = sorted(reviewed)
     if sorted(set(stop)) != running:
         raise Conflict(f"the running profiles are {', '.join(running) or 'none'}, not the reviewed "
                        f"{', '.join(sorted(set(stop))) or 'none'}: review the switch again")
@@ -1121,7 +1122,8 @@ def _deploy_pinned(digest, stop, source, orchestrate, approval, progress):
     check()
     with tempfile.TemporaryDirectory(prefix="hl-recipe-deploy-") as directory:
         launch.prepare(cluster, profile, options, router=intent["router"], vram_cap_gib=None, state_dir=directory,
-                       source=source or commands.live_source(cluster))
+                       source=source or commands.live_source(cluster),
+                       **({"reviewed": reviewed} if preflight.includes(options) else {}))
     stopped = []
     for name in sorted(set(stop)):
         progress.before_stop(name)
@@ -1130,6 +1132,8 @@ def _deploy_pinned(digest, stop, source, orchestrate, approval, progress):
                         stop_states=dict(progress.state.get("stop_states") or {},
                                          **{name: stop_outcome(stopped[-1]["down"])}))
     check()
+    if preflight.includes(options):
+        preflight.snapshot(digest, source=source)
     # The hand-over is checked again by up right after it takes ownership of the profile (no gap: a later cancel
     # sees "launching" and stops the launching profile through its own stop marker).
     try:

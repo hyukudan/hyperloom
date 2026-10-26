@@ -29,6 +29,52 @@ def check_port(address, port):
             raise ProcessError(f"port unavailable: {address}:{port}") from exc
 
 
+def port_owned(address, port, pids):
+    """Read-only proof that an occupied IPv4 listener belongs to a reviewed child; unknown owners fail closed."""
+    if not pids:
+        return False
+    try:
+        if os.name == "nt":
+            from ctypes import wintypes
+            class Row(ctypes.Structure):
+                _fields_ = [(name, wintypes.DWORD) for name in
+                            ("state", "local", "port", "remote", "remote_port", "pid")]
+            query = ctypes.WinDLL("iphlpapi").GetExtendedTcpTable
+            query.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD), wintypes.BOOL,
+                              wintypes.ULONG, ctypes.c_int, wintypes.ULONG]
+            query.restype = wintypes.DWORD
+            size = wintypes.DWORD()
+            if query(None, ctypes.byref(size), False, socket.AF_INET, 3, 0) != 122:
+                return False
+            buffer = ctypes.create_string_buffer(size.value)
+            if query(buffer, ctypes.byref(size), False, socket.AF_INET, 3, 0):
+                return False
+            count = wintypes.DWORD.from_buffer(buffer).value
+            rows = (Row * count).from_buffer(buffer, ctypes.sizeof(wintypes.DWORD))
+            owners = {row.pid for row in rows if row.state == 2 and socket.ntohs(row.port & 0xffff) == port
+                      and socket.inet_ntoa(bytes(wintypes.DWORD(row.local))) in (address, "0.0.0.0")}
+            return bool(owners) and owners <= set(pids)
+        inodes = set()
+        for line in Path("/proc/net/tcp").read_text().splitlines()[1:]:
+            row = line.split()
+            host, number = row[1].split(":")
+            if (row[3] == "0A" and int(number, 16) == port
+                    and socket.inet_ntoa(bytes.fromhex(host)[::-1]) in (address, "0.0.0.0")):
+                inodes.add(row[9])
+        owned = set()
+        for pid in pids:
+            for fd in (Path("/proc") / str(pid) / "fd").iterdir():
+                try:
+                    target = os.readlink(fd)
+                except OSError:
+                    continue
+                if target.startswith("socket:["):
+                    owned.add(target[8:-1])
+        return bool(inodes) and inodes <= owned
+    except (OSError, ValueError, IndexError):
+        return False
+
+
 class InstanceLock:
     """An OS lock, released even on a crash. The lock file is never unlinked."""
 

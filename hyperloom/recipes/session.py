@@ -70,7 +70,7 @@ def resolve(path, layers, identity=None, backend=None):
     return (backend or core.StubBackend()).resolve(path, read_text(path), layers, identity)
 
 
-def evaluate(cluster, profile, path, layers, source, backend=None, *, placement_inputs=None):
+def evaluate(cluster, profile, path, layers, source, backend=None, *, placement_inputs=None, reviewed=None):
     """``source(ctx)`` -> (inventory, facts, raw availability, notes): live probes or a saved facts file. One resolved
     document (the backend's) is used for binding, match, admission and the decision."""
     backend = backend or core.StubBackend()
@@ -91,7 +91,7 @@ def evaluate(cluster, profile, path, layers, source, backend=None, *, placement_
     ctx.limits = dict(ctx.limits or {}, node_runtime=facts.current_runtime(cluster, ctx, gathered.get("node_runtime")))
     if any(reader.placement_mode(r) for r in preliminary["routes"]):
         return _placement_evaluation(cluster, path, layers, backend, ctx, preliminary, inventory, gathered, raw, notes,
-                                     placement_inputs=placement_inputs)
+                                     placement_inputs=placement_inputs, reviewed=reviewed)
     # A profile can activate a CUDA-only recipe for which the legacy HIP/service binder cannot build an identity.
     # Field names choose only the provisional identity path; the core still validates freshness and activation.
     if profile_placement:
@@ -111,7 +111,7 @@ def evaluate(cluster, profile, path, layers, source, backend=None, *, placement_
             source.placement = True
             inventory, gathered, raw, notes = source(ctx)
         return _placement_evaluation(cluster, path, layers, backend, ctx, recipe, inventory, gathered, raw, notes,
-                                     placement_inputs=placement_inputs, identity=identity)
+                                     placement_inputs=placement_inputs, identity=identity, reviewed=reviewed)
     if profile_placement:
         # A refused placement profile leaves the original legacy evaluation, including its binding, intact.
         bound = apply.bind(base, ctx, inventory)
@@ -142,7 +142,7 @@ def evaluate(cluster, profile, path, layers, source, backend=None, *, placement_
 
 
 def _placement_evaluation(cluster, path, layers, backend, ctx, base, inventory, gathered, raw, notes,
-                          *, placement_inputs=None, identity=None):
+                          *, placement_inputs=None, identity=None, reviewed=None):
     if not isinstance(backend, core.CoreBackend):
         raise RecipeError("placement binding requires a compatible ts-recipe core")
     report = apply.probe_report(base, None, gathered, cluster=cluster, ctx=ctx, inventory=inventory)
@@ -163,7 +163,7 @@ def _placement_evaluation(cluster, path, layers, backend, ctx, base, inventory, 
             from . import preflight, runtime
             admitted = {}
             plans = preflight.check(cluster, path, layers, backend, resolved.recipe, bound, report, raw, effective_sha,
-                                    inputs=placement_inputs, admission=admitted)
+                                    inputs=placement_inputs, admission=admitted, identity=identity, reviewed=reviewed)
             apply.refuse_unsupported(resolved.recipe, adapter=runtime.preset())
             decision = runtime.decision(cluster, resolved.recipe, ctx, bound, effective_sha, plans, admitted)
         except RecipeError as exc:
@@ -275,7 +275,7 @@ def specificity(recipe):
     return count
 
 
-def pick(cluster, profile, directories, layers, source, backend=None):
+def pick(cluster, profile, directories, layers, source, backend=None, *, reviewed=None):
     """Auto-pick: candidates for the profile's model that match and deploy; the most specific wins, ties by name.
     Returns (chosen Evaluation or None, rows for every candidate with why it was or was not chosen)."""
     ctx = facts.context(cluster, profile)
@@ -306,7 +306,8 @@ def pick(cluster, profile, directories, layers, source, backend=None):
             out["result"] = f'other model ("{row["model"]}")'
         else:
             try:
-                evaluation = evaluate(cluster, profile, row["path"], layers, once, backend)
+                evaluation = evaluate(cluster, profile, row["path"], layers, once, backend,
+                                      **({"reviewed": reviewed} if reviewed is not None else {}))
             except RecipeError as exc:
                 out["result"] = "refused: " + str(exc)
             else:

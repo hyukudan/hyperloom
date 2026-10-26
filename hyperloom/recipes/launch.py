@@ -139,7 +139,7 @@ def plan_service(cluster, profile, cap, host, *, free_physical_gib=None):
     return plan.to_dict(), None
 
 
-def prepare(cluster, profile, options, *, router, vram_cap_gib, state_dir, source=None):
+def prepare(cluster, profile, options, *, router, vram_cap_gib, state_dir, source=None, reviewed=None):
     """Resolve, probe, match, plan and decide; refuse with every reason before any lease or process exists."""
     if options.components is not None:
         commands.components_store().load(options.components, selected=options.selected_content)
@@ -153,7 +153,8 @@ def prepare(cluster, profile, options, *, router, vram_cap_gib, state_dir, sourc
     source = source or commands.live_source(cluster, placement=placement)
     if options.recipe == "auto":
         dirs = options.dirs if options.exact_dirs else commands.recipe_dirs(cluster, options.dirs)
-        chosen, rows = session.pick(cluster, profile, dirs, options.layers, source, backend)
+        chosen, rows = session.pick(cluster, profile, dirs, options.layers, source, backend,
+                                    **({"reviewed": reviewed} if reviewed is not None else {}))
         if chosen is None:
             raise RecipeError("no recipe fits: " + "; ".join(f"{r['path']}: {r['result']}" for r in rows)
                               if rows else "no recipe files in " + ", ".join(map(str, commands.recipe_dirs(cluster))))
@@ -161,7 +162,8 @@ def prepare(cluster, profile, options, *, router, vram_cap_gib, state_dir, sourc
     else:
         evaluation = session.evaluate(cluster, profile, options.recipe, options.layers, source, backend,
                                       **({"placement_inputs": options.placement_inputs}
-                                         if options.placement_inputs is not None else {}))
+                                         if options.placement_inputs is not None else {}),
+                                      **({"reviewed": reviewed} if reviewed is not None else {}))
     why = refusal_of(evaluation)
     if why is not None:
         raise RecipeError(why)

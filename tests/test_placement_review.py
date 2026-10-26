@@ -90,13 +90,29 @@ def test_03_future_big_window_bounds_4090_turn(identity):
 
 
 def test_04_legacy_mtime_cache_loads_unchanged(tmp_path):
+    import subprocess
+    # Execute the actual merge-base writer, including its JSON formatting and integer-second stat identity.
+    namespace = dict(__name__="hyperloom.recipes.baseline_descriptors", __package__="hyperloom.recipes")
+    baseline = subprocess.run(["git", "show", "ddc5640:hyperloom/recipes/descriptors.py"],
+                              check=True, capture_output=True, text=True).stdout
+    exec(compile(baseline, "ddc5640:descriptors.py", "exec"), namespace)
     model = tmp_path / "model"
     model.write_bytes(b"model")
+    os.utime(model, ns=(1700000000250000000, 1700000000250000000))
+    legacy = namespace["Store"](tmp_path / "cache")
     store = descriptors.Store(tmp_path / "cache")
-    st = model.stat()
-    content_cache._write(store._path(model), dict(model=str(model), files=[dict(file=str(model),
-        device=st.st_dev, size=st.st_size, mtime=st.st_mtime)], metadata={"legacy": True}, tensors=[]))
+    with mock.patch.object(descriptors.modelfiles, "read", return_value=({"legacy": True}, [])):
+        legacy.save(model)
+        original = store._path(model).read_bytes()
+        assert store.load(model) == ({"legacy": True}, [])
+        store.save(model)
+        assert store._path(model).read_bytes() == original
+    # Baseline deliberately treats same-second changes as unchanged; the next second invalidates it.
+    os.utime(model, ns=(1700000000750000000, 1700000000750000000))
     assert store.load(model) == ({"legacy": True}, [])
+    os.utime(model, ns=(1700000001250000000, 1700000001250000000))
+    with pytest.raises(descriptors.DescriptorError, match="changed"):
+        store.load(model)
 
 
 def test_04_strict_placement_headers_have_a_separate_versioned_namespace(tmp_path):

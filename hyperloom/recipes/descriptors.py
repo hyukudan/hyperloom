@@ -34,7 +34,7 @@ def _files(path, *, nanoseconds=False):
     for f in files:
         st = os.stat(f)
         out.append({"file": str(f), "device": st.st_dev, "size": st.st_size,
-                    **({"mtime_ns": st.st_mtime_ns} if nanoseconds else {"mtime": st.st_mtime})})
+                    **({"mtime_ns": st.st_mtime_ns} if nanoseconds else {"mtime": int(st.st_mtime)})})
     return out
 
 

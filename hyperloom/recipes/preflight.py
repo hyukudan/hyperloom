@@ -15,7 +15,7 @@ from .reader import RecipeError
 
 
 def check(cluster, path, layers, backend, recipe, bound, report, raw, effective_sha, *, inputs=None,
-          cache=None, observer_factory=None, busy=None, now=None, admission=None):
+          cache=None, observer_factory=None, busy=None, now=None, admission=None, identity=None, reviewed=None):
     """All Hyperloom-determinable placement refusals. No leases, locks, gates, helpers or children."""
     now = time.time() if now is None else now
     used = grants.check(cluster, recipe, bound["binding"], report, raw["hosts"], now=now, anchors_only=True)
@@ -46,7 +46,7 @@ def check(cluster, path, layers, backend, recipe, bound, report, raw, effective_
         # One authoritative place call per enabled configuration. No Python sizing/capability fallback.
         plans[route["id"]] = backend.place(path, layers, route=route["id"], probe=report, components=components,
                                             context=saved.get("context"), desc=saved.get("desc"),
-                                            identity=dict(report, binding=bound["binding"])).document
+                                            identity=identity).document
         plan = plans[route["id"]]
         if not isinstance(plan.get("devices"), list) or not plan["devices"] or not isinstance(plan.get("host"), dict):
             raise RecipeError("PL_E_SCHEMA core returned no touched devices or host budgets")
@@ -72,9 +72,10 @@ def check(cluster, path, layers, backend, recipe, bound, report, raw, effective_
                     raise rtx.ServiceError("placement host charge would cross available RAM floor")
             except (rtx.ServiceError, ValueError, TypeError) as exc:
                 raise RecipeError("PL_E_FREE " + str(exc)) from exc
+    owners, ports = _reviewed_resources(reviewed)
     for uuid in sorted(used):
         # Probe an existing OS lock only. A missing lock must not create the runtime directory or lock file.
-        if rtx.device_lock_path(used[uuid]["uuid"]).exists():
+        if uuid not in owners and rtx.device_lock_path(used[uuid]["uuid"]).exists():
             lock = rtx.device_lock(used[uuid]["uuid"])
             try:
                 lock.acquire(create=False)
@@ -85,7 +86,8 @@ def check(cluster, path, layers, backend, recipe, bound, report, raw, effective_
             finally:
                 lock.close()
         try:
-            reason = (busy or rtx.pro_busy)(used[uuid]["uuid"])
+            reason = (_handover_busy(used[uuid]["uuid"], owners[uuid], observer_factory)
+                      if uuid in owners else (busy or rtx.pro_busy)(used[uuid]["uuid"]))
         except rtx.ServiceError as exc:
             raise RecipeError("PL_E_BUSY device idle state unknown: " + str(exc)) from exc
         if reason:
@@ -96,7 +98,8 @@ def check(cluster, path, layers, backend, recipe, bound, report, raw, effective_
     try:
         procs.check_port("127.0.0.1", port)
     except procs.ProcessError as exc:
-        raise RecipeError("PL_E_BUSY " + str(exc)) from exc
+        if not procs.port_owned("127.0.0.1", port, ports.get(port, ())):
+            raise RecipeError("PL_E_BUSY " + str(exc)) from exc
     observer = None
     try:
         observer = (observer_factory or gpu_counters.Observer)()
@@ -111,6 +114,70 @@ def check(cluster, path, layers, backend, recipe, bound, report, raw, effective_
     if admission is not None:
         admission.update(inputs=inputs, policies=policies)
     return plans
+
+
+def _reviewed_resources(reviewed):
+    """Only a reviewed controller's ready, live helper may account for its device locks and child port."""
+    owners, ports = {}, {}
+    for state in (reviewed or {}).values():
+        record = state.get("prefill_service") or {}
+        if not state.get("token") or not record.get("directory") or type(record.get("pid")) is not int:
+            continue
+        directory = Path(record["directory"])
+        try:
+            live = rtx._read(directory / "state.json")
+            if live.get("state") != "ready" or live.get("pid") != record["pid"]:
+                continue
+            helper = procs.InstanceLock(directory / "helper.lock")
+            try:
+                helper.acquire(create=False)
+            except procs.ProcessError:
+                pass  # A ready helper holds every device lock until its child has stopped.
+            else:
+                continue  # A stale ready.json / controller record proves no ownership.
+            finally:
+                helper.close()
+        except (OSError, ValueError):
+            continue
+        devices = live.get("device", [])
+        devices = devices if isinstance(devices, list) else [devices]
+        uuids = {grants.uuid_key(d.get("uuid", "")) for d in devices}
+        expected = set((record.get("placement_supervision") or {}).get("caps_bytes", {}))
+        expected = {grants.uuid_key(u) for u in expected} or {grants.uuid_key(record.get("device", ""))}
+        if "" in expected or uuids != expected:
+            continue
+        for uuid in uuids:
+            owners.setdefault(uuid, set()).add(record["pid"])
+        ports.setdefault(record.get("port"), set()).add(record["pid"])
+    return owners, ports
+
+
+def _handover_busy(uuid, pids, observer_factory):
+    """Subtract only the reviewed child's attributable bytes for this idle check, never for a placement cap."""
+    key = grants.uuid_key(uuid)
+    apps = rtx.compute_apps()
+    foreign = [pid for gpu, pid, used in apps if grants.uuid_key(gpu) == key and pid not in pids
+               and used is not None and used > rtx.PRO_IDLE_MIB]
+    if foreign:
+        return f"foreign compute processes {sorted(foreign)}"
+    observer = None
+    try:
+        observer = (observer_factory or gpu_counters.Observer)()
+        owned = 0
+        for pid in pids:
+            sample = observer.sample(pid)
+            if key not in sample or type(sample[key]) is not int or sample[key] < 0:
+                raise gpu_counters.CounterError("reviewed process GPU counters unavailable")
+            owned += sample[key]
+        residual = rtx.device_used_mib(uuid) * (1 << 20) - owned
+        if residual > rtx.PRO_IDLE_MIB * (1 << 20):
+            return "device memory not attributable to the reviewed deployment"
+    except (gpu_counters.CounterError, OSError) as exc:
+        raise rtx.ServiceError(str(exc)) from exc
+    finally:
+        if observer is not None:
+            observer.close()
+    return None
 
 
 def includes(options):
@@ -130,24 +197,30 @@ def includes(options):
     return any("components" in field.split(".") or "assist" in field.split(".") for field in fields)
 
 
-def before_options(cluster, profile, options, *, router="local", cap=None, source=None):
+def before_options(cluster, profile, options, *, router="local", cap=None, source=None, reviewed=None):
     if not includes(options):
         return
     from .. import orchestrate
     from . import launch
     orchestrate.check_launch(cluster, profile, router, recipe=True)
     launch.prepare(cluster, profile, options, router=router, vram_cap_gib=cap,
-                   state_dir=orchestrate._state_path(profile).parent, source=source)
+                   state_dir=orchestrate._state_path(profile).parent, source=source,
+                   **({"reviewed": reviewed} if reviewed is not None else {}))
 
 
-def snapshot(digest, profile=None, *, source=None):
+def snapshot(digest, profile=None, *, source=None, stop=None):
     from . import service
     try:
         cluster, intent, options = service.options_from_inputs(digest, profile)
     except service.NotFound:
         # No placement document exists to admit. Keep legacy missing-snapshot job/error handling unchanged.
         return
-    before_options(cluster, intent["profile"], options, router=intent["router"], source=source)
+    reviewed = None
+    if stop is not None and includes(options):
+        reviewed = service._states()
+        if sorted(set(stop)) != sorted(reviewed):
+            raise service.Conflict("the running profiles differ from the reviewed stop list: review the switch again")
+    before_options(cluster, intent["profile"], options, router=intent["router"], source=source, reviewed=reviewed)
 
 
 def cli(args, *, load_cluster=None):
@@ -160,7 +233,8 @@ def cli(args, *, load_cluster=None):
     from . import launch, service
     with service.configured(args.config):
         if deploy or args.recipe_inputs:
-            snapshot(args.inputs if deploy else args.recipe_inputs, None if deploy else args.profile)
+            snapshot(args.inputs if deploy else args.recipe_inputs, None if deploy else args.profile,
+                     **({"stop": args.stop or []} if deploy else {}))
             return
         cluster = (load_cluster or main_cli._cluster)(args.config)
         layers = session.Layers(profile=args.recipe_profile, overrides=list(args.recipe_overrides or []),
