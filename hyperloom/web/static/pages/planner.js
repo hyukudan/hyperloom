@@ -8,6 +8,7 @@
     recipe: "", profile: "", facts: "", fields: [{path: "", values: ""}], tokens: "", busy: false, error: null, answer: null,
     save: {}, p: {model: "", facts: "", prompt: 8192, output: 256, slots: 1, objective: "latency", top_k: 5,
       busy: false, error: null, answer: null}};
+  V.s = {route: "decode", bundle: "", name: "", answer: null, error: null, busy: false};
   try { V.view = localStorage.getItem("hyperloom-planner-view") === "placement" ? "placement" : "whatif"; } catch (_) { /* storage may be disabled */ }
   const esc = value => H().esc(value);
   const object = value => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -349,6 +350,41 @@
       ${(r.scenarios || []).map(scenarioCard).join("")}${inputs}`;
   }
 
+  function solverCard() {
+    const s = V.s, result = s.answer?.result;
+    const table = result?.rows ? H().table(["Row", "Choice", "Placement / refusal", "Prediction", "Estimates", "Pick"],
+      result.rows.map(row => {
+        const id = row.id || row.choice?.id || "";
+        const refusal = row.refusal || row.placement?.refusal;
+        const prediction = row.prediction || {};
+        return H().cells([esc(id), esc(JSON.stringify(row.choice || {})),
+          esc(refusal ? JSON.stringify(refusal) : JSON.stringify(row.placement || {})),
+          esc(`${row.tag || "unpredicted"}${prediction.milli_tok_s == null ? "" : " · " + (prediction.milli_tok_s / 1000).toFixed(3) + " tok/s"}`),
+          esc((row.estimates || []).join(", ") || "none"),
+          pageButton("Pick and save", "planner-solver-pick", {disabled: s.busy || !s.name || !row.saveable || !id ?
+            row.save_refused || "Enter a layer name; each pick is explicit" : "", extra: `data-row="${esc(id)}"`})]);
+      }).join(""), "Tierstream solve rows") : "";
+    return H().card("Tierstream solver", `<p class="hint">Use a cached local input bundle. Review every row, then choose one to save its exact overrides after Tierstream re-plans it. Assists and grants stay operator-controlled. Hypothetical FILE rows cannot be saved.</p>
+      <div class="row"><div class="field"><label for="solver-route">Route</label><input class="inp" id="solver-route" data-page-action="planner-solver-input" data-key="route" value="${esc(s.route)}"></div>
+      <div class="field"><label for="solver-bundle">Cached input bundle</label><input class="inp" id="solver-bundle" data-page-action="planner-solver-input" data-key="bundle" value="${esc(s.bundle)}"></div>
+      ${pageButton("Solve selected recipe", "planner-solver-run", {disabled: s.busy || !V.recipe || !s.route || !s.bundle ? "Choose a recipe, route and input bundle" : ""})}</div>
+      <div class="field"><label for="solver-layer">Save picked row as layer</label><input class="inp" id="solver-layer" data-page-action="planner-solver-input" data-key="name" value="${esc(s.name)}"></div>
+      ${s.error ? `<p class="field-error" role="alert">${esc(s.error)}</p>` : ""}${table}${s.answer ? cli(s.answer) : ""}
+      ${s.saved ? `<p role="status">Saved ${esc(s.saved.result?.name || "picked overrides")}</p>` : ""}`);
+  }
+
+  async function runSolver(row) {
+    const s = V.s;
+    s.busy = true; s.error = null; rerender();
+    try {
+      if (row) s.saved = await post("planner/pick", {selection: s.answer.result.selection, row, name: s.name});
+      else { s.answer = await post("planner/solve", {recipe: V.recipe, route: s.route, bundle: s.bundle}); s.saved = null; }
+      const answer = row ? s.saved : s.answer;
+      if (!answer.ok) s.error = answer.error || "Tierstream refused";
+    } catch (error) { s.error = error.message; }
+    finally { s.busy = false; rerender(); }
+  }
+
   // --- page ----------------------------------------------------------------------------------------------------------
   (window.HyperloomPages ||= {}).planner = {
     title: "Recipe planner",
@@ -366,7 +402,7 @@
         `<label><input type="radio" name="planner-view" value="${id}" data-page-action="planner-view"${V.view === id ? " checked" : ""}> ${esc(label)}</label>`).join("")}</fieldset>`;
       const why = Object.values(d.why || {}).filter(Boolean).map(w => `<p class="hint">${esc(w)}</p>`).join("");
       const body = V.view === "whatif" ? whatifForm() + whatifResults() : placementForm() + placementResults();
-      return `<div class="grid planner">${tabs}${why}${body}</div>`;
+      return `<div class="grid planner">${tabs}${why}${body}${solverCard()}</div>`;
     },
     refresh() { loadCatalog(true); },
   };
@@ -411,6 +447,8 @@
     else if (action === "planner-remove") { V.fields.splice(index, 1); if (!V.fields.length) V.fields.push({path: "", values: ""}); rerender(); }
     else if (action === "planner-run") runWhatif();
     else if (action === "planner-place") runPlacement();
+    else if (action === "planner-solver-run") runSolver();
+    else if (action === "planner-solver-pick") runSolver(control.dataset.row);
     else if (action === "planner-save-open") { V.save[control.dataset.variant] = {open: true, name: `${V.recipe}.${control.dataset.variant}`.slice(0, 64)}; rerender(); }
     else if (action === "planner-save-close") { delete V.save[control.dataset.variant]; rerender(); }
     else if (action === "planner-save") saveLayer(control.dataset.variant);
@@ -421,13 +459,14 @@
     if (action === "planner-view" && el.checked) { V.view = el.value; try { localStorage.setItem("hyperloom-planner-view", V.view); } catch (_) {} rerender(); }
     else if (action === "planner-input") {
       V[el.dataset.key] = el.value;
-      if (el.dataset.key === "recipe") { V.fields = [{path: "", values: ""}]; V.answer = null; V.facts = ""; loadShown(V.recipe); }
+      if (el.dataset.key === "recipe") { V.fields = [{path: "", values: ""}]; V.answer = null; V.facts = ""; V.s.answer = null; V.s.saved = null; loadShown(V.recipe); }
       if (el.dataset.key === "profile") V.facts = "";
       if (event.type === "change") rerender();
     } else if (action === "planner-path") { V.fields[Number(el.dataset.index)].path = el.value; rerender(); }
     else if (action === "planner-values") { V.fields[Number(el.dataset.index)].values = el.value; if (event.type === "change") rerender(); }
     else if (action === "planner-p") { V.p[el.dataset.key] = el.value; if (el.dataset.key === "model") V.p.facts = ""; if (event.type === "change") rerender(); }
     else if (action === "planner-save-name") { V.save[el.dataset.variant].name = el.value; if (event.type === "change") rerender(); }
+    else if (action === "planner-solver-input") { V.s[el.dataset.key] = el.value; if (el.dataset.key !== "name") V.s.answer = null; if (event.type === "change") rerender(); }
   }
   document.addEventListener("input", onInput);
   document.addEventListener("change", onInput);

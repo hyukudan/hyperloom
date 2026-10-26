@@ -30,6 +30,8 @@ def register(reg):
     reg.get("planner", page)
     reg.post("planner/whatif", whatif)
     reg.post("planner/placement", placement)
+    reg.post("planner/solve", solve)
+    reg.post("planner/pick", pick)
     reg.capability("planner-whatif", True, "recipe variants side by side on saved hardware facts (nothing deployed)")
     from hyperloom.recipes import facts as recipe_facts
     available, why = cli_planner.planner_available()
@@ -288,3 +290,31 @@ def whatif(api, arguments):
 def placement(api, arguments):
     argv, stdin = placement_argv(api, arguments)
     return answer(api, "placement", argv, run(api, argv, stdin))
+
+
+def solve_argv(api, arguments, *, picking=False):
+    from hyperloom.recipes import service
+    allowed = {"selection", "row", "name"} if picking else {"recipe", "route", "bundle"}
+    if not isinstance(arguments, dict) or set(arguments) != allowed:
+        raise ValueError("expected " + ", ".join(sorted(allowed)))
+    if picking:
+        selection = arguments["selection"]
+        if not isinstance(selection, str) or not re.fullmatch(r"[0-9a-f]{64}", selection):
+            raise ValueError("selection must be a snapshot SHA-256")
+        row = _name(arguments, "row", required=True)
+        name = _name(arguments, "name", required=True)
+        argv = ["solve", "--selection", selection, "--pick", row, "--save-layer", name]
+    else:
+        argv = ["solve", service.recipe_ref("recipe", arguments["recipe"]), "--route",
+                _name(arguments, "route", required=True), "--bundle", _name(arguments, "bundle", required=True)]
+    return argv + ["--catalog-only", "--config", str(api.config_path)]
+
+
+def solve(api, arguments):
+    argv = solve_argv(api, arguments)
+    return answer(api, "solve", argv, run(api, argv, None))
+
+
+def pick(api, arguments):
+    argv = solve_argv(api, arguments, picking=True)
+    return answer(api, "pick", argv, run(api, argv, None))

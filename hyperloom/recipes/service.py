@@ -915,7 +915,17 @@ def config_sha256():
         return None
 
 
-def plan(cluster, ref, profile, *, layers=None, source=None, inputs=None):
+def solve(cluster, ref, route, bundle, *, layers=None, backend=None):
+    from . import solver
+    return solver.solve(cluster, ref, route, bundle, layers=layers, backend=backend)
+
+
+def pick_solve(cluster, selection, row, name, *, backend=None, replace=None):
+    from . import solver
+    return solver.pick(cluster, selection, row, name, backend=backend, replace=replace)
+
+
+def plan(cluster, ref, profile, *, layers=None, source=None, inputs=None, solver_bundle=None, solver_route=None):
     """Launch eligibility and preview: what `up PROFILE --recipe REF` decides before any lease (orchestrate's launch
     checks, then a dry run of launch.prepare on a snapshot of the inputs: match, decision, the RTX service planned at
     the recipe's budget, the router's route table). ``up.ok`` only when every check passes; otherwise the refusal, and
@@ -935,6 +945,10 @@ def plan(cluster, ref, profile, *, layers=None, source=None, inputs=None):
     out = {"profile": profile, "recipe": (entry["id"] if entry else "auto"),
            "file": entry["original"] if entry else "auto", "inputs": inputs, "intent": manifest["intent"],
            "checked_at_start": CHECKED_AT_START}
+    if solver_bundle is not None:
+        if entry is None or not solver_route:
+            raise RecipeError("solver preview requires an explicit recipe and route")
+        out["solver"] = solve(cluster, ref, solver_route, solver_bundle, layers=layers)
     refusal = None
     try:
         cluster, _, options = options_from_inputs(inputs, profile)

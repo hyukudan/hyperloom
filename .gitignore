@@ -11,3 +11,8 @@ cluster.json
 secrets/
 **/run/components-v1/
 **/run/content-manifests/
+**/run/placement-inputs/
+**/run/solver-inputs/
+**/run/solver-plans/
+**/run/context-v1.json
+**/run/receipts/

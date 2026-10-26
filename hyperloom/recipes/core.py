@@ -82,6 +82,7 @@ class PlacementOutput:
     """The same core invocation's machine-readable result and human-readable stdout."""
     document: dict
     text: str
+    overrides: bytes | None = None
 
 
 class Core:
@@ -108,6 +109,11 @@ class Core:
                 (Path(directory) / name).write_bytes((value if isinstance(value, str) else json.dumps(value)).encode("utf-8"))
             # Input names in args stand for the temporary files written above.
             argv = [str(self.executable), *[str(Path(directory) / a) if a in inputs else str(a) for a in args]]
+            overrides_path = None
+            if placing and "--emit-overrides" in argv:
+                index = argv.index("--emit-overrides") + 1
+                overrides_path = Path(directory) / "picked-overrides.toml"
+                argv[index] = str(overrides_path)
             json_path = Path(directory) / "placement-output.json"
             if placing:
                 argv += ["--json-out", str(json_path)]
@@ -142,7 +148,16 @@ class Core:
                 raise RecipeError(f"{label} printed no valid JSON: {exc}") from exc
             if not isinstance(doc, dict):
                 raise RecipeError(f"{label} printed {type(doc).__name__}, not a JSON object")
-            return PlacementOutput(doc, text) if with_text else doc
+            overrides = None
+            if overrides_path is not None:
+                try:
+                    with overrides_path.open("rb") as stream:
+                        overrides = stream.read(MAX_OUTPUT + 1)
+                    if len(overrides) > MAX_OUTPUT:
+                        raise RecipeError("ts-recipe picked overrides exceeds output limit")
+                except OSError as exc:
+                    raise RecipeError("ts-recipe emitted no picked overrides after re-plan") from exc
+            return PlacementOutput(doc, text, overrides) if with_text else doc
 
 
 def _set_text(value):
@@ -266,7 +281,7 @@ class CoreBackend:
             raise RecipeError("the core's select output has an unexpected shape")
         return result
 
-    def _placement(self, command, path, layers, route, documents, identity, text_flag):
+    def _placement(self, command, path, layers, route, documents, identity, text_flag, pick=None):
         inputs = {}
         args = [command, str(path), "--route", route]
         for name, value in documents.items():
@@ -279,6 +294,10 @@ class CoreBackend:
             else:
                 args += [f"--{name}", str(value)]
         args += self._layer_args(layers, inputs, identity)
+        if pick is not None:
+            if command != "solve" or not isinstance(pick, str) or not pick or pick.startswith("-"):
+                raise RecipeError("PL_E_SCHEMA solve pick requires a row id")
+            args += ["--pick", pick, "--emit-overrides", "picked-overrides.toml"]
         if text_flag:
             args.append(text_flag)
         return self.core.placement(args, inputs)
@@ -290,11 +309,11 @@ class CoreBackend:
                                {"probe": probe, "components": components, "desc": desc, "usage": usage,
                                 "context": context}, identity, "--explain" if explain else None)
 
-    def solve(self, path, layers, *, route, probe, inputs, desc=None, context=None, identity=None, table=True):
+    def solve(self, path, layers, *, route, probe, inputs, desc=None, context=None, identity=None, table=True, pick=None):
         """Solve from cached configuration documents; keep both the core's rows and its display text."""
         return self._placement("solve", path, layers, route,
                                {"probe": probe, "inputs": inputs, "desc": desc, "context": context},
-                               identity, "--table" if table else None)
+                               identity, "--table" if table else None, pick=pick)
 
 
 def backend(cluster=None):

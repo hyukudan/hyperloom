@@ -1,0 +1,79 @@
+"""No new physical identities or paths in tracked recipe/profile/receipt/fixture data.
+
+Historical synthetic fixtures (including the immutable eb9ae96 oracle) are pinned by byte hash, not directory
+exemptions. Any changed or new artifact must pass the strict rule. Logs and operational documents stay local.
+"""
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import tomllib
+import unittest
+
+ROOT = Path(__file__).resolve().parents[1]
+BASELINE = Path(__file__).with_name("fixtures") / "privacy-legacy.json"
+PHYSICAL = re.compile(r"GPU-[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}|"
+                      r"\b[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]\b")
+ABSOLUTE = re.compile(r"(?:^|[\s\"'=,])(?:[A-Za-z]:[\\/]|/(?!/)[\w.-]+/)")
+PRIVATE_KEYS = frozenset(("uuid", "pci", "pci_path", "hostname", "host_id", "user", "username"))
+
+
+def private(value, key=""):
+    if isinstance(value, dict):
+        return any((k in PRIVATE_KEYS and v not in (None, "", [], {})) or private(v, k) for k, v in value.items())
+    if isinstance(value, list):
+        return any(private(v, key) for v in value)
+    if isinstance(value, str):
+        if key == "host" and value:
+            return True
+        if PHYSICAL.search(value) or ABSOLUTE.search(value):
+            return True
+        for variable in ("USERNAME", "COMPUTERNAME"):
+            local = os.environ.get(variable, "")
+            if len(local) >= 4 and local.casefold() in value.casefold():
+                return True
+    return False
+
+
+def artifacts():
+    paths = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+                           cwd=ROOT, capture_output=True, check=True).stdout.decode().split("\0")
+    for name in sorted(set(paths)):
+        path = Path(name)
+        if (path.suffix.lower() in (".json", ".toml", ".csv", ".jsonl", ".log", ".txt")
+                and (name.startswith("tests/fixtures/") or
+                     any(part in ("recipes", "profiles", "receipts", "run") for part in path.parts))):
+            yield name, ROOT / path
+
+
+def findings():
+    found = {}
+    for name, path in artifacts():
+        raw = path.read_bytes()
+        text = raw.decode("utf-8")
+        try:
+            doc = json.loads(text) if path.suffix == ".json" else tomllib.loads(text) if path.suffix == ".toml" else text
+        except ValueError:
+            doc = text
+        if private(doc):
+            found[name] = hashlib.sha256(raw).hexdigest()
+    return found
+
+
+class PrivacyTests(unittest.TestCase):
+    def test_tracked_artifacts_add_no_identity_or_path_bearing_data(self):
+        legacy = json.loads(BASELINE.read_bytes())
+        self.assertEqual(findings(), legacy,
+                         "new/changed artifact carries UUID, PCI, host, user or absolute path; sanitize a separate fixture")
+
+    def test_strict_rule_catches_identity_paths_and_host_user_fields(self):
+        import uuid
+        for value in ({"uuid": "GPU-" + str(uuid.uuid4())}, {"pci": f"{0:04x}:{1:02x}:{0:02x}.{0}"},
+                      {"host": "synthetic-host"}, {"username": "operator"},
+                      str(ROOT / "local-runtime"), {"model": "/private/model/file"}):
+            with self.subTest(kind=type(value).__name__):
+                self.assertTrue(private(value))
+        self.assertFalse(private({"device_name": "portable class", "arch": "sm_test", "samples": [{"bytes": 42}],
+                                  "file": "<runtime>/placement.json", "host_pinned_gib": 74}))

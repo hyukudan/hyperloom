@@ -386,9 +386,20 @@ def _accelerator(raw, doctor, gpu, declared):
         row["memory_free_bytes"] = row["memory_total_bytes"] - row["memory_used_bytes"]
     if not amd and _finite(row["memory_total_bytes"]) and _finite(row["memory_free_bytes"]):
         row["memory_used_bytes"] = row["memory_total_bytes"] - row["memory_free_bytes"]
-    policy = next((device for device in declared if device.get("id") == raw.get("id") and raw.get("id")), {})
-    row["excluded"] = policy.get("excluded", False) or "4090" in (row["name"] or "")
-    row["policy_reason"] = policy.get("reason") or ("RTX 4090 is excluded by policy" if row["excluded"] else None)
+    policies = [device for device in declared if any(
+        device.get(key) and str(device[key]).casefold() == str(value).casefold()
+        for key, value in (("id", raw.get("id")), ("uuid", raw.get("uuid") or raw.get("id")),
+                           ("pci", raw.get("pci"))))]
+    if not policies:
+        policies = [device for device in declared if device.get("name") == raw.get("name") and raw.get("name")]
+    policy = policies[0] if len(policies) == 1 else {}
+    # An explicit configuration flag decides; a device the configuration does not mention keeps the legacy rule
+    # (the RTX 4090 is never offered by itself).
+    legacy = "4090" in (row["name"] or "")
+    row["excluded"] = policy.get("excluded", legacy)
+    row["policy_reason"] = policy.get("reason") or (
+        ("excluded by configuration" if "excluded" in policy else "RTX 4090 is excluded by policy")
+        if row["excluded"] else None)
     return _missing(row, ("id", "name", "memory_used_bytes", "memory_total_bytes", "memory_free_bytes", "utilization_pct",
                           "temperature_c", "power_w", "driver", "runtime", "kernel", "usb4_driver", "layout", "policy_reason"))
 
@@ -1066,7 +1077,9 @@ class API:
             "online": sum(machine["health"] in ("online", "degraded") for machine in machines),
             "accelerators_in_use": None, "memory_free_bytes": sum(headroom) if all_memory else None,
             "minimum_headroom_bytes": min(headroom) if all_memory else None,
-            "links_healthy": None, "links_summary": None, "excluded_reason": "RTX 4090 excluded by policy"},
+            "links_healthy": None, "links_summary": None,
+            "excluded_reason": "; ".join(sorted({d.get("policy_reason") or "excluded by configuration"
+                for m in machines for d in m["accelerators"] or [] if d["excluded"]})) or None},
             ("accelerators_in_use", "memory_free_bytes", "minimum_headroom_bytes", "links_healthy", "links_summary"))
         if all(machine["roles"] is not None and machine["accelerators"] is not None for machine in machines):
             documents["devices"]["summary"]["accelerators_in_use"] = sum(
@@ -1165,7 +1178,8 @@ class API:
                                        features={"loaded": list(feature_registry.registry().loaded),
                                                  "failed": dict(feature_registry.registry().failed)},
                                        lab_rules={"label_prefix": "hl-", "turn_cap_s": 1200, "drain_margin_s": 60,
-                                                  "usb4_layout": 1, "excluded": "RTX 4090", "extended_turn": "explicit approver ACK required"})
+                                                  "usb4_layout": 1, "excluded": "configured device excluded flag",
+                                                  "extended_turn": "explicit approver ACK required"})
         return documents
 
     def _logs(self, statuses):
