@@ -204,7 +204,8 @@ def test_01_evaluate_prepare_up_and_real_watchdog_with_fake_child(tmp_path, file
     monkeypatch.setattr(rtx, "compute_apps", lambda: [])
     monkeypatch.setattr(rtx, "device_used_mib", lambda _: 4096 if old else
                         (values[identity.lower()] + (1 << 20) - 1) // (1 << 20))
-    monkeypatch.setattr(gpu_counters, "Observer", lambda: observer)
+    observer_factory = mock.Mock(return_value=observer)
+    monkeypatch.setattr(gpu_counters, "Observer", observer_factory)
     dog = placement_supervision.Watchdog
     monkeypatch.setattr(placement_supervision, "Watchdog", lambda *a, **kw: dog(*a, clock=lambda: NOW, **kw))
     inputs = {"routes": {"decode": dict(components=ref, selected_content=selected, receipts=str(artifacts.receipts),
@@ -232,6 +233,8 @@ def test_01_evaluate_prepare_up_and_real_watchdog_with_fake_child(tmp_path, file
         old["old"] = dict(profile="old", token="reviewed-controller", prefill_service=record)
     prepared = launch.prepare(cluster, "decode", options, router="local", vram_cap_gib=None, state_dir=tmp_path,
                               **({"reviewed": old} if handover else {}))
+    observer_factory.assert_called_once()
+    observer.close.assert_called_once()
     assert prepared.evaluation.ok and prepared.evaluation.decision["placement"]
     assert prepared.placement_request.supervision["caps_bytes"] == {identity.lower(): 90 * rtx.GIB}
     assert not prepared.placement_request.files.placement.exists()  # pure admission never publishes

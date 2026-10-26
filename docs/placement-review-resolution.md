@@ -326,3 +326,38 @@ also remain AST-equal to HEAD (`hl-placement-r18-legacy-artifacts.log`). Privacy
 
 Logs remain outside git. TEMP/TMP were not changed, and the submodule remains empty. HEAD is still ce445cc on
 hl/placement. No network, GPU work, additional worktree, commit or push was used.
+
+## Follow-up of a7d9792: bounded loading and observer reuse
+
+Contract rev 21c. The clean full Python 3.13 baseline completed before tracked edits: **46 failed, 3759 passed,
+69 skipped** in 483.34 s. Its failing IDs exactly equal the 46 supplied reference IDs. CPU reproductions confirmed
+that sustained own growth killed on check three, a transient allocation killed on check one, and reviewed
+preparation constructed two observers. Regression tests reproduced the defects before implementation.
+
+| Item | Change | Regression | Open points |
+|---|---|---|---|
+| A: sustained own growth | `hyperloom/gpu_counters.py:34` reads device memory through the observer's initialized NVML session and a UUID handle; Windows batches every owned PID into one PDH snapshot per side. `hyperloom/pc_big.py:63` retains nvidia-smi as fallback and distinguishes growth-only ambiguity. `hyperloom/placement_supervision.py:163` allows it without adding or resetting strikes until 60 seconds after the first full check, shortened by the ready timeout; this interval never restarts. Release/mixed ambiguity still strikes, and other devices/caps remain checked. | `tests/test_pc_big_loading.py:17`: native ABI and shared-snapshot check, fallback, sustained growth beyond three checks, retained strikes/recovery, finite growth allowance and release/mixed refusal. Existing release with persistent foreign use remains refused. | Native timing and loading behavior require live qualification. Ambiguous growth can delay foreign-use refusal until it resolves or the allowance expires. Growth after the allowance receives the normal three strikes. Admission/start have no allowance. |
+| B: transient own allocation | `hyperloom/pc_big.py:106` requires two consecutive busy brackets within a watchdog check; `hyperloom/placement_supervision.py:170` enables this only for its GPU checks. | `tests/test_pc_big_loading.py:171`, `test_own_spike_only_in_total_needs_two_busy_watchdog_brackets` covers one transient spike, persistent foreign totals, and unchanged single-verdict admission/handover. | Repeated spikes can still coincide with both brackets; live qualification remains open. |
+| C: bracket and WDDM assumptions | `docs/placement-supervision.md:44` and `docs/placement-grants.md:52` state that attribution must be monotonic per PID within each bracket. Spikes can falsely refuse; dips can conceal foreign use for a check. The total below attribution refusal remains fail-closed. | `tests/test_pc_big_loading.py:196`, `test_live_qualification_documents_bracket_assumption_and_total_accounting` checks that both supervision and this resolution retain the open qualification points. | Exercise non-monotonic spikes/dips and compare summed PDH Dedicated Usage with NVML memory.used under load, including shared/aliased allocations and driver accounting. The one MiB tolerance and total below attribution refusal require live WDDM qualification before enabling release. |
+| D: shared pre-stop observer and UUID keys | `hyperloom/recipes/launch.py:139` owns the reviewed evaluation/render observer in an ExitStack; session/preflight and the real RTX renderer borrow it. `hyperloom/pc_big.py:83` uses `grants.uuid_key` for owned attribution. | `tests/test_placement_lifecycle.py:236` requires one construction/close through reviewed preparation. `tests/test_pc_big_loading.py:189`, `test_owned_busy_normalizes_uuid_like_handover_filter` covers surrounding whitespace and case. | None. Ownership/observers remain transient; replacement after stopping still performs fresh unowned admission and takes the device locks. |
+
+No live GPU or WDDM qualification was performed. Production placement remains unpublished and refused.
+
+Final full Python 3.13 suite: **46 failed, 3780 passed, 69 skipped** in 685.16 s. Reference, clean baseline and
+final failing-ID sets are exactly equal: none added or missing. All **21 additional cases pass**. The focused
+placement/admission/lifecycle/legacy/privacy run passed **379 tests, 3 skipped**. Before/after logs are
+`hl-placement-before-r19.log` and `hl-placement-after-r19.log`; exact ID comparison is
+`hl-placement-failure-comparison-r19.log`. Regression-first evidence is `hl-placement-red-r19.log`; the focused
+run is `hl-placement-focused-r19.log`. Logs are outside git.
+
+The final full run emitted two background admission-thread warnings when pre-existing tests patched global sleep
+(one StopIteration and one KeyboardInterrupt). That test-isolation issue remains open; admission-thread code is
+unchanged. The final run completed without interruption despite taking longer than the baseline.
+
+G6 retains all **21 cases byte-identically**, including the unchanged frozen fixture and reconstructed SHA-256
+`40489d24e0a9b64d9b6186b2742d2fff734e4d66e310dd1776d8b62c340168e7`. Legacy reservation, gate, busy-query and
+watchdog definitions are AST-equal to eb9ae96; the device-lock definition matches after path-helper inlining,
+and the legacy helper acquisition/gate/verify branch matches. The helper service_run, legacy rendering body,
+legacy evaluator and legacy picker remain AST-equal to HEAD (`hl-placement-legacy-ast-r19.log`). LF, UTF-8,
+privacy and diff whitespace checks pass. TEMP/TMP were not changed; the submodule remains empty. Work stayed on
+the existing branch and HEAD a7d9792. No network, GPU work, additional worktree, commit or push was used.

@@ -16,12 +16,14 @@ from .reader import RecipeError
 
 
 def check(cluster, path, layers, backend, recipe, bound, report, raw, effective_sha, *, inputs=None,
-          cache=None, observer_factory=None, busy=None, now=None, admission=None, identity=None, reviewed=None):
+          cache=None, observer_factory=None, busy=None, now=None, admission=None, identity=None, reviewed=None,
+          observer=None):
     """All Hyperloom-determinable placement refusals. No leases, locks, gates, helpers or children."""
     now = time.time() if now is None else now
     owners, ports, reclaimable = _reviewed_resources(reviewed, cluster)
     with ExitStack() as stack:
-        observer = _open_observer(stack, observer_factory) if owners else None
+        if observer is None and owners:
+            observer = _open_observer(stack, observer_factory)
         hosts = {host: dict(memory) for host, memory in raw["hosts"].items()}
         for host, credit in reclaimable.items():
             for key in ("free_ram_gib", "free_commit_gib"):

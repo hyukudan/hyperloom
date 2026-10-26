@@ -82,7 +82,7 @@ def _samples(source):
     return once
 
 
-def evaluate(cluster, profile, path, layers, source, backend=None, *, placement_inputs=None, reviewed=None):
+def evaluate(cluster, profile, path, layers, source, backend=None, *, placement_inputs=None, reviewed=None, observer=None):
     """Use the legacy evaluator unless recipe/layer fields can activate placement.
 
     Placement sources accept ``source(ctx, policy=(placement, identity))``; the default policy is legacy.
@@ -96,7 +96,7 @@ def evaluate(cluster, profile, path, layers, source, backend=None, *, placement_
     if not placement:
         return _legacy_evaluate(cluster, profile, path, layers, source, backend)
     return _evaluate_placement_candidate(cluster, profile, path, layers, _samples(source), backend,
-                                         placement_inputs=placement_inputs, reviewed=reviewed)
+                                         placement_inputs=placement_inputs, reviewed=reviewed, observer=observer)
 
 
 def _legacy_evaluate(cluster, profile, path, layers, source, backend=None):
@@ -135,7 +135,7 @@ def _legacy_evaluate(cluster, profile, path, layers, source, backend=None):
 
 
 def _evaluate_placement_candidate(cluster, profile, path, layers, source, backend=None, *,
-                                  placement_inputs=None, reviewed=None):
+                                  placement_inputs=None, reviewed=None, observer=None):
     """``source(ctx)`` -> (inventory, facts, raw availability, notes): live probes or a saved facts file. One resolved
     document (the backend's) is used for binding, match, admission and the decision."""
     backend = backend or core.StubBackend()
@@ -153,7 +153,7 @@ def _evaluate_placement_candidate(cluster, profile, path, layers, source, backen
     inventory, gathered, raw, notes = source(ctx, policy=policy)
     if any(reader.placement_mode(r) for r in preliminary["routes"]):
         return _placement_evaluation(cluster, path, layers, backend, ctx, preliminary, inventory, gathered, raw, notes,
-                                     placement_inputs=placement_inputs, reviewed=reviewed)
+                                     placement_inputs=placement_inputs, reviewed=reviewed, observer=observer)
     # A profile can activate a CUDA-only recipe for which the legacy HIP/service binder cannot build an identity.
     # Field names choose only the provisional identity path; the core still validates freshness and activation.
     if profile_placement:
@@ -171,13 +171,13 @@ def _evaluate_placement_candidate(cluster, profile, path, layers, source, backen
         # A fresh profile can introduce placement only after identity validation. Upgrade the live policy sample.
         inventory, gathered, raw, notes = source(ctx, policy=(True, profile_placement))
         return _placement_evaluation(cluster, path, layers, backend, ctx, recipe, inventory, gathered, raw, notes,
-                                     placement_inputs=placement_inputs, identity=identity, reviewed=reviewed)
+                                     placement_inputs=placement_inputs, identity=identity, reviewed=reviewed, observer=observer)
     return _legacy_evaluate(cluster, profile, path, layers,
                             lambda c: source(c, policy=(False, False)), backend)
 
 
 def _placement_evaluation(cluster, path, layers, backend, ctx, base, inventory, gathered, raw, notes,
-                          *, placement_inputs=None, identity=None, reviewed=None):
+                          *, placement_inputs=None, identity=None, reviewed=None, observer=None):
     if not isinstance(backend, core.CoreBackend):
         raise RecipeError("placement binding requires a compatible ts-recipe core")
     ctx.limits = dict(ctx.limits or {}, node_runtime=facts.current_runtime(cluster, ctx, gathered.get("node_runtime")))
@@ -199,7 +199,8 @@ def _placement_evaluation(cluster, path, layers, backend, ctx, base, inventory, 
             from . import preflight, runtime
             admitted = {}
             plans = preflight.check(cluster, path, layers, backend, resolved.recipe, bound, report, raw, effective_sha,
-                                    inputs=placement_inputs, admission=admitted, identity=identity, reviewed=reviewed)
+                                    inputs=placement_inputs, admission=admitted, identity=identity, reviewed=reviewed,
+                                    observer=observer)
             apply.refuse_unsupported(resolved.recipe, adapter=runtime.preset())
             decision = runtime.decision(cluster, resolved.recipe, ctx, bound, effective_sha, plans, admitted)
         except RecipeError as exc:
@@ -311,7 +312,7 @@ def specificity(recipe):
     return count
 
 
-def pick(cluster, profile, directories, layers, source, backend=None, *, reviewed=None):
+def pick(cluster, profile, directories, layers, source, backend=None, *, reviewed=None, observer=None):
     from . import preflight
     facts.context(cluster, profile)
     try:
@@ -320,7 +321,7 @@ def pick(cluster, profile, directories, layers, source, backend=None, *, reviewe
         placement = False  # Preserve legacy per-candidate refusals for unreadable layers.
     if not placement:
         return _legacy_pick(cluster, profile, directories, layers, source, backend)
-    return _placement_pick(cluster, profile, directories, layers, source, backend, reviewed=reviewed)
+    return _placement_pick(cluster, profile, directories, layers, source, backend, reviewed=reviewed, observer=observer)
 
 
 def _legacy_pick(cluster, profile, directories, layers, source, backend=None):
@@ -359,7 +360,7 @@ def _legacy_pick(cluster, profile, directories, layers, source, backend=None):
     return passing[0][2], rows
 
 
-def _placement_pick(cluster, profile, directories, layers, source, backend=None, *, reviewed=None):
+def _placement_pick(cluster, profile, directories, layers, source, backend=None, *, reviewed=None, observer=None):
     """Auto-pick: candidates for the profile's model that match and deploy; the most specific wins, ties by name.
     Returns (chosen Evaluation or None, rows for every candidate with why it was or was not chosen)."""
     ctx = facts.context(cluster, profile)
@@ -375,7 +376,8 @@ def _placement_pick(cluster, profile, directories, layers, source, backend=None,
         else:
             try:
                 evaluation = evaluate(cluster, profile, row["path"], layers, once, backend,
-                                      **({"reviewed": reviewed} if reviewed is not None else {}))
+                                      **({"reviewed": reviewed} if reviewed is not None else {}),
+                                      **({"observer": observer} if observer is not None else {}))
             except RecipeError as exc:
                 out["result"] = "refused: " + str(exc)
             else:

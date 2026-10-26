@@ -34,6 +34,29 @@ CPU-only tests: `python -m pytest -q tests/test_placement_supervision.py tests/t
 Native driver behavior is not qualified by these fake-counter/process tests. Operational policy documents and
 watchdog logs contain local identities and belong in local runtime storage, never in committed fixtures.
 
+Owned PC-BIG residual checks use two attribution snapshots around a device total. The observer reads the total
+in-process through its existing NVML session by UUID; Windows takes all owned PIDs from one PDH collection on
+each side. Observers without native totals, or unavailable NVML totals, retain the nvidia-smi fallback. Placement
+caps always use full attributable process bytes. Admission/start refuse a single busy verdict; the watchdog
+requires two consecutive busy brackets in the same check, so a temporary allocation seen only in one total
+does not stop a normal turn. Numeric foreign-process evidence, locks and ledgers retain their immediate checks.
+
+The residual bounds assume attribution is monotonic per PID within each bracket. An allocation/free spike can
+produce a false busy verdict; a release/reallocation dip can conceal foreign use for that check. Two busy
+brackets reduce transient refusals but do not establish that assumption. Live qualification must exercise both
+patterns under loading and serving workloads. This remains an open qualification point.
+
+When all three brackets are ambiguous and every owned PID's after sample is at least its before sample, the
+watchdog reports own load in progress without adding or resetting counter strikes. This allowance ends 60 seconds
+after the first full check, or after the ready timeout if shorter; it never restarts. Later growth ambiguity,
+release-shaped ambiguity and mixed changes receive the usual three counter strikes. Admission/start receive no
+load allowance. Caps, grants, deadlines and all other devices remain checked during loading.
+
+Live WDDM qualification also remains open for the total below attribution refusal: under PRO load, compare the
+sum of owned PIDs' PDH Dedicated Usage with NVML memory.used (and the nvidia-smi fallback). Establish whether the
+sum stays within the device total plus the one MiB rounding tolerance, including shared/aliased allocations and
+driver accounting. Persistent disagreement still refuses; CPU fakes do not qualify this relationship.
+
 Pure admission inspects every touched device's existing OS lock without acquiring it and checks the selected local
 port before any admission hold, published placement, launch state or helper directory. A missing lock creates no
 file or directory; an unlocked stale lock is allowed. A held/unreadable lock or occupied port is `PL_E_BUSY`.

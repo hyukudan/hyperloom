@@ -48,11 +48,17 @@ The guard therefore checks compute processes on
 those PROs and excludes only the helper and child PIDs. Assist process rows never trigger this PRO guard. WDDM
 desktop rows with N/A memory alone are ignored. Foreign numeric PRO use above the idle threshold refuses, as does
 PRO device memory above the bounded attribution for the turn's own PIDs. Each device-total read is bracketed by
-two attributable samples per PID. The sum of each PID's larger sample proves foreign activity above the idle
-threshold; the sum of each PID's smaller sample proves clear state at or below it. Ambiguous brackets are resampled
-immediately, up to three brackets. Persistent ambiguity or an invalid total (negative, non-integer, or more than
-one MiB below the smaller attribution) is an unavailable counter. This subtraction applies only to PC-BIG detection;
-placement caps still cover the full attributable process usage.
+two attributable snapshots. Windows collects all owned PIDs together; the observer's existing NVML session supplies
+the total by UUID, with nvidia-smi as fallback. Assuming attribution is monotonic per PID within each bracket,
+the sum of each PID's larger sample bounds foreign activity from below; the sum of the smaller samples bounds it
+from above. Ambiguous brackets are resampled immediately, up to three brackets. Admission/start refuse one busy
+verdict; the watchdog requires two consecutive busy brackets within a check. Growth-only ambiguity receives a
+watchdog load allowance for the first 60 seconds of full checks, shortened by the ready timeout, without adding
+or resetting strikes. It never restarts; release/mixed ambiguity and growth after that limit remain unavailable
+counters. An invalid total (negative, non-integer, or more than one MiB below the smaller attribution) also refuses.
+Non-monotonic spikes/dips and WDDM total/attribution ordering remain open live-qualification points, described in
+placement-supervision.md. This subtraction applies only to PC-BIG detection; placement caps still cover the full
+attributable process usage.
 The guard retains the ledger check and refuses unreadable state. The watchdog checks unowned PRO locks on each
 full tick (about two seconds), with ledger and GPU queries at five-second intervals, independently of the
 half-second host-memory checks. Unavailable GPU counters receive three consecutive attempts; admission refuses the
@@ -62,8 +68,8 @@ Per-process placement cap/attribution failures still stop immediately.
 Planned replacement may passively account for a reviewed old service's lock and child PID only while its recorded
 ready state, PID, exact device set and held helper lifetime lock prove ownership. Foreign PRO processes and ledger
 windows still refuse. The later device idle check additionally subtracts only that reviewed child's attributable
-memory using the same brackets. Preflight owns one observer and lends it to all admission checks, closing it on
-success or refusal. Verified owners pass transiently through pre-stop launch/RTX rendering and validation.
+memory using the same brackets. One observer is shared by all admission checks and pre-stop launch/RTX rendering,
+then closed on success or refusal. Verified owners pass transiently through rendering and validation.
 This pre-stop ownership is never written into the replacement policy: after the controller stops the old
 service, the replacement must pass fresh unowned checks and acquire every device lock before starting. A stale
 review, mismatched state or unreleased old lock cannot authorize a new helper.

@@ -272,11 +272,12 @@ def expand_placement(data, plan):
 
 
 def render_service(cluster, profile_name, *, api_key, handoff_api_key, free_physical_gib, now=None, vram_cap_gib=None,
-                   host_gib_exact=None, placement_request=None, placement_owners=None):
+                   host_gib_exact=None, placement_request=None, placement_owners=None, placement_observer=None):
     if placement_request is not None:
         if vram_cap_gib is not None or host_gib_exact is not None:
             raise ConfigError("PL_E_CONFLICT placement cannot be combined with legacy sizing flags")
-        return render_placement_service(cluster, placement_request, api_key=api_key, owners=placement_owners)
+        return render_placement_service(cluster, placement_request, api_key=api_key, owners=placement_owners,
+                                        observer=placement_observer)
     s, data, kind = _service(cluster, profile_name)
     decode = data["decode_profiles"][kind]
     rule = decode["context"]
@@ -355,7 +356,7 @@ def render_service(cluster, profile_name, *, api_key, handoff_api_key, free_phys
                        (reservation or {}).get("gate"))
 
 
-def render_placement_service(cluster, request, *, api_key, owners=None):
+def render_placement_service(cluster, request, *, api_key, owners=None, observer=None):
     """Opt-in RTX-alone decode renderer. The shipped unpublished pin refuses before rendering any argv."""
     from .recipes import runtime
     from .recipes.grants import uuid_key
@@ -380,7 +381,7 @@ def render_placement_service(cluster, request, *, api_key, owners=None):
     if touched != granted.keys():
         raise ConfigError("PL_E_GRANT every touched device needs an explicit grant")
     from . import placement_supervision
-    placement_supervision.validate(policy, now=time.time(), starting=False, owners=owners)
+    placement_supervision.validate(policy, now=time.time(), starting=False, owners=owners, observer=observer)
     windows = [g["window"] for g in granted.values()]
     if policy.get("host_grant") is not None:
         windows.append(policy["host_grant"]["window"])

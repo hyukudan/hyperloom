@@ -1,4 +1,4 @@
-"""Read-only, attributable GPU memory observers. No contexts or device-total estimates."""
+"""Read-only GPU memory observers. Device totals are separate from attributable cap measurements."""
 from __future__ import annotations
 
 import ctypes as C
@@ -18,17 +18,41 @@ def _check(status):
 
 
 class Nvml:
-    """NVML inventory and Linux per-process accounting; loading NVML does not create a CUDA context."""
+    """NVML inventory, totals and Linux per-process accounting; loading NVML does not create a CUDA context."""
 
     def __init__(self):
         try:
             self.dll = C.CDLL("nvml.dll" if os.name == "nt" else "libnvidia-ml.so.1")
             _check(self.dll.nvmlInit_v2())
+            self._memory_handles = {}
         except (OSError, AttributeError) as exc:
             raise CounterError("NVML unavailable") from exc
 
     def close(self):
         _check(self.dll.nvmlShutdown())
+
+    def device_used_bytes(self, uuid):
+        """Read memory.used through this observer's NVML session, without a context or subprocess."""
+        class Memory(C.Structure):
+            _fields_ = [("total", C.c_ulonglong), ("free", C.c_ulonglong), ("used", C.c_ulonglong)]
+
+        key = uuid.strip().lower()
+        try:
+            lookup = self.dll.nvmlDeviceGetHandleByUUID
+            lookup.argtypes = [C.c_char_p, C.POINTER(C.c_void_p)]
+            lookup.restype = C.c_int
+            query = self.dll.nvmlDeviceGetMemoryInfo
+            query.argtypes = [C.c_void_p, C.POINTER(Memory)]
+            query.restype = C.c_int
+            if key not in self._memory_handles:
+                handle = C.c_void_p()
+                _check(lookup(uuid.strip().encode("ascii"), C.byref(handle)))
+                self._memory_handles[key] = handle
+            memory = Memory()
+            _check(query(self._memory_handles[key], C.byref(memory)))
+            return memory.used
+        except (OSError, AttributeError, UnicodeError) as exc:
+            raise CounterError("NVML device total unavailable") from exc
 
     def devices(self):
         count = C.c_uint()
@@ -194,6 +218,16 @@ class Observer:
 
     def sample(self, pid):
         return pdh_sample(self.pdh.rows(), self.luids, pid) if self.pdh else self.nvml.sample(pid)
+
+    def sample_many(self, pids):
+        """All Windows PIDs share one Dedicated Usage collection on each side of a bracket."""
+        if self.pdh:
+            rows = self.pdh.rows()
+            return {pid: pdh_sample(rows, self.luids, pid) for pid in pids}
+        return {pid: self.nvml.sample(pid) for pid in pids}
+
+    def device_used_bytes(self, uuid):
+        return self.nvml.device_used_bytes(uuid)
 
     def close(self):
         errors = []

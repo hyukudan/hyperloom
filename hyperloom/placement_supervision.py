@@ -10,6 +10,7 @@ from .recipes import grants
 from .config import number
 
 PC_BIG_CHECK_S = 5
+PC_BIG_LOAD_GRACE_S = 60
 
 
 def validate(policy, *, now, starting=False, memory=None, owners=None, observer=None, observer_factory=None,
@@ -98,6 +99,7 @@ class Watchdog(rtx.Watchdog):
         self.observer = observer
         self._cleanup_errors = []
         self._pc_big_next = 0
+        self._pc_big_load_until = None
         self.pc_big_clock = pc_big_clock
         self.owners = {u.lower(): {os.getpid(), pid} for u in self.policy["caps_gib"]}
 
@@ -161,13 +163,16 @@ class Watchdog(rtx.Watchdog):
                 checkpoint = self.pc_big_clock()
                 if checkpoint >= self._pc_big_next:
                     self._pc_big_next = checkpoint + PC_BIG_CHECK_S
+                    if self._pc_big_load_until is None:
+                        self._pc_big_load_until = checkpoint + min(PC_BIG_LOAD_GRACE_S, self.spec.ready_timeout_s)
                     try:
                         pc_big.require_clear(self.policy.get("pc_big_guard"), owners=self.owners,
-                                             observer=self.observer)
+                                             observer=self.observer, confirm_busy=True)
                         self.smi_failures = 0
                     except pc_big.CounterUnavailable as exc:
-                        self.smi_failures += 1
                         line["smi"] = str(exc)
+                        if not (isinstance(exc, pc_big.LoadInProgress) and checkpoint < self._pc_big_load_until):
+                            self.smi_failures += 1
                         if self.smi_failures >= rtx.SMI_FAILURES_MAX:
                             reason = "PC-BIG GPU counters failed persistently; turn refused"
                 sample = self.observer.sample(self.pid)

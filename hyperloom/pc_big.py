@@ -49,6 +49,10 @@ class CounterUnavailable(rtx.ServiceError):
     """Live GPU query failures and incoherent totals receive bounded watchdog retries."""
 
 
+class LoadInProgress(CounterUnavailable):
+    """Only non-decreasing owned attribution made every bracket ambiguous; admission still refuses."""
+
+
 def _gpu_query(query, *args):
     try:
         return query(*args)
@@ -56,38 +60,64 @@ def _gpu_query(query, *args):
         raise CounterUnavailable("PC-BIG GPU counters unavailable; turn refused") from exc
 
 
-def owned_busy(uuid, pids, observer):
-    """Bracket the device total with per-PID attribution; ambiguous intervals never prove idle."""
-    key = uuid.lower()
+def _device_total(uuid, observer):
+    # Optional methods are declared by the observer type; older observers retain their original fallback.
+    query = getattr(type(observer), "device_used_bytes", None)
+    if query is not None:
+        try:
+            total = query(observer, uuid)
+        except (gpu_counters.CounterError, OSError, AttributeError):
+            pass
+        else:
+            if type(total) is not int or total < 0:
+                raise CounterUnavailable("PC-BIG device total is invalid; turn refused")
+            return total
+    used = _gpu_query(rtx.device_used_mib, uuid)
+    if type(used) is not int or used < 0:
+        raise CounterUnavailable("PC-BIG device total is invalid; turn refused")
+    return used * (1 << 20)
+
+
+def owned_busy(uuid, pids, observer, *, confirm_busy=False):
+    """Bracket a total; bounds assume attribution is monotonic per PID within each bracket."""
+    from .recipes.grants import uuid_key
+    key = uuid_key(uuid)
     pids = sorted(pids)
     def attributed():
+        snapshot = getattr(type(observer), "sample_many", None)
+        samples = snapshot(observer, pids) if snapshot is not None else {pid: observer.sample(pid) for pid in pids}
         result = {}
         for pid in pids:
-            sample = observer.sample(pid)
+            sample = samples[pid]
             if key not in sample or type(sample[key]) is not int or sample[key] < 0:
                 raise gpu_counters.CounterError("owned PRO attributable counters unavailable")
             result[pid] = sample[key]
         return result
+    busy, growth_only = False, True
     for _ in range(3):
         before = attributed()
-        used = _gpu_query(rtx.device_used_mib, uuid)
-        if type(used) is not int or used < 0:
-            raise CounterUnavailable("PC-BIG device total is invalid; turn refused")
+        total = _device_total(uuid, observer)
         after = attributed()
         hi = sum(max(before[pid], after[pid]) for pid in pids)
         lo = sum(min(before[pid], after[pid]) for pid in pids)
-        total = used * (1 << 20)
         # The device counter reports whole MiB; tolerate at most one MiB of rounding below attribution.
         if total + (1 << 20) < lo:
             raise CounterUnavailable("PC-BIG device total is below attribution; turn refused")
         if total - hi > rtx.PRO_IDLE_MIB * (1 << 20):
-            return True
+            if not confirm_busy or busy:
+                return True
+            busy, growth_only = True, False
+            continue
         if total - lo <= rtx.PRO_IDLE_MIB * (1 << 20):
             return False
+        busy = False
+        growth_only = growth_only and all(after[pid] >= before[pid] for pid in pids)
+    if growth_only:
+        raise LoadInProgress("PC-BIG own load in progress; attribution changed across device totals")
     raise CounterUnavailable("PC-BIG attribution changed across device totals; turn refused")
 
 
-def active(guard, *, owners=None, observer=None, observer_factory=None, locks_only=False):
+def active(guard, *, owners=None, observer=None, observer_factory=None, locks_only=False, confirm_busy=False):
     """Held PRO lock, busy PRO or any open ledger start is a window. Unknown state refuses.
 
     Missing optional preferences means no ledger signal is configured. Existing but unreadable
@@ -120,12 +150,18 @@ def active(guard, *, owners=None, observer=None, observer_factory=None, locks_on
                 if observer is None:
                     observer = (observer_factory or gpu_counters.Observer)()
                     stack.callback(observer.close)
+                loading = None
                 for pro in sorted(owned_pros):
-                    if owned_busy(pros[pro], owners[pro], observer):
-                        return True
+                    try:
+                        if owned_busy(pros[pro], owners[pro], observer, confirm_busy=confirm_busy):
+                            return True
+                    except LoadInProgress as exc:
+                        loading = exc
             for pro in pros:
                 if pro not in owners and _gpu_query(rtx.pro_busy, pros[pro]):
                     return True
+            if owned_pros and loading is not None:
+                raise loading
         return False
     except CounterUnavailable:
         raise
@@ -167,6 +203,7 @@ def _ledger_active(guard):
     return bool(state["holders"] or state["stale"] or partial)
 
 
-def require_clear(guard, *, owners=None, observer=None, observer_factory=None, locks_only=False):
-    if active(guard, owners=owners, observer=observer, observer_factory=observer_factory, locks_only=locks_only):
+def require_clear(guard, *, owners=None, observer=None, observer_factory=None, locks_only=False, confirm_busy=False):
+    if active(guard, owners=owners, observer=observer, observer_factory=observer_factory, locks_only=locks_only,
+              confirm_busy=confirm_busy):
         raise rtx.ServiceError("PC-BIG window is active; turn refused")

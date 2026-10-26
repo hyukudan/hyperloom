@@ -34,6 +34,9 @@ def test_residual_brackets_bound_each_owned_pid(tmp_path, monkeypatch, stage, ca
         if pid == os.getpid():
             value = [4, 1][index % 2] if case == "crossing-pids" else 0
         else:
+            if case == "ambiguous" and stage == "watchdog":
+                # Each check takes six bracket samples and one separate cap sample. Keep every bracket release-shaped.
+                index %= 7
             value = child[index % len(child)] if case in ("ambiguous", "crossing-pids") else child[min(index, len(child) - 1)]
         result = dict.fromkeys(keys, 0)
         result[pro] = value * rtx.GIB + (1 if case == "rounded-total" and pid == 42 else 0)
@@ -86,7 +89,7 @@ def test_residual_brackets_bound_each_owned_pid(tmp_path, monkeypatch, stage, ca
                 assert "exceeds placement cap" in reason
             assert dog.smi_failures == 0
     if case in ("growth", "release-foreign"):
-        assert query.call_count == 2
+        assert query.call_count == (3 if stage == "watchdog" and case == "release-foreign" else 2)
     if case in ("ambiguous", "crossing-pids"):
         assert query.call_count == (10 if stage == "watchdog" else 3)
     observer.close.assert_not_called()
