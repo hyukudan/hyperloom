@@ -788,7 +788,7 @@ def rename(value, mapping):
 def up_options(cluster, recipe, profile=None, *, layers=None, dirs=(), intent=None):
     """(cluster, intent, launch.Options) for ``up --recipe REF`` (a file, a recipe id or auto): everything is
     snapshotted first and the launch reads only the snapshot (its configuration copy included)."""
-    from . import session
+    from . import launch, preflight, session
     layers = layers or session.Layers()
     if recipe == "auto":
         if not profile:
@@ -797,6 +797,9 @@ def up_options(cluster, recipe, profile=None, *, layers=None, dirs=(), intent=No
     else:
         path, candidates = locate(recipe, cluster, for_up=True, extra=dirs), ()
         profile = deployment_profile(cluster, path, profile)
+    preflight.before_options(cluster, profile, launch.Options("auto" if path is None else str(path), layers,
+                                                              list(candidates)),
+                             router=(intent or {}).get("router", "local"))
     digest, pin = launch_inputs(cluster, path, layers, candidates, intent=dict(intent or {}, profile=profile), pin=True)
     try:
         cluster, intent, options = options_from_inputs(digest, profile)
@@ -1061,6 +1064,8 @@ def deploy(digest, stop=(), *, source=None, orchestrate=None, approval=None, job
     after it owns the profile (the hand-over) and then starts nothing. The progress file says how far the deploy got,
     so a cancel undoes only what the deploy did (a cancelled deploy's error says what it had stopped)."""
     from .. import orchestrate as default_orchestrate
+    from . import preflight
+    preflight.snapshot(digest, source=source)
     orchestrate = orchestrate or default_orchestrate
     with launch_progress(job, "deploy") as progress:
         return _deploy(digest, stop, source, orchestrate, approval, progress)

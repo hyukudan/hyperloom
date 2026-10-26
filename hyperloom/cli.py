@@ -400,6 +400,8 @@ def _up_command(args, orchestrate, load_cluster):
             raise ValueError("--approval-end must include a timezone")
         approval = {"ref": args.approval_ref, "lease_s": args.approval_lease, "end_epoch": end.timestamp()}
     cluster = (load_cluster or _cluster)(args.config)
+    from .recipes import preflight
+    preflight.cli(args, load_cluster=lambda _: cluster)
     recipe = None
     if args.recipe_inputs is not None:
         if args.recipe is not None or any((args.recipe_profile, args.recipe_overrides, args.recipe_set, args.recipe_dir,
@@ -756,6 +758,8 @@ def build_parser(parser_class=argparse.ArgumentParser):
 def _admission_hold(args):
     """Contract C11 for direct CLI use: a deploy/start/install takes a "core" hold (refused while a benchmark
     holds its resources), a stop a "stop" hold (cancels overlapping benchmarks). Returns a release function."""
+    from .recipes import preflight
+    preflight.cli(args)
     kind = {"up": "core", "install": "core", "down": "stop"}.get(args.command)
     if args.command == "recipe" and getattr(args, "operation", None) in ("deploy", "probe"):
         kind = "core"

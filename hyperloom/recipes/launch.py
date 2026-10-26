@@ -31,6 +31,7 @@ class Options:
     pin: Path | None = None          # the launch's pin on its snapshot (service.acquire_pin), released after up
     components: dict | None = None  # local cache sidecar; never inserted in the recipe or desc-v1
     selected_content: dict | None = None
+    placement_inputs: dict | None = None  # per-route cached configuration references, never acquisition requests
 
 
 @dataclass
@@ -144,7 +145,10 @@ def prepare(cluster, profile, options, *, router, vram_cap_gib, state_dir, sourc
     backend, production = _backend(cluster)
     if vram_cap_gib is not None:
         raise RecipeError("--vram-cap-gib and --recipe both set the RTX cap: put it in the recipe (device_gib)")
-    check_router()
+    from . import preflight
+    placement = preflight.includes(options)
+    if not placement:
+        check_router()
     source = source or commands.live_source(cluster)
     if options.recipe == "auto":
         dirs = options.dirs if options.exact_dirs else commands.recipe_dirs(cluster, options.dirs)
@@ -154,10 +158,14 @@ def prepare(cluster, profile, options, *, router, vram_cap_gib, state_dir, sourc
                               if rows else "no recipe files in " + ", ".join(map(str, commands.recipe_dirs(cluster))))
         evaluation = chosen
     else:
-        evaluation = session.evaluate(cluster, profile, options.recipe, options.layers, source, backend)
+        evaluation = session.evaluate(cluster, profile, options.recipe, options.layers, source, backend,
+                                      **({"placement_inputs": options.placement_inputs}
+                                         if options.placement_inputs is not None else {}))
     why = refusal_of(evaluation)
     if why is not None:
         raise RecipeError(why)
+    if placement:
+        check_router()
     decision = evaluation.decision
     service = dict(decision["service"])
     cap, host, plan = None, None, None

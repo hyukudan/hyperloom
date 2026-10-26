@@ -1964,6 +1964,14 @@ class API:
             self._audit(action, arguments, {"state": "refused", "error": str(exc)})
             raise
         priority = action in ("down", "cancel")
+        if action == "recipes/deploy" or (action == "up" and (arguments.get("recipe") or arguments.get("recipe_inputs"))):
+            from hyperloom.recipes import preflight
+            argv = self._deploy_argv(arguments) if action == "recipes/deploy" else self._recipe_up_argv(arguments)
+            parsed = cli.build_parser(recipe_web.RaisingParser).parse_args(argv)
+            try:
+                preflight.cli(parsed, load_cluster=self._recipe_loader)
+            except (OSError, ValueError, RuntimeError) as exc:
+                raise APIError(str(exc), 400) from exc
         occupying = action in ("up", "install", "recipes/deploy", "recipes/probe")
         # A stop: down, and every cancel that is not a feature job's (a profile's cancel and an up's or a deploy's
         # cancel stop a profile, or may).

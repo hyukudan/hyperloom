@@ -8,7 +8,7 @@ import json
 import time
 from pathlib import Path
 
-from . import apply, core, devices, facts, grants, reader
+from . import apply, core, devices, facts, reader
 from .reader import RecipeError
 
 SUFFIXES = (".toml", ".json")
@@ -70,7 +70,7 @@ def resolve(path, layers, identity=None, backend=None):
     return (backend or core.StubBackend()).resolve(path, read_text(path), layers, identity)
 
 
-def evaluate(cluster, profile, path, layers, source, backend=None):
+def evaluate(cluster, profile, path, layers, source, backend=None, *, placement_inputs=None):
     """``source(ctx)`` -> (inventory, facts, raw availability, notes): live probes or a saved facts file. One resolved
     document (the backend's) is used for binding, match, admission and the decision."""
     backend = backend or core.StubBackend()
@@ -79,7 +79,8 @@ def evaluate(cluster, profile, path, layers, source, backend=None):
     inventory, gathered, raw, notes = source(ctx)
     ctx.limits = dict(ctx.limits or {}, node_runtime=facts.current_runtime(cluster, ctx, gathered.get("node_runtime")))
     if any(reader.placement_mode(r) for r in base["routes"]):
-        return _placement_evaluation(cluster, path, layers, backend, ctx, base, inventory, gathered, raw, notes)
+        return _placement_evaluation(cluster, path, layers, backend, ctx, base, inventory, gathered, raw, notes,
+                                     placement_inputs=placement_inputs)
     bound = apply.bind(base, ctx, inventory)
     report = apply.probe_report(base, bound, gathered)
     identity = dict(report, binding=bound["binding"], workload=layers.workload,
@@ -107,7 +108,8 @@ def evaluate(cluster, profile, path, layers, source, backend=None):
                       availability, decision, refusal, list(notes))
 
 
-def _placement_evaluation(cluster, path, layers, backend, ctx, base, inventory, gathered, raw, notes):
+def _placement_evaluation(cluster, path, layers, backend, ctx, base, inventory, gathered, raw, notes,
+                          *, placement_inputs=None):
     if not isinstance(backend, core.CoreBackend):
         raise RecipeError("placement binding requires a compatible ts-recipe core")
     report = apply.probe_report(base, None, gathered, cluster=cluster, ctx=ctx, inventory=inventory)
@@ -124,11 +126,9 @@ def _placement_evaluation(cluster, path, layers, backend, ctx, base, inventory, 
     refusal = None
     if not problems:
         try:
-            used = grants.check(cluster, resolved.recipe, bound["binding"], report, raw["hosts"])
-            from . import sysmem
-            for row in report["devices"]:
-                if grants.uuid_key(row.get("uuid", "")) in used:
-                    sysmem.require(raw.get("sysmem_policy", "unknown"), placement=True, platform=row.get("platform"))
+            from . import preflight
+            preflight.check(cluster, path, layers, backend, resolved.recipe, bound, report, raw, effective_sha,
+                            inputs=placement_inputs)
             # Placement launch stays unavailable until its adapter and supervision are complete.
             apply.refuse_unsupported(resolved.recipe)
         except RecipeError as exc:
