@@ -1,0 +1,129 @@
+"""Placement-only supervision. Operator grants never open or extend a PC-BIG window."""
+from __future__ import annotations
+
+import math
+
+from . import gpu_counters, rtx
+from .recipes import grants
+from .config import number
+
+
+def validate(policy, *, now, starting=False, memory=None):
+    """Validate an exact cap for each granted UUID and the aggregate pinned/pageable host charge."""
+    entries = grants.parse_grants(policy["grants"])
+    by_uuid = {grants.uuid_key(g["uuid"]): g for g in entries}
+    caps = {grants.uuid_key(k): v for k, v in policy["caps_gib"].items()}
+    if not by_uuid or len(caps) != len(policy["caps_gib"]) or caps.keys() != by_uuid.keys():
+        raise rtx.ServiceError("placement requires one cap per granted UUID")
+    for uuid, grant in by_uuid.items():
+        cap = caps[uuid]
+        number(cap, "placement cap", 0, 1024)
+        if cap <= 0 or cap > grant["vram_cap_gib"]:
+            raise rtx.ServiceError("placement cap exceeds grant or is disabled")
+        if not grants._active(grant["window"], now, starting=starting):
+            raise rtx.ServiceError("placement device grant is not open or has expired")
+    pinned, pageable = policy["host_pinned_gib"], policy["host_pageable_gib"]
+    number(pinned, "placement pinned host", 0, grants.HOST_MAX_GIB)
+    number(pageable, "placement pageable host", 0, 4096)
+    charge = pinned + pageable
+    host = policy.get("host_grant")
+    if host is not None:
+        grants.parse_host_grant(host)
+        if not grants._active(host["window"], now, starting=starting):
+            raise rtx.ServiceError("placement host grant is not open or has expired")
+    if charge and (host is None or charge > host["host_gib"]):
+        raise rtx.ServiceError("placement pinned + pageable exceeds host grant")
+    if memory is not None and starting:
+        free, commit = memory["free_physical_gib"], memory["free_commit_gib"]
+        floor = policy["free_commit_floor_gib"]
+        number(floor, "placement commit floor", 0, 4096)
+        if not all(math.isfinite(v) for v in (free, commit)):
+            raise rtx.ServiceError("placement host memory counters unavailable")
+        if free * rtx.GIB < grants.HOST_START_BYTES or charge > free:
+            raise rtx.ServiceError("placement requires MemAvailable >= 82 GB and the host charge")
+        if commit - charge < floor:
+            raise rtx.ServiceError("placement host charge would cross free commit floor")
+    return by_uuid, caps
+
+
+def acquire(policy, stack, *, lock_factory, gate_runner, verify, log, now):
+    """The caller owns the ExitStack before acquisition: any lock/gate failure rolls back every held lock."""
+    entries, _ = validate(policy, now=now, starting=True)
+    info = []
+    for uuid in sorted(entries):
+        lock = lock_factory(uuid).acquire()
+        stack.callback(lock.close)
+    for uuid in sorted(entries):
+        refused = gate_runner(entries[uuid]["gate"])
+        log({"gate": refused or "open", "uuid": uuid})
+        if refused:
+            raise rtx.ServiceError(refused)
+        info.append(verify(entries[uuid]["uuid"]))
+    return info
+
+
+class Watchdog(rtx.Watchdog):
+    """No baseline subtraction, including WDDM N/A. Observer failure immediately stops the owned process."""
+
+    def __init__(self, spec, pid, kill, log, *, observer=None, **kwargs):
+        super().__init__(spec, pid, kill, log, **kwargs)
+        self.policy = spec.placement_supervision
+        self.observer = observer
+
+    def start(self):
+        if self.observer is None:
+            self.observer = gpu_counters.Observer()
+        # Sample before starting the thread; never call the legacy start's device-total baseline.
+        try:
+            self.observer.sample(self.pid)
+            self._thread.start()
+        except Exception:
+            self.observer.close()
+            self.observer = None
+            raise
+        return self
+
+    def stop(self):
+        super().stop()
+        if self.observer is not None:
+            self.observer.close()
+            self.observer = None
+
+    def check_memory(self):
+        reason, memory = super().check_memory()
+        if reason is None:
+            try:
+                validate(self.policy, now=self.clock())
+                if memory["free_commit_gib"] < self.policy["free_commit_floor_gib"]:
+                    reason = "placement free commit below floor"
+                if not all(math.isfinite(v) for v in memory.values()):
+                    reason = "placement host memory counters unavailable"
+            except (ValueError, RuntimeError) as exc:
+                reason = str(exc)
+        return reason, memory
+
+    def check(self):
+        reason, memory = self.check_memory()
+        line = {"t": round(self.clock(), 1), "pid": self.pid, **memory}
+        if reason is None:
+            try:
+                _, caps = validate(self.policy, now=self.clock())
+                sample = self.observer.sample(self.pid)
+                line["vram_bytes"] = sample
+                if not caps.keys() <= sample.keys():
+                    raise gpu_counters.CounterError("granted GPU missing from attributable counters")
+                for uuid, used in sample.items():
+                    if type(used) is not int or used < 0:
+                        raise gpu_counters.CounterError("per-process GPU memory is N/A")
+                    if uuid not in caps and used > 0:
+                        reason = "process active on an ungranted GPU"
+                        break
+                    if uuid in caps and used > caps[uuid] * rtx.GIB:
+                        reason = "per-process VRAM exceeds placement cap"
+                        break
+            except gpu_counters.CounterError as exc:
+                reason = str(exc)
+        if reason:
+            line["kill"] = reason
+        self.log(line)
+        return reason

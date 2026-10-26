@@ -6,6 +6,7 @@ its fidelity oracle. A new model is a new preset file; nothing here names one.
 """
 from __future__ import annotations
 
+from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
@@ -160,6 +161,7 @@ class ServiceSpec:
     binary_sha256: str | None = None
     placement: dict | None = None
     gate: list | None = None
+    placement_supervision: dict | None = None
 
 
 def redact(argv, flags):
@@ -400,6 +402,18 @@ def verify_pro(pro_uuid, run=subprocess.run, require_idle=True):
         raise ServiceError("RTX PRO busy: " + busy)
     return {"uuid": rows[0][0], "name": rows[0][1], "pci_bus_id": rows[0][2], "memory_total_mib": int(rows[0][3]),
             "busy": busy}
+
+
+def verify_device(device_uuid, run=subprocess.run):
+    """Placement identity/idle check: any explicitly granted CUDA device, without a model-name restriction."""
+    rows = _smi(["--query-gpu=uuid,name,pci.bus_id,memory.total", "--format=csv,noheader,nounits", "-i", device_uuid], run)
+    if len(rows) != 1 or rows[0][0].lower() != device_uuid.lower() or not rows[0][3].isdigit():
+        raise ServiceError("placement device identity or physical capacity unavailable")
+    busy = pro_busy(rows[0][0], run)
+    if busy:
+        raise ServiceError("placement device busy: " + busy)
+    return {"uuid": rows[0][0], "name": rows[0][1], "pci_bus_id": rows[0][2],
+            "memory_total_mib": int(rows[0][3]), "busy": None}
 
 
 def pro_busy(pro_uuid, run=subprocess.run):
@@ -643,13 +657,16 @@ OWNER_INTERVAL_S = 2
 
 
 def service_run(spec_path, *, child_factory=procs.LocalChild, watchdog_factory=Watchdog, verify=verify_pro,
-                health=_health, lock_factory=device_lock, owner_check=_owner_alive, gate_runner=run_gate):
+                health=_health, lock_factory=device_lock, owner_check=_owner_alive, gate_runner=run_gate,
+                memory=memory_status, observer_factory=None):
     """Persistent helper: owns the CUDA child (Job Object), its watchdog and the plaintext keys in its spec.
     Its lifetime lock (helper.lock) tells stop_service whether it is alive; every start step re-checks the stop file."""
     path = Path(spec_path)
     directory = path.parent
     lifetime = procs.InstanceLock(directory / "helper.lock").acquire()
     child = watchdog = device = None
+    devices = ExitStack()
+    observer = None
     reason = "stopped"
     redacted = []
     events = (directory / "watchdog.jsonl").open("a", encoding="utf-8")
@@ -670,13 +687,35 @@ def service_run(spec_path, *, child_factory=procs.LocalChild, watchdog_factory=W
         if stopping():
             reason = "stop requested before start"
             return
-        device = lock_factory(spec.pro_uuid).acquire()
-        if spec.gate:
-            refused = gate_runner(spec.gate)
-            log({"t": round(time.time(), 1), "gate": refused or "open"})
-            if refused:
-                raise ServiceError(refused)
-        info = verify(spec.pro_uuid)
+        if spec.placement_supervision is not None:
+            from . import gpu_counters, placement_supervision
+            placement_supervision.validate(spec.placement_supervision, now=time.time(), starting=True, memory=memory())
+            # Availability is tested before any engine is started. Counters may enumerate GPUs but never run work.
+            observer = (observer_factory or gpu_counters.Observer)()
+            sample = observer.sample(os.getpid())
+            _, caps = placement_supervision.validate(spec.placement_supervision, now=time.time(), starting=True)
+            if not caps.keys() <= sample.keys():
+                raise ServiceError("granted GPU missing from attributable counters")
+            if spec.pro_uuid.lower() not in caps:
+                raise ServiceError("placement anchor has no grant")
+            info = placement_supervision.acquire(spec.placement_supervision, devices, lock_factory=lock_factory,
+                                                  gate_runner=gate_runner,
+                                                  verify=verify_device if verify is verify_pro else verify,
+                                                  log=log, now=time.time())
+            for item in info:
+                if (item.get("memory_total_mib") is not None
+                        and caps[item["uuid"].lower()] * 1024 > item["memory_total_mib"]):
+                    raise ServiceError("placement cap exceeds device physical capacity")
+            # Gate commands can take time; recheck every deadline and the physical/commit floors before spawn.
+            placement_supervision.validate(spec.placement_supervision, now=time.time(), starting=True, memory=memory())
+        else:
+            device = lock_factory(spec.pro_uuid).acquire()
+            if spec.gate:
+                refused = gate_runner(spec.gate)
+                log({"t": round(time.time(), 1), "gate": refused or "open"})
+                if refused:
+                    raise ServiceError(refused)
+            info = verify(spec.pro_uuid)
         if not spec.binary_sha256:
             raise ServiceError("service binary has no release manifest (hyperloom prefill build)")
         if _sha256(spec.argv[0]) != spec.binary_sha256:
@@ -688,7 +727,13 @@ def service_run(spec_path, *, child_factory=procs.LocalChild, watchdog_factory=W
         child = child_factory(spec.argv, spec.env, directory, "service", port=("127.0.0.1", spec.port))
         child.start()
         # The watchdog only terminates the process; this loop sees it and does the orderly stop below.
-        watchdog = watchdog_factory(spec, child.process.pid, child.process.kill, log).start()
+        if spec.placement_supervision is not None:
+            watchdog = placement_supervision.Watchdog(spec, child.process.pid, child.process.kill, log,
+                                                       observer=observer, memory=memory)
+            observer = None  # watchdog now owns the observer, including cleanup on start failure
+            watchdog.start()
+        else:
+            watchdog = watchdog_factory(spec, child.process.pid, child.process.kill, log).start()
         end = time.monotonic() + spec.ready_timeout_s
         ready, strikes, next_health, next_owner = None, 0, 0.0, 0.0
         while True:
@@ -749,6 +794,9 @@ def service_run(spec_path, *, child_factory=procs.LocalChild, watchdog_factory=W
         _write(directory / "state.json", {"state": "stopped", "reason": reason, "argv": redacted})
         if device is not None:
             device.close()
+        devices.close()
+        if observer is not None:
+            observer.close()
         lifetime.close()
 
 
@@ -756,9 +804,12 @@ def prepare_service(spec):
     """The helper's directory and the record the controller persists BEFORE anything is launched (B1)."""
     directory = secrets.runtime_dir() / ("prefill-" + uuid.uuid4().hex)
     directory.mkdir(parents=True)
-    return {"machine": spec.machine_id, "directory": str(directory), "port": spec.port, "preset": spec.preset,
+    record = {"machine": spec.machine_id, "directory": str(directory), "port": spec.port, "preset": spec.preset,
             "device": spec.pro_uuid, "argv": spec.redacted, "vram_cap_gib": spec.vram_cap_gib,
             "placement": spec.placement}
+    if spec.placement_supervision is not None:
+        record["placement_supervision"] = spec.placement_supervision
+    return record
 
 
 def launch_service(record, spec, *, detached, owner=None, timeout_s=None, check=lambda: None):
@@ -948,9 +999,23 @@ def gpu_memory(run=subprocess.run):
     return {row[0]: int(row[1]) for row in _smi(["--query-gpu=uuid,memory.used", "--format=csv,noheader,nounits"], run)}
 
 
-def visibility(service, apps=compute_apps, memory=gpu_memory):
+def visibility(service, apps=compute_apps, memory=gpu_memory, *, observer=None):
     """Acceptance 1. True/False from per-process rows; None (unverified) when the driver lists none, with the
     device memory of every GPU as the evidence to read beside the service's PRO-pinned environment."""
+    if service.get("placement_supervision") is not None:
+        from . import gpu_counters
+        owned = observer is None
+        observer = observer or gpu_counters.Observer()
+        try:
+            sample = observer.sample(service["pid"])
+            allowed = {u.lower() for u in service["placement_supervision"]["caps_gib"]}
+            if not allowed <= sample.keys() or any(type(v) is not int or v < 0 for v in sample.values()):
+                raise gpu_counters.CounterError("attributable GPU counters unavailable")
+            gpus = sorted(u for u, used in sample.items() if used > 0)
+            return {"only_granted": set(gpus) <= allowed, "visible_on": gpus, "vram_bytes": sample}
+        finally:
+            if owned:
+                observer.close()
     gpus = sorted({gpu for gpu, pid, _ in apps() if pid == service.get("pid")})
     verdict = None if not gpus else gpus == [service["device"]]
     return {"only_pro": verdict, "visible_on": gpus, "device_memory_mib": memory(),
@@ -978,7 +1043,8 @@ def fidelity_gate(cluster, profile_name, prompts, request=_request, apps=compute
         rows.append({"tokens": entry["tokens"], "status": status, "equal": equal, "got": got,
                      "seconds": reply.get("seconds")})
     seen = visibility(service, apps, memory) if service.get("pid") else {"only_pro": None, "why": "attached: no pid"}
-    return {"gate": data["fidelity"]["name"], "pass": ok and seen["only_pro"] is not False, "rows": rows,
+    return {"gate": data["fidelity"]["name"], "pass": ok and seen.get("only_granted", seen.get("only_pro")) is not False,
+            "rows": rows,
             "visibility": seen, "quality_gate": data["fidelity"]["quality_gate"],
             "quality_gate_why": data["fidelity"]["quality_gate_why"]}
 
