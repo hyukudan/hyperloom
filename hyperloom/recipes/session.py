@@ -56,8 +56,10 @@ class Evaluation:
 
 
 def read_text(path):
+    """A recipe file as text, decoded without newline translation: the text hashes to the raw file's sha256, which
+    profile and overrides layers bind to (a CRLF file keeps its CRLF)."""
     try:
-        return Path(path).read_text(encoding="utf-8")
+        return Path(path).read_bytes().decode("utf-8")
     except (OSError, UnicodeError) as exc:
         raise RecipeError(f"{path}: {exc}") from exc
 

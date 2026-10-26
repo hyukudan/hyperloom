@@ -52,7 +52,10 @@ stale. A stale profile is not applied: the run uses the recipe alone and is mark
 
 1. **Resolve** the recipe with its layers: the autotuner profile first, then override files, then `--recipe-set`.
    This runs through the strix-stream core (`ss-recipe`: `pc.recipe_core`, `HYPERLOOM_SS_RECIPE` or `ss-recipe` on
-   `PATH`). The core's effective document, hardware match and route selection are used throughout. A stale profile
+   `PATH`). The project is being renamed tierstream: `ts-recipe` and `HYPERLOOM_TS_RECIPE` are tried first, a
+   `pc.recipe_core` that does not exist is looked up as its sibling `ts-recipe` / `ss-recipe`, and recipe, profile
+   and overrides files are read with `tierstream/*` schema ids too (outputs and hashes keep the `strix-stream/*`
+   ids). The core's effective document, hardware match and route selection are used throughout. A stale profile
    is dropped and the run is marked `untuned`. Without the core, `up --recipe` is refused unless
    `HYPERLOOM_RECIPE_STUB=1` is set; that uses hyperloom's offline reader and records the run as not production.
    `up --recipe` needs the local router, because the router reads the route state written on the control machine.

@@ -20,6 +20,9 @@ from .reader import RecipeError
 
 TIMEOUT_S = 60
 MAX_OUTPUT = 4 << 20        # bytes of stdout or stderr read from one core call
+# strix-stream is renamed tierstream: its core is `ts-recipe`, and `ss-recipe` is still found (the new name first).
+NAMES = ("ts-recipe", "ss-recipe")
+ENV = ("HYPERLOOM_TS_RECIPE", "HYPERLOOM_SS_RECIPE")
 
 
 def _executable(candidate):
@@ -33,16 +36,31 @@ def _executable(candidate):
     return str(path) if os.access(path, os.X_OK) else None
 
 
+def _names():
+    return [name + (".exe" if os.name == "nt" else "") for name in NAMES]
+
+
 def locate(cluster=None):
-    """The ss-recipe executable: cluster `pc.recipe_core`, else HYPERLOOM_SS_RECIPE, else the absolute PATH entries
-    (never the current directory); None when absent. A configured path that is not usable is None, not a fallback."""
+    """The recipe core executable (ts-recipe, else ss-recipe): cluster `pc.recipe_core`, else HYPERLOOM_TS_RECIPE, else
+    HYPERLOOM_SS_RECIPE, else the absolute PATH entries (never the current directory); None when absent. A configured
+    path that is not usable is None, not a fallback; a configured path that does not exist (the core was renamed)
+    is looked up as its sibling ts-recipe / ss-recipe in the same directory."""
     configured = (cluster.raw.get("pc", {}).get("recipe_core") if cluster is not None else None)
-    for candidate in (configured, os.environ.get("HYPERLOOM_SS_RECIPE")):
+    if configured:
+        path = Path(configured)
+        if path.is_absolute() and not path.exists():
+            for name in _names():
+                found = _executable(path.with_name(name))
+                if found:
+                    return found
+        return _executable(configured)
+    for variable in ENV:
+        candidate = os.environ.get(variable)
         if candidate:
             return _executable(candidate)
-    name = "ss-recipe.exe" if os.name == "nt" else "ss-recipe"
-    for entry in os.environ.get("PATH", "").split(os.pathsep):
-        if entry and Path(entry).is_absolute():
+    entries = [entry for entry in os.environ.get("PATH", "").split(os.pathsep) if entry and Path(entry).is_absolute()]
+    for name in _names():
+        for entry in entries:
             found = _executable(Path(entry) / name)
             if found:
                 return found
@@ -83,7 +101,11 @@ class Core:
                 stdout.seek(0)
                 stderr.seek(0)
                 text, err = _bounded(stdout, "output"), _bounded(stderr, "error output")
-        message = err.strip().removeprefix("ss-recipe: ")
+        message = err.strip()
+        for prefix in (name + ": " for name in NAMES):
+            if message.startswith(prefix):
+                message = message[len(prefix):]
+                break
         if out.returncode == 1:
             raise RecipeError(message or "ss-recipe refused")
         if out.returncode != 0:
@@ -124,7 +146,7 @@ class StubBackend:
     def resolve(self, path, text, layers, identity):
         def read(layer):
             try:
-                return Path(layer).read_text(encoding="utf-8")
+                return Path(layer).read_bytes().decode("utf-8")     # no newline translation, like the recipe
             except (OSError, UnicodeError) as exc:
                 raise RecipeError(f"{layer}: cannot read ({exc})") from exc
         profile = (read(layers.profile), str(layers.profile)) if layers.profile else None
@@ -134,7 +156,7 @@ class StubBackend:
         return Resolved(eff.recipe, eff.sha256, reader.explain(eff), eff.untuned, eff.refused)
 
     def effective_sha256(self, path, layers, resolved, report):
-        return hashlib.sha256(json.dumps(resolved.to_json(), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        return reader.canonical_sha256(resolved.to_json())
 
     def select(self, path, layers, resolved, state, effective_sha):
         return reader.select(resolved.recipe, state, effective_sha)

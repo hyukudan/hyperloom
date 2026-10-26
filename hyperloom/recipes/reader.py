@@ -18,6 +18,9 @@ import tomllib
 SCHEMA = "strix-stream/recipe-v1"
 PROFILE_SCHEMA = "strix-stream/recipe-profile-v1"
 OVERRIDES_SCHEMA = "strix-stream/recipe-overrides-v1"
+# strix-stream is renamed tierstream: ids are read in either spelling and normalized to the legacy one, which every
+# output and every hash carries (a renamed id is the same document; the core hashes the frozen v1 ids too).
+LEGACY_PREFIX, RENAMED_PREFIX = "strix-stream/", "tierstream/"
 MAX_BYTES = 16 * 1024 * 1024
 MAX_GIB = 1048576.0
 MAX_INDEX = 4096          # layer indices and list entries (a range never expands past it)
@@ -226,6 +229,26 @@ def _check_tree(value, where):
         raise RecipeError(f"{where or 'recipe'}: dates and times are not recipe values")
 
 
+def legacy_id(schema):
+    """A schema id in the legacy spelling (``tierstream/x`` -> ``strix-stream/x``); anything else unchanged."""
+    if isinstance(schema, str) and schema.startswith(RENAMED_PREFIX):
+        return LEGACY_PREFIX + schema[len(RENAMED_PREFIX):]
+    return schema
+
+
+def spellings(schema):
+    """Both accepted spellings of a legacy schema id, for messages."""
+    return f"{schema} or {RENAMED_PREFIX}{schema[len(LEGACY_PREFIX):]}"
+
+
+def canonical_sha256(doc):
+    """The effective sha256 of a resolved recipe: its canonical JSON (sorted keys, no spaces) with the schema id in
+    the legacy spelling. The stub's one hash rule (Effective and the stub backend)."""
+    if isinstance(doc.get("schema"), str):
+        doc = dict(doc, schema=legacy_id(doc["schema"]))
+    return hashlib.sha256(json.dumps(doc, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
 def load_text(text, origin="recipe"):
     """A document tree from TOML or JSON text (JSON when the first non-blank is `{`)."""
     if len(text.encode("utf-8")) > MAX_BYTES:
@@ -284,8 +307,8 @@ def parse(text, origin="recipe"):
     for key in ("schema", "name", "match", "routes"):
         if key not in tree:
             raise RecipeError(f'recipe: missing key "{key}"')
-    if tree["schema"] != SCHEMA:
-        raise RecipeError(f"schema: expected {SCHEMA}")
+    if legacy_id(tree["schema"]) != SCHEMA:
+        raise RecipeError(f"schema: expected {spellings(SCHEMA)}")
     if not isinstance(tree["name"], str) or not NAME.fullmatch(tree["name"]):
         raise RecipeError("name: expected [A-Za-z0-9._-]{1,64}")
     recipe = {"schema": SCHEMA, "name": tree["name"],
@@ -531,14 +554,14 @@ def parse_layer(text, origin, recipe, recipe_sha256, probe=None):
     (``probe``: the probe report with ``binding``, ``workload`` and ``descriptors``); one that does not fit raises
     StaleProfile with the reason."""
     tree = load_text(text, origin)
-    schema = tree.get("schema")
+    schema = legacy_id(tree.get("schema"))
     if schema == PROFILE_SCHEMA:
         _check_keys(tree, {"schema", "recipe", "recipe_sha256", "source", "workload", "key", "probe", "max_drift",
                            "set"}, "")
     elif schema == OVERRIDES_SCHEMA:
         _check_keys(tree, {"schema", "recipe", "recipe_sha256", "source", "set"}, "")
     else:
-        raise RecipeError(f"{origin}: schema: expected {PROFILE_SCHEMA} or {OVERRIDES_SCHEMA}")
+        raise RecipeError(f"{origin}: schema: expected {spellings(PROFILE_SCHEMA)} or {spellings(OVERRIDES_SCHEMA)}")
     if tree.get("recipe") != recipe["name"]:
         raise RecipeError(f'{origin}: recipe: is for "{tree.get("recipe")}", not "{recipe["name"]}"')
     sets = tree.get("set")
@@ -639,12 +662,13 @@ class Effective:
         return doc
 
     def canonical_sha256(self):
-        return hashlib.sha256(json.dumps(self.to_json(), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        return canonical_sha256(self.to_json())
 
 
 def resolve(text, origin="recipe", profile=None, overrides=(), sets=(), probe=None):
     """recipe + at most one profile ((text, origin)) + overrides files ([(text, origin)]) + --set entries ->
-    Effective. Each layer applies atomically; a stale profile is recorded in ``refused`` and the run is untuned."""
+    Effective. Each layer applies atomically; a stale profile is recorded in ``refused`` and the run is untuned.
+    ``text`` is the file decoded without newline translation, so its sha256 is the raw file's (layers bind to it)."""
     recipe = parse(text, origin)
     sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
     eff = Effective(recipe, sha, origin)

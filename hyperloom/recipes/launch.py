@@ -55,8 +55,9 @@ def _backend(cluster):
     if os.environ.get(STUB_ENV) == "1":
         chosen.label = "stub (HYPERLOOM_RECIPE_STUB=1, non-production)"
         return chosen, False
-    raise RecipeError("up --recipe needs the strix-stream recipe core (ss-recipe: pc.recipe_core, "
-                      f"HYPERLOOM_SS_RECIPE or PATH); {STUB_ENV}=1 runs the stub reader as a non-production launch")
+    raise RecipeError("up --recipe needs the strix-stream recipe core (ts-recipe or ss-recipe: pc.recipe_core, "
+                      f"HYPERLOOM_TS_RECIPE, HYPERLOOM_SS_RECIPE or PATH); {STUB_ENV}=1 runs the stub reader as a "
+                      "non-production launch")
 
 
 def _service_budget(evaluation):

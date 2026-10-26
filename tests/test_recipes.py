@@ -709,21 +709,120 @@ class LaunchTests(unittest.TestCase):
         exe.chmod(0o755)
         bat = self.dir / "ss-recipe.bat"
         bat.write_bytes(b"")
-        with mock.patch.dict(os.environ, {"HYPERLOOM_SS_RECIPE": str(exe)}):
+        with mock.patch.dict(os.environ, {"HYPERLOOM_TS_RECIPE": "", "HYPERLOOM_SS_RECIPE": str(exe)}):
             self.assertEqual(core.locate(), str(exe))
         for bad in ("ss-recipe.exe", str(self.dir / "missing.exe")) + ((str(bat),) if os.name == "nt" else ()):
-            with mock.patch.dict(os.environ, {"HYPERLOOM_SS_RECIPE": bad}):
+            with mock.patch.dict(os.environ, {"HYPERLOOM_TS_RECIPE": "", "HYPERLOOM_SS_RECIPE": bad}):
                 self.assertIsNone(core.locate(), bad)
         # PATH: relative entries (the current directory) are never searched.
         cwd = os.getcwd()
         os.chdir(self.dir)
         try:
-            with mock.patch.dict(os.environ, {"HYPERLOOM_SS_RECIPE": "", "PATH": os.pathsep.join([".", ""])}):
+            with mock.patch.dict(os.environ, {"HYPERLOOM_TS_RECIPE": "", "HYPERLOOM_SS_RECIPE": "",
+                                              "PATH": os.pathsep.join([".", ""])}):
                 self.assertIsNone(core.locate())
-            with mock.patch.dict(os.environ, {"HYPERLOOM_SS_RECIPE": "", "PATH": str(self.dir)}):
+            with mock.patch.dict(os.environ, {"HYPERLOOM_TS_RECIPE": "", "HYPERLOOM_SS_RECIPE": "",
+                                              "PATH": str(self.dir)}):
                 self.assertEqual(core.locate(), str(exe))
         finally:
             os.chdir(cwd)
+
+    def test_core_is_found_under_both_names(self):
+        # The project is renamed tierstream: ts-recipe first, ss-recipe still found; both env names; a configured
+        # path that no longer exists is looked up as its sibling.
+        suffix = ".exe" if os.name == "nt" else ""
+        old, new = self.dir / "old", self.dir / "new"
+        for directory, name in ((old, "ss-recipe"), (new, "ts-recipe"), (new, "ss-recipe")):
+            directory.mkdir(exist_ok=True)
+            (directory / (name + suffix)).write_bytes(b"")
+            (directory / (name + suffix)).chmod(0o755)
+        ts, ss = str(new / ("ts-recipe" + suffix)), str(old / ("ss-recipe" + suffix))
+        clear = {"HYPERLOOM_TS_RECIPE": "", "HYPERLOOM_SS_RECIPE": ""}
+        with mock.patch.dict(os.environ, dict(clear, PATH=os.pathsep.join([str(old), str(new)]))):
+            self.assertEqual(core.locate(), ts)                                  # the new name wins on PATH
+        with mock.patch.dict(os.environ, dict(clear, PATH=str(old))):
+            self.assertEqual(core.locate(), ss)
+        with mock.patch.dict(os.environ, {"HYPERLOOM_TS_RECIPE": ts, "HYPERLOOM_SS_RECIPE": ss}):
+            self.assertEqual(core.locate(), ts)
+        with mock.patch.dict(os.environ, {"HYPERLOOM_TS_RECIPE": "", "HYPERLOOM_SS_RECIPE": ss}):
+            self.assertEqual(core.locate(), ss)
+        cluster = lambda path: mock.Mock(raw={"pc": {"recipe_core": str(path)}})
+        with mock.patch.dict(os.environ, dict(clear, PATH="")):
+            self.assertEqual(core.locate(cluster(new / ("ss-recipe" + suffix))), str(new / ("ss-recipe" + suffix)))
+            self.assertEqual(core.locate(cluster(new / ("strix-old" + suffix))), ts)      # missing: the sibling
+            self.assertIsNone(core.locate(cluster(self.dir / "none" / ("ss-recipe" + suffix))))
+            if os.name == "nt":
+                bat = new / "ss-recipe.bat"
+                bat.write_bytes(b"")
+                self.assertIsNone(core.locate(cluster(bat)))                    # present but unusable: no fallback
+        # Both stderr prefixes are stripped from the core's refusal.
+        def refusal(err):
+            def run(argv, **kw):
+                kw["stderr"].write(err)
+                return mock.Mock(returncode=1)
+            return run
+        for prefix in (b"ts-recipe: ", b"ss-recipe: "):
+            with self.assertRaises(RecipeError) as caught:
+                core.Core(ts, run=refusal(prefix + b"no route fits")).call(["x"])
+            self.assertEqual(str(caught.exception), "no route fits")
+
+    def test_renamed_schema_ids_are_read_and_written_legacy(self):
+        renamed = MM.replace('schema = "strix-stream/recipe-v1"', 'schema = "tierstream/recipe-v1"', 1)
+        self.assertNotEqual(renamed, MM)
+        old, new = reader.resolve(MM, "mm.toml"), reader.resolve(renamed, "mm.toml")
+        self.assertEqual(new.recipe["schema"], "strix-stream/recipe-v1")
+        self.assertEqual(new.to_json(), old.to_json())
+        self.assertEqual(new.canonical_sha256(), old.canonical_sha256())
+        self.assertEqual(reader.explain(new)["schema"], "strix-stream/recipe-explain-v1")
+        # One hash rule: the stub backend's effective sha256 is the reader's, for either spelling.
+        resolved = core.Resolved(new.recipe, new.sha256, {})
+        self.assertEqual(core.StubBackend().effective_sha256(None, None, resolved, None), old.canonical_sha256())
+        self.assertEqual(reader.canonical_sha256(dict(old.to_json(), schema="tierstream/recipe-v1")),
+                         old.canonical_sha256())
+        select = reader.select(new.recipe, select_state(new.recipe), SHA)
+        self.assertEqual(select, reader.select(old.recipe, select_state(old.recipe), SHA))
+        self.assertEqual(select["schema"], "strix-stream/recipe-select-v1")
+        # Profile and overrides layers in either spelling (dispatched by kind), bound to the file they were made for.
+        overrides = ('schema = "tierstream/recipe-overrides-v1"\nrecipe = "minimax-m3.1-flash-lab"\n[set]\n'
+                     '"limits.host_free_ram_floor_gib" = 6\n')
+        self.assertEqual(reader.resolve(MM, overrides=[(overrides, "o")]).recipe["limits"]["host_free_ram_floor_gib"], 6)
+        profile = profile_text().replace("strix-stream/recipe-profile-v1", "tierstream/recipe-profile-v1")
+        eff = reader.resolve(MM, profile=(profile, "p.toml"), probe=identity())
+        self.assertFalse(eff.untuned, eff.refused)
+        self.assertEqual(eff.trace["limits.host_free_ram_floor_gib"]["layer"], "profile")
+        for bad in ("tierstream/recipe-v2", "strix-stream/recipe-v2", "tierstream/recipe-profile-v1"):
+            with self.subTest(bad=bad), self.assertRaisesRegex(RecipeError, "or tierstream/recipe-v1"):
+                reader.parse(MM.replace('schema = "strix-stream/recipe-v1"', f'schema = "{bad}"', 1))
+        with self.assertRaisesRegex(RecipeError, "or tierstream/recipe-overrides-v1"):
+            reader.resolve(MM, overrides=[(overrides.replace("recipe-overrides-v1", "recipe-v1"), "o")])
+
+    def test_crlf_recipes_bind_layers_to_their_raw_bytes(self):
+        import hashlib
+        lf = MM.replace("\r\n", "\n")
+        for name, body in (("lf", lf.encode()), ("crlf", lf.replace("\n", "\r\n").encode())):
+            with self.subTest(newlines=name):
+                path = self.dir / f"{name}.toml"
+                path.write_bytes(body)
+                raw_sha = hashlib.sha256(body).hexdigest()
+                layer = self.dir / f"{name}-o.toml"
+                layer.write_bytes(('schema = "strix-stream/recipe-overrides-v1"\nrecipe = "minimax-m3.1-flash-lab"\n'
+                                   f'recipe_sha256 = "{raw_sha}"\n[set]\n"limits.host_free_ram_floor_gib" = 6\n')
+                                  .replace("\n", "\r\n" if name == "crlf" else "\n").encode())
+                resolved = session.resolve(path, session.Layers(overrides=[layer]))
+                self.assertEqual(resolved.file_sha256, raw_sha)
+                self.assertEqual(resolved.recipe["limits"]["host_free_ram_floor_gib"], 6)
+                # The core backend hashes the same raw bytes (its effective document may carry the renamed id).
+                effective = dict(__import__("tomllib").loads(lf), schema="tierstream/recipe-v1")
+                fake = mock.Mock(executable="core")
+                fake.call.side_effect = lambda args, inputs=None: effective if args[0] == "validate" else {"fields": []}
+                by_core = session.resolve(path, session.Layers(), backend=core.CoreBackend(fake))
+                self.assertEqual((by_core.file_sha256, by_core.recipe["schema"]), (raw_sha, reader.SCHEMA))
+        other = hashlib.sha256(lf.encode()).hexdigest()
+        stale = self.dir / "stale-o.toml"
+        stale.write_text('schema = "strix-stream/recipe-overrides-v1"\nrecipe = "minimax-m3.1-flash-lab"\n'
+                         f'recipe_sha256 = "{other}"\n[set]\n', encoding="utf-8")
+        with self.assertRaisesRegex(RecipeError, "written for another version of the recipe file"):
+            session.resolve(self.dir / "crlf.toml", session.Layers(overrides=[stale]))
 
     def test_layer_ranges_and_lists_are_bounded(self):
         for value in ("[[0, 1000000000000]]", "[5000]", "[" + ", ".join(map(str, range(5000))) + "]"):
@@ -1207,8 +1306,9 @@ def _check_table(table):
 
 
 def _core():
-    """The real recipe core (ss-recipe) named by HYPERLOOM_SS_RECIPE, when it can run here."""
-    executable = os.environ.get("HYPERLOOM_SS_RECIPE")
+    """The real recipe core (ts-recipe or ss-recipe) named by HYPERLOOM_TS_RECIPE or HYPERLOOM_SS_RECIPE, when it can
+    run here."""
+    executable = os.environ.get("HYPERLOOM_TS_RECIPE") or os.environ.get("HYPERLOOM_SS_RECIPE")
     if not executable or not Path(executable).is_file() or (executable.endswith(".exe") and os.name != "nt"):
         return None
     return core.CoreBackend(core.Core(executable))
@@ -1340,7 +1440,7 @@ class ConformanceTests(unittest.TestCase):
     def test_stub_equals_core(self):
         backend = _core()
         if backend is None:
-            self.skipTest("no ss-recipe here (set HYPERLOOM_SS_RECIPE to the core's executable)")
+            self.skipTest("no recipe core here (set HYPERLOOM_TS_RECIPE or HYPERLOOM_SS_RECIPE to its executable)")
         resolved, bound, decision, sha = self.prepare(backend)
         stub = reader.parse(PLAIN)
         self.assertEqual(resolved.recipe["routes"], stub["routes"])          # the core's document reads back the same
