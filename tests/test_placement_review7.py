@@ -38,8 +38,8 @@ def test_3_native_fidelity_uses_pinned_replica_tokens_and_every_device(tmp_path,
     if fault != "no-oracle":
         (tmp_path / "replica-oracle.json").write_text(json.dumps(oracle), encoding="utf-8")
     service = {"pid": 42, "spool": str(directory), "ready": {"load_id": 7}, "engine_sha": "1" * 40,
-               "argv": ["replica", "--draft", "draft"],
-               "placement": {"devices": [{"uuid": u} for u in ids[:2]]},
+               "argv": ["replica"],
+               "placement": {"devices": [{"uuid": u, "lines": [{"component": "drafter"}]} for u in ids[:2]]},
                "placement_supervision": {"caps_gib": dict.fromkeys(keys[:2], 10)}}
     oracle_sha = hashlib.sha256((tmp_path / "replica-oracle.json").read_bytes()).hexdigest() if fault != "no-oracle" else "0" * 64
     monkeypatch.setattr(runtime, "preset", lambda: dict(runtime_preset, engine_sha="1" * 40,
@@ -47,7 +47,8 @@ def test_3_native_fidelity_uses_pinned_replica_tokens_and_every_device(tmp_path,
     if fault == "release":
         service["engine_sha"] = "2" * 40
     if fault == "plain":
-        service["argv"] = ["replica"]
+        for device in service["placement"]["devices"]:
+            device["lines"] = []
     native_class = replica_spool.Client
     clients = []
     def client(*args, **kwargs):

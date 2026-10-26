@@ -110,7 +110,9 @@ def fidelity_gate(service, prompts):
         if (not ready or type(load_id) is not int or ready.get("load_id") != load_id
                 or ready.get("pid") != service["pid"] or not client.health()):
             raise ServiceError("replica spool readiness/ping does not match the owned load")
-        speculative = any(a.split("=", 1)[0] == "--draft" for a in service.get("argv", []))
+        # Placement owns drafter selection; its admitted lines survive rendering and service-record persistence.
+        speculative = any(line.get("component") == "drafter"
+                          for device in service["placement"]["devices"] for line in device.get("lines", []))
         phases = "chats0,schats0" if speculative else "chats0"
         # The native worker flushes but retains its JSON stream until the next request. Keep its evidence under
         # the owned runtime directory: deleting it here can fail on Windows while that stream is still open.

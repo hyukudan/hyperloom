@@ -34,7 +34,133 @@ regular file, including `--routes`, `--residency-seed`, `--winpf-prior` and `--c
 The controller's `none` and `builtin[:CAP]` values need no file. Duplicate inputs cannot hide a missing earlier file.
 Missing values, unknown options and native-unsupported `--option=value` spellings are synchronous schema refusals.
 Output options name future files; rendering does not create them. File formats, state capacity, reference coverage,
-receipt contents and request shape bounds remain native validation obligations.
+receipt contents and admitted allocation/shape bounds remain native validation obligations. Numeric syntax, native
+enums, the request environment allowlist and argv-only bounds are checked before admission on **every occurrence**,
+including values overwritten later. Phase-dependent required inputs are checked for every supplied phase list.
+
+The table below is derived from all 97 branches of `parse_args` in `apps/cuda_ds41_replica.cu` and the request
+environment allowlist in `apps/cuda_ds41_replica_serve.hpp` at **a919c257c511b2ae4688737f2127e02eecee2255**.
+`tests/fixtures/replica-parser-a919c257.json` records the extracted conversions and SHA-256 of both complete source
+files (normalized to LF). Before qualifying another release, run this offline audit against its source:
+
+```powershell
+python tools/check_replica_args.py --source PATH/TO/REPLICA
+```
+
+Any source change fails the audit; explicitly review the parser, update the mirror and repin the snapshot before
+enabling that release. The regression also checks snapshot/classification/table agreement without needing a replica
+checkout. Regenerate the table after an intentional rule change with `python tools/check_replica_args.py --write`.
+
+U32 means the Windows parser's `std::stoul` followed by a uint32 cast: leading ASCII whitespace, optional sign,
+decimal numeric prefix, magnitude <= 4294967295, negative values negated modulo 2^32. Suffixes are ignored by native
+`std::sto*` calls; these are not strict whole-token conversions. F32/F64 mean `std::stof`/`std::stod`: decimal or
+hexadecimal floating prefix, signed infinity and NaN (including a payload) accepted; overflow and underflow to zero
+refused, representable Windows subnormals accepted. No probability [0,1] range is invented. Native `split` skips empty
+fields. Tokens themselves must be nonempty strings without NUL/CR/LF. Options and values are separate argv tokens.
+All enums are case-sensitive. The first six controller costs must remain positive after conversion from ms to float
+seconds; the optional seventh draft cost has no positivity check in native code.
+
+<!-- replica-parser-table:start -->
+| Native option | Native conversion | Pure rendering rule |
+|---|---|---|
+| `--arena-gib` | double | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--attn-fork` | flag | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--attn-h1` | flag | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--attn-pf` | flag | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--attn1` | flag | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--cache` | value | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--chat-logits` | flag | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--chat-prompt` | u32 | U32; chat-prompt + chat-steps + 16 <= INT_MAX when chats are selected. |
+| `--chat-steps` | u32 | U32; chat-prompt + chat-steps + 16 <= INT_MAX when chats are selected. |
+| `--chats` | value | Each nonempty comma-separated field uses U32; file-dependent index bound engine-owned. |
+| `--controller-costs` | value | none or 6/7 comma-separated F64 costs; first 6 > 0 after float(ms / 1000); requires prior != none. |
+| `--controller-explore` | u32 | U32; no additional parser range. |
+| `--controller-learn` | flag | Flag; takes no value. |
+| `--controller-prior` | value | none, builtin[:CAP], or readable FILE[:CAP]; decimal CAP uses U32. |
+| `--controller-prior-alt` | flag | Flag; takes no value. |
+| `--controller-save` | value | Future output path; never created by rendering. |
+| `--controller-scope` | value | One of: chat, run. |
+| `--draft` | value | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--draft-device` | long | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--draft-keep` | u32 | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--draft-keep-from` | value | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--draft-trace` | value | Future output path; never created by rendering. |
+| `--draft-vocab` | value | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--dsrtxk-off` | flag | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--engram` | value | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--engram-cache-mb` | u32 | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--env` | value | NAME=VALUE; NAME is STRIX_DS41_CUDA_ENGRAM_CHECK or STRIX_DS41_REPLICA_WINDOW_ENGRAM_PREFETCH; arbitrary/empty VALUE. |
+| `--flush-ready` | flag | Flag; takes no value. |
+| `--fuse-hc` | flag | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--fuse-off` | flag | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--fuse-shared` | flag | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--hc-cluster` | flag | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--hc-partial5` | flag | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--host-margin-gib` | double | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--host-spares` | u32 | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--import-state` | value | Readable regular input file; contents engine-owned. |
+| `--json` | value | Future output path; never created by rendering. |
+| `--layers` | u32 | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--max-pinned-gib` | double | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--max-positions` | u32 | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--max-rows` | u32 | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--moe-expand` | flag | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--moe-v1b3` | flag | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--no-flush-ready` | flag | Flag; takes no value. |
+| `--no-wb-defer` | flag | Flag; takes no value. |
+| `--ob-expand` | flag | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--ob-one` | flag | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--pdl` | flag | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--pdl-np` | flag | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--pdl-regs` | flag | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--phases` | value | Native phase grammar and integer conversion ranges; per-phase required inputs; smoke refused in full-model placement. K/row bounds engine-owned. |
+| `--predict` | u32 | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--prefetch-layer` | u32 | U32; no additional parser range. |
+| `--prefetch-token` | u32 | U32; no additional parser range. |
+| `--pressure-free` | u32 | U32; no additional parser range. |
+| `--pressure-recent` | u32 | U32; no additional parser range. |
+| `--pressure-spares` | u32 | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--probe-phase` | value | Opaque comma-separated phase filter; native imposes no enum or numeric syntax. |
+| `--qakv-auto` | flag | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--qakv-s1` | flag | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--qual` | flag | Flag; takes no value. |
+| `--receipt` | value | Readable regular input file; contents engine-owned. |
+| `--records-inline` | flag | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--ref` | value | Readable regular input file; contents engine-owned. |
+| `--reset-cache` | value | One of: open, warm. |
+| `--residency-save` | value | Future output path; never created by rendering. |
+| `--residency-seed` | value | Readable regular input file; contents engine-owned. |
+| `--route-stats` | flag | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--router-pf` | flag | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--router-pf0` | flag | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--router-v2` | flag | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--routes` | value | Readable regular input file; contents engine-owned. |
+| `--seqmod` | value | First two nonempty colon-separated fields use U32; extra fields ignored, as native. |
+| `--seqs-file` | value | Readable regular input file; contents engine-owned. |
+| `--serve` | value | Spool path; helper-owned in service rendering. |
+| `--serve-idle` | double | F64; no additional parser range. Helper-owned in service rendering. |
+| `--serve-keep-on-fail` | flag | Flag; takes no value. |
+| `--serve-max` | u32 | U32; no additional parser range. Helper-owned in service rendering. |
+| `--shared-fork` | flag | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--spares` | u32 | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--steps` | u32 | U32; steps + 16 <= INT_MAX; >= 64 for exact/pressure/wforce/spec phases. |
+| `--stream-hashes` | flag | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--test-hooks` | flag | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--timeline` | value | Future output path; never created by rendering. |
+| `--timing` | flag | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--verify` | u32 | U32; no additional parser range. |
+| `--warm` | u32 | U32; no additional parser range. |
+| `--warmup-graphs` | value | Placement-owned; always PL_E_CONFLICT (including repeated / equals spellings). |
+| `--wb-alt` | u32 | U32; no additional parser range. |
+| `--wb-defer` | flag | Flag; takes no value. |
+| `--window` | value | controller, probe, or fixed:U32. |
+| `--winpf-l1-cap` | u32 | U32; no additional parser range. |
+| `--winpf-pmin` | float | F32. |
+| `--winpf-prior` | value | Readable regular input file; contents engine-owned. |
+| `--winpf-prior-cap` | u32 | U32; no additional parser range. |
+| `--winpf-prior-pmin` | float | F32. |
+| `--winpf-revert` | u32 | U32; no additional parser range. |
+<!-- replica-parser-table:end -->
 
 The allocation and qualification controls found in that parser are placement-owned and conflict even when spelled
 with `=` or repeated with an apparently matching value:
@@ -89,3 +215,8 @@ Tierstream owns their aggregation. Input logs and context documents remain local
 
 The single-/two-device G6 fixture contains placeholders only. Tests generate physical identities and absolute paths
 at runtime and use a test-only release SHA; these do not qualify a production release.
+
+Placement fidelity uses the admitted `devices[].lines[].component` entries retained in the service record. A placed
+`drafter` requires both `chats0` and `schats0`, with every plain and speculative token/end-state arm compared against
+the pinned reference. A plan without a drafter requires only `chats0`. This capability never comes from argv:
+placement argv has no `--draft`. Both cases still require attributable visibility on every touched GPU.
