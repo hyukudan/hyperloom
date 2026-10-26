@@ -225,14 +225,8 @@ def _value(check):
 
 
 def _preflight_reason(exc):
-    """Keep the actionable recipe refusal without returning local paths or process identities."""
-    value = redact(str(exc))
-    value = re.sub(r'''["'](?:[A-Za-z]:[\\/]|/|\\\\)[^"'\n]*["']''', "<path>", value)
-    value = re.sub(r'''(?:[A-Za-z]:[\\/]|/(?=[\w.~-])|\\\\)[^\r\n,;\]\)"']*''', "<path>", value)
-    value = re.sub(r"(?i)\b(?:process(?:es)?|pids?)\s*(?:[=:]\s*)?(?:\[[^\]]*\]|\d+(?:\s*,\s*\d+)*)",
-                   "processes <redacted>", value)
-    value = re.sub(r"(?i)\bGPU-[0-9a-f-]{36}\b", "<device>", value)
-    return value[:500]
+    """Only fixed public wording crosses this boundary; arbitrary exception text stays in the local audit."""
+    return "preflight checks failed"
 
 
 def _finite(value):

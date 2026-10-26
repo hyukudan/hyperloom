@@ -61,13 +61,13 @@ def _active(window, now, *, starting=False):
             and rtx.expires(window["expires_at"], "window.expires_at") > now + (60 if starting else 0))
 
 
-def pc_big_deadline(cluster, selected, *, now, guard=None, owners=None, anchors=()):
+def pc_big_deadline(cluster, selected, *, now, guard=None, owners=None, anchors=(), observer_factory=None):
     """Earliest live or scheduled PC-BIG conflict, selected by configured policy rather than model name."""
     try:
         guard = guard if guard is not None else pc_big.context(cluster, selected, anchors=anchors)
         if guard is None:
             return None
-        pc_big.require_clear(guard, owners=owners)
+        pc_big.require_clear(guard, owners=owners, observer_factory=observer_factory)
     except rtx.ServiceError as exc:
         raise RecipeError("PL_E_GRANT " + str(exc)) from exc
     cuda = cluster.pc.get("cuda", {})
@@ -83,7 +83,7 @@ def pc_big_deadline(cluster, selected, *, now, guard=None, owners=None, anchors=
 
 
 def check(cluster, recipe, binding, report, hosts, *, now=None, touched=None, anchors_only=False,
-          guard=None, owners=None):
+          guard=None, owners=None, observer_factory=None):
     """Validate every enabled route's anchor and nonzero assists. Return the grants used, without clamping.
 
     Tierstream supplies binding (including alias merging and strict selectors). Inactive assists consume no grant.
@@ -141,7 +141,7 @@ def check(cluster, recipe, binding, report, hosts, *, now=None, touched=None, an
         raise RecipeError("PL_E_GRANT core touched a device without an enabled, bound grant")
     deadline = pc_big_deadline(cluster, [row for row in rows.values()
                                        if uuid_key(row.get("uuid", "")) in used], now=now, guard=guard,
-                               owners=owners, anchors=_anchors(recipe, binding, report))
+                               owners=owners, anchors=_anchors(recipe, binding, report), observer_factory=observer_factory)
     ends = [rtx.expires(g["window"]["expires_at"], "grant expires_at") for g in used.values()]
     if host_grant is not None:
         ends.append(rtx.expires(host_grant["window"]["expires_at"], "host grant expires_at"))
@@ -156,7 +156,7 @@ def _anchors(recipe, binding, report):
             and placement_mode(r) for sid in r["devices"] for m in binding.get(sid, [])}
 
 
-def policy(cluster, recipe, route, binding, report, plan, hosts, *, now, owners=None):
+def policy(cluster, recipe, route, binding, report, plan, hosts, *, now, owners=None, observer_factory=None):
     """Carry Tierstream's integer budgets and the complete operator-window constraint into supervision."""
     devices = plan.get("devices", [])
     try:
@@ -164,7 +164,7 @@ def policy(cluster, recipe, route, binding, report, plan, hosts, *, now, owners=
     except rtx.ServiceError as exc:
         raise RecipeError("PL_E_GRANT " + str(exc)) from exc
     used = check(cluster, recipe, binding, report, hosts, now=now, touched=[d["uuid"] for d in devices],
-                 guard=guard, owners=owners)
+                 guard=guard, owners=owners, observer_factory=observer_factory)
     budgets = {sid: route["placement"][sid]["device_gib"] for sid in route["devices"]}
     budgets.update({sid: a["device_gib"] for sid, a in route.get("assist", {}).items()})
     host = plan["host"]
@@ -176,5 +176,5 @@ def policy(cluster, recipe, route, binding, report, plan, hosts, *, now, owners=
             "host_grant": cluster.pc.get("cuda", {}).get("host_grant"),
             "free_commit_floor_gib": max(4, recipe["limits"]["host_free_commit_floor_gib"]),
             "pc_big_deadline": pc_big_deadline(cluster, devices, now=now, guard=guard, owners=owners,
-                                               anchors=_anchors(recipe, binding, report)),
+                                               anchors=_anchors(recipe, binding, report), observer_factory=observer_factory),
             "pc_big_guard": guard}

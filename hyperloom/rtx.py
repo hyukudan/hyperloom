@@ -786,7 +786,7 @@ def service_run(spec_path, *, child_factory=procs.LocalChild, watchdog_factory=W
             observer = (observer_factory or gpu_counters.Observer)()
             sample = observer.sample(os.getpid())
             _, caps = placement_supervision.validate(spec.placement_supervision, now=time.time(), starting=True,
-                                                    owners=owners)
+                                                    owners=owners, observer=observer)
             if not caps.keys() <= sample.keys():
                 raise ServiceError("granted GPU missing from attributable counters")
             if spec.pro_uuid.lower() not in caps:
@@ -798,7 +798,7 @@ def service_run(spec_path, *, child_factory=procs.LocalChild, watchdog_factory=W
                     raise ServiceError("placement cap exceeds device physical capacity")
             # Gate commands can take time; recheck every deadline and the physical/commit floors before spawn.
             placement_supervision.validate(spec.placement_supervision, now=time.time(), starting=True, memory=memory(),
-                                           owners=owners)
+                                           owners=owners, observer=observer)
         else:
             device = lock_factory(spec.pro_uuid).acquire()
             if spec.gate:

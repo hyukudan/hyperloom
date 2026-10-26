@@ -13,7 +13,7 @@ import uuid
 
 import pytest
 
-from hyperloom import device_policy, pc_big, placement_supervision, procs, rtx
+from hyperloom import device_policy, gpu_counters, pc_big, placement_supervision, procs, rtx
 from hyperloom.recipes import grants, measurements, preflight, reader, service
 from hyperloom.telemetry.store import Store
 from hyperloom.web.api import API, APIError
@@ -45,19 +45,23 @@ def test_two_device_helper_and_watchdog_do_not_self_lock(tmp_path, monkeypatch):
     keys = sorted(u.lower() for u in data["caps_gib"])
     pro = next(g["uuid"] for g in data["grants"] if g["uuid"].lower() == keys[0])
     data["pc_big_guard"] = dict(pro_uuid=pro, preferences=str(tmp_path / "telemetry.sqlite3"))
-    dogs, apps = [], []
+    assist = keys[1]
+    dogs, apps = [], [(pro, 99999, None), (assist, 99999, None)]
     real_dog = placement_supervision.Watchdog
     class Captured(real_dog):
         def __init__(self, *a, **kw):
             super().__init__(*a, **kw, clock=lambda: NOW)
             dogs.append(self)
     observer = mock.Mock()
-    observer.sample.return_value = dict.fromkeys(keys, 0)
+    observer.sample.side_effect = lambda pid: {u: 4000 * (1 << 20) if u == pro.lower() and pid == os.getpid()
+                                               else 0 for u in keys}
     monkeypatch.setattr(placement_supervision, "Watchdog", Captured)
     # Encode spelling so Windows also exercises Linux's case-sensitive legacy lock filenames.
     monkeypatch.setattr(rtx, "device_lock_path", lambda u: tmp_path / ("pcbig-" + u.encode().hex() + ".lock"))
     monkeypatch.setattr(rtx, "pro_busy", lambda _: None)
     monkeypatch.setattr(rtx, "compute_apps", lambda: list(apps))
+    total = [4000]
+    monkeypatch.setattr(rtx, "device_used_mib", lambda u: total[0] if u.lower() == pro.lower() else 0)
     spec = replace(_binary_spec(), placement_supervision=data, pro_uuid=pro, deadline=NOW + 600)
     monkeypatch.setattr(time, "time", lambda: NOW)
     thread = helper.run_helper(helper.write(spec), lock_factory=rtx.device_lock,
@@ -69,16 +73,27 @@ def test_two_device_helper_and_watchdog_do_not_self_lock(tmp_path, monkeypatch):
         assert procs.lock_held(rtx.device_lock_path(pro))
         with pytest.raises(procs.ProcessError):
             rtx.device_lock(pro).acquire()
-        apps[:] = [(pro, os.getpid(), 2000), (pro, 4242, None)]
+        apps.extend([(pro, os.getpid(), 4000), (pro, 4242, None)])
         dog = dogs[0]
         dog._pc_big_next = 0
         assert dog.check() is None
         FakeChild.instances[0].process.kill.assert_not_called()
-        # Foreign compute, including WDDM N/A, is never attributable to this turn.
-        apps.append((pro, 99999, None))
+        # The PRO guard never classifies an assist's foreign numeric row as a PC-BIG window.
+        apps.append((assist, 777, rtx.PRO_IDLE_MIB + 1))
+        dog._pc_big_next = 0
+        assert dog.check() is None
+        apps.pop()
+        apps.append((pro, 777, rtx.PRO_IDLE_MIB + 1))
         dog._pc_big_next = 0
         assert "PC-BIG" in dog.check()
         apps.pop()
+        total[0] = 4000 + rtx.PRO_IDLE_MIB
+        dog._pc_big_next = 0
+        assert dog.check() is None
+        total[0] += 1
+        dog._pc_big_next = 0
+        assert "PC-BIG" in dog.check()
+        total[0] = 4000
         ledger = tmp_path / "ledger.md"
         ledger.write_text("12:00 operator: **PC-BIG start**\n", encoding="utf-8")
         store = Store(tmp_path / "telemetry.sqlite3")
@@ -127,13 +142,16 @@ def test_reviewed_handover_guard_uses_only_proven_live_owners(tmp_path, monkeypa
         monkeypatch.setattr(rtx, "device_lock_path", lambda u: tmp_path / (u.lower() + ".lock"))
         directory = tmp_path / "old-service"
         directory.mkdir()
-        live = dict(state="ready", pid=42, device=dict(uuid=h.uuid))
+        live = dict(state="ready", pid=42, device=[dict(uuid=h.uuid), dict(uuid=aux)])
         (directory / "state.json").write_text(json.dumps(live), encoding="utf-8")
         reviewed = {"old": dict(token="reviewed controller", prefill_service=dict(
-            directory=str(directory), pid=42, device=h.uuid, port=8096))}
-        monkeypatch.setattr(rtx, "compute_apps", lambda: [(h.uuid, 42, 4000)])
+            directory=str(directory), pid=42, device=h.uuid, port=8096,
+            placement_supervision=dict(caps_bytes={h.uuid: 90 * rtx.GIB, aux: 8 * rtx.GIB})))}
+        apps = [(h.uuid, 42, 4000), (h.uuid, 777, None), (aux, 777, None)]
+        monkeypatch.setattr(rtx, "compute_apps", lambda: list(apps))
         monkeypatch.setattr(rtx, "pro_busy", lambda _: "reviewed child")
-        monkeypatch.setattr(rtx, "device_used_mib", lambda _: 4000)
+        total = [4000]
+        monkeypatch.setattr(rtx, "device_used_mib", lambda u: total[0] if u.lower() == h.uuid.lower() else 0)
         def observer():
             result = mock.Mock()
             result.sample.side_effect = lambda pid: {h.uuid.lower(): 4000 * (1 << 20) if pid == 42 else 0,
@@ -149,10 +167,14 @@ def test_reviewed_handover_guard_uses_only_proven_live_owners(tmp_path, monkeypa
             lifetime = procs.InstanceLock(directory / "helper.lock").acquire()
             stack.callback(lifetime.close)
             check()
-            monkeypatch.setattr(rtx, "compute_apps", lambda: [(h.uuid, 777, None)])
+            apps.append((h.uuid, 777, rtx.PRO_IDLE_MIB + 1))
             with pytest.raises(reader.RecipeError, match="PC-BIG"):
                 check()
-            monkeypatch.setattr(rtx, "compute_apps", lambda: [(h.uuid, 42, 4000)])
+            apps.pop()
+            total[0] += rtx.PRO_IDLE_MIB + 1
+            with pytest.raises(reader.RecipeError, match="PC-BIG"):
+                check()
+            total[0] = 4000
             live["pid"] = 43
             (directory / "state.json").write_text(json.dumps(live), encoding="utf-8")
             with pytest.raises(reader.RecipeError, match="PC-BIG"):
@@ -240,21 +262,116 @@ def test_root_pytest_excludes_submodule_collection():
     assert "third_party" in options.get("norecursedirs", [])
 
 
-def test_legacy_recipe_portal_error_retains_redacted_reason(tmp_path, monkeypatch):
+@pytest.mark.parametrize("kind", ["apostrophe-path", "parenthesized-pid", "bare-uuid", "mig-uuid", "unknown-code"])
+def test_legacy_recipe_portal_error_uses_public_envelope(tmp_path, monkeypatch, kind):
     api = API(tmp_path / "config.json")
     monkeypatch.setattr(api, "_arguments", lambda *a: dict(profile="test", recipe="legacy"))
     monkeypatch.setattr(api, "_recipe_up_argv", lambda _: ["up", "test", "--recipe", "legacy"])
-    monkeypatch.setattr(api, "_audit", lambda *a: None)
-    reason = "approval missing for " + str(tmp_path / "private folder" / "snapshot.json") + " processes [12345]"
-    monkeypatch.setattr(preflight, "cli", mock.Mock(side_effect=reader.RecipeError(reason)))
+    audit = mock.Mock()
+    monkeypatch.setattr(api, "_audit", audit)
+    errors = {"apostrophe-path": FileNotFoundError(2, "missing", str(tmp_path / "O'Brien" / "snapshot.json")),
+              "parenthesized-pid": reader.RecipeError("approval missing for pid (12345)"),
+              "bare-uuid": reader.RecipeError(str(uuid.uuid4())),
+              "mig-uuid": reader.RecipeError("MIG-" + str(uuid.uuid4())),
+              "unknown-code": reader.RecipeError("PL_E_PRIVATE arbitrary private details")}
+    error = errors[kind]
+    monkeypatch.setattr(preflight, "cli", mock.Mock(side_effect=error))
     with pytest.raises(APIError) as caught:
         api.mutate("up", {})
     assert caught.value.status == 400
-    assert "recipe preflight refused" in str(caught.value)
-    assert "approval missing" in str(caught.value)
-    assert str(tmp_path) not in str(caught.value)
-    assert "private folder" not in str(caught.value)
-    assert "12345" not in str(caught.value)
+    assert str(caught.value) == "recipe preflight refused: preflight checks failed; see local audit"
+    assert audit.call_args.args[2]["error"] == str(error)
+    assert api._active is None
+
+
+@pytest.mark.parametrize("signal", ["held", "unreadable"])
+def test_unowned_pro_lock_refuses_on_next_full_tick(tmp_path, monkeypatch, signal):
+    data = policy()
+    pro = "GPU-" + str(uuid.uuid4())
+    data["pc_big_guard"] = dict(pro_uuids=[pro], preferences=str(tmp_path / "telemetry.sqlite3"))
+    observer = mock.Mock()
+    observer.sample.return_value = {u.lower(): 0 for u in data["caps_gib"]}
+    now = [NOW]
+    dog = placement_supervision.Watchdog(replace(_binary_spec(), placement_supervision=data, deadline=NOW + 600),
+        42, lambda: None, lambda _: None, observer=observer, clock=lambda: now[0],
+        pc_big_clock=lambda: now[0], memory=lambda: dict(free_physical_gib=100, free_commit_gib=120))
+    locks, busy, ledger = mock.Mock(return_value=False), mock.Mock(return_value=None), mock.Mock(return_value=False)
+    monkeypatch.setattr(procs, "lock_held", locks)
+    monkeypatch.setattr(rtx, "pro_busy", busy)
+    monkeypatch.setattr(pc_big, "_ledger_active", ledger)
+    assert dog.check() is None
+    if signal == "held":
+        locks.return_value = True
+    else:
+        locks.side_effect = OSError("unreadable lock")
+    now[0] += rtx.WATCH_S
+    assert "PC-BIG" in dog.check()
+    assert busy.call_count == ledger.call_count == 1
+    assert dog.smi_failures == 0
+
+
+def test_legacy_visible_changes_document_early_busy_order():
+    document = (Path(__file__).resolve().parents[1] / "docs/api.md").read_text(encoding="utf-8")
+    legacy = document.split("## Legacy-visible changes", 1)[1].split("## Access and authentication", 1)[0]
+    assert "HTTP 409" in legacy
+    assert "before preflight" in legacy
+
+
+@pytest.mark.parametrize("stage", ["pre-start", "watchdog"])
+@pytest.mark.parametrize("signal", ["desktop-pro", "desktop-assist", "numeric-assist", "numeric-pro",
+                                   "residual-boundary", "residual-over", "query-failure", "observer-failure",
+                                   "missing-attribution", "negative-attribution"])
+def test_owned_pro_activity_uses_attributable_residual(tmp_path, monkeypatch, stage, signal):
+    data = policy()
+    pro, assist = sorted(u.lower() for u in data["caps_gib"])
+    data["pc_big_guard"] = dict(pro_uuids=[pro.upper()], preferences=str(tmp_path / "telemetry.sqlite3"))
+    owners = {pro.upper(): {os.getpid(), 42}, assist: {42}}
+    observer = mock.Mock()
+    observer.sample.side_effect = lambda pid: {pro: (3000 if pid == os.getpid() else 1000) * (1 << 20), assist: 0}
+    monkeypatch.setattr(gpu_counters, "Observer", lambda: observer)
+    monkeypatch.setattr(procs, "lock_held", mock.Mock(side_effect=AssertionError("owned PRO lock checked")))
+    monkeypatch.setattr(rtx, "pro_busy", mock.Mock(side_effect=AssertionError("owned PRO busy checked")))
+    apps = []
+    if signal == "desktop-pro":
+        apps.append((pro, 777, None))
+    if signal == "desktop-assist":
+        apps.append((assist, 777, None))
+    if signal.startswith("numeric"):
+        apps.append((pro if signal == "numeric-pro" else assist, 777, rtx.PRO_IDLE_MIB + 1))
+    monkeypatch.setattr(rtx, "compute_apps", lambda: apps)
+    total = mock.Mock(return_value=4000 + rtx.PRO_IDLE_MIB + (signal == "residual-over"))
+    monkeypatch.setattr(rtx, "device_used_mib", total)
+    if signal == "query-failure":
+        total.side_effect = rtx.ServiceError("total unavailable")
+    if signal == "observer-failure":
+        observer.sample.side_effect = gpu_counters.CounterError("attribution unavailable")
+    if signal in ("missing-attribution", "negative-attribution"):
+        observer.sample.side_effect = None
+        observer.sample.return_value = {} if signal == "missing-attribution" else {pro: -1, assist: 0}
+    refused = signal in ("numeric-pro", "residual-over", "query-failure", "observer-failure",
+                         "missing-attribution", "negative-attribution")
+    if stage == "pre-start":
+        if refused:
+            error = pc_big.CounterUnavailable if signal == "query-failure" else rtx.ServiceError
+            with pytest.raises(error):
+                placement_supervision.validate(data, now=NOW, starting=True, owners=owners)
+        else:
+            placement_supervision.validate(data, now=NOW, starting=True, owners=owners)
+    else:
+        now = [NOW]
+        dog = placement_supervision.Watchdog(replace(_binary_spec(), placement_supervision=data, deadline=NOW + 600),
+            42, lambda: None, lambda _: None, observer=observer, clock=lambda: now[0],
+            pc_big_clock=lambda: now[0], memory=lambda: dict(free_physical_gib=100, free_commit_gib=120))
+        if signal == "query-failure":
+            for strike in range(3):
+                assert (dog.check() is not None) == (strike == 2)
+                now[0] += 5
+            total.side_effect = None
+            assert dog.check() is None
+            assert dog.smi_failures == 0
+        else:
+            assert (dog.check() is not None) == refused
+            assert dog.smi_failures == 0
 
 
 def test_privacy_scan_catches_nested_docs_and_shipped_recipe_references():

@@ -227,7 +227,7 @@ class PreflightTests(unittest.TestCase):
                     mock.patch.object(api, "_deploy_argv", return_value=argv), \
                     mock.patch.object(preflight, "cli", side_effect=RecipeError("PL_E_CAPABILITY")), \
                     mock.patch.object(api, "_hold") as hold, mock.patch.object(api, "_start_worker") as child:
-                with self.assertRaisesRegex(APIError, "PL_E_CAPABILITY"):
+                with self.assertRaisesRegex(APIError, "recipe preflight refused: preflight checks failed; see local audit"):
                     api.mutate(action, args)
                 hold.assert_not_called()
                 child.assert_not_called()

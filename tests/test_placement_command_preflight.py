@@ -207,7 +207,7 @@ def test_product_legacy_deploy_preflight_refuses_with_400_before_job_or_hold():
             assert status == 400
             assert set(body) == {"error"}
             assert "recipe preflight refused:" in body["error"]
-            assert "no snapshot" in body["error"]
+            assert body["error"] == "recipe preflight refused: preflight checks failed; see local audit"
             status, body = portal.request("POST", "recipes/deploy", {"inputs": digest})
             assert status == 400
             assert set(body) == {"error"}

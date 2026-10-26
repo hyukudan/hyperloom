@@ -23,7 +23,10 @@ Placement retains these changes to the legacy interface:
   If the final selection of such a launch differs from the admitted one (recipe, digest, kind or resources),
   it is refused before any launch state with `recipe selection changed after admission; retry`.
 - The portal returns synchronous HTTP 400 refusals for invalid recipe launches/deploys before creating a job;
-  the UI displays the refusal. Previously these could become asynchronous job failures.
+  the UI displays a fixed public refusal and the full reason stays in the local audit. Previously these could
+  become asynchronous job failures.
+- An occupied portal returns HTTP 409 before preflight for another non-priority mutation, including legacy recipe
+  launches. The busy check runs again under the job mutex after preflight to cover concurrent admission.
 - A configured device's `excluded` flag controls its eligibility, including an explicitly included RTX 4090.
   This permits operator-granted placement turns. The legacy devices summary, lab-rule legend and default exclusion
   reason keep their original text; the flag and any explicit configured reason remain authoritative.

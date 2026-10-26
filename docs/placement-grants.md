@@ -45,10 +45,15 @@ After acquiring all selected locks, a placement helper skips the lock check for 
 helper cannot acquire the same lock until the turn releases it. PRO lock acquisition preserves the configured UUID
 spelling, including on case-sensitive filesystems; normalized comparison keys never select a different lock file.
 The guard therefore checks compute processes on
-those PROs and excludes only the helper and child PIDs; foreign processes with N/A memory also refuse. It retains
-the ledger check and refuses unreadable state. The watchdog rechecks these signals every five seconds, independently
-of the half-second host-memory checks. GPU query failures receive three consecutive attempts; lock and ledger
-failures refuse on the next PC-BIG check. Per-process placement cap/attribution failures still stop immediately.
+those PROs and excludes only the helper and child PIDs. Assist process rows never trigger this PRO guard. WDDM
+desktop rows with N/A memory alone are ignored. Foreign numeric PRO use above the idle threshold refuses, as does
+PRO device memory minus the observer's attributable bytes for the turn's own PIDs above that threshold. This
+subtraction applies only to PC-BIG detection; placement caps still cover the full attributable process usage.
+The guard retains the ledger check and refuses unreadable state. The watchdog checks unowned PRO locks on each
+full tick (about two seconds), with ledger and GPU queries at five-second intervals, independently of the
+half-second host-memory checks. GPU query failures receive three consecutive attempts; admission refuses the
+first failure. Lock failures refuse on the next full tick and ledger failures on the next ledger check.
+Per-process placement cap/attribution failures still stop immediately.
 
 Planned replacement may passively account for a reviewed old service's lock and child PID only while its recorded
 ready state, PID, exact device set and held helper lifetime lock prove ownership. Foreign PRO processes and ledger

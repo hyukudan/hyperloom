@@ -12,11 +12,13 @@ from .config import number
 PC_BIG_CHECK_S = 5
 
 
-def validate(policy, *, now, starting=False, memory=None, owners=None, check_pc_big=True):
+def validate(policy, *, now, starting=False, memory=None, owners=None, observer=None, observer_factory=None,
+             check_pc_big=True):
     """Validate an exact cap for each granted UUID and the aggregate pinned/pageable host charge."""
     entries = grants.parse_grants(policy["grants"])
     if check_pc_big:
-        pc_big.require_clear(policy.get("pc_big_guard"), owners=owners)
+        pc_big.require_clear(policy.get("pc_big_guard"), owners=owners, observer=observer,
+                             observer_factory=observer_factory)
     big = policy.get("pc_big_deadline")
     if big is not None and now + (60 if starting else 0) >= big:
         raise rtx.ServiceError("placement turn reaches a PC-BIG window")
@@ -155,11 +157,13 @@ class Watchdog(rtx.Watchdog):
             try:
                 now = self.clock()
                 _, caps = validate(self.policy, now=now, check_pc_big=False)
+                pc_big.require_clear(self.policy.get("pc_big_guard"), owners=self.owners, locks_only=True)
                 checkpoint = self.pc_big_clock()
                 if checkpoint >= self._pc_big_next:
                     self._pc_big_next = checkpoint + PC_BIG_CHECK_S
                     try:
-                        pc_big.require_clear(self.policy.get("pc_big_guard"), owners=self.owners)
+                        pc_big.require_clear(self.policy.get("pc_big_guard"), owners=self.owners,
+                                             observer=self.observer)
                         self.smi_failures = 0
                     except pc_big.CounterUnavailable as exc:
                         self.smi_failures += 1

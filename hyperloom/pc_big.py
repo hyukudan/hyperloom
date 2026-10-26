@@ -1,11 +1,12 @@
 """Passive PC-BIG guard shared by placement admission, measurements and their watchdogs."""
 from __future__ import annotations
 
+from contextlib import ExitStack
 from pathlib import Path
 import sqlite3
 import time
 
-from . import downloads, procs, rtx
+from . import downloads, gpu_counters, procs, rtx
 
 
 def context(cluster, selected, *, anchors=()):
@@ -48,7 +49,14 @@ class CounterUnavailable(rtx.ServiceError):
     """Only live GPU query failures may receive bounded watchdog retries."""
 
 
-def active(guard, *, owners=None):
+def _gpu_query(query, *args):
+    try:
+        return query(*args)
+    except (OSError, ValueError, RuntimeError, IndexError) as exc:
+        raise CounterUnavailable("PC-BIG GPU counters unavailable; turn refused") from exc
+
+
+def active(guard, *, owners=None, observer=None, observer_factory=None, locks_only=False):
     """Held PRO lock, busy PRO or any open ledger start is a window. Unknown state refuses.
 
     Missing optional preferences means no ledger signal is configured. Existing but unreadable
@@ -57,29 +65,43 @@ def active(guard, *, owners=None):
     if not guard:
         return False
     try:
+        owners = {u.lower(): set(pids) for u, pids in (owners or {}).items()}
+        pros = guard.get("pro_uuids") or ([guard["pro_uuid"]] if guard.get("pro_uuid") else [])
+        pros = {pro.lower(): pro for pro in pros}
+        for pro in pros:
+            if pro not in owners and procs.lock_held(rtx.device_lock_path(pros[pro])):
+                return True
+        if locks_only:
+            return False
         # Ledger/lock failures remain immediate even if GPU queries are temporarily unavailable.
         if _ledger_active(guard):
             return True
-        owners = {u.lower(): set(pids) for u, pids in (owners or {}).items()}
-        pros = guard.get("pro_uuids") or ([guard["pro_uuid"]] if guard.get("pro_uuid") else [])
-        foreign_check = False
-        for pro in pros:
-            if pro.lower() in owners:
-                foreign_check = True
-            elif procs.lock_held(rtx.device_lock_path(pro)):
-                return True
-        try:
-            # The held lock prevents a legacy helper starting. Device-total use would count our own child.
-            if foreign_check:
-                for gpu, pid, used in rtx.compute_apps():
-                    if gpu.lower() in owners and pid not in owners[gpu.lower()]:
-                        if used is None or used > rtx.PRO_IDLE_MIB:
-                            return True
+        owned_pros = pros.keys() & owners.keys()
+        with ExitStack() as stack:
+            if owned_pros:
+                apps = _gpu_query(rtx.compute_apps)
+                for gpu, pid, used in apps:
+                    key = gpu.lower()
+                    # WDDM desktop N/A rows alone are not jobs; device residual catches unattributed use.
+                    if (key in owned_pros and pid not in owners[key] and used is not None
+                            and used > rtx.PRO_IDLE_MIB):
+                        return True
+                if observer is None:
+                    observer = (observer_factory or gpu_counters.Observer)()
+                    stack.callback(observer.close)
+                for pro in sorted(owned_pros):
+                    attributed = 0
+                    for pid in owners[pro]:
+                        sample = observer.sample(pid)
+                        if pro not in sample or type(sample[pro]) is not int or sample[pro] < 0:
+                            raise gpu_counters.CounterError("owned PRO attributable counters unavailable")
+                        attributed += sample[pro]
+                    used = _gpu_query(rtx.device_used_mib, pros[pro])
+                    if used * (1 << 20) - attributed > rtx.PRO_IDLE_MIB * (1 << 20):
+                        return True
             for pro in pros:
-                if pro.lower() not in owners and rtx.pro_busy(pro):
+                if pro not in owners and _gpu_query(rtx.pro_busy, pros[pro]):
                     return True
-        except (OSError, ValueError, RuntimeError, IndexError) as exc:
-            raise CounterUnavailable("PC-BIG GPU counters unavailable; turn refused") from exc
         return False
     except CounterUnavailable:
         raise
@@ -121,6 +143,6 @@ def _ledger_active(guard):
     return bool(state["holders"] or state["stale"] or partial)
 
 
-def require_clear(guard, *, owners=None):
-    if active(guard, owners=owners):
+def require_clear(guard, *, owners=None, observer=None, observer_factory=None, locks_only=False):
+    if active(guard, owners=owners, observer=observer, observer_factory=observer_factory, locks_only=locks_only):
         raise rtx.ServiceError("PC-BIG window is active; turn refused")

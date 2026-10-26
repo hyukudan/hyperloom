@@ -249,3 +249,40 @@ Final full Python 3.13 validation:
 The first overlapping baseline attempt was invalidated when a late manifest test read an edited example; it is not used as
 baseline evidence. The replacement baseline restored exact HEAD contents in this same worktree, then restored all
 edits before the final after run. The temporary validation snapshot was removed. Logs stay outside git; no additional worktree, network, GPU work, commit or push.
+
+## Follow-up of 658d62f: owned PRO activity, watchdog latency and public refusals
+
+Contract rev 21c. Both reviews' remaining findings are addressed here. All new regressions use CPU process and
+counter fakes; the integrated helper and reviewed handover retain real OS device/helper locks. The original
+implementation first failed ten launch/handover, public-response, lock-latency and documentation cases
+(`hl-placement-r17-red.log`). The independent residual/attribution matrix reproduced thirteen failures before the
+production changes (`hl-placement-r17-residual-red.log`), including missed unattributed use and unavailable totals.
+
+| Item | Change (file:line) | Regression | Open points |
+|---|---|---|---|
+| A: PRO scope and WDDM activity | `hyperloom/pc_big.py:79` intersects normalized PRO identities with owners. N/A desktop rows alone are ignored; foreign numeric PRO use above idle still refuses. Each owned PRO's device total minus the observer's bytes for all owned PIDs must stay at or below the idle threshold. Assist process rows never enter this guard. | `tests/test_pc_big_ownership.py:41` exercises real helper startup and watchdog checks with PRO/assist desktop rows, own process use, numeric foreign PRO use, assist numeric activity, residual boundary/overflow and ledger refusal. `:129` covers reviewed two-device handover, foreign numeric PRO use, unattributed totals and stale ownership. `:324` covers pre-start/watchdog attribution, missing/negative samples, query failures, immediate observer refusal and counter recovery. | No live WDDM qualification under the no-GPU constraint. Placement caps retain full attributable process usage. |
+| A: observer lifetime and counter errors | `hyperloom/rtx.py:788` and `hyperloom/placement_supervision.py:165` pass their existing observer. `hyperloom/recipes/measurements.py:108` creates and registers cleanup of its observer after locks/gates and before the owned check. `hyperloom/recipes/grants.py:64` and `hyperloom/recipes/preflight.py:28` carry the handover observer factory through admission. `hyperloom/pc_big.py:52` preserves `CounterUnavailable` for GPU query failures; attribution failures refuse immediately. Borrowed observers stay with their caller; temporary admission observers are closed. | The same integrated/matrix cases, existing measurement lock/gate/observer ordering and cleanup regressions, and the three-strike/recovery checks. | Unowned PROs retain external-lock and legacy busy checks. Ledger and scheduled-window refusals remain enforced. |
+| B: unowned PRO lock latency | `hyperloom/placement_supervision.py:160` checks only unowned PRO locks on each full tick (about two seconds). Ledger/GPU work remains on its five-second schedule. | `tests/test_pc_big_ownership.py:288` makes an external lock held or unreadable between full ticks and requires refusal at the next two-second tick, with no additional ledger/GPU queries or counter strike. Existing rate-limit coverage retains the five-second query cadence. | Ledger/GPU detection remains bounded by the next scheduled full tick. |
+| C: public HTTP 400 | `hyperloom/web/api.py:224` returns fixed public wording; the existing refusal boundary keeps arbitrary exception text only in the local audit. Existing portal expectations now check that envelope. | `tests/test_pc_big_ownership.py:266` passes a native missing-file exception with an apostrophe in its quoted path, a parenthesized PID, bare/MIG UUIDs and an unknown private code through the real API boundary. Every response is identical, the audit retains the full original reason, and no job is created. | None. This intentionally removes arbitrary actionable text from the public response. |
+| D: early HTTP 409 ordering | `docs/api.md:28` lists busy-before-preflight ordering under legacy-visible changes and documents the repeated mutex check after preflight. The HTTP 400 entry also describes the fixed public response and local audit. | `tests/test_pc_big_ownership.py:313` checks the legacy-visible entry; the existing portal busy-order regression forbids preflight while another job is active. | None. No runtime ordering change was needed. |
+
+The exact-HEAD full Python 3.13 baseline is **46 failed, 3685 passed, 69 skipped** in 467.09 s
+(`hl-placement-r17-before313.log`). Its failing IDs equal all 46 reference IDs exactly
+(`hl-placement-r17-failure-comparison.log`). The ownership regression module passes **37 cases** after the fixes.
+
+Final full Python 3.13 suite: **46 failed, 3712 passed, 69 skipped** in 467.23 s
+(`hl-placement-r17-after313.log`). The reference, clean baseline and final failing-ID sets are exactly equal,
+with no added or missing failures; all 27 additional cases pass (`hl-placement-r17-failure-comparison.log`).
+The broad focused run found the two known empty-submodule failures and two old public-reason expectations;
+the latter now assert the fixed envelope and both pass (`hl-placement-r17-envelope-recheck.log`). Ownership,
+privacy and G6 checks pass **41 cases** (`hl-placement-r17-artifact-tests.log`).
+
+G6 retains all **21 cases byte-identically**, with the unchanged fixture and reconstructed SHA-256
+`40489d24e0a9b64d9b6186b2742d2fff734e4d66e310dd1776d8b62c340168e7`.
+Legacy reservation, gate, busy-query and watchdog definitions remain AST-equal to eb9ae96; the device-lock
+definition matches after inlining its extracted path helper, and the legacy helper acquisition/gate/verify
+branch is AST-equal (`hl-placement-r17-legacy-ast.log`). Against 658d62f, only the placement part of RTX
+`service_run` changes (`hl-placement-r17-ast.log`). LF verification and `git diff --check` pass.
+
+Logs remain outside git. TEMP/TMP were not changed; the empty submodule is untouched. No network, GPU work,
+additional worktree, commit or push was used.

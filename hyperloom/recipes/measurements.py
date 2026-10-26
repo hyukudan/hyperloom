@@ -105,11 +105,11 @@ def _gpu(row, grant, *, clock=time.time, lock_factory=rtx.device_lock, gate_runn
         placement_supervision.validate(policy, now=clock(), starting=True, memory=rtx.memory_status())
         placement_supervision.acquire(policy, stack, lock_factory=lock_factory, gate_runner=gate_runner,
                                       verify=lambda u: _idle(u), log=lambda _: None, now=clock())
-        placement_supervision.validate(policy, now=clock(), starting=True,
-                                      owners={grants.uuid_key(grant["uuid"]): {os.getpid()}})
         observer = observer_factory()
         owned = [True]
         stack.callback(lambda: observer.close() if owned[0] else None)
+        placement_supervision.validate(policy, now=clock(), starting=True, observer=observer,
+                                      owners={grants.uuid_key(grant["uuid"]): {os.getpid()}})
         sample = observer.sample(os.getpid())
         if (grants.uuid_key(row["uuid"]) not in sample
                 or any(type(v) is not int or v < 0 for v in sample.values())):
