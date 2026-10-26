@@ -1284,10 +1284,14 @@ def status(profile=None, config_path=None):
     return result
 
 
-def logs(profile, process, tail=100):
+def logs(profile, process, tail=100, config_path=None):
+    """A process's recent output; with ``config_path``, only of a launch of that configuration (`owns`): another
+    configuration's launch (or one without the record) is refused before any read or call."""
     if type(tail) is not int or not 1 <= tail <= 65536:
         raise ValueError("tail must be in 1..65536")
     state = _read(_state_path(profile))
+    if config_path is not None and not owns(state, config_path):
+        raise OrchestrationError(f"{profile}: launched from another configuration")
     local = {"router": state.get("router") or {}, "prefill": state.get("prefill_service") or {}}.get(process, {})
     if local.get("directory") and (process == "prefill" or local.get("machine") == "local"):
         directory = Path(local["directory"])

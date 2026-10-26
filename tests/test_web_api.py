@@ -196,13 +196,17 @@ class APITests(unittest.TestCase):
 
     def test_profiles_show_only_this_configurations_launch_of_a_shared_name(self):
         from hyperloom import orchestrate
-        owned = {"profile": "qwen-replicas", "router": {"machine": "halo-1"}, "release_id": "r" * 12}
+        owned = {"profile": "qwen-replicas", "router": {"machine": "halo-1"}, "release_id": "r" * 12,
+                 "process_specs": [{"machine_id": "halo-1", "role": "replica", "argv": ["/opt/foreign-engine"],
+                                    "env": {"FOREIGN_SETTING": "1"}}],
+                 "rendered_router": {"replicas": [{"id": "foreign-replica", "address": "127.0.0.1", "port": 18999}]}}
         status = {"qwen-replicas": {"nodes": {}}}
         for owner in (None, orchestrate.config_record(self.directory / "other" / "cluster.json")):
             self.orch._read.side_effect = lambda path, state=dict(owned, config=owner): state
             row = self.api._profiles(self.cluster, status)[0]
             self.assertIsNone(row["launch"])
             self.assertEqual(row["why"]["launch"], "no owned launch")
+            self.assertNotIn("foreign", json.dumps(row).lower())          # nothing of the other launch shows
         self.orch._read.side_effect = lambda path: dict(owned, config=orchestrate.config_record(self.api.config_path))
         row = self.api._profiles(self.cluster, status)[0]
         self.assertEqual(row["router"], "halo-1")
@@ -365,7 +369,7 @@ class APITests(unittest.TestCase):
         query = {"profile": "qwen-replicas", "process": "halo-1", "tail": "5"}
         first = self.api.read("logs", query)
         self.assertEqual(first, self.api.read("logs", query))
-        self.orch.logs.assert_called_once_with("qwen-replicas", "halo-1", 5)
+        self.orch.logs.assert_called_once_with("qwen-replicas", "halo-1", 5, config_path=self.api.config_path)
         self.assertNotIn("hidden", json.dumps(first))
 
     def test_unknown_arguments_and_bad_types_refused(self):

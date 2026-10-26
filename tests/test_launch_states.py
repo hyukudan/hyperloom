@@ -128,6 +128,16 @@ class LaunchStatesTests(unittest.TestCase):
                 answer = orchestrate.status(name, config_path=self.config_b)
                 self.assertEqual((answer["state"], answer["why"]), ("stopped", "launched from another configuration"))
 
+    def test_logs_on_b_refuse_a_launch_of_a_before_any_read_or_call(self):
+        self.state("prof-a", self.config_a, machines={"node-a": {"install_root": "/opt/a"}})
+        self.state("legacy", machines={"node-legacy": {"install_root": "/opt/legacy"}})
+        with mock.patch.object(orchestrate, "_call", side_effect=AssertionError("polled")), \
+                mock.patch.object(orchestrate, "_client", side_effect=AssertionError("polled")):
+            for name in ("prof-a", "legacy"):
+                for process in ("router", "node-a", "node-legacy"):
+                    with self.assertRaisesRegex(orchestrate.OrchestrationError, "another configuration"):
+                        orchestrate.logs(name, process, 10, config_path=self.config_b)
+
     def test_cli_up_records_its_own_config_even_inside_another(self):
         from hyperloom import cli
         from hyperloom.recipes import service

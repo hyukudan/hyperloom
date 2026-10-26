@@ -151,7 +151,8 @@ class SummaryTests(unittest.TestCase):
     def test_launch_metadata_and_effective_argv_env(self):
         owned = {"release_id": "a" * 12, "nodes": ["halo-2"], "machines": {"halo-2": {}},
                  "devices": ["halo-2:gpu"], "started_at": 900, "router": {"machine": "halo-2"},
-                 "process_specs": [{"machine_id": "halo-2", "role": "replica", "argv": ["/opt/engine", "--http-port", "18501"], "env": {"STRIX_COHORT_ROWS": "32"}}]}
+                 "process_specs": [{"machine_id": "halo-2", "role": "replica", "argv": ["/opt/engine", "--http-port", "18501"], "env": {"STRIX_COHORT_ROWS": "32"}}],
+                 "config": {"path": str(self.api.config_path)}}             # this portal's launch (path only)
         self.orch._read.side_effect = None
         self.orch._read.return_value = owned
         profile = self.api._profiles(self.cluster, {})[0]

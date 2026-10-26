@@ -683,9 +683,10 @@ class API:
             row["started_at"] = min((item["start_time"] for item in row["leases"] + row["processes"] if _finite(item.get("start_time"))), default=None)
             owned = {}
             try:
-                owned = self.orchestrate._read(self.orchestrate._state_path(name))
-                if not orchestrate.owns(owned, self.config_path):
-                    raise KeyError("launched from another configuration")    # not this portal's launch
+                saved = self.orchestrate._read(self.orchestrate._state_path(name))
+                if not orchestrate.owns(saved, self.config_path):
+                    raise KeyError("launched from another configuration")    # not this portal's launch: none of it
+                owned = saved
                 # Ownership records are authoritative for router placement.
                 row["launch"] = redact({key: owned[key] for key in ("router", "leases", "release_id") if key in owned})
                 row["router"] = (owned.get("router") or {}).get("machine")
@@ -1018,7 +1019,7 @@ class API:
                 processes.append("router")
             for process in processes:
                 try:
-                    logs = self.orchestrate.logs(profile, process, 100)
+                    logs = self.orchestrate.logs(profile, process, 100, config_path=self.config_path)
                     for stream in ("stdout", "stderr"):
                         for line in str(logs.get(stream) or "").splitlines():
                             message = redact(line)
@@ -1059,7 +1060,7 @@ class API:
                     raise APIError("tail must be in 1..65536")
                 cache_key = "logs/" + repr(key)
                 if cache_key not in self._cached:
-                    self._cached[cache_key] = self._document("logs", entries=redact(self.orchestrate.logs(*key)), failures=None,
+                    self._cached[cache_key] = self._document("logs", entries=redact(self.orchestrate.logs(*key, config_path=self.config_path)), failures=None,
                                                            why={"failures": "persistent process failure index unavailable"})
                 document = self._cached[cache_key]
             return redact(document)
