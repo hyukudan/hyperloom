@@ -17,6 +17,11 @@ def _check(status):
         raise CounterError(f"GPU counter API failed ({status})")
 
 
+class _MemoryV2(C.Structure):
+    _fields_ = [("version", C.c_uint), ("total", C.c_ulonglong), ("reserved", C.c_ulonglong),
+                ("free", C.c_ulonglong), ("used", C.c_ulonglong)]
+
+
 class Nvml:
     """NVML inventory, totals and Linux per-process accounting; loading NVML does not create a CUDA context."""
 
@@ -27,29 +32,36 @@ class Nvml:
             self._memory_handles = {}
         except (OSError, AttributeError) as exc:
             raise CounterError("NVML unavailable") from exc
+        self._memory_query = None
+        try:
+            lookup = self.dll.nvmlDeviceGetHandleByUUID
+            query = self.dll.nvmlDeviceGetMemoryInfo_v2
+            lookup.argtypes = [C.c_char_p, C.POINTER(C.c_void_p)]
+            lookup.restype = C.c_int
+            query.argtypes = [C.c_void_p, C.POINTER(_MemoryV2)]
+            query.restype = C.c_int
+            self._memory_lookup, self._memory_query = lookup, query
+        except AttributeError:
+            pass  # Process accounting remains usable; totals fall back to nvidia-smi without v2.
 
     def close(self):
         _check(self.dll.nvmlShutdown())
 
     def device_used_bytes(self, uuid):
-        """Read memory.used through this observer's NVML session, without a context or subprocess."""
-        class Memory(C.Structure):
-            _fields_ = [("total", C.c_ulonglong), ("free", C.c_ulonglong), ("used", C.c_ulonglong)]
+        """Read allocated memory.used, excluding reserved bytes just like nvidia-smi; never use v1."""
+        from .recipes.grants import uuid_key
 
-        key = uuid.strip().lower()
+        key = uuid_key(uuid)
+        if self._memory_query is None:
+            raise CounterError("NVML v2 device total unavailable")
         try:
-            lookup = self.dll.nvmlDeviceGetHandleByUUID
-            lookup.argtypes = [C.c_char_p, C.POINTER(C.c_void_p)]
-            lookup.restype = C.c_int
-            query = self.dll.nvmlDeviceGetMemoryInfo
-            query.argtypes = [C.c_void_p, C.POINTER(Memory)]
-            query.restype = C.c_int
             if key not in self._memory_handles:
                 handle = C.c_void_p()
-                _check(lookup(uuid.strip().encode("ascii"), C.byref(handle)))
+                identity = "GPU-" + key[4:] if key.startswith("gpu-") else key
+                _check(self._memory_lookup(identity.encode("ascii"), C.byref(handle)))
                 self._memory_handles[key] = handle
-            memory = Memory()
-            _check(query(self._memory_handles[key], C.byref(memory)))
+            memory = _MemoryV2(version=C.sizeof(_MemoryV2) | (2 << 24))
+            _check(self._memory_query(self._memory_handles[key], C.byref(memory)))
             return memory.used
         except (OSError, AttributeError, UnicodeError) as exc:
             raise CounterError("NVML device total unavailable") from exc

@@ -10,7 +10,6 @@ from .recipes import grants
 from .config import number
 
 PC_BIG_CHECK_S = 5
-PC_BIG_LOAD_GRACE_S = 60
 
 
 def validate(policy, *, now, starting=False, memory=None, owners=None, observer=None, observer_factory=None,
@@ -99,9 +98,15 @@ class Watchdog(rtx.Watchdog):
         self.observer = observer
         self._cleanup_errors = []
         self._pc_big_next = 0
-        self._pc_big_load_until = None
+        self._pc_big_load_until = pc_big_clock() + spec.ready_timeout_s
+        self._pc_big_hi = {}
+        self._replica_ready = False
         self.pc_big_clock = pc_big_clock
         self.owners = {u.lower(): {os.getpid(), pid} for u in self.policy["caps_gib"]}
+
+    def mark_ready(self):
+        """The helper has accepted the replica's ready event and health check; loading grace ends permanently."""
+        self._replica_ready = True
 
     def start(self):
         if self.observer is None:
@@ -163,18 +168,25 @@ class Watchdog(rtx.Watchdog):
                 checkpoint = self.pc_big_clock()
                 if checkpoint >= self._pc_big_next:
                     self._pc_big_next = checkpoint + PC_BIG_CHECK_S
-                    if self._pc_big_load_until is None:
-                        self._pc_big_load_until = checkpoint + min(PC_BIG_LOAD_GRACE_S, self.spec.ready_timeout_s)
+                    attribution = {}
                     try:
                         pc_big.require_clear(self.policy.get("pc_big_guard"), owners=self.owners,
-                                             observer=self.observer, confirm_busy=True)
+                                             observer=self.observer, confirm_busy=True, attribution=attribution)
                         self.smi_failures = 0
                     except pc_big.CounterUnavailable as exc:
                         line["smi"] = str(exc)
-                        if not (isinstance(exc, pc_big.LoadInProgress) and checkpoint < self._pc_big_load_until):
+                        loading = isinstance(exc, pc_big.LoadInProgress)
+                        if loading:
+                            line["pc_big_bracket_s"] = round(exc.bracket_s, 4)
+                            line["pc_big_hi_bytes"] = exc.hi_bytes
+                        progress = loading and all(u in self._pc_big_hi and hi - self._pc_big_hi[u] >= rtx.GIB
+                                                   for u, hi in exc.hi_bytes.items())
+                        if not (progress and not self._replica_ready and self.pc_big_clock() < self._pc_big_load_until):
                             self.smi_failures += 1
                         if self.smi_failures >= rtx.SMI_FAILURES_MAX:
                             reason = "PC-BIG GPU counters failed persistently; turn refused"
+                    finally:
+                        self._pc_big_hi = attribution
                 sample = self.observer.sample(self.pid)
                 line["vram_bytes"] = sample
                 if not caps.keys() <= sample.keys():

@@ -52,6 +52,10 @@ class CounterUnavailable(rtx.ServiceError):
 class LoadInProgress(CounterUnavailable):
     """Only non-decreasing owned attribution made every bracket ambiguous; admission still refuses."""
 
+    def __init__(self, message, hi_bytes, bracket_s):
+        super().__init__(message)
+        self.hi_bytes, self.bracket_s = hi_bytes, bracket_s
+
 
 def _gpu_query(query, *args):
     try:
@@ -78,7 +82,7 @@ def _device_total(uuid, observer):
     return used * (1 << 20)
 
 
-def owned_busy(uuid, pids, observer, *, confirm_busy=False):
+def owned_busy(uuid, pids, observer, *, confirm_busy=False, attribution=None):
     """Bracket a total; bounds assume attribution is monotonic per PID within each bracket."""
     from .recipes.grants import uuid_key
     key = uuid_key(uuid)
@@ -93,16 +97,20 @@ def owned_busy(uuid, pids, observer, *, confirm_busy=False):
                 raise gpu_counters.CounterError("owned PRO attributable counters unavailable")
             result[pid] = sample[key]
         return result
-    busy, growth_only = False, True
+    busy, growth_only, bracket_s = False, True, 0.0
     for _ in range(3):
+        started = time.monotonic()
         before = attributed()
         total = _device_total(uuid, observer)
         after = attributed()
+        bracket_s = max(bracket_s, time.monotonic() - started)
         hi = sum(max(before[pid], after[pid]) for pid in pids)
         lo = sum(min(before[pid], after[pid]) for pid in pids)
         # The device counter reports whole MiB; tolerate at most one MiB of rounding below attribution.
         if total + (1 << 20) < lo:
             raise CounterUnavailable("PC-BIG device total is below attribution; turn refused")
+        if attribution is not None:
+            attribution[key] = hi
         if total - hi > rtx.PRO_IDLE_MIB * (1 << 20):
             if not confirm_busy or busy:
                 return True
@@ -113,11 +121,13 @@ def owned_busy(uuid, pids, observer, *, confirm_busy=False):
         busy = False
         growth_only = growth_only and all(after[pid] >= before[pid] for pid in pids)
     if growth_only:
-        raise LoadInProgress("PC-BIG own load in progress; attribution changed across device totals")
+        raise LoadInProgress("PC-BIG own load in progress; attribution changed across device totals",
+                             {key: hi}, bracket_s)
     raise CounterUnavailable("PC-BIG attribution changed across device totals; turn refused")
 
 
-def active(guard, *, owners=None, observer=None, observer_factory=None, locks_only=False, confirm_busy=False):
+def active(guard, *, owners=None, observer=None, observer_factory=None, locks_only=False, confirm_busy=False,
+           attribution=None):
     """Held PRO lock, busy PRO or any open ledger start is a window. Unknown state refuses.
 
     Missing optional preferences means no ledger signal is configured. Existing but unreadable
@@ -153,10 +163,15 @@ def active(guard, *, owners=None, observer=None, observer_factory=None, locks_on
                 loading = None
                 for pro in sorted(owned_pros):
                     try:
-                        if owned_busy(pros[pro], owners[pro], observer, confirm_busy=confirm_busy):
+                        if owned_busy(pros[pro], owners[pro], observer, confirm_busy=confirm_busy,
+                                      attribution=attribution):
                             return True
                     except LoadInProgress as exc:
-                        loading = exc
+                        if loading is None:
+                            loading = exc
+                        else:
+                            loading.hi_bytes.update(exc.hi_bytes)
+                            loading.bracket_s = max(loading.bracket_s, exc.bracket_s)
             for pro in pros:
                 if pro not in owners and _gpu_query(rtx.pro_busy, pros[pro]):
                     return True
@@ -203,7 +218,8 @@ def _ledger_active(guard):
     return bool(state["holders"] or state["stale"] or partial)
 
 
-def require_clear(guard, *, owners=None, observer=None, observer_factory=None, locks_only=False, confirm_busy=False):
+def require_clear(guard, *, owners=None, observer=None, observer_factory=None, locks_only=False, confirm_busy=False,
+                  attribution=None):
     if active(guard, owners=owners, observer=observer, observer_factory=observer_factory, locks_only=locks_only,
-              confirm_busy=confirm_busy):
+              confirm_busy=confirm_busy, attribution=attribution):
         raise rtx.ServiceError("PC-BIG window is active; turn refused")

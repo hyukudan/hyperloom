@@ -100,7 +100,7 @@ def _gpu(row, grant, *, clock=time.time, lock_factory=rtx.device_lock, gate_runn
               "host_pinned_gib": 0, "host_pageable_gib": 0, "free_commit_floor_gib": 4,
               "pc_big_guard": row.get("_pc_big_guard")}
     end = min(clock() + 60, rtx.expires(grant["window"]["expires_at"], "probe grant"))
-    spec = SimpleNamespace(placement_supervision=policy, deadline=end, free_commit_floor_gib=4)
+    spec = SimpleNamespace(placement_supervision=policy, deadline=end, free_commit_floor_gib=4, ready_timeout_s=0)
     with ExitStack() as stack:
         placement_supervision.validate(policy, now=clock(), starting=True, memory=rtx.memory_status())
         placement_supervision.acquire(policy, stack, lock_factory=lock_factory, gate_runner=gate_runner,

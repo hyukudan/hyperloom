@@ -361,3 +361,45 @@ and the legacy helper acquisition/gate/verify branch matches. The helper service
 legacy evaluator and legacy picker remain AST-equal to HEAD (`hl-placement-legacy-ast-r19.log`). LF, UTF-8,
 privacy and diff whitespace checks pass. TEMP/TMP were not changed; the submodule remains empty. Work stayed on
 the existing branch and HEAD a7d9792. No network, GPU work, additional worktree, commit or push was used.
+
+## Follow-up of 7e6d7aa: measurement supervision and progress before readiness
+
+Contract rev 21c. The clean full Python 3.13 baseline completed before edits: **46 failed, 3780 passed,
+69 skipped** in 584.82 s. All 46 failing IDs exactly match the supplied reference. Regression-first execution
+with unchanged production code recorded **14 failed, 4 passed** across the 18 new CPU cases. The failures include
+the real measurement watchdog's missing field, the reserved-memory offset, fallback loading beyond 60 seconds,
+stalled growth, readiness delivery by the helper and repeated reviewed-resource lookup.
+
+| Item | Change (file:line) | Regression | Open points |
+|---|---|---|---|
+| A: explicit measurement watchdog | `hyperloom/recipes/measurements.py:103` supplies an explicit zero ready timeout, so probes have zero load grace. | `tests/test_pc_big_review.py:21`, `test_measurement_uses_real_watchdog_with_zero_load_grace`: fake measurement child/counters with the real placement watchdog and inherited fail-closed loop. A synchronous scheduler starts no thread and performs no real wait. Normal completion succeeds; growth ambiguity still adds a strike. | None for this defect. Live measurement hardware remains unqualified by CPU tests. |
+| B: comparable native device totals | `hyperloom/gpu_counters.py:20`, `:35` and `:50` define and configure the versioned NVML v2 structure/API once per session, return allocated `used` without reserved bytes, and refuse v1 substitution. Unavailable v2 falls back through the existing nvidia-smi path. | `tests/test_pc_big_review.py:78`, `test_native_total_matches_allocated_memory_or_falls_back`: fake v1-only, v2, unsupported and version-mismatch DLLs; version word, field offsets, reserved-memory exclusion, fallback and cleanup. | Verify NVML v2 used == nvidia-smi memory.used at idle and under load on the qualified driver. WDDM attribution/total accounting remains a release prerequisite. |
+| C: progress and readiness bound | `hyperloom/pc_big.py:85` supplies each device's bracket high bound; `hyperloom/placement_supervision.py:101` and `:169` retain previous full-check bounds and allow growth ambiguity only when each ambiguous device gains at least 1 GiB, readiness is pending and the fixed ready deadline has not elapsed. `hyperloom/rtx.py:864` ends grace when the helper accepts readiness and health. Earlier strikes are preserved; the first ambiguity without history strikes. Bracket width and high bounds are logged locally. | `tests/test_pc_big_review.py:158`, `:200` and `:257`: high-bound growth with a stationary lower bound, exact/sub-GiB progress, retained strikes, stalls, readiness, timeout, bounded hidden foreign N/A use and immediate large foreign residuals; realistic 90 GiB loading at 1.2 GiB/s through the real fallback survives. Real helper readiness is exercised with a fake scheduler and child. | Monotonic attribution within each bracket remains an assumption. Coincident spikes/dips and live fallback timings require qualification; ambiguous foreign use can be delayed only while the progress/readiness/deadline conditions hold. |
+| D: lookup and documentation nits | `hyperloom/recipes/launch.py:140` reuses one reviewed-resource snapshot for observer creation and rendering. `hyperloom/gpu_counters.py:54` normalizes UUID keys and uses the canonical GPU prefix for driver lookup; ABI declarations are hoisted. `docs/placement-supervision.md:60` documents retained strikes and delayed foreign-use detection. | `tests/test_pc_big_review.py:226`, `test_prepare_reuses_one_reviewed_resource_snapshot` covers changing ownership with/without an initial observer. The native test covers mixed-case/whitespace lookup, normalized handle caching and one-time signature setup. `test_loading_documentation_covers_retained_strikes_and_delayed_foreign_detection` guards both conservative edge cases and the native-total qualification. | None for these nits. Ownership and observers remain transient; replacement still repeats unowned admission after shutdown. |
+
+All new regressions use fake counters/processes and clocks or synchronous scheduling. They never sleep in real
+time or start background threads. The production release remains unpublished and refused; no live GPU/WDDM
+qualification is claimed.
+
+Final full Python 3.13 suite: **46 failed, 3798 passed, 69 skipped** in 480.58 s. The reference, clean baseline
+and final failing-ID sets are exactly equal: all 46 pre-existing IDs, none added or missing. All **18 additional
+cases pass**. The focused lifecycle/admission/legacy/privacy run passed **419 tests, 2 skipped** with thread
+warnings treated as errors. A separate run forbidding real-time sleep passed all 18 new cases in 0.39 s and
+verified that the live-thread set was unchanged.
+
+The full run emitted one known admission-heartbeat thread warning when an existing test patched global sleep
+to raise KeyboardInterrupt. Admission-thread code is unchanged; that pre-existing test-isolation point remains
+open. The new regressions start no background threads.
+
+G6 retains all **21 cases byte-identically**, with the unchanged frozen fixture and reconstructed SHA-256
+`40489d24e0a9b64d9b6186b2742d2fff734e4d66e310dd1776d8b62c340168e7`. Legacy reservation, gates, busy queries,
+watchdog and helper acquisition/gate/verification remain AST-equal to eb9ae96; device locking matches after
+path-helper inlining. Removing the new placement-only readiness signal leaves service_run AST-equal to 7e6d7aa.
+Legacy rendering, launch preparation, evaluator/picker and the unowned PC-BIG query loop also retain AST equality.
+
+Evidence logs outside git: `hl-placement-r20-before313.log`, `hl-placement-r20-after313.log`,
+`hl-placement-r20-failure-comparison.log`, `hl-placement-r20-red.log`, `hl-placement-r20-focused.log`,
+`hl-placement-r20-regression-isolation.log`, `hl-placement-r20-legacy-ast.log`,
+`hl-placement-r20-privacy.log` and `hl-placement-r20-final-checks.log`.
+Privacy, UTF-8, LF and diff whitespace checks pass. TEMP/TMP were unchanged; submodules remain uninitialized.
+Work stayed on hl/placement at HEAD 7e6d7aa. No network, GPU work, additional worktree, commit or push was used.

@@ -178,7 +178,6 @@ def prepare(cluster, profile, options, *, router, vram_cap_gib, state_dir, sourc
                 raise RecipeError("the placement decode replica is loopback-only: use --router local")
             request = runtime.request(evaluation.decision)
             # Pure render (including artifact/release checks) before any state, helper or gate exists.
-            owners, _, _ = preflight._reviewed_resources(reviewed, cluster)
             spec = render_placement(cluster, profile, request, api_key="0" * 64, owners=owners, observer=observer)
             table = {"effective_sha256": evaluation.effective_sha256, "state": {"file": None}, "routes": []}
             return Launch(evaluation, production and not evaluation.effective.untuned, True, None, None, None,

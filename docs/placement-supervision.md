@@ -35,8 +35,9 @@ Native driver behavior is not qualified by these fake-counter/process tests. Ope
 watchdog logs contain local identities and belong in local runtime storage, never in committed fixtures.
 
 Owned PC-BIG residual checks use two attribution snapshots around a device total. The observer reads the total
-in-process through its existing NVML session by UUID; Windows takes all owned PIDs from one PDH collection on
-each side. Observers without native totals, or unavailable NVML totals, retain the nvidia-smi fallback. Placement
+in-process through its existing NVML session by UUID. NVML v2 `used` excludes driver/firmware-reserved memory;
+the v1 total includes it and is never substituted. Windows takes all owned PIDs from one PDH collection on
+each side. Observers without native totals, or unavailable NVML v2 totals, retain the nvidia-smi fallback. Placement
 caps always use full attributable process bytes. Admission/start refuse a single busy verdict; the watchdog
 requires two consecutive busy brackets in the same check, so a temporary allocation seen only in one total
 does not stop a normal turn. Numeric foreign-process evidence, locks and ledgers retain their immediate checks.
@@ -47,15 +48,28 @@ brackets reduce transient refusals but do not establish that assumption. Live qu
 patterns under loading and serving workloads. This remains an open qualification point.
 
 When all three brackets are ambiguous and every owned PID's after sample is at least its before sample, the
-watchdog reports own load in progress without adding or resetting counter strikes. This allowance ends 60 seconds
-after the first full check, or after the ready timeout if shorter; it never restarts. Later growth ambiguity,
-release-shaped ambiguity and mixed changes receive the usual three counter strikes. Admission/start receive no
-load allowance. Caps, grants, deadlines and all other devices remain checked during loading.
+watchdog reports own load in progress. It adds no counter strike only while each ambiguous device's owned
+attribution high bound has grown by at least 1 GiB since the previous full check, the replica has not passed its
+ready event and health check, and its ready timeout has not elapsed since watchdog construction. The first
+ambiguous check without a previous high bound receives a strike. Readiness ends the allowance permanently;
+stalled or sub-GiB growth, release-shaped ambiguity and mixed changes receive the usual counter strikes.
+Measurement probes explicitly have zero load grace. Admission/start receive no load allowance. Caps, grants,
+deadlines and all other devices remain checked during loading. Ambiguity logs include the high bounds and the
+maximum measured bracket width in seconds for live timing qualification.
+
+Qualifying progress preserves earlier strikes: with two already recorded, the first later strike can stop the
+child immediately. During qualifying ambiguous growth, foreign N/A use up to the
+idle threshold plus own growth within a bracket can remain hidden; detection can be delayed until progress stalls,
+readiness succeeds or the ready timeout ends,
+then stop via "counters failed persistently" rather than "window is active". Larger residuals and numeric foreign
+rows still refuse immediately. Consecutive qualifying checks consume at least 1 GiB of high-bound headroom on
+each ambiguous device and remain bounded by its cap and ready timeout.
 
 Live WDDM qualification also remains open for the total below attribution refusal: under PRO load, compare the
 sum of owned PIDs' PDH Dedicated Usage with NVML memory.used (and the nvidia-smi fallback). Establish whether the
 sum stays within the device total plus the one MiB rounding tolerance, including shared/aliased allocations and
 driver accounting. Persistent disagreement still refuses; CPU fakes do not qualify this relationship.
+Also verify NVML v2 used == nvidia-smi memory.used at idle and under load on the qualified driver.
 
 Pure admission inspects every touched device's existing OS lock without acquiring it and checks the selected local
 port before any admission hold, published placement, launch state or helper directory. A missing lock creates no

@@ -22,7 +22,7 @@ def test_owned_bracket_uses_native_total_and_one_pdh_snapshot_per_side(monkeypat
     dll = mock.Mock()
     dll.nvmlInit_v2.return_value = dll.nvmlShutdown.return_value = 0
     def handle(identity, out):
-        assert identity == pro.encode("ascii")
+        assert identity == ("GPU-" + pro[4:].lower()).encode("ascii")
         out._obj.value = 0x123456789
         return 0
     def memory(handle, out):
@@ -32,7 +32,7 @@ def test_owned_bracket_uses_native_total_and_one_pdh_snapshot_per_side(monkeypat
         out._obj.used = own + 800 * (1 << 20)
         return 0
     dll.nvmlDeviceGetHandleByUUID.side_effect = handle
-    dll.nvmlDeviceGetMemoryInfo.side_effect = memory
+    dll.nvmlDeviceGetMemoryInfo_v2.side_effect = memory
     monkeypatch.setattr(C, "CDLL", lambda _: dll)
     monkeypatch.setattr(C, "WinDLL", mock.Mock(side_effect=AssertionError("CUDA loaded")), raising=False)
     observer = gpu_counters.Observer.__new__(gpu_counters.Observer)
@@ -46,8 +46,8 @@ def test_owned_bracket_uses_native_total_and_one_pdh_snapshot_per_side(monkeypat
     try:
         assert not pc_big.owned_busy(pro, {1, 2}, observer)
         assert observer.pdh.rows.call_count == 2
-        dll.nvmlDeviceGetMemoryInfo.assert_called_once()
-        assert dll.nvmlDeviceGetMemoryInfo.argtypes[0] is C.c_void_p
+        dll.nvmlDeviceGetMemoryInfo_v2.assert_called_once()
+        assert dll.nvmlDeviceGetMemoryInfo_v2.argtypes[0] is C.c_void_p
         assert observer.device_used_bytes(pro.lower()) == own + 800 * (1 << 20)
         dll.nvmlDeviceGetHandleByUUID.assert_called_once()
         C.WinDLL.assert_not_called()
@@ -83,13 +83,18 @@ def loading_watchdog(tmp_path, monkeypatch, shape="growth", ready_timeout=120):
         # Three brackets then the independent cap sample; allocations can change between brackets.
         side = n % 7
         child = ([1, 4] if shape != "release" else [4, 1])[side % 2] if side < 6 else 1
+        if shape == "growth":
+            child += n // 7
         parent = [4, 1][n % 2] if shape == "mixed" else 0
         return dict.fromkeys(keys, 0) | {pro: (child if pid == 42 else parent) * rtx.GIB}
     observer = mock.Mock()
     observer.sample.side_effect = sample
     monkeypatch.setattr(rtx, "compute_apps", lambda: [(pro, 777, None)])
-    total = mock.Mock(return_value={"growth": 3 * 1024 + 800, "release": 5 * 1024 + 800,
-                                   "mixed": 8 * 1024}[shape])
+    def used(_):
+        return (3 + (counts.get(42, 0) - 1) // 7) * 1024 + 800
+    total = mock.Mock(side_effect=used if shape == "growth" else None,
+                      return_value={"growth": 3 * 1024 + 800, "release": 5 * 1024 + 800,
+                                    "mixed": 8 * 1024}[shape])
     monkeypatch.setattr(rtx, "device_used_mib", total)
     now = [NOW]
     lines = []
@@ -102,13 +107,16 @@ def loading_watchdog(tmp_path, monkeypatch, shape="growth", ready_timeout=120):
 
 def test_sustained_own_growth_does_not_kill_or_reset_existing_strikes(tmp_path, monkeypatch):
     dog, observer, now, lines, total, keys = loading_watchdog(tmp_path, monkeypatch)
-    dog.smi_failures = 1
+    assert dog.check() is None  # No previous high bound: establish history with one conservative strike.
+    assert dog.smi_failures == 1
+    now[0] += 5
     for _ in range(4):
         assert dog.check() is None
         assert dog.smi_failures == 1
         assert "load in progress" in lines[-1]["smi"]
         now[0] += 5
     observer.sample.side_effect = lambda pid: dict.fromkeys(keys, 0)
+    total.side_effect = None
     total.return_value = 0
     assert dog.check() is None
     assert dog.smi_failures == 0
@@ -143,16 +151,20 @@ def test_growth_allowance_is_never_used_for_admission(tmp_path, monkeypatch, sta
             preflight._handover_busy(keys[0], dog.owners[keys[0]], observer)
 
 
-@pytest.mark.parametrize("ready_timeout, grace", [(120, 60), (10, 10)])
+@pytest.mark.parametrize("ready_timeout, grace", [(120, 120), (10, 10)])
 def test_growth_that_never_settles_eventually_strikes(tmp_path, monkeypatch, ready_timeout, grace):
     dog, _, now, _, _, _ = loading_watchdog(tmp_path, monkeypatch, ready_timeout=ready_timeout)
+    dog.policy["caps_gib"] = dict.fromkeys(dog.policy["caps_gib"], 90)
+    dog.policy["caps_bytes"] = dict.fromkeys(dog.policy["caps_bytes"], 90 * rtx.GIB)
+    for grant in dog.policy["grants"]:
+        grant["vram_cap_gib"] = 90
     assert dog.check() is None
     for offset in range(5, grace, 5):
         now[0] = NOW + offset
         assert dog.check() is None
-        assert dog.smi_failures == 0
-    for strike in range(1, rtx.SMI_FAILURES_MAX + 1):
-        now[0] = NOW + grace + (strike - 1) * 5
+        assert dog.smi_failures == 1
+    for strike in range(2, rtx.SMI_FAILURES_MAX + 1):
+        now[0] = NOW + grace + (strike - 2) * 5
         assert (dog.check() is not None) == (strike == rtx.SMI_FAILURES_MAX)
         assert dog.smi_failures == strike
 

@@ -861,6 +861,8 @@ def service_run(spec_path, *, child_factory=procs.LocalChild, watchdog_factory=W
                         ok = spool.health() if spool is not None else health(spec.port).get("status") == "ok"
                         if ok:
                             ready = _scrub(event, [a for a, b in zip(spec.argv, redacted) if a != b])
+                            if spec.placement_supervision is not None:
+                                watchdog.mark_ready()
                             _write(directory / "state.json", {"state": "ready", "pid": child.process.pid,
                                                               "device": info, "ready": ready, "argv": redacted})
                             next_health = now + HEALTH_INTERVAL_S
