@@ -7,6 +7,7 @@ from pathlib import Path
 from decimal import Decimal
 from fractions import Fraction
 import math
+import os
 import re
 import struct
 
@@ -23,6 +24,7 @@ VALUES = INPUTS | frozenset(("--steps", "--phases", "--seqmod", "--chats", "--ch
     "--serve-max", "--residency-save", "--reset-cache", "--env"))
 FLAGS = frozenset(("--controller-prior-alt", "--controller-learn", "--flush-ready",
                    "--no-flush-ready", "--wb-defer", "--no-wb-defer", "--serve-keep-on-fail", "--qual"))
+OUTPUTS = frozenset(("--json", "--timeline", "--draft-trace", "--controller-save", "--residency-save"))
 DEFAULT_PHASES = "exact0,pressure,exact8,chats8,chats0"
 UINTS = frozenset(("--steps", "--chat-prompt", "--chat-steps", "--verify", "--warm", "--pressure-free",
     "--pressure-recent", "--prefetch-layer", "--prefetch-token", "--controller-explore", "--winpf-l1-cap",
@@ -157,6 +159,10 @@ def _phases(value):
             _bad("--phases")
         for digits in re.findall(r"[0-9]+", phase):
             _uint(digits, "--phases")
+        # Every valid native row count is at least one. Check even overwritten --phases occurrences.
+        first = re.search(r"[0-9]+", phase)
+        if first is not None and _uint(first[0], "--phases") > 64:
+            _bad("--phases")
     return phases
 
 
@@ -172,7 +178,55 @@ def _available(value, option):
         raise RecipeError("PL_E_STALE replica input is missing or unreadable: " + option) from exc
 
 
-def validate(argv):
+def _output_available(value, option):
+    # Native opens these files without making parents. Check known failures without creating/truncating outputs;
+    # the eventual open/rename remains authoritative for ACLs, sharing violations and filesystem races.
+    try:
+        paths = [Path(value).resolve()]
+        if option == "--residency-save":
+            paths.append(Path(value + ".tmp").resolve())
+            if not os.access(paths[0].parent, os.W_OK):
+                raise OSError("output parent is not writable")
+        for path in paths:
+            if path.exists():
+                if not path.is_file() or not os.access(path, os.W_OK):
+                    raise OSError("output is not a writable regular file")
+            elif not path.parent.is_dir() or not os.access(path.parent, os.W_OK):
+                raise OSError("output parent is missing or not writable")
+    except (OSError, ValueError) as exc:
+        raise RecipeError("PL_E_SCHEMA unavailable native output: " + option) from exc
+
+
+def _capacities(phases, config, allocation_flags):
+    """Use admitted capacities when available; never derive allocation flags from request argv."""
+    if not isinstance(config, dict):
+        _bad("placement config")
+    rows = config.get("max_rows")
+    positions = config.get("max_context_tokens")
+    for name, value in (("--max-rows", rows), ("--max-positions", positions)):
+        if value is not None and (type(value) is not int or not 0 < value <= 0xffffffff):
+            _bad(name)
+    window = any(p.startswith(("wforce", "spec", "schats", "wsmoke", "gsmoke", "csmoke")) for p in phases)
+    draft = any(p.startswith(("spec", "schats")) for p in phases)
+    if rows is not None and (rows > 8 or (window and rows < 2) or (draft and rows > 6)):
+        _bad("--max-rows for --phases")
+    predict = None
+    if allocation_flags is not None:
+        if not isinstance(allocation_flags, dict):
+            _bad("cached allocation flags")
+        # The components reference binds all allocation-affecting flags; absent --predict uses native default 8.
+        predict = max(8, _uint(str(allocation_flags.get("--predict", 8)), "cached --predict"))
+        if (rows or 1) * predict > 64:
+            _bad("--max-rows x cached --predict")
+    for phase in phases:
+        digits = re.search(r"[0-9]+", phase)
+        k = _uint(digits[0], "--phases") if digits else 0
+        if (rows or 1) * k > 64 or (predict is not None and k > predict):
+            _bad("--phases K / --max-rows / cached --predict")
+    return positions
+
+
+def validate(argv, *, config=None, allocation_flags=None):
     """Validate native arity, required launch inputs and every input occurrence, without publishing anything."""
     if (not argv or any(not isinstance(a, str) or not a or "\x00" in a or "\n" in a or "\r" in a for a in argv)
             or argv[0].startswith("--")):
@@ -191,6 +245,8 @@ def validate(argv):
             raise RecipeError("PL_E_SCHEMA missing value of " + option)
         value = argv[index + 1]
         _value(option, value)
+        if option in OUTPUTS:
+            _output_available(value, option)
         if option == "--phases":
             _phases(value)
         options[option] = value
@@ -208,6 +264,7 @@ def validate(argv):
     require("--receipt")
     # Do not let a later occurrence hide invalid syntax, ranges, or requirements of an earlier one.
     phases = [phase for value in occurrences.get("--phases", [DEFAULT_PHASES]) for phase in _phases(value)]
+    positions = _capacities(phases, {} if config is None else config, allocation_flags)
     for phase in phases:
         if phase.startswith(("exact", "pressure", "wforce", "spec")):
             require("--ref")
@@ -227,6 +284,11 @@ def validate(argv):
         count = max(_uint(v, "--chat-steps") for v in occurrences.get("--chat-steps", ["128"]))
         if prompt + count + 16 > 0x7fffffff:
             _bad("--chat-prompt / --chat-steps")
+    else:
+        prompt = count = 0
+    # The imported position is engine-owned, but even position zero cannot fit a larger request.
+    if positions is not None and max(max(steps) + 16, prompt + count + 16) > positions:
+        _bad("--max-positions below what --phases need")
     if (any(v != "none" for v in occurrences.get("--controller-costs", []))
             and "none" in occurrences.get("--controller-prior", [])):
         _bad("--controller-costs needs --controller-prior")

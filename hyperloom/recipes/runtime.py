@@ -57,6 +57,7 @@ class Files:
     receipts: Path
     manifest_sha256: str | None = None
     document: dict | None = None
+    allocation_flags: dict | None = None
 
     def read(self):
         document = deepcopy(self.document) if self.document is not None else content_cache._read(self.placement, "PL_E_STALE")
@@ -129,7 +130,7 @@ def decision(cluster, recipe, ctx, bound, effective_sha, plans, admitted):
         raise RecipeError("PL_E_STALE placement requires its local receipts file")
     receipts = str(Path(receipts).resolve())
     files = Files(commands.runtime_dir() / "placements" / (content_cache._sha(plan) + ".json"), manifest,
-                  Path(receipts), record["manifest_sha256"], plan)
+                  Path(receipts), record["manifest_sha256"], plan, record["reference"].get("flags"))
     selected = record["selected"]
     target = selected.get("model", selected.get("target"))
     if target is None:
@@ -155,14 +156,15 @@ def decision(cluster, recipe, ctx, bound, effective_sha, plans, admitted):
             "service": {"start": True, "why": None}, "running": [], "requirements": [],
             "effective_sha256": effective_sha, "machine": ctx.pc, "argv": list(argv),
             "files": {"placement": str(files.placement), "manifest": str(manifest), "receipts": receipts,
-                      "manifest_sha256": files.manifest_sha256, "document": plan},
+                      "manifest_sha256": files.manifest_sha256, "document": plan,
+                      "allocation_flags": files.allocation_flags},
             "supervision": admitted["policies"][route["id"]], "port": admitted["inputs"].get("port", 8096)}
 
 
 def request(decision):
     files = decision["files"]
     return Request(decision["machine"], Files(Path(files["placement"]), Path(files["manifest"]),
-                   Path(files["receipts"]), files["manifest_sha256"], files["document"]),
+                   Path(files["receipts"]), files["manifest_sha256"], files["document"], files.get("allocation_flags")),
                    decision["supervision"], port=decision.get("port", 8096), argv=tuple(decision["argv"]))
 
 
@@ -202,7 +204,7 @@ def render(files, *, binary, argv=(), data=None):
                        & (SUGAR | SIZING | {"--placement", "--content-manifest", "--receipts"}))
     if conflicts:
         raise RecipeError("PL_E_CONFLICT placement owns allocation flags: " + ", ".join(conflicts))
-    replica_args.validate(argv)
+    replica_args.validate(argv, config=document.get("config"), allocation_flags=files.allocation_flags)
     return [str(binary), *argv, *files.argv()], visibility(document), document
 
 
