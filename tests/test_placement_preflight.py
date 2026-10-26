@@ -125,8 +125,10 @@ class PreflightTests(unittest.TestCase):
         path.write_bytes(DS.encode())
         options = launch.Options(str(path))
         self.assertFalse(preflight.includes(options))
-        with mock.patch.object(launch, "prepare", side_effect=AssertionError("legacy admission")):
+        with mock.patch.object(launch, "prepare", side_effect=AssertionError("legacy admission")), \
+                mock.patch.object(orchestrate, "check_launch") as check:
             preflight.before_options(None, "legacy", options)
+        check.assert_called_once()
         options.layers.sets = [("routes.decode.components.drafter.device", "anchor")]
         self.assertTrue(preflight.includes(options))
 

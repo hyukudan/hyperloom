@@ -213,8 +213,12 @@ class Observer:
         return pdh_sample(self.pdh.rows(), self.luids, pid) if self.pdh else self.nvml.sample(pid)
 
     def close(self):
-        try:
-            if self.pdh:
-                self.pdh.close()
-        finally:
-            self.nvml.close()
+        errors = []
+        for counter in (self.pdh, self.nvml):
+            if counter is not None:
+                try:
+                    counter.close()
+                except BaseException as exc:
+                    errors.append(exc)
+        if errors:
+            raise BaseExceptionGroup("GPU observer cleanup failed", errors)

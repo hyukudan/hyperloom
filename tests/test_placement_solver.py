@@ -53,11 +53,13 @@ class SolverTests(unittest.TestCase):
             self.assertIn("--context", argv)
             self.assertEqual(json.loads(Path(argv[argv.index("--inputs") + 1]).read_text())["choices"][0]["id"], "plain")
             if self.error:
-                return SimpleNamespace(returncode=1, stdout="", stderr=self.error)
+                kwargs["stderr"].write(self.error.encode())
+                return SimpleNamespace(returncode=1)
             Path(argv[argv.index("--json-out") + 1]).write_bytes(json.dumps(self.doc).encode())
             if "--pick" in argv:
                 Path(argv[argv.index("--emit-overrides") + 1]).write_bytes(self.emitted)
-            return SimpleNamespace(returncode=0, stdout="rows, refusals, estimates, unpredicted\n", stderr="")
+            kwargs["stdout"].write(b"rows, refusals, estimates, unpredicted\n")
+            return SimpleNamespace(returncode=0)
 
         self.backend = core.CoreBackend(core.Core("test-ts-recipe", run=run))
         # Resolution is a schema-only fake. Every place/solve/pick still goes through the actual CLI bridge above.

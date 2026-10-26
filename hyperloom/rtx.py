@@ -725,12 +725,11 @@ def service_run(spec_path, *, child_factory=procs.LocalChild, watchdog_factory=W
     path = Path(spec_path)
     directory = path.parent
     lifetime = procs.InstanceLock(directory / "helper.lock").acquire()
-    child = watchdog = device = spool = None
+    child = watchdog = device = spool = events = None
     devices = ExitStack()
     observer = None
     reason = "stopped"
     redacted = []
-    events = (directory / "watchdog.jsonl").open("a", encoding="utf-8")
 
     def log(line):
         events.write(json.dumps(line) + "\n")
@@ -739,8 +738,27 @@ def service_run(spec_path, *, child_factory=procs.LocalChild, watchdog_factory=W
     def stopping():
         return (directory / "stop").exists() or not owner_check(owner)
 
+    errors, failed = [], []
+
+    def cleanup_step(name, action):
+        try:
+            action()
+        except BaseException as exc:
+            errors.append(exc)
+            failed.append(name)
+            # Error text may contain keys from a failed child command; record only the step and type.
+            line = {"cleanup": name, "error": type(exc).__name__}
+            try:
+                log(line)
+            except BaseException:
+                try:
+                    print(json.dumps(line), file=sys.stderr, flush=True)
+                except BaseException:
+                    pass  # Neither log destination may interrupt containment or lock release.
+
     owner = None
     try:
+        events = (directory / "watchdog.jsonl").open("a", encoding="utf-8")
         raw = _read(path)
         path.unlink()  # the only copy of the literal keys on disk, now in memory only
         spec = ServiceSpec(**raw["spec"])
@@ -767,7 +785,8 @@ def service_run(spec_path, *, child_factory=procs.LocalChild, watchdog_factory=W
             info = placement_supervision.acquire(spec.placement_supervision, devices, lock_factory=lock_factory,
                                                   gate_runner=gate_runner,
                                                   verify=verify_device if verify is verify_pro else verify,
-                                                  log=log, now=time.time())
+                                                  log=log, now=time.time(),
+                                                  release=lambda lock: cleanup_step("device", lock.close))
             for item in info:
                 cap_bytes = spec.placement_supervision.get("caps_bytes", {}).get(item["uuid"].lower())
                 if (item.get("memory_total_mib") is not None
@@ -855,24 +874,37 @@ def service_run(spec_path, *, child_factory=procs.LocalChild, watchdog_factory=W
     except Exception as exc:  # noqa: BLE001 - recorded for the controller
         reason = f"{type(exc).__name__}: {exc}"
     finally:
-        path.unlink(missing_ok=True)
-        if watchdog is not None:
-            watchdog.stop()
-        if child is not None:
-            if spool is not None and child.alive():
-                try:
-                    spool.shutdown(timeout=5)
-                except (OSError, ValueError):
-                    pass  # an unresponsive or failed worker is still terminated by the owned Job Object
-            child.stop(10)
-        events.close()
-        _write(directory / "state.json", {"state": "stopped", "reason": reason, "argv": redacted})
-        if device is not None:
-            device.close()
-        devices.close()
-        if observer is not None:
-            observer.close()
-        lifetime.close()
+        def shutdown_spool():
+            if spool is not None and child is not None and child.alive():
+                spool.shutdown(timeout=5)
+
+        def stopped():
+            state = {"state": "stopped", "reason": reason, "argv": redacted}
+            if failed:
+                state["cleanup_errors"] = list(failed)
+            _write(directory / "state.json", state)
+
+        # LIFO: the lifetime lock is released only after every other cleanup has been attempted. ExitStack also
+        # unwinds every per-device lock if another close fails. Guard each callback so logging and error propagation
+        # cannot skip child termination, terminal state, or any remaining release.
+        with ExitStack() as cleanup:
+            cleanup.callback(cleanup_step, "lifetime", lifetime.close)
+            if events is not None:
+                cleanup.callback(cleanup_step, "events", events.close)
+            cleanup.callback(cleanup_step, "state", stopped)
+            if observer is not None:
+                cleanup.callback(cleanup_step, "observer", observer.close)
+            cleanup.callback(cleanup_step, "devices", devices.close)
+            if device is not None:
+                cleanup.callback(cleanup_step, "device", device.close)
+            if child is not None:
+                cleanup.callback(cleanup_step, "child", lambda: child.stop(10))
+                cleanup.callback(cleanup_step, "spool", shutdown_spool)
+            if watchdog is not None:
+                cleanup.callback(cleanup_step, "watchdog", watchdog.stop)
+            cleanup.callback(cleanup_step, "spec", lambda: path.unlink(missing_ok=True))
+        if errors:
+            raise BaseExceptionGroup("service cleanup failed", errors)
 
 
 def prepare_service(spec):

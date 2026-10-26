@@ -210,32 +210,49 @@ def includes(options):
     return any("components" in field.split(".") or "assist" in field.split(".") for field in fields)
 
 
-def before_options(cluster, profile, options, *, router="local", cap=None, source=None, reviewed=None):
+def before_options(cluster, profile, options, *, router="local", cap=None, source=None, reviewed=None,
+                   nodes=None, diagnostics=None, devices=None):
+    from .. import orchestrate
+    # Command checks also apply when a legacy recipe or auto's candidates contain no placement keys.
+    if cap is not None:
+        raise RecipeError("--vram-cap-gib and --recipe both set the RTX cap: put it in the recipe (device_gib)")
+    if options.recipe == "auto" and profile is None:
+        raise RecipeError("up --recipe auto needs the profile to run")
+    orchestrate.check_launch(cluster, profile, router, nodes, diagnostics=diagnostics, devices=devices, recipe=True)
+    if profile not in (reviewed or {}) and orchestrate._state_path(profile).exists():
+        raise orchestrate.OrchestrationError("profile has saved running state; run down before up")
     if not includes(options):
         return
-    from .. import orchestrate
     from . import launch
-    orchestrate.check_launch(cluster, profile, router, recipe=True)
     launch.prepare(cluster, profile, options, router=router, vram_cap_gib=cap,
                    state_dir=orchestrate._state_path(profile).parent, source=source,
                    **({"reviewed": reviewed} if reviewed is not None else {}))
 
 
-def snapshot(digest, profile=None, *, source=None, stop=None, approval=None):
+def snapshot(digest, profile=None, *, source=None, stop=None, approval=None, job=None):
     from .. import orchestrate
     from . import service
-    try:
-        cluster, intent, options = service.options_from_inputs(digest, profile)
-    except service.NotFound:
-        # No placement document exists to admit. Keep legacy missing-snapshot job/error handling unchanged.
-        return
+    if job:
+        service.cancel_marker(job)  # Validate only; no progress file, directory or marker is created.
+    cluster, intent, options = service.options_from_inputs(digest, profile)
     orchestrate.validate_command(intent["deadline_s"], approval, intent["queue_timeout_s"])
-    reviewed = None
-    if stop is not None and includes(options):
-        reviewed = service._states()
-        if sorted(set(stop)) != sorted(reviewed):
-            raise service.Conflict("the running profiles differ from the reviewed stop list: review the switch again")
+    reviewed = service.reviewed_stops(stop) if stop is not None else None
     before_options(cluster, intent["profile"], options, router=intent["router"], source=source, reviewed=reviewed)
+
+
+def command_options(args):
+    """Pure CLI option conflicts, before even reading a snapshot or publishing original inputs."""
+    layers = any(value is not None for value in (
+        args.recipe_profile, args.recipe_overrides, args.recipe_set, args.recipe_dir, args.recipe_workload))
+    if args.recipe_inputs is not None:
+        if (args.recipe is not None or layers or args.node is not None or args.device is not None
+                or args.diagnostic is not None or args.vram_cap_gib is not None or args.router != "local"):
+            raise ValueError("--recipe-inputs launches a planned snapshot as it is: no --recipe*, --node, --device, "
+                             "--diagnostic, --vram-cap-gib or --router")
+    elif args.recipe is None and layers:
+        raise ValueError("--recipe-profile/--recipe-overrides/--recipe-set/--recipe-dir/--recipe-workload need --recipe")
+    elif args.recipe is not None and args.vram_cap_gib is not None:
+        raise RecipeError("--vram-cap-gib and --recipe both set the RTX cap: put it in the recipe (device_gib)")
 
 
 def cli(args, *, load_cluster=None):
@@ -245,15 +262,26 @@ def cli(args, *, load_cluster=None):
     if not deploy and command != "up":
         return
     from .. import orchestrate
+    from . import launch, service
+    if not deploy:
+        command_options(args)
+    if getattr(args, "job", None):
+        service.cancel_marker(args.job)
     approval = commands._approval(args)
-    if not deploy and not args.recipe_inputs:
+    if not deploy and args.recipe_inputs is None:
         orchestrate.validate_command(args.deadline, approval, args.queue_timeout)
-    if not deploy and not (args.recipe or args.recipe_inputs):
+    if not deploy and args.recipe is None and args.recipe_inputs is None:
+        if args.profile is not None:
+            from .. import cli as main_cli
+            cluster = (load_cluster or main_cli._cluster)(args.config)
+            orchestrate.check_launch(cluster, args.profile, args.router, args.node, diagnostics=args.diagnostic,
+                                      devices=args.device, vram_cap_gib=args.vram_cap_gib)
+            if orchestrate._state_path(args.profile).exists():
+                raise orchestrate.OrchestrationError("profile has saved running state; run down before up")
         return
     from .. import cli as main_cli
-    from . import launch, service
     with service.configured(args.config):
-        if deploy or args.recipe_inputs:
+        if deploy or args.recipe_inputs is not None:
             snapshot(args.inputs if deploy else args.recipe_inputs, None if deploy else args.profile,
                      approval=approval,
                      **({"stop": args.stop or []} if deploy else {}))
@@ -263,6 +291,8 @@ def cli(args, *, load_cluster=None):
                                 sets=[reader.parse_set(s) for s in args.recipe_set or []],
                                 workload=args.recipe_workload or "default")
         dirs = service.candidate_dirs(cluster, args.recipe_dir or []) if args.recipe == "auto" else []
-        path = "auto" if args.recipe == "auto" else str(service.locate(args.recipe, cluster, for_up=True))
+        path = "auto" if args.recipe == "auto" else str(service.locate(
+            args.recipe, cluster, for_up=True, extra=args.recipe_dir or []))
         profile = args.profile if path == "auto" else service.deployment_profile(cluster, path, args.profile)
-        before_options(cluster, profile, launch.Options(path, layers, dirs), router=args.router, cap=args.vram_cap_gib)
+        before_options(cluster, profile, launch.Options(path, layers, dirs), router=args.router, cap=args.vram_cap_gib,
+                       nodes=args.node, diagnostics=args.diagnostic, devices=args.device)

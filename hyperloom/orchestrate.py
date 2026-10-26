@@ -681,7 +681,8 @@ def prelaunch(cluster, profile, settings, kind, clients, mids):
             "node_paths": node_paths, "release_rows": release_rows}
 
 
-def check_launch(cluster, profile, router="local", nodes=None, *, diagnostics=None, recipe=False):
+def check_launch(cluster, profile, router="local", nodes=None, *, diagnostics=None, recipe=False,
+                 devices=None, vram_cap_gib=None):
     """The profile, node and router checks up makes before any I/O (also `hyperloom recipe plan`'s preflight)."""
     settings, kind, defaults = _profile(cluster, profile)
     name = _preset_name(cluster, profile)
@@ -711,29 +712,19 @@ def check_launch(cluster, profile, router="local", nodes=None, *, diagnostics=No
         if router != "local":
             # The router reads the route state hyperloom writes on this machine every second.
             raise ValueError("--recipe runs the router locally (it reads the route state written here): use --router local")
+    check_selection(cluster, mids, router, settings.get("prefill_service"), devices, vram_cap_gib)
     return settings, kind, defaults, engine, name, pair, diagnostics, mids
 
 
-def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s=1140, approval=None, queue_timeout_s=3600,
-       diagnostics=None, vram_cap_gib=None, recipe=None, cancelled=None):
-    validate_command(deadline_s, approval, queue_timeout_s)
-    settings, kind, defaults, engine, name, pair, diagnostics, mids = check_launch(
-        cluster, profile, router, nodes, diagnostics=diagnostics, recipe=recipe is not None)
+def check_selection(cluster, mids, router, service, devices=None, vram_cap_gib=None):
+    """Passive device/router/cap checks, repeated with the recipe's effective service at launch."""
     declared = list(mids)
-    service = settings.get("prefill_service")
-    launch = None
-    if recipe is not None:
-        from .recipes import launch as recipe_launch
-        launch = recipe_launch.prepare(cluster, profile, recipe, router=router, vram_cap_gib=vram_cap_gib,
-                                       state_dir=_state_path(profile).parent)
-        if getattr(launch, "placement_request", None) is not None:
-            return recipe_launch.up_placement(cluster, profile, launch, deadline_s=deadline_s, cancelled=cancelled)
-        if not launch.service_start:
-            service = None  # every prefill stays on the nodes (the why is recorded); no PRO lease, no start
     if service is not None and router != "local":
         raise ValueError("the RTX prefill service is loopback-only: use --router local")
-    if vram_cap_gib is not None and service is None:
-        raise ValueError("--vram-cap-gib places an RTX prefill service; this profile has none")
+    if vram_cap_gib is not None:
+        if service is None:
+            raise ValueError("--vram-cap-gib places an RTX prefill service; this profile has none")
+        rtx.effective_cap(cluster.pc.get("cuda", {}).get("reservation"), vram_cap_gib)
     for device in devices or []:
         try:
             mid, did = device.split(":", 1)
@@ -750,6 +741,26 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
     for mid in declared:
         if mid not in cluster.machines:
             raise ValueError("unknown machine: " + mid)
+    return declared
+
+
+def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s=1140, approval=None, queue_timeout_s=3600,
+       diagnostics=None, vram_cap_gib=None, recipe=None, cancelled=None):
+    validate_command(deadline_s, approval, queue_timeout_s)
+    settings, kind, defaults, engine, name, pair, diagnostics, mids = check_launch(
+        cluster, profile, router, nodes, diagnostics=diagnostics, recipe=recipe is not None,
+        devices=devices, vram_cap_gib=vram_cap_gib)
+    service = settings.get("prefill_service")
+    launch = None
+    if recipe is not None:
+        from .recipes import launch as recipe_launch
+        launch = recipe_launch.prepare(cluster, profile, recipe, router=router, vram_cap_gib=vram_cap_gib,
+                                       state_dir=_state_path(profile).parent)
+        if getattr(launch, "placement_request", None) is not None:
+            return recipe_launch.up_placement(cluster, profile, launch, deadline_s=deadline_s, cancelled=cancelled)
+        if not launch.service_start:
+            service = None  # every prefill stays on the nodes (the why is recorded); no PRO lease, no start
+    declared = check_selection(cluster, mids, router, service, devices, vram_cap_gib)
     path = _state_path(profile)
     lock = procs.InstanceLock(path.with_suffix(".lock")).acquire()
     state = {"profile": profile, "leases": [], "router": None,

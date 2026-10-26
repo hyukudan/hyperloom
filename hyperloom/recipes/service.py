@@ -792,6 +792,8 @@ def up_options(cluster, recipe, profile=None, *, layers=None, dirs=(), intent=No
     from . import launch, preflight, session
     command = dict(DEFAULT_INTENT, **(intent or {}))
     orchestrate.validate_command(command["deadline_s"], approval, command["queue_timeout_s"])
+    if cluster is None:
+        cluster = orchestrate.load_cluster(config_path_in_use())
     layers = layers or session.Layers()
     if recipe == "auto":
         if not profile:
@@ -1070,6 +1072,16 @@ def launch_progress(job, what, profile=None):
                 pass        # the job's own id: a marker left behind cancels nothing else (pruned after a day)
 
 
+def reviewed_stops(stop):
+    """Passive stop-list validation, repeated under the snapshot pin before the switch."""
+    reviewed = _states()
+    running = sorted(reviewed)
+    if sorted(set(stop)) != running:
+        raise Conflict(f"the running profiles are {', '.join(running) or 'none'}, not the reviewed "
+                       f"{', '.join(sorted(set(stop))) or 'none'}: review the switch again")
+    return reviewed
+
+
 def deploy(digest, stop=(), *, source=None, orchestrate=None, approval=None, job=None):
     """The switch as one operation: launch exactly the planned snapshot ``digest`` after stopping the reviewed running
     profiles ``stop``. Everything that can refuse deterministically is checked BEFORE anything is stopped: the snapshot
@@ -1082,7 +1094,7 @@ def deploy(digest, stop=(), *, source=None, orchestrate=None, approval=None, job
     so a cancel undoes only what the deploy did (a cancelled deploy's error says what it had stopped)."""
     from .. import orchestrate as default_orchestrate
     from . import preflight
-    preflight.snapshot(digest, source=source, stop=stop, approval=approval)
+    preflight.snapshot(digest, source=source, stop=stop, approval=approval, job=job)
     orchestrate = orchestrate or default_orchestrate
     with launch_progress(job, "deploy") as progress:
         return _deploy(digest, stop, source, orchestrate, approval, progress)
@@ -1102,12 +1114,8 @@ def _deploy_pinned(digest, stop, source, orchestrate, approval, progress):
     progress.record(profile=profile)
     # The launch arguments' own checks (deadline, approval, queue timeout) before anything is stopped.
     default_orchestrate.validate_command(intent["deadline_s"], approval, intent["queue_timeout_s"])
-    reviewed = _states()
-    running = sorted(reviewed)
-    if sorted(set(stop)) != running:
-        raise Conflict(f"the running profiles are {', '.join(running) or 'none'}, not the reviewed "
-                       f"{', '.join(sorted(set(stop))) or 'none'}: review the switch again")
-    if profile not in running and default_orchestrate._state_path(profile).exists():
+    reviewed = reviewed_stops(stop)
+    if profile not in reviewed and default_orchestrate._state_path(profile).exists():
         # Before anything is stopped: up would refuse this profile's saved state of another configuration (or one
         # without the record) only after the switch had stopped the reviewed profiles.
         try:

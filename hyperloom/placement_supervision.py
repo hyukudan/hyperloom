@@ -54,13 +54,16 @@ def validate(policy, *, now, starting=False, memory=None):
     return by_uuid, caps
 
 
-def acquire(policy, stack, *, lock_factory, gate_runner, verify, log, now):
+def acquire(policy, stack, *, lock_factory, gate_runner, verify, log, now, release=None):
     """The caller owns the ExitStack before acquisition: any lock/gate failure rolls back every held lock."""
     entries, _ = validate(policy, now=now, starting=True)
     info = []
     for uuid in sorted(entries):
         lock = lock_factory(uuid).acquire()
-        stack.callback(lock.close)
+        if release is None:
+            stack.callback(lock.close)
+        else:
+            stack.callback(release, lock)
     for uuid in sorted(entries):
         refused = gate_runner(entries[uuid]["gate"])
         log({"gate": refused or "open", "uuid": uuid})
@@ -77,6 +80,7 @@ class Watchdog(rtx.Watchdog):
         super().__init__(spec, pid, kill, log, **kwargs)
         self.policy = spec.placement_supervision
         self.observer = observer
+        self._cleanup_errors = []
 
     def start(self):
         if self.observer is None:
@@ -85,17 +89,34 @@ class Watchdog(rtx.Watchdog):
         try:
             self.observer.sample(self.pid)
             self._thread.start()
-        except Exception:
-            self.observer.close()
+        except BaseException as exc:
+            observer = self.observer
             self.observer = None
+            try:
+                observer.close()
+            except BaseException as close_error:
+                # The helper records start failures and then calls stop. Keep shutdown errors for that guarded
+                # teardown too, so a failed first child sample cannot swallow them or close the observer twice.
+                self._cleanup_errors.append(close_error)
+                raise BaseExceptionGroup("placement watchdog start and cleanup failed", [exc, close_error])
             raise
         return self
 
     def stop(self):
-        super().stop()
-        if self.observer is not None:
-            self.observer.close()
-            self.observer = None
+        errors, self._cleanup_errors = self._cleanup_errors, []
+        try:
+            super().stop()
+        except BaseException as exc:
+            errors.append(exc)
+        observer = self.observer
+        self.observer = None
+        if observer is not None:
+            try:
+                observer.close()
+            except BaseException as exc:
+                errors.append(exc)
+        if errors:
+            raise BaseExceptionGroup("placement watchdog cleanup failed", errors)
 
     def check_memory(self):
         reason, memory = super().check_memory()

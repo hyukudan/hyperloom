@@ -390,16 +390,11 @@ def up_command(args, *, orchestrate=None, load_cluster=None):
 def _up_command(args, orchestrate, load_cluster):
     orchestrate = orchestrate or _module("hyperloom.orchestrate")
     approval = _module("hyperloom.recipes.commands")._approval(args)
-    cluster = (load_cluster or _cluster)(args.config)
+    cluster = None if args.recipe_inputs is not None else (load_cluster or _cluster)(args.config)
     from .recipes import preflight
     preflight.cli(args, load_cluster=lambda _: cluster)
     recipe = None
     if args.recipe_inputs is not None:
-        if args.recipe is not None or any((args.recipe_profile, args.recipe_overrides, args.recipe_set, args.recipe_dir,
-                                           args.recipe_workload, args.node, args.device, args.diagnostic,
-                                           args.vram_cap_gib)) or args.router != "local":
-            raise ValueError("--recipe-inputs launches a planned snapshot as it is: no --recipe*, --node, --device, "
-                             "--diagnostic, --vram-cap-gib or --router")
         service = _module("hyperloom.recipes.service")
         pin = service.acquire_pin(args.recipe_inputs)         # before the snapshot is read
         try:
@@ -421,9 +416,6 @@ def _up_command(args, orchestrate, load_cluster):
             approval=approval,
             intent={"router": args.router, "deadline_s": args.deadline, "queue_timeout_s": args.queue_timeout})
         args.profile = intent["profile"]
-    elif any((args.recipe_profile, args.recipe_overrides, args.recipe_set, args.recipe_dir, args.recipe_workload)):
-        raise ValueError("--recipe-profile/--recipe-overrides/--recipe-set/--recipe-dir/--recipe-workload need "
-                         "--recipe")
     launch = lambda cancelled=None: orchestrate.up(  # noqa: E731
         cluster, args.profile, router=args.router, nodes=args.node, devices=args.device, deadline_s=args.deadline,
         approval=approval, queue_timeout_s=args.queue_timeout, diagnostics=args.diagnostic,

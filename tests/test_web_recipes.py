@@ -673,8 +673,8 @@ class JobTests(unittest.TestCase):
             cluster = orchestrate.load_cluster(self.env.config)
             digest = service.plan(cluster, "ds-user", "ds41-rtx", source=self.source)["inputs"]
             with mock.patch.object(commands, "live_source", return_value=self.source):
-                refused = self.wait(self.api.mutate("recipes/deploy", {"inputs": digest, "stop": ["qwen-replicas"]}))
-                self.assertIn("running profiles are none", refused["error"])
+                with self.assertRaisesRegex(APIError, "running profiles are none"):
+                    self.api.mutate("recipes/deploy", {"inputs": digest, "stop": ["qwen-replicas"]})
                 self.orch.down.assert_not_called()
                 job = self.wait(self.api.mutate("recipes/deploy", {"inputs": digest}))
         self.assertEqual(job["state"], "succeeded", job["error"])
@@ -714,11 +714,11 @@ class JobTests(unittest.TestCase):
         self.assertIn("deploy cancelled", finished["error"])
         self.orch.up.assert_not_called()
         # The API forwards every up argument to the CLI, which refuses what a snapshot launch does not take.
-        bound = self.wait(self.api.mutate("up", {"recipe_inputs": digest, "node": ["halo-1"],
-                                                 "recipe_set": ["limits.host_free_ram_floor_gib=1"]}))
-        self.assertIn("planned snapshot as it is", bound["error"])
-        missing = self.wait(self.api.mutate("recipes/deploy", {"inputs": "0" * 64}))
-        self.assertIn("no snapshot", missing["error"])
+        with self.assertRaisesRegex(APIError, "planned snapshot as it is"):
+            self.api.mutate("up", {"recipe_inputs": digest, "node": ["halo-1"],
+                                   "recipe_set": ["limits.host_free_ram_floor_gib=1"]})
+        with self.assertRaisesRegex(APIError, "no snapshot"):
+            self.api.mutate("recipes/deploy", {"inputs": "0" * 64})
         with self.assertRaises(APIError):
             self.api.mutate("recipes/deploy", {"inputs": digest, "stop": "qwen-replicas"})
         with self.assertRaises(APIError):
