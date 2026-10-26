@@ -4,6 +4,7 @@ state file."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
@@ -325,6 +326,7 @@ def up_placement(cluster, profile, launch, *, deadline_s, cancelled=None):
     spec = replace(spec, deadline=min(spec.deadline, time.time() + deadline_s))
     path = orchestrate._state_path(profile)
     lock = procs.InstanceLock(path.with_suffix(".lock")).acquire()
+    handlers = ExitStack()
     owned = False
     state = {"profile": profile, "leases": [], "router": None, "machines": {}, "keys": [],
              "known_hosts": str(orchestrate._known_hosts()), "token": uuid.uuid4().hex,
@@ -341,9 +343,11 @@ def up_placement(cluster, profile, launch, *, deadline_s, cancelled=None):
         if cancelled is not None and cancelled():
             raise orchestrate.OrchestrationError("profile stop requested")
         path.with_suffix(".stop").unlink(missing_ok=True)
+        handlers.enter_context(orchestrate._up_handlers(path))
         request.files.publish()
         owned = True
         orchestrate._write(path, state)
+        orchestrate._start_up_watch(path, state["token"])
         state["prefill_service"] = rtx.prepare_service(spec)
         orchestrate._write(path, state)
         rtx.launch_service(state["prefill_service"], spec, detached=orchestrate._detached,
@@ -361,17 +365,8 @@ def up_placement(cluster, profile, launch, *, deadline_s, cancelled=None):
                 orchestrate._write(path, state)
         raise
     finally:
+        handlers.close()
         lock.close()
-
-
-def ingest_context(realised, destination):
-    """Persist local context-v1 from an engine's realised checkpoint-1 events; never publish physical identities."""
-    from . import content_cache, runtime
-    destination = Path(destination)
-    previous = content_cache._read(destination, "PL_E_SCHEMA") if destination.exists() else None
-    document = runtime.ingest(realised, previous)
-    content_cache._write(destination, document)
-    return document
 
 
 def route_state_spec(launch, service_record, reservation_end, state):

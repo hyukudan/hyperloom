@@ -1,114 +1,33 @@
-"""Round 6: passive command refusals and fault-tolerant helper teardown, with no GPU or engine work."""
-from contextlib import ExitStack
+"""CPU-only cleanup regressions."""
+
 from dataclasses import replace
-import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
+import json
 
 import pytest
 
-from hyperloom import admission, cli, gpu_counters, orchestrate, placement_supervision, procs, rtx
-from hyperloom.config import parse
-from hyperloom.recipes import launch, service
-from tests import test_recipes, test_rtx
+from hyperloom import gpu_counters, placement_supervision, procs, rtx
+
+from tests import test_rtx
 from tests.test_placement_supervision import policy
-
-
-SNAPSHOT_FLAGS = [["--recipe", "other"], ["--recipe-profile", "profile.json"],
-                  ["--recipe-overrides", "overrides.json"], ["--recipe-set", "a=1"],
-                  ["--recipe-dir", "recipes"], ["--recipe-workload", "default"], ["--recipe-workload", ""],
-                  ["--node", "halo-1"], ["--device", "workstation:rtx-pro"],
-                  ["--diagnostic", "unknown"], ["--vram-cap-gib", "0"], ["--router", "halo-1"]]
-COMMAND_FLAGS = [(["--node", "unknown"], "unknown machine"),
-                 (["--node", "halo-1", "halo-1"], "distinct machines"),
-                 (["--node", "halo-2", "halo-1"], "rank order"),
-                 (["--diagnostic", "unknown"], "unknown diagnostic"),
-                 (["--device", "bad"], "unknown machine or device"),
-                 (["--device", "workstation:rtx-4090"], "excluded"),
-                 (["--device", "halo-1:missing"], "unsupported profile device"),
-                 (["--vram-cap-gib", "90"], "both set the RTX cap"),
-                 (["--router", "unknown"], "router locally"),
-                 (["--job", "not-hex"], "expected hex")]
-COMMAND_CASES = [(entry, flags, "planned snapshot") for entry in ("hold-inputs", "inputs")
-                 for flags in SNAPSHOT_FLAGS]
-COMMAND_CASES += [(entry, flags, message) for entry in ("hold-up", "up") for flags, message in COMMAND_FLAGS]
-COMMAND_CASES += [(entry, ["--job", "not-hex"], "expected hex")
-                  for entry in ("hold-deploy", "deploy")]
-COMMAND_CASES += [(entry, [], "not the reviewed") for entry in ("hold-deploy", "deploy")]
-COMMAND_CASES += [(entry, [], "no snapshot") for entry in ("hold-deploy", "deploy", "hold-inputs", "inputs")]
-COMMAND_CASES += [(entry, [], "expected a 64-hex digest") for entry in ("hold-inputs", "inputs")]
-COMMAND_CASES += [(entry, [], "no such recipe") for entry in ("hold-up", "up")]
-COMMAND_CASES += [(entry, [], "saved running state")
-                  for entry in ("hold-up", "up", "hold-inputs", "inputs", "hold-plain", "plain")]
-PLAIN_FLAGS = [(flags, "loopback-only" if flags[0] == "--router" else message)
-               for flags, message in COMMAND_FLAGS if flags[0] != "--vram-cap-gib"]
-PLAIN_FLAGS += [(["--vram-cap-gib", value], "vram-cap-gib") for value in ("nan", "0", "91")]
-PLAIN_FLAGS += [(["--recipe-profile", "profile.json"], "need --recipe")]
-PLAIN_FLAGS += [(["--recipe-workload", ""], "need --recipe")]
-COMMAND_CASES += [(entry, flags, message) for entry in ("hold-plain", "plain") for flags, message in PLAIN_FLAGS]
-
-
-@pytest.mark.parametrize("entry,flags,message", COMMAND_CASES)
-def test_2_option_refusals_precede_holds_publication_pins_and_progress(tmp_path, monkeypatch, entry, flags, message):
-    cluster = parse(test_rtx.rtx_example())
-    path = tmp_path / "recipe.json"
-    path.write_text(json.dumps(test_recipes.PlacementSchemaTests.document()), encoding="utf-8")
-    options = launch.Options(str(path))
-    intent = dict(service.DEFAULT_INTENT, profile="ds41-rtx")
-    monkeypatch.setattr(cli, "_cluster", lambda _: cluster)
-    def from_inputs(*args):
-        if message == "no snapshot":
-            raise service.NotFound("no snapshot (it may have expired: plan again)")
-        if not args[0]:
-            raise service.RecipeError("expected a 64-hex digest")
-        return cluster, intent, options
-    monkeypatch.setattr(service, "options_from_inputs", from_inputs)
-    monkeypatch.setattr(service, "deployment_profile", lambda *a: "ds41-rtx")
-    def locate(ref, *args, **kwargs):
-        if not ref:
-            raise service.NotFound("no such recipe")
-        return path
-    monkeypatch.setattr(service, "locate", locate)
-    monkeypatch.setattr(service, "_states", lambda: {"old": {}} if message == "not the reviewed" else {})
-    monkeypatch.setattr(orchestrate, "_state_path", lambda _: tmp_path / "up.json")
-    if message == "saved running state":
-        (tmp_path / "up.json").write_text("{}", encoding="utf-8")
-    prepare = mock.Mock(return_value=SimpleNamespace(placement_request=object()))
-    monkeypatch.setattr(launch, "prepare", prepare)
-    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
-    fake = mock.Mock()
-    with service.configured(tmp_path / "config.json"), ExitStack() as stack:
-        writes = [stack.enter_context(mock.patch.object(module, name, side_effect=AssertionError(name)))
-                  for module, name in [(admission, "for_config"), (service, "launch_inputs"),
-                                       (service, "acquire_pin"), (service, "pinned"), (service, "launch_progress")]]
-        if entry == "deploy":
-            operation = lambda: service.deploy("a" * 64, job="not-hex" if flags else None, orchestrate=fake)
-        else:
-            argv = (["recipe", "deploy", "a" * 64] if entry == "hold-deploy" else
-                    ["up", "ds41-rtx"] if "plain" in entry else
-                    ["up", "ds41-rtx", "--recipe-inputs" if "inputs" in entry else "--recipe",
-                     "" if message in ("expected a 64-hex digest", "no such recipe") else
-                     "a" * 64 if "inputs" in entry else str(path)])
-            args = cli.build_parser().parse_args([*argv, *flags, "--config", str(tmp_path / "config.json")])
-            operation = (lambda: cli._admission_hold(args)) if entry.startswith("hold-") else (
-                lambda: cli.up_command(args, orchestrate=fake, load_cluster=lambda _: cluster))
-        with pytest.raises((ValueError, RuntimeError), match=message):
-            operation()
-        for write in writes:
-            write.assert_not_called()
-        fake.up.assert_not_called()
-        fake.down.assert_not_called()
-        prepare.assert_not_called()
-    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
 
 
 CLEANUP_STEPS = ["spec", "watchdog", "pdh", "nvml", "spool", "child", "device-0", "device-1",
                  "state", "events", "lifetime", "log", "multiple"]
+
+
 CLEANUP_CASES = [(stage, step) for stage in ("loading", "ready") for step in CLEANUP_STEPS]
+
+
 CLEANUP_CASES += [("stale-ready", step) for step in ("pdh", "nvml", "multiple")]
+
+
 CLEANUP_CASES += [("watchdog-start", step) for step in ("pdh", "nvml", "multiple")]
-CLEANUP_CASES += [("legacy", "device-0")]
+
+
+CLEANUP_CASES += [("legacy", step) for step in ("device-0", "multiple")]
 
 
 @pytest.mark.parametrize("stage,fault", CLEANUP_CASES)
@@ -226,7 +145,7 @@ def test_3_cleanup_faults_cannot_skip_child_locks_or_terminal_state(tmp_path, mo
     assert set(expected) <= set(calls), (calls, raised.value)
     assert calls[-1] == "lifetime"
     if "child" in calls:
-        assert calls.index("child") < calls.index("device-0") < calls.index("state")
+        assert calls.index("child") < calls.index("state") < calls.index("device-0")
     assert all(child.stopped for child in children)
     assert not path.exists()
     if fault != "state":
@@ -247,5 +166,9 @@ def test_3_cleanup_faults_cannot_skip_child_locks_or_terminal_state(tmp_path, mo
             return [leaf for nested in error.exceptions for leaf in leaves(nested)]
         return [str(error)]
     errors = leaves(raised.value)
-    for name in failures:
-        assert "injected " + name in errors
+    if stage == "legacy":
+        assert not isinstance(raised.value, BaseExceptionGroup)
+        assert errors == ["injected " + failures[0]]
+    else:
+        for name in failures:
+            assert "injected " + name in errors

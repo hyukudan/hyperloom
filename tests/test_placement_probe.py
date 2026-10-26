@@ -149,7 +149,7 @@ class PassiveInventoryTests(unittest.TestCase):
         run = mock.Mock(side_effect=[SimpleNamespace(returncode=1, stdout="", stderr="unsupported field"),
             SimpleNamespace(returncode=1, stdout="", stderr="unsupported field"),
             SimpleNamespace(returncode=0, stdout=f"{ident}, test class, 24576, 0\n")])
-        rows = probe.nvidia_gpus(run, topology_reader=lambda pci: topology.summarize([], complete=False))
+        rows = probe.nvidia_gpus(run, placement=True, topology_reader=lambda pci: topology.summarize([], complete=False))
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["arch"], "unknown")
         self.assertEqual(rows[0]["pci_path"], "unknown")
@@ -163,7 +163,7 @@ class PassiveInventoryTests(unittest.TestCase):
         topology_reader = mock.Mock(return_value={"pci_path": ["root", "port"], "link": {"gen": 4, "width": 4},
                                                   "via": "chipset", "numa_node": 0})
         with mock.patch.object(probe.os, "name", "nt"):
-            rows = probe.nvidia_gpus(run, topology_reader=topology_reader)
+            rows = probe.nvidia_gpus(run, placement=True, topology_reader=topology_reader)
         self.assertEqual(rows[0]["name"], "Test GPU")
         self.assertEqual(rows[0]["arch"], "sm_120")
         self.assertEqual(rows[0]["platform"], "windows-wddm")

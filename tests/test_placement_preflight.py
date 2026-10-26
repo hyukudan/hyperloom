@@ -168,7 +168,7 @@ class PreflightTests(unittest.TestCase):
             stack.enter_context(mock.patch.object(orchestrate, "_state_path", return_value=self.root / "up-test.json"))
             stack.enter_context(mock.patch.object(launch, "_backend", return_value=(backend, True)))
             stack.enter_context(mock.patch.object(session.facts, "context", return_value=ctx))
-            stack.enter_context(mock.patch.object(commands, "live_source", return_value=lambda _: (
+            stack.enter_context(mock.patch.object(commands, "live_source", return_value=lambda _, **kw: (
                 inventory, gathered, raw, [])))
             stack.enter_context(mock.patch.object(preflight.content_cache, "_read", return_value=self.inputs))
             stack.enter_context(mock.patch.object(commands, "components_store", return_value=self.cache))

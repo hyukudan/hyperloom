@@ -1,4 +1,5 @@
-"""Review 8 item 5: native startup refusals precede admission, using CPU fixtures only."""
+"""CPU-only argv preflight regressions."""
+
 from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,23 +10,29 @@ import pytest
 from hyperloom import admission, orchestrate, procs, rtx
 from hyperloom.recipes import launch, measurements, preflight, runtime, service, session
 from hyperloom.recipes.reader import RecipeError
+
 from tests import test_placement_render
 from tests.test_recipes_grants import NOW, window
 
 
-# Keep this inventory independent of runtime.SIZING: these native controls must never override a plan.
 CAPACITY = ("--max-positions", "--max-rows", "--arena-gib", "--spares", "--host-spares",
             "--pressure-spares", "--predict", "--layers", "--host-margin-gib", "--max-pinned-gib",
             "--engram", "--engram-cache-mb", "--draft", "--draft-device", "--draft-vocab", "--draft-keep",
             "--draft-keep-from", "--warmup-graphs")
+
+
 DISPATCH = ("--timing", "--stream-hashes", "--chat-logits", "--records-inline", "--route-stats", "--test-hooks",
             "--fuse-hc", "--fuse-shared",
             "--router-v2", "--router-pf", "--router-pf0", "--pdl", "--pdl-np", "--pdl-regs",
             "--shared-fork", "--qakv-s1", "--qakv-auto", "--attn-fork", "--ob-expand", "--moe-expand",
             "--ob-one", "--attn1", "--attn-h1", "--attn-pf", "--hc-cluster", "--hc-partial5",
             "--moe-v1b3", "--dsrtxk-off", "--fuse-off")
+
+
 INPUTS = ("model", "--import-state", "--receipt", "--ref", "--seqs-file", "--routes",
           "--residency-seed", "--winpf-prior", "--controller-prior")
+
+
 VALUES = ("--import-state", "--receipt", "--ref", "--seqs-file", "--routes", "--seqmod",
           "--phases", "--chats", "--steps", "--chat-prompt", "--chat-steps", "--json", "--timeline",
           "--verify", "--warm", "--pressure-free", "--pressure-recent", "--prefetch-layer", "--prefetch-token",
@@ -33,6 +40,8 @@ VALUES = ("--import-state", "--receipt", "--ref", "--seqs-file", "--routes", "--
           "--controller-explore", "--probe-phase", "--draft-trace", "--winpf-prior", "--winpf-l1-cap",
           "--winpf-pmin", "--winpf-prior-cap", "--winpf-prior-pmin", "--winpf-revert", "--wb-alt",
           "--residency-save", "--reset-cache", "--env")
+
+
 CASES = ([('valid', 'none')] + [("required", option) for option in
          ("model", "--import-state", "--receipt", "--ref", "--seqs-file", "--chats", "--draft")]
          + [(fault, option) for fault in ("missing-value", "next-option", "equals-value") for option in VALUES]
@@ -105,7 +114,8 @@ def test_5_native_startup_is_validated_before_admission(tmp_path, monkeypatch, f
         fixture.write()
         policy = dict(grants=[dict(uuid=fixture.uuids[0], vram_cap_gib=10, approval="test", window=window(),
                                   gate=[str(Path(__file__).resolve()), "fake"])],
-                      caps_gib={fixture.uuids[0].lower(): 10}, host_pinned_gib=0, host_pageable_gib=0,
+                      caps_gib={fixture.uuids[0].lower(): 10}, caps_bytes={fixture.uuids[0].lower(): 10 * rtx.GIB},
+                      host_pinned_gib=0, host_pageable_gib=0,
                       free_commit_floor_gib=4)
         files = fixture.files
         decision = dict(placement=True, machine="local", argv=argv, supervision=policy,

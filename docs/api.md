@@ -10,6 +10,26 @@ The shapes of the examples are exact; their values are illustrative (a test fixt
 - [Other endpoints](#other-endpoints): the screen documents, `up`/`down`/`install`/`doctor`/`hosts/pin`/
   `keys/rotate`/`cancel`, jobs
 
+## Legacy-visible changes
+
+Placement retains these changes to the legacy interface:
+
+- Launch preflight runs before CLI admission holds, snapshot publication, pins and progress files. This keeps
+  deterministic refusals free of launch state for legacy and placement recipes alike. The no-profile Phase 1a
+  placeholder still prints before unused launch arguments are validated.
+- The portal returns synchronous HTTP 400 refusals for invalid recipe launches/deploys before creating a job;
+  the UI displays the refusal. Previously these could become asynchronous job failures.
+- A configured device's `excluded` flag controls its eligibility, including an explicitly included RTX 4090.
+  This permits operator-granted placement turns. The legacy devices summary, lab-rule legend and default exclusion
+  reason keep their original text; the flag and any explicit configured reason remain authoritative.
+- Recipe readers and `save-layer` accept `tierstream/` schema aliases and normalise them to `strix-stream/`.
+  This supports the core's namespace rename and lets placement layers use the existing editor/catalog workflow.
+- Fidelity dispatch inspects saved service ownership to choose the native placement gate. Legacy preset errors
+  still precede missing/not-running state errors; the extra state read is needed to identify the opt-in adapter.
+
+Legacy recipe reports omit placement-only CUDA driver/H2D identities; their passive GPU probe uses the original
+single query and preserves GPU-name whitespace. Deploy keeps its original queue-timeout exception and message.
+
 ## Access and authentication
 
 | | rule |

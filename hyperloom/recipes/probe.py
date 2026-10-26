@@ -42,8 +42,10 @@ def missing(why):
 
 # --- control machine ---------------------------------------------------------------------------------------------
 
-def nvidia_gpus(run=subprocess.run, *, topology_reader=None):
+def nvidia_gpus(run=subprocess.run, *, placement=False, topology_reader=None):
     """Passive identity and PCI capabilities. No context, transfer benchmark, or file measurement is created."""
+    if not placement:
+        return _legacy_nvidia_gpus(run)
     from . import topology
     topology_reader = topology_reader or topology.collect
     base = "uuid,name,memory.total,memory.used"
@@ -78,6 +80,24 @@ def nvidia_gpus(run=subprocess.run, *, topology_reader=None):
                 row["platform"] = "windows-" + cells[7].lower()
         row.update(topology_reader(row["pci"]))
         gpus.append(row)
+    return gpus
+
+
+def _legacy_nvidia_gpus(run=subprocess.run):
+    """[{uuid, name, memory_gib, used_gib}] for every NVIDIA GPU of this machine (nvidia-smi, passive)."""
+    try:
+        out = run(["nvidia-smi", "--query-gpu=uuid,name,memory.total,memory.used", "--format=csv,noheader,nounits"],
+                  capture_output=True, text=True, timeout=SMI_TIMEOUT_S, **no_window())
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ProbeError(f"nvidia-smi unavailable: {exc}") from exc
+    if out.returncode != 0:
+        raise ProbeError("nvidia-smi failed: " + (out.stderr or out.stdout).strip()[:300])
+    gpus = []
+    for line in out.stdout.splitlines():
+        cells = [c.strip() for c in line.split(",")]
+        if len(cells) == 4 and cells[2].isdigit() and cells[3].isdigit():
+            gpus.append({"uuid": cells[0], "name": cells[1], "memory_gib": int(cells[2]) / 1024,
+                         "used_gib": int(cells[3]) / 1024})
     return gpus
 
 

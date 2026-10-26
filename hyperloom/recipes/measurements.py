@@ -104,6 +104,7 @@ def _gpu(row, grant, *, clock=time.time, lock_factory=rtx.device_lock, gate_runn
          observer_factory=gpu_counters.Observer, watchdog_factory=placement_supervision.Watchdog,
          popen=subprocess.Popen, job_factory=None):
     policy = {"grants": [grant], "caps_gib": {grant["uuid"]: grant["vram_cap_gib"]},
+              "caps_bytes": {grants.uuid_key(grant["uuid"]): int(grant["vram_cap_gib"] * rtx.GIB)},
               "host_pinned_gib": 0, "host_pageable_gib": 0, "free_commit_floor_gib": 4}
     end = min(clock() + 60, rtx.expires(grant["window"]["expires_at"], "probe grant"))
     spec = SimpleNamespace(placement_supervision=policy, deadline=end, free_commit_floor_gib=4)
@@ -202,7 +203,7 @@ def manifest(cluster, files, window, *, clock=time.time, run=subprocess.run):
 
 
 def acquire(cluster, mode, *, runtime, uuid=None, xfer_sha256=None, store_id=None, files=(), window=None,
-            clock=time.time, inventory=probe.nvidia_gpus, gpu_runner=_gpu, store_runner=_store,
+            clock=time.time, inventory=None, gpu_runner=_gpu, store_runner=_store,
             manifest_runner=None):
     """Explicit top-level command only. All authorization checks precede any child or model read."""
     if mode not in ("xfer", "store", "manifest"):
@@ -229,7 +230,8 @@ def acquire(cluster, mode, *, runtime, uuid=None, xfer_sha256=None, store_id=Non
             raise RecipeError("PL_E_UNKNOWN_DEVICE probe UUID must be configured and non-excluded")
         # Refuse missing grants before even querying inventory.
         gpu_grant(cluster, {"uuid": uuid, "name": ""}, now=clock())
-        rows = [r for r in inventory() if grants.uuid_key(r["uuid"]) == grants.uuid_key(uuid)]
+        rows = [r for r in (inventory() if inventory is not None else probe.nvidia_gpus(placement=True))
+                if grants.uuid_key(r["uuid"]) == grants.uuid_key(uuid)]
         if len(rows) != 1:
             raise RecipeError("PL_E_UNKNOWN_DEVICE measurement UUID is absent or ambiguous")
         row = rows[0]

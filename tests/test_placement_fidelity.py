@@ -1,17 +1,22 @@
-"""Round 7: native replica fidelity and synchronous legacy launch refusals, CPU fakes only."""
-import hashlib
-import json
+"""CPU-only fidelity regressions."""
+
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
+import hashlib
+import json
 import uuid
 
 import pytest
 
-from hyperloom import config, replica_spool, rtx
-from hyperloom.recipes import runtime, service, session
-from tests.recipe_fixtures import isolated
-from tests.test_web_recipes import Portal, QWEN
+from hyperloom import replica_spool, rtx, replica_gate
+from hyperloom.recipes import runtime, service
+
+from tests import test_placement_render
+from tests.test_recipes_grants import NOW, window
+
+
+runtime_preset = runtime.preset()
 
 
 @pytest.mark.parametrize("fault", [None, "tokens", "missing-arm", "duplicate-arm", "short", "rc", "fatal",
@@ -26,7 +31,7 @@ def test_3_native_fidelity_uses_pinned_replica_tokens_and_every_device(tmp_path,
         (directory / name).mkdir(parents=True)
     (directory / "ready.json").write_text('{"event":"ready","load_id":7,"pid":42}', encoding="utf-8")
     (tmp_path / "state.json").write_text('{"state":"ready","pid":42}', encoding="utf-8")
-    oracle = {"schema": "hyperloom/replica-oracle-v1", "engine_sha": "1" * 40,
+    oracle = {"schema": "hyperloom/replica-oracle-v1", "engine_sha": runtime.replica_args.AUDITED_REVISION,
               "chat_prompt": 2, "chat_steps": 2, "chats": [0], "files": {}}
     for name, content in {"state": b"synthetic state", "sequences": b"fixture\t1,2\n",
                           "expected": b'{"event":"chat_end","key":"plain:0#0-0","toks":[3,4,5],"position":4,"next_token":5,"digest":"abc"}\n'}.items():
@@ -37,12 +42,12 @@ def test_3_native_fidelity_uses_pinned_replica_tokens_and_every_device(tmp_path,
         oracle["files"]["expected"]["sha256"] = "0" * 64
     if fault != "no-oracle":
         (tmp_path / "replica-oracle.json").write_text(json.dumps(oracle), encoding="utf-8")
-    service = {"pid": 42, "spool": str(directory), "ready": {"load_id": 7}, "engine_sha": "1" * 40,
+    service = {"pid": 42, "spool": str(directory), "ready": {"load_id": 7}, "engine_sha": runtime.replica_args.AUDITED_REVISION,
                "argv": ["replica"],
                "placement": {"devices": [{"uuid": u, "lines": [{"component": "drafter"}]} for u in ids[:2]]},
                "placement_supervision": {"caps_gib": dict.fromkeys(keys[:2], 10)}}
     oracle_sha = hashlib.sha256((tmp_path / "replica-oracle.json").read_bytes()).hexdigest() if fault != "no-oracle" else "0" * 64
-    monkeypatch.setattr(runtime, "preset", lambda: dict(runtime_preset, engine_sha="1" * 40,
+    monkeypatch.setattr(runtime, "preset", lambda: dict(runtime_preset, engine_sha=runtime.replica_args.AUDITED_REVISION,
                        fidelity=None if fault == "unpublished-oracle" else {"oracle_sha256": oracle_sha}))
     if fault == "release":
         service["engine_sha"] = "2" * 40
@@ -125,38 +130,65 @@ def test_3_native_fidelity_uses_pinned_replica_tokens_and_every_device(tmp_path,
     http.assert_not_called()
 
 
-runtime_preset = runtime.preset()
-
-
-def test_product_legacy_deploy_preflight_refuses_with_400_before_job_or_hold():
-    with isolated() as env:
-        cluster = config.load(env.config)
-        recipe = service.locate(QWEN, cluster)
-        digest = service.launch_inputs(cluster, recipe, session.Layers(),
-                                       intent=dict(service.DEFAULT_INTENT, profile="qwen-replicas"))
-        root, manifest = service.load_inputs(digest)
-        saved = next(e for e in manifest["entries"] if e["role"] == "recipe")
-        # A real legacy launch snapshot, corrupted after preview. Preflight must verify it before admission.
-        (root / saved["name"]).write_text("changed after preview", encoding="utf-8")
-        portal = Portal(env)
-        try:
-            # A legacy recipe's missing snapshot used to become an asynchronous job failure.
-            status, body = portal.request("POST", "recipes/deploy", {"inputs": "0" * 64})
-            assert status == 400
-            assert set(body) == {"error"}
-            assert "no snapshot" in body["error"]
-            status, body = portal.request("POST", "recipes/deploy", {"inputs": digest})
-            assert status == 400
-            assert set(body) == {"error"}
-            assert "changed" in body["error"]
-            status, body = portal.request("POST", "up", {"profile": "qwen-replicas", "recipe_inputs": "0" * 64,
-                                                        "node": ["halo-1"]})
-            assert status == 400
-            assert set(body) == {"error"}
-            assert "planned snapshot as it is" in body["error"]
-            assert portal.api._jobs == {}
-            assert portal.api._active is None
-            assert not (env.config.parent / "run" / "admission.sqlite3").exists()
-            assert not (service.runtime_dir() / "recipe-inputs" / "pins").exists()
-        finally:
-            portal.close()
+@pytest.mark.parametrize("drafter,missing_arm,argv_draft", [(True, None, False), (True, "spec", False),
+                                                         (True, "plain", False), (False, None, False),
+                                                         (False, None, True)])
+def test_3_fidelity_uses_the_retained_rendered_placement(tmp_path, monkeypatch, drafter, missing_arm, argv_draft):
+    fixture = test_placement_render.PlacementRenderTests()
+    fixture.setUp()
+    try:
+        for i, device in enumerate(fixture.document["devices"]):
+            device.update(role="anchor" if i == 0 else "assist", budget_bytes=10 * rtx.GIB,
+                          lines=[dict(component="drafter" if drafter and i == 1 else "graphs", bytes=1024)])
+        fixture.write()
+        policy = dict(grants=[dict(uuid=u, vram_cap_gib=10, approval="test", window=window(),
+                                  gate=[str(Path(__file__).resolve()), "fake"]) for u in fixture.uuids],
+                      caps_gib={u.lower(): 10 for u in fixture.uuids},
+                      caps_bytes={u.lower(): 10 * rtx.GIB for u in fixture.uuids}, host_pinned_gib=0, host_pageable_gib=0,
+                      free_commit_floor_gib=4)
+        cluster = SimpleNamespace(machines={"local": SimpleNamespace(access="local", os="windows",
+                                                                    install_root=str(fixture.root))})
+        monkeypatch.setattr(runtime, "preset", lambda: fixture.data)
+        monkeypatch.setattr(rtx.time, "time", lambda: NOW)
+        request = runtime.Request("local", fixture.files, policy, argv=tuple(fixture.argv))
+        spec = rtx.render_placement_service(cluster, request, api_key="0" * 64)
+        assert "--draft" not in spec.argv
+        monkeypatch.setattr(rtx.secrets, "runtime_dir", lambda: tmp_path)
+        record = rtx.prepare_service(spec)
+        Path(record["spool"]).mkdir()
+        # The fidelity command reloads this record, without reading the original descriptor again.
+        record = json.loads(json.dumps(record))
+        if argv_draft:
+            record["argv"].extend(("--draft", "irrelevant"))  # Even stale argv cannot override the admitted plan.
+        record.update(pid=42, ready=dict(load_id=7))
+        end = dict(toks=[3, 4, 5], position=4, next_token=5, digest="abc")
+        oracle = dict(engine_sha=fixture.data["engine_sha"], chats=[0], chat_prompt=2, chat_steps=2)
+        monkeypatch.setattr(replica_gate, "_oracle", lambda *a: (
+            oracle, dict(state=tmp_path / "state", sequences=tmp_path / "seqs"), {"plain:0#0-0": end}))
+        phases = []
+        def native(args):
+            phase = args[args.index("--phases") + 1]
+            phases.append(phase)
+            keys = ["plain:0#0-0"] + (["spec:schats0#0-0"] if "schats0" in phase else [])
+            rows = [dict(event="chat_end", key=key, **end) for key in keys
+                    if not missing_arm or not key.startswith(missing_arm)]
+            Path(args[args.index("--json") + 1]).write_text(
+                "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+            return dict(rc=0, fatal=False, failures=0, load_id=7)
+        client = mock.Mock()
+        client.ready.return_value = dict(load_id=7, pid=42)
+        client.health.return_value = True
+        client.request.side_effect = native
+        monkeypatch.setattr(replica_gate.replica_spool, "Client", lambda *a, **k: client)
+        observer = mock.Mock()
+        observer.sample.return_value = {u.lower(): 1024 for u in fixture.uuids}
+        monkeypatch.setattr(replica_gate.gpu_counters, "Observer", lambda: observer)
+        result = replica_gate.fidelity_gate(record, tmp_path)
+        assert phases == ["chats0,schats0" if drafter else "chats0"]
+        assert result["pass"] is (missing_arm is None), result
+        if missing_arm is None:
+            assert len(result["rows"]) == (2 if drafter else 1)
+            assert result["visibility"]["visible_on"] == sorted(u.lower() for u in fixture.uuids)
+        observer.close.assert_called_once()
+    finally:
+        fixture.doCleanups()

@@ -13,6 +13,8 @@ import struct
 
 from .reader import RecipeError
 
+AUDITED_REVISION = "a919c257c511b2ae4688737f2127e02eecee2255"
+
 
 INPUTS = frozenset(("--import-state", "--receipt", "--ref", "--seqs-file", "--routes",
                     "--residency-seed", "--winpf-prior", "--controller-prior"))

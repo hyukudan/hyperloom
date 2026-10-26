@@ -1105,6 +1105,14 @@ def _deploy(digest, stop, source, orchestrate, approval, progress):
         return _deploy_pinned(digest, stop, source, orchestrate, approval, progress)
 
 
+def validate_snapshot(intent, approval):
+    """Keep deploy's legacy queue-timeout refusal, including before an admission hold is written."""
+    from .. import orchestrate
+    orchestrate._approval(intent["deadline_s"], approval)
+    if type(intent["queue_timeout_s"]) is not int or not 60 <= intent["queue_timeout_s"] <= orchestrate.MAX_QUEUE_S:
+        raise RecipeError("the snapshot's queue timeout is out of range")
+
+
 def _deploy_pinned(digest, stop, source, orchestrate, approval, progress):
     from .. import orchestrate as default_orchestrate
     from . import commands, launch, preflight
@@ -1113,7 +1121,7 @@ def _deploy_pinned(digest, stop, source, orchestrate, approval, progress):
     profile = intent["profile"]
     progress.record(profile=profile)
     # The launch arguments' own checks (deadline, approval, queue timeout) before anything is stopped.
-    default_orchestrate.validate_command(intent["deadline_s"], approval, intent["queue_timeout_s"])
+    validate_snapshot(intent, approval)
     reviewed = reviewed_stops(stop)
     if profile not in reviewed and default_orchestrate._state_path(profile).exists():
         # Before anything is stopped: up would refuse this profile's saved state of another configuration (or one

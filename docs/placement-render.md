@@ -4,6 +4,10 @@ The opt-in `rtx-decode-ds41-placement` adapter is for the RTX-alone DS decode re
 null until claudeinfo-release publishes the pinned release. Rendering also requires an explicit `placement-v1`
 capability for that release. The selected replica at a919c257 does not parse the placement flags, so the shipped
 capability list is empty. A published SHA alone does not enable launch.
+Qualification also requires the published SHA to equal `replica_args.AUDITED_REVISION`, bound to the snapshot
+revision by `tools/check_replica_args.py`. A different release refuses with `PL_E_CAPABILITY` until its parser is
+audited and the mirror/snapshot are explicitly repinned. Test binaries use this identity without qualifying a
+production release; the shipped preset remains unpublished.
 The legacy prefill service and its immutable G6 oracle are unchanged. The new preset has a distinct schema and is
 not included in the list of qualified legacy presets.
 
@@ -17,6 +21,8 @@ with `CUDA_DEVICE_ORDER=PCI_BUS_ID`. Legacy rendering keeps its exact environmen
 The core engine identifier is `strix-cuda-ds41-replica`. Its placement-v1 document is kept intact; it does not carry
 a manifest hash. The components-cache sidecar binds and validates the manifest independently. Device byte budgets
 are carried from the core into rendering, physical-capacity checks and watchdog comparisons.
+Every touched UUID needs an integer byte cap with `caps_bytes <= caps_gib * GiB <= grant * GiB`; missing or
+inconsistent caps are refused without clamping, including a half-byte conversion that rounds above the GiB cap.
 
 Evaluation returns an admitted decode decision containing the plan, artifact references and supervision policy.
 `up --recipe` launches that local decode replica through the existing owned service helper, locks, per-device
@@ -142,10 +148,10 @@ BatchWindowController, window_policy_from_env and generate_greedy/generate_specu
 driver file are not called by this app's parser/configuration path; their separate validation is not a hidden
 replica argv rule (`src/ds41_dspark_driver.cpp:146`, :267, :299, :428, :437, :446, :452, :458, :471).
 
-Before-admission regressions cover every mirrored class: `tests/test_placement_review8.py` checks required files,
+Before-admission regressions cover every mirrored class: `tests/test_placement_argv_preflight.py` checks required files,
 every accepted option's arity, readability, duplicates and all capacity/dispatch conflicts;
-`tests/test_placement_review9.py` checks every allowed numeric conversion, enums, environment and overwritten
-values; `tests/test_placement_review10.py` checks every phase family, repeated phase lists, the three reported
+`tests/test_placement_argv_values.py` checks every allowed numeric conversion, enums, environment and overwritten
+values; `tests/test_placement_argv_capacities.py` checks every phase family, repeated phase lists, the three reported
 K violations, admitted row/predict/position boundaries, controller required combinations and output failures.
 The tests forbid leases/pins, publication, gates, helper/process/lock creation and state writes, and compare the
 filesystem before/after. Fingerprint regressions mutate every helper/header, including a transitive include.
@@ -303,7 +309,12 @@ placement loader. Preserve the native request allowlist and spool protocol. Publ
 before adding the capability and release pin here. This change supplies neither native placement support nor GPU
 qualification.
 
-The launch owner can ingest realised checkpoint-1 events with `recipes.launch.ingest_context`. The JSONL event shape
+Engine-dependent open point: context-v1 ingestion. The helper does not ingest context observations yet: the
+published engine must first define and emit a realised checkpoint-1 JSONL stream, including its location and
+per-start ownership. Guessing a stream from request outputs could ingest stale runs or checkpoint-2 readings.
+The unused `launch.ingest_context` and `commands.manifest_store` wrappers have been removed. Manifest acquisition
+already persists through `content_cache.ManifestStore`; the CPU-only `runtime.ingest` parser remains tested for
+the future integration. No start or stop writes a context-v1 document today. The proposed JSONL event shape
 is `event=context`, `checkpoint=1`, the six context identity fields (`arch`, `device_name`, `driver`, `platform`,
 `build_sha256`, `signature`), `ctx_observed` in bytes, and an attributable `method` (`pdh-process-dedicated`, `nvml-process`, or
 `amdsmi-process`). Checkpoint 2 and other events do not enter the context allowance. Samples remain oldest first;

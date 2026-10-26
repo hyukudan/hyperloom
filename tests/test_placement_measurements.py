@@ -37,6 +37,13 @@ class MeasurementTests(unittest.TestCase):
         return m.acquire(self.cluster, mode, runtime=self.root, uuid=self.uuid, xfer_sha256="a" * 64,
                          store_id="store-test", clock=lambda: NOW, inventory=lambda: [self.row], **kwargs)
 
+    def test_explicit_xfer_acquisition_requests_placement_inventory(self):
+        with mock.patch.object(m.probe, "nvidia_gpus", return_value=[self.row]) as inventory:
+            m.acquire(self.cluster, "xfer", runtime=self.root, uuid=self.uuid, xfer_sha256="a" * 64,
+                      store_id="store-test", clock=lambda: NOW,
+                      gpu_runner=lambda row, grant: m.median(self.samples, m.XFER_METHOD))
+        inventory.assert_called_once_with(placement=True)
+
     def test_top_level_only_exclusive_modes_and_dispatch(self):
         parser = cli.build_parser()
         for mode in ("xfer", "store", "manifest"):

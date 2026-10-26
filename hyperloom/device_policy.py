@@ -11,6 +11,5 @@ def resolve(card, declared):
                    d["name"] == card.get("name")]
     policy = matches[0] if len(matches) == 1 else {}
     excluded = policy.get("excluded", "4090" in (card.get("name") or ""))
-    reason = policy.get("reason") or (("excluded by configuration" if "excluded" in policy else
-                                      "RTX 4090 is excluded by policy") if excluded else None)
+    reason = policy.get("reason") or ("RTX 4090 is excluded by policy" if excluded else None)
     return {"excluded": excluded, "policy_reason": reason}

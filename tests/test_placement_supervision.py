@@ -19,7 +19,8 @@ def policy():
     ids = sorted("GPU-" + str(uuid.uuid4()) for _ in range(2))
     return {"grants": [{"uuid": u, "vram_cap_gib": 12, "approval": "test approval", "window": window(),
                         "gate": [sys.executable, "operator-gate.py"]} for u in ids],
-            "caps_gib": {u: 8 for u in ids}, "host_pinned_gib": 60, "host_pageable_gib": 2,
+            "caps_gib": {u: 8 for u in ids}, "caps_bytes": {u.lower(): 8 * rtx.GIB for u in ids},
+            "host_pinned_gib": 60, "host_pageable_gib": 2,
             "host_grant": {"host_gib": 74, "approval": "test approval", "window": window()},
             "free_commit_floor_gib": 4}
 
@@ -150,7 +151,7 @@ class PdhTests(unittest.TestCase):
 class NvmlTests(unittest.TestCase):
     def test_native_process_abi_attribution_na_and_no_double_count(self):
         ids = ["GPU-" + str(uuid.uuid4()) for _ in range(2)]
-        from tests.test_placement_review3 import NVML_EXPORTS
+        from tests.test_placement_counter_identity import NVML_EXPORTS
         dll = mock.Mock(spec_set=NVML_EXPORTS)
         dll.nvmlInit_v2.return_value = dll.nvmlShutdown.return_value = 0
         def count(out):

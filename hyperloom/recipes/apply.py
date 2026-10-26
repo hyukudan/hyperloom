@@ -118,14 +118,15 @@ def probe_report(recipe, bound, facts, *, cluster=None, ctx=None, inventory=None
             item = facts["devices"].get(member["id"], {})
             row = {"id": member["id"], "kind": device["kind"], "name": item.get("name"),
                    "memory_gib": item.get("memory_gib"), "host": member["host"]}
-            for key in ("host_ram_gib", "disk_read_gbytes_ps", "h2d_gbytes_ps", "driver"):
+            for key in ("host_ram_gib", "disk_read_gbytes_ps", "driver"):
+                if device["kind"] == "cuda" and key == "driver":
+                    continue  # Legacy PC CUDA profiles never used these placement-only facts.
                 if item.get(key) is not None:
                     row[key] = item[key]
             devices.append(row)
     report = {"model": facts["model"], "devices": devices, "links": deepcopy(facts.get("links", []))}
-    for key in ("engine_sha256", "model_sha256"):
-        if facts.get(key):
-            report[key] = facts[key]
+    if facts.get("model_sha256"):
+        report["model_sha256"] = facts["model_sha256"]
     return report
 
 

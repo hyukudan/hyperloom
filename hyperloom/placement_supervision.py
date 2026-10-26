@@ -18,16 +18,17 @@ def validate(policy, *, now, starting=False, memory=None):
     caps = {grants.uuid_key(k): v for k, v in policy["caps_gib"].items()}
     if not by_uuid or len(caps) != len(policy["caps_gib"]) or caps.keys() != by_uuid.keys():
         raise rtx.ServiceError("placement requires one cap per granted UUID")
-    if "caps_bytes" in policy:
-        byte_caps = policy["caps_bytes"]
-        if (byte_caps.keys() != caps.keys() or
-                any(type(v) is not int or v <= 0 for v in byte_caps.values())):
-            raise rtx.ServiceError("placement requires integer byte caps for every touched GPU")
+    byte_caps = policy.get("caps_bytes")
+    if (not isinstance(byte_caps, dict) or byte_caps.keys() != caps.keys() or
+            any(type(v) is not int or v <= 0 for v in byte_caps.values())):
+        raise rtx.ServiceError("placement requires integer byte caps for every touched GPU")
     for uuid, grant in by_uuid.items():
         cap = caps[uuid]
         number(cap, "placement cap", 0, 1024)
         if cap <= 0 or cap > grant["vram_cap_gib"]:
             raise rtx.ServiceError("placement cap exceeds grant or is disabled")
+        if byte_caps[uuid] > cap * rtx.GIB:
+            raise rtx.ServiceError("placement byte cap exceeds GiB cap")
         if not grants._active(grant["window"], now, starting=starting):
             raise rtx.ServiceError("placement device grant is not open or has expired")
     pinned, pageable = policy["host_pinned_gib"], policy["host_pageable_gib"]

@@ -1065,9 +1065,7 @@ class API:
             "online": sum(machine["health"] in ("online", "degraded") for machine in machines),
             "accelerators_in_use": None, "memory_free_bytes": sum(headroom) if all_memory else None,
             "minimum_headroom_bytes": min(headroom) if all_memory else None,
-            "links_healthy": None, "links_summary": None,
-            "excluded_reason": "; ".join(sorted({d.get("policy_reason") or "excluded by configuration"
-                for m in machines for d in m["accelerators"] or [] if d["excluded"]})) or None},
+            "links_healthy": None, "links_summary": None, "excluded_reason": "RTX 4090 excluded by policy"},
             ("accelerators_in_use", "memory_free_bytes", "minimum_headroom_bytes", "links_healthy", "links_summary"))
         if all(machine["roles"] is not None and machine["accelerators"] is not None for machine in machines):
             documents["devices"]["summary"]["accelerators_in_use"] = sum(
@@ -1166,8 +1164,7 @@ class API:
                                        features={"loaded": list(feature_registry.registry().loaded),
                                                  "failed": dict(feature_registry.registry().failed)},
                                        lab_rules={"label_prefix": "hl-", "turn_cap_s": 1200, "drain_margin_s": 60,
-                                                  "usb4_layout": 1, "excluded": "configured device excluded flag",
-                                                  "extended_turn": "explicit approver ACK required"})
+                                                  "usb4_layout": 1, "excluded": "RTX 4090", "extended_turn": "explicit approver ACK required"})
         return documents
 
     def _logs(self, statuses):

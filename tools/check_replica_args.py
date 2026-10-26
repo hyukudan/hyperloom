@@ -79,6 +79,7 @@ def inventory(source):
 
 
 def table(snapshot):
+    assert snapshot["revision"] == replica_args.AUDITED_REVISION, "runtime/native parser revision drift"
     options = snapshot["options"]
     owned = runtime.SIZING | runtime.SUGAR
     accepted = replica_args.VALUES | replica_args.FLAGS

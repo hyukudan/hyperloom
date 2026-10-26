@@ -7,10 +7,9 @@ operations. A layer can create an absent assist or component table; the effectiv
 in one layer are refused. Profile guards protect a tuned route's layout, including assists, components, row and
 sequence counts, and host budgets. Optional devices use `{"unbound": true}` profile identity markers when absent.
 
-Table presence activates placement, including `assist = {}` or `components = {}`. Hyperloom preserves these tables
-through normalization. A core that drops them from its effective recipe is refused before binding, so it cannot
-silently apply legacy admission or identity rules. Tierstream must retain presence in `RRoute`, set it while parsing
-the tables, and emit present empty tables in canonical JSON; its current vector-contents predicate is insufficient.
+Only non-empty `assist` or `components` tables activate placement (contract rev 21c). Empty tables such as
+`assist = {}` or `components = {}` are normalised away and retain legacy admission and identity rules. Hyperloom
+and Tierstream use this same predicate; a core that drops a non-empty table is refused before binding.
 
 `hyperloom.recipes.placement.place` and `.solve` accept cached input documents or paths and return
 `PlacementOutput(document, text)`. They require the authoritative core. Discovery uses `pc.recipe_core`, then

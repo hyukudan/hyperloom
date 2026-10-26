@@ -55,7 +55,7 @@ class ContentCacheTests(unittest.TestCase):
     def test_runtime_stores_and_key_order_and_triple_invalidation(self):
         with mock.patch.object(commands, "runtime_dir", return_value=self.runtime):
             self.assertEqual(commands.components_store().directory, self.runtime / "components-v1")
-            self.assertEqual(commands.manifest_store().directory, self.runtime / "content-manifests")
+            self.assertEqual(content_cache.ManifestStore(commands.runtime_dir()).directory, self.runtime / "content-manifests")
         reordered = content_cache.reference("a" * 64, {"context": 4096, "rows": 6}, "b" * 64)
         with self.no_content_reads():
             self.assertEqual(self.cache.load(reordered, selected=self.selected), self.document)

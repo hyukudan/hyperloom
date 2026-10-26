@@ -121,6 +121,10 @@ class CandidateTests(unittest.TestCase):
         self.assertEqual(len(self.report()["devices"]), 2)
 
     def test_session_uses_core_assignment_and_never_legacy_preselection(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "recipe.json"
+        path.write_text(json.dumps(test_recipes.PlacementSchemaTests.document()), encoding="utf-8")
         recipe = reader.parse(json.dumps(test_recipes.PlacementSchemaTests.document()))
         binding = {"anchor": [{"id": self.ids[0], "host": "local"}], "aux": []}
         backend = core.CoreBackend(core.Core("cpu-core"))
@@ -129,8 +133,8 @@ class CandidateTests(unittest.TestCase):
                 mock.patch.object(session, "resolve", return_value=resolved), \
                 mock.patch.object(backend, "match", return_value=([], binding, "0" * 64)) as match, \
                 mock.patch.object(apply, "bind", side_effect=AssertionError("legacy binding")):
-            evaluation = session.evaluate(self.cluster, "synthetic", "recipe.toml", session.Layers(),
-                lambda ctx: (self.inventory, self.facts, {"devices": {}, "hosts": {}, "lan": {}, "usb4": {}}, []), backend)
+            evaluation = session.evaluate(self.cluster, "synthetic", path, session.Layers(),
+                lambda ctx, **kw: (self.inventory, self.facts, {"devices": {}, "hosts": {}, "lan": {}, "usb4": {}}, []), backend)
         self.assertEqual(evaluation.bound["binding"], binding)
         self.assertIn("no operator grant", evaluation.refusal)
         self.assertEqual(len(match.call_args.args[2]["devices"]), 2)

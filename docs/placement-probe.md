@@ -36,7 +36,7 @@ the existing assets-verify manifest only when local size, nanosecond mtime, inod
 still match. Missing/stale verification withholds the identity and records the reason; gathering never hashes
 model content or starts the engine. This remains a metadata cache, with the existing forged-metadata limitation.
 Both candidate and bound-device reports carry `engine_sha256` and `model_sha256` into the core's profile freshness
-check. Auto selection caches identity-bearing samples separately. CPU coverage in `test_placement_review4.py`
+check. Auto selection caches identity-bearing samples separately. CPU coverage in `test_placement_session_policy.py`
 uses live gathering, the real report builders, and a real Tierstream CPU core (set `HYPERLOOM_TS_RECIPE`).
 All fixture identities and absolute executable paths are generated at runtime. Probe documents carrying live
 UUIDs, BDFs or executable paths are local data and must not be committed. Native GPU/driver qualification remains

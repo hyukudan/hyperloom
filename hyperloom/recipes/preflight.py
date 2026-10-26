@@ -10,7 +10,7 @@ from pathlib import Path
 import time
 
 from .. import gpu_counters, placement_supervision, procs, rtx
-from . import commands, content_cache, grants, reader, session, sysmem
+from . import commands, content_cache, facts, grants, reader, session, sysmem
 from .reader import RecipeError
 
 
@@ -235,7 +235,7 @@ def snapshot(digest, profile=None, *, source=None, stop=None, approval=None, job
     if job:
         service.cancel_marker(job)  # Validate only; no progress file, directory or marker is created.
     cluster, intent, options = service.options_from_inputs(digest, profile)
-    orchestrate.validate_command(intent["deadline_s"], approval, intent["queue_timeout_s"])
+    service.validate_snapshot(intent, approval)
     reviewed = service.reviewed_stops(stop) if stop is not None else None
     before_options(cluster, intent["profile"], options, router=intent["router"], source=source, reviewed=reviewed)
 
@@ -256,11 +256,13 @@ def command_options(args):
 
 
 def cli(args, *, load_cluster=None):
-    """Read and validate original inputs before CLI/portal admission can write its hold database."""
+    """Validate before admission; return placement's PC hold resources, or None for legacy resource selection."""
     command = getattr(args, "command", None)
     deploy = command == "recipe" and getattr(args, "operation", None) == "deploy"
     if not deploy and command != "up":
         return
+    if not deploy and args.profile is None and args.recipe is None and args.recipe_inputs is None:
+        return  # Phase 1a is a placeholder command, as at ddc5640.
     from .. import orchestrate
     from . import launch, service
     if not deploy:
@@ -294,5 +296,8 @@ def cli(args, *, load_cluster=None):
         path = "auto" if args.recipe == "auto" else str(service.locate(
             args.recipe, cluster, for_up=True, extra=args.recipe_dir or []))
         profile = args.profile if path == "auto" else service.deployment_profile(cluster, path, args.profile)
-        before_options(cluster, profile, launch.Options(path, layers, dirs), router=args.router, cap=args.vram_cap_gib,
+        options = launch.Options(path, layers, dirs)
+        before_options(cluster, profile, options, router=args.router, cap=args.vram_cap_gib,
                        nodes=args.node, diagnostics=args.diagnostic, devices=args.device)
+        if includes(options):
+            return {facts.control_machine(cluster)}

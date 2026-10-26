@@ -41,6 +41,8 @@ def qualified(data):
         raise RecipeError("PL_E_CAPABILITY unsupported placement engine (schema only for legacy adapters)")
     if not isinstance(data.get("engine_sha"), str) or not re.fullmatch(r"[0-9a-f]{40}", data["engine_sha"]):
         raise RecipeError("PL_E_CAPABILITY placement release is unpublished; waiting for claudeinfo-release pinned sha")
+    if data["engine_sha"] != replica_args.AUDITED_REVISION:
+        raise RecipeError("PL_E_CAPABILITY placement release differs from the audited replica parser revision")
 
 
 def executable(cluster, machine, data=None):

@@ -270,11 +270,14 @@ def _ok(result):
 
 def gather(cluster, ctx, *, call, gpus=None, memory=None, pro_busy=None, cache=None, measure_disks=False,
            measurer=None, now=None, release_executable=None, release_commit=None, sysmem_reader=None,
-           transfer_identity=None):
+           transfer_identity=None, placement=False):
     """(inventory, facts, availability, notes). ``call(machine_id, verb)`` runs a node verb and returns its result or
     raises; any failure is an unavailable fact with its reason, never an invented value."""
     now = time.time() if now is None else now
-    gpus, memory = gpus or probe.nvidia_gpus, memory or probe.host_memory
+    placement = placement or release_executable is not None or transfer_identity is not None
+    if gpus is None:
+        gpus = (lambda: probe.nvidia_gpus(placement=True)) if placement else probe.nvidia_gpus
+    memory = memory or probe.host_memory
     pro_busy, measurer = pro_busy or rtx.pro_busy, measurer or probe.read_bandwidth
     notes = []
     try:
@@ -289,7 +292,7 @@ def gather(cluster, ctx, *, call, gpus=None, memory=None, pro_busy=None, cache=N
     for gpu in inventory["cuda"]:
         row = {"name": gpu["name"], "memory_gib": gpu["memory_gib"], "host_ram_gib": pc_mem["total_gib"],
                **{k: gpu[k] for k in ("uuid", "pci", "arch", "driver", "memory_bytes", "platform",
-                                     "pci_path", "link", "via", "numa_node") if k in gpu}}
+                                     "pci_path", "link", "via", "numa_node") if placement and k in gpu}}
         if ctx.service is not None and gpu["uuid"] == ctx.service["uuid"]:
             asset = pc_assets.get(ctx.service.get("model_asset") or "")
             if asset is not None and cache is not None:
@@ -348,11 +351,12 @@ def gather(cluster, ctx, *, call, gpus=None, memory=None, pro_busy=None, cache=N
     facts = {"model": ctx.model, "devices": devices, "links": links,
              "node_runtime": node_runtime(cluster, ctx, cache)}
     # Store identities come from local cached provenance, never an implicit measurement or hostname lookup.
-    from . import topology
-    facts.update({key: (transfer_identity or {}).get(key, "unknown")
-                  for key in ("file_store", "engram_store")})
-    facts["xfer_host"] = ((transfer_identity or {}).get("xfer_host")
-                          if transfer_identity and "xfer_host" in transfer_identity else topology.host())
+    if placement:
+        from . import topology
+        facts.update({key: (transfer_identity or {}).get(key, "unknown")
+                      for key in ("file_store", "engram_store")})
+        facts["xfer_host"] = ((transfer_identity or {}).get("xfer_host")
+                              if transfer_identity and "xfer_host" in transfer_identity else topology.host())
     availability = {"devices": avail_devices, "hosts": hosts, "lan": lan, "usb4": usb4}
     if release_executable is not None:
         from . import sysmem

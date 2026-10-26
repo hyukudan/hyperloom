@@ -743,7 +743,7 @@ def _admission_hold(args):
     """Contract C11 for direct CLI use: a deploy/start/install takes a "core" hold (refused while a benchmark
     holds its resources), a stop a "stop" hold (cancels overlapping benchmarks). Returns a release function."""
     from .recipes import preflight
-    preflight.cli(args)
+    checked_resources = preflight.cli(args)
     kind = {"up": "core", "install": "core", "down": "stop"}.get(args.command)
     if args.command == "recipe" and getattr(args, "operation", None) in ("deploy", "probe"):
         kind = "core"
@@ -751,9 +751,9 @@ def _admission_hold(args):
                         and not (getattr(args, "recipe", None) or getattr(args, "recipe_inputs", None))):
         return lambda: None
     admission = _module("hyperloom.admission")
-    resources = {"*"}
+    resources = checked_resources or {"*"}
     # A snapshot (--recipe-inputs) launches with the placement it was planned on: it holds everything.
-    if getattr(args, "profile", None) and not getattr(args, "recipe_inputs", None):
+    if checked_resources is None and getattr(args, "profile", None) and not getattr(args, "recipe_inputs", None):
         try:
             cluster = _cluster(getattr(args, "config", None) or config_path())
             resources = admission.profile_resources(cluster, args.profile, _module("hyperloom.orchestrate"),

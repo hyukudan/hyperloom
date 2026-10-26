@@ -727,6 +727,7 @@ def service_run(spec_path, *, child_factory=procs.LocalChild, watchdog_factory=W
     directory = path.parent
     lifetime = procs.InstanceLock(directory / "helper.lock").acquire()
     child = watchdog = device = spool = events = None
+    spec = None
     devices = ExitStack()
     observer = None
     reason = "stopped"
@@ -890,14 +891,14 @@ def service_run(spec_path, *, child_factory=procs.LocalChild, watchdog_factory=W
         # cannot skip child termination, terminal state, or any remaining release.
         with ExitStack() as cleanup:
             cleanup.callback(cleanup_step, "lifetime", lifetime.close)
-            if events is not None:
-                cleanup.callback(cleanup_step, "events", events.close)
-            cleanup.callback(cleanup_step, "state", stopped)
-            if observer is not None:
-                cleanup.callback(cleanup_step, "observer", observer.close)
             cleanup.callback(cleanup_step, "devices", devices.close)
             if device is not None:
                 cleanup.callback(cleanup_step, "device", device.close)
+            cleanup.callback(cleanup_step, "state", stopped)
+            if events is not None:
+                cleanup.callback(cleanup_step, "events", events.close)
+            if observer is not None:
+                cleanup.callback(cleanup_step, "observer", observer.close)
             if child is not None:
                 cleanup.callback(cleanup_step, "child", lambda: child.stop(10))
                 cleanup.callback(cleanup_step, "spool", shutdown_spool)
@@ -905,6 +906,8 @@ def service_run(spec_path, *, child_factory=procs.LocalChild, watchdog_factory=W
                 cleanup.callback(cleanup_step, "watchdog", watchdog.stop)
             cleanup.callback(cleanup_step, "spec", lambda: path.unlink(missing_ok=True))
         if errors:
+            if spec is None or spec.placement_supervision is None:
+                raise errors[0]
             raise BaseExceptionGroup("service cleanup failed", errors)
 
 
@@ -1139,7 +1142,11 @@ def fidelity_gate(cluster, profile_name, prompts, request=_request, apps=compute
     """Select the owned native replica gate or the unchanged legacy prefill oracle."""
     active = service
     if active is None:
-        _, active = _running(profile_name)
+        try:
+            _, active = _running(profile_name)
+        except (OSError, ValueError, RuntimeError, KeyError):
+            _service(cluster, profile_name)  # Legacy preset errors precede missing/not-running state errors.
+            raise
     if active.get("spool") or active.get("placement_supervision") is not None:
         from . import replica_gate
         return replica_gate.fidelity_gate(active, prompts)

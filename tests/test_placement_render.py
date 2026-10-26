@@ -23,7 +23,7 @@ class PlacementRenderTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.data = runtime.preset()
         self.data["capabilities"] = ["placement-v1"]
-        self.data["engine_sha"] = "1" * 40  # test-only release; never a production/local engine pin
+        self.data["engine_sha"] = runtime.replica_args.AUDITED_REVISION  # audited identity with a fake binary; never a production preset pin
         self.uuids = ["GPU-" + str(uuid.uuid4()) for _ in range(2)]
         model = self.root / "model"
         model.write_bytes(b"synthetic model")
@@ -63,7 +63,8 @@ class PlacementRenderTests(unittest.TestCase):
             policy = {"grants": [{"uuid": u, "vram_cap_gib": 10, "approval": "synthetic operator",
                                   "window": window(), "gate": [str(Path(__file__).resolve()), "fake"]}
                                  for u in self.uuids[:count]],
-                      "caps_gib": {u.lower(): 10 for u in self.uuids[:count]}, "host_pinned_gib": 0,
+                      "caps_gib": {u.lower(): 10 for u in self.uuids[:count]},
+                      "caps_bytes": {u.lower(): 10 * rtx.GIB for u in self.uuids[:count]}, "host_pinned_gib": 0,
                       "host_pageable_gib": 0, "free_commit_floor_gib": 4}
             machine = SimpleNamespace(access="local", os="windows", install_root=str(self.root))
             request = runtime.Request("local", self.files, policy, argv=tuple(self.argv))
@@ -93,7 +94,8 @@ class PlacementRenderTests(unittest.TestCase):
         policy = {"grants": [{"uuid": u, "vram_cap_gib": 10.1, "approval": "synthetic operator",
                               "window": window(), "gate": [str(Path(__file__).resolve()), "fake"]}
                              for u in self.uuids],
-                  "caps_gib": {u.lower(): 10.1 for u in self.uuids}, "host_pinned_gib": 0,
+                  "caps_gib": {u.lower(): 10.1 for u in self.uuids},
+                  "caps_bytes": {u.lower(): int(round(10.1 * rtx.GIB)) for u in self.uuids}, "host_pinned_gib": 0,
                   "host_pageable_gib": 0, "free_commit_floor_gib": 4}
         machine = SimpleNamespace(access="local", os="windows", install_root=str(self.root))
         cluster = SimpleNamespace(machines={"local": machine})
@@ -164,7 +166,7 @@ class PlacementRenderTests(unittest.TestCase):
             [{"bytes": 300, "method": "pdh-process-dedicated"}]])
         self.assertNotIn("uuid", json.dumps(document))
         destination = self.root / "context-v1.json"
-        self.assertEqual(launch.ingest_context(realised, destination), document)
+        content_cache._write(destination, runtime.ingest(realised))
         self.assertEqual(json.loads(destination.read_bytes()), document)
         for change in ({"method": "device-total"}, {"signature": ""}, {"ctx_observed": -1}):
             realised.write_bytes(json.dumps(dict(event, **change)).encode())

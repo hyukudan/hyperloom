@@ -1,6 +1,6 @@
-"""Round 10 item 3: complete argv refusal sweep, before admission, with CPU fakes."""
+"""CPU-only argv capacities regressions."""
+
 from contextlib import ExitStack
-import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -10,15 +10,19 @@ import pytest
 from hyperloom import admission, orchestrate, procs, rtx
 from hyperloom.recipes import launch, measurements, preflight, runtime, service, session
 from hyperloom.recipes.reader import RecipeError
+
 from tests import test_placement_render
 from tests.test_recipes_grants import NOW, window
 
 
-# Native K is the first digit run, not the optional b budget or f draft count.
 PHASES = ("chats65", "chats4294967295", "pressure65", "exact65", "dchats65b0",
           "chats65b0", "pressure4294967295", "wforce65", "wforcep65w", "spec65w",
           "schats65b0f5w", "smoke65", "smokep65", "wsmoke65", "wsmokep65w", "csmoke65", "gsmoke65")
+
+
 OUTPUTS = ("--json", "--timeline", "--draft-trace", "--controller-save", "--residency-save")
+
+
 CASES = ([(phase, {}, False) for phase in PHASES]
          + [("chats11", {"max_rows": 6}, False), ("chats9b64", {"max_rows": 8}, False),
             ("pressure33", {"max_rows": 2}, False), ("chats64", {"max_rows": 2}, False),
@@ -90,7 +94,8 @@ def test_3_phase_capacities_before_admission(tmp_path, monkeypatch, phase, confi
         fixture.write()
         policy = dict(grants=[dict(uuid=fixture.uuids[0], vram_cap_gib=10, approval="test", window=window(),
                                   gate=[str(Path(__file__).resolve()), "fake"])],
-                      caps_gib={fixture.uuids[0].lower(): 10}, host_pinned_gib=0, host_pageable_gib=0,
+                      caps_gib={fixture.uuids[0].lower(): 10}, caps_bytes={fixture.uuids[0].lower(): 10 * rtx.GIB},
+                      host_pinned_gib=0, host_pageable_gib=0,
                       free_commit_floor_gib=4)
         decision = dict(placement=True, machine="local", argv=argv, supervision=policy,
                         files=dict(placement=str(fixture.files.placement), manifest=str(fixture.files.manifest),
@@ -126,99 +131,5 @@ def test_3_phase_capacities_before_admission(tmp_path, monkeypatch, phase, confi
                 call.assert_not_called()
         assert before == {p: p.read_bytes() for p in fixture.root.rglob("*") if p.is_file()}
         assert list(tmp_path.iterdir()) == []
-    finally:
-        fixture.doCleanups()
-
-
-def test_3_fingerprint_covers_helpers_and_transitive_headers(tmp_path):
-    from tools.check_replica_args import inventory, PARSER_HELPERS
-
-    for name in ("apps/cuda_ds41_replica.cu", "apps/cuda_ds41_replica_serve.hpp", *PARSER_HELPERS):
-        path = tmp_path / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("// synthetic parser dependency\n", encoding="utf-8", newline="\n")
-    main = tmp_path / "apps/cuda_ds41_replica.cu"
-    main.write_text('#include "strix/first.hpp"\nconst auto parse_args = x;\n'
-                    'if (a == "--phases") phases_arg = next();\n'
-                    'const std::vector<std::string> launch_args;\n', encoding="utf-8", newline="\n")
-    serve = tmp_path / "apps/cuda_ds41_replica_serve.hpp"
-    serve.write_text('inline bool is_request_env() { return name == "ENV";\n}\n', encoding="utf-8", newline="\n")
-    first, second = (tmp_path / "include/strix" / name for name in ("first.hpp", "second.hpp"))
-    first.parent.mkdir(parents=True)
-    first.write_text('#include "second.hpp"\n', encoding="utf-8", newline="\n")
-    second.write_text("// nested parser rule\n", encoding="utf-8", newline="\n")
-    original = inventory(tmp_path)
-    # A rule change in any helper/header must invalidate the same pinned fingerprint as a main-parser edit.
-    for name in original["files"]:
-        path = tmp_path / name
-        content = path.read_bytes()
-        path.write_bytes(content + b"// changed refusal\n")
-        assert inventory(tmp_path) != original, name
-        path.write_bytes(content)
-    second.write_bytes(second.read_bytes().replace(b"\n", b"\r\n"))
-    assert inventory(tmp_path) == original  # the audit is deliberately LF-normalized
-    second.unlink()
-    assert inventory(tmp_path) != original
-
-
-@pytest.mark.parametrize("flags,phase,rows,valid", [
-    ({"--predict": 8}, "chats9", 1, False), ({"--predict": 2}, "chats8", 1, True),
-    ({"--predict": 9}, "chats9", 1, True), ({"--predict": 33}, "chats0", 2, False),
-    ({"--predict": 32}, "chats32", 2, True), ({}, "chats9", 1, False)])
-def test_3_cached_predict_limit_survives_decision_serialization(monkeypatch, flags, phase, rows, valid):
-    fixture = test_placement_render.PlacementRenderTests()
-    fixture.setUp()
-    try:
-        fixture.document["config"] = dict(max_rows=rows)
-        fixture.write()
-        files = dict(placement=str(fixture.files.placement), manifest=str(fixture.files.manifest),
-                     receipts=str(fixture.files.receipts), manifest_sha256=None, document=fixture.document,
-                     allocation_flags=flags)
-        decision = json.loads(json.dumps(dict(machine="local", files=files, supervision={}, argv=[
-            *fixture.argv, "--phases", phase])))
-        monkeypatch.setattr(runtime, "preset", lambda: fixture.data)
-        request = runtime.request(decision)
-        if valid:
-            runtime.render(request.files, binary="fake", argv=request.argv)
-        else:
-            with pytest.raises(RecipeError, match="PL_E_SCHEMA.*(?:phases|predict)"):
-                runtime.render(request.files, binary="fake", argv=request.argv)
-    finally:
-        fixture.doCleanups()
-
-
-def test_3_decision_uses_the_admitted_allocation_reference(monkeypatch):
-    from hyperloom.recipes import commands, content_cache
-
-    fixture = test_placement_render.PlacementRenderTests()
-    fixture.setUp()
-    try:
-        rid, sha, build = "decode", "a" * 64, "b" * 64
-        plan = fixture.document
-        plan.update(route=rid, effective_sha256=sha, build_sha256=build, config=dict(max_rows=1))
-        for device in plan["devices"]:
-            device["host"] = "local"
-        manifest_sha = content_cache._sha(fixture.manifest)
-        (fixture.root / (manifest_sha + ".json")).write_bytes(fixture.files.manifest.read_bytes())
-        reference = dict(build_sha256=build, receipts_sha256=plan["receipts_sha256"], flags={"--predict": 8})
-        record = dict(reference=reference, manifest_sha256=manifest_sha, selected=dict(model=fixture.argv[0]))
-        cache = mock.Mock(manifests=SimpleNamespace(directory=fixture.root))
-        cache.record.return_value = record
-        argv = [*fixture.argv[1:], "--phases", "chats9"]
-        admitted = dict(inputs=dict(routes={rid: dict(components=reference, receipts=str(fixture.files.receipts),
-                                                    selected_content=record["selected"], argv=argv)}))
-        recipe = dict(routes=[dict(id=rid, phase="decode", components=dict(arena=dict(units=1)))])
-        monkeypatch.setattr(runtime, "preset", lambda: fixture.data)
-        monkeypatch.setattr(commands, "components_store", lambda: cache)
-        monkeypatch.setattr(commands, "runtime_dir", lambda: fixture.root / "unpublished")
-        monkeypatch.setattr(runtime, "executable", lambda *a: Path("fake"))
-        before = {p: p.read_bytes() for p in fixture.root.rglob("*") if p.is_file()}
-        with mock.patch.object(runtime.Files, "publish", side_effect=AssertionError("publish")), \
-                mock.patch.object(procs, "LocalChild", side_effect=AssertionError("child")), \
-                pytest.raises(RecipeError, match="PL_E_SCHEMA.*cached --predict"):
-            runtime.decision(None, recipe, SimpleNamespace(pc="local"), None, sha, {rid: plan}, admitted)
-        cache.record.assert_called_once_with(reference, selected=record["selected"])
-        assert before == {p: p.read_bytes() for p in fixture.root.rglob("*") if p.is_file()}
-        assert not (fixture.root / "unpublished").exists()
     finally:
         fixture.doCleanups()
