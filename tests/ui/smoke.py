@@ -717,6 +717,38 @@ def recipes_walkthrough(client, server, output=None):
     return ("deploy job" if ready else "deploy gated by the preview's refusal") + ", fixture recipe deployed by a job"
 
 
+def preflight_refusal_walkthrough(client, server):
+    """A real synchronous legacy recipe refusal stays in the job-error panel through polling."""
+    client.call("Page.navigate", url=server.url + "#/recipes")
+    eventually(lambda: client.evaluate("!!window.Hyperloom && Hyperloom.state.fresh && !Hyperloom.mutationReason()"))
+    for action, arguments, message in (
+            ("up", {"profile": "qwen-replicas", "recipe_inputs": "0" * 64, "node": ["halo-1"]},
+             "planned snapshot as it is"),
+            ("recipes/deploy", {"inputs": "0" * 64}, "no snapshot")):
+        eventually(lambda: client.evaluate("Hyperloom.state.fresh && !Hyperloom.mutationReason()"))
+        client.evaluate(f"window.refusal = null; Hyperloom.mutate({json.dumps(action)}, {json.dumps(arguments)})"
+                        ".catch(e => { window.refusal = {message: e.message, status: e.status}; });")
+        eventually(lambda: client.evaluate("window.refusal !== null"))
+        refusal = client.evaluate("window.refusal")
+        if refusal["status"] != 400 or message not in refusal["message"]:
+            raise AssertionError("unexpected preflight refusal: " + json.dumps(refusal))
+        eventually(lambda: client.evaluate("!document.getElementById('job-panel').hidden && "
+                                           "document.getElementById('job-panel').innerText.includes(window.refusal.message)"), timeout=5)
+        client.evaluate("Hyperloom.refresh()")
+        if not client.evaluate("document.getElementById('job-panel').innerText.includes(window.refusal.message)"):
+            raise AssertionError("polling erased the preflight refusal")
+    if client.evaluate("!!document.querySelector('#job-panel [data-action=cancel], #job-panel [data-action=stop]')"):
+        raise AssertionError("a refused launch must have no running-job controls")
+    if any(call["action"] == "up" for call in server.calls()):
+        raise AssertionError("preflight refusal started the legacy engine")
+    jobs = client.evaluate("Hyperloom.request('jobs')")
+    if jobs["jobs"]:
+        raise AssertionError("preflight refusal created a job")
+    if client.errors:
+        raise AssertionError("Browser console/exception errors: " + json.dumps(client.errors))
+    return "HTTP 400 message retained in job panel; no job or launch"
+
+
 def feature_pages(client, server, output, width, theme):
     """Every registered feature page (static/pages): it renders its title, finishes loading, does not overflow
     and raises no console error; one screenshot per page, width and theme (page-<id>-<width>-<theme>.png)."""
@@ -1261,7 +1293,8 @@ def seed_fixtures(directory, now):
     return patches
 
 
-def browser_smoke(chrome, server, output, *, keyboard=False, keyboard_only=False, recipes_only=False):
+def browser_smoke(chrome, server, output, *, keyboard=False, keyboard_only=False, recipes_only=False,
+                  refusals_only=False):
     with tempfile.TemporaryDirectory(prefix="hyperloom-chrome-", ignore_cleanup_errors=True) as profile:
         port = free_port()
         command = [chrome, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-first-run", "--no-default-browser-check",
@@ -1291,7 +1324,7 @@ def browser_smoke(chrome, server, output, *, keyboard=False, keyboard_only=False
                 client.call("Page.enable")
                 client.call("Page.addScriptToEvaluateOnNewDocument", source="localStorage.removeItem('hyperloom-theme');")
                 captures = 0
-                for width in (() if keyboard_only or recipes_only else (1440, 390)):
+                for width in (() if keyboard_only or recipes_only or refusals_only else (1440, 390)):
                     client.call("Emulation.setDeviceMetricsOverride", width=width, height=1000,
                                 deviceScaleFactor=1, mobile=False)
                     backgrounds = {}
@@ -1351,7 +1384,7 @@ def browser_smoke(chrome, server, output, *, keyboard=False, keyboard_only=False
                         captures += feature_pages(client, server, output, width, theme)
                     if not backgrounds.get("light") or backgrounds["light"] == backgrounds.get("dark"):
                         raise AssertionError("System light/dark preference did not change the rendered theme")
-                if not keyboard_only and not recipes_only:
+                if not keyboard_only and not recipes_only and not refusals_only:
                     print("PASS shell walkthrough: " + shell_walkthrough(client, server, output), flush=True)
                 if keyboard or keyboard_only:
                     # Desktop makes every opener visible; the manual walkthrough
@@ -1364,6 +1397,8 @@ def browser_smoke(chrome, server, output, *, keyboard=False, keyboard_only=False
                 if client.errors:
                     raise AssertionError(json.dumps(client.errors))
                 if not keyboard_only:
+                    print("PASS preflight refusal: " + preflight_refusal_walkthrough(client, server), flush=True)
+                if not keyboard_only and not refusals_only:
                     print("PASS recipes walkthrough: edit, inline refusal, fix, preview, " + recipes_walkthrough(client, server, output)
                           + ", save copy", flush=True)
                     if not recipes_only:
@@ -1386,6 +1421,7 @@ def main():
     parser.add_argument("--keyboard", action="store_true", help="also check dialog keyboard focus and destructive Enter handling")
     parser.add_argument("--keyboard-only", action="store_true", help="run the dialog keyboard pass without screenshots")
     parser.add_argument("--recipes-only", action="store_true", help="run only the Recipes & profiles walkthrough")
+    parser.add_argument("--refusals-only", action="store_true", help="run only the synchronous launch refusal walkthrough")
     parser.add_argument("--serve", action="store_true", help="keep a fake-backed UI running for keyboard review")
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--chrome", help="Chrome/Chromium executable (or set CHROME)")
@@ -1417,8 +1453,8 @@ def main():
     print("Screenshots: " + str(output), flush=True)
     with FixtureServer() as server:
         count = browser_smoke(chrome, server, output, keyboard=args.keyboard, keyboard_only=args.keyboard_only,
-                              recipes_only=args.recipes_only)
-    print(f"PASS {count} route/viewport/theme captures; no console errors" if count else "PASS keyboard walkthrough; no console errors")
+                              recipes_only=args.recipes_only, refusals_only=args.refusals_only)
+    print(f"PASS {count} route/viewport/theme captures; no console errors" if count else "PASS requested walkthrough; no console errors")
     return 0
 
 

@@ -129,6 +129,19 @@ hardware refuses the recipe in `result.hardware`.
 | `GET recipes/active[?profile=P]` | `hyperloom recipe active [P]` | what each running profile was launched with, as launched |
 | `GET recipes/routes[?profile=P]` | `hyperloom recipe routes [P]` | per-route and per-request routing of the running recipe (RTX vs nodes) |
 
+Launch preflight is synchronous for `POST recipes/deploy` and `POST up` with `recipe` or `recipe_inputs`, on
+legacy and placement routes alike. Refusals detected at this stage return **HTTP 400** with exactly
+`{"error": "<the CLI refusal message>"}`. There is no job id or recipe-command envelope, and no job is created.
+These include conflicting snapshot options; invalid approval, deadline, queue timeout or job arguments; missing,
+expired or changed snapshot files; a reviewed stop list that differs from the running set; unknown or excluded
+nodes/devices, unsupported router/diagnostic selections, saved running state, unavailable recipe references; and
+placement descriptor, content-manifest, policy, budget or grant refusals found by passive rendering. For example,
+an expired snapshot returns `400 {"error": "recipe inputs <digest>: no snapshot (it may have expired: plan again)"}`.
+The web UI retains this message in the job-error panel, labelled as refused before job creation. These refusals
+previously appeared as errors inside an asynchronous job. Checks that require the actual launch (including the
+operator gate and engine load/runtime checks) still report failure through the accepted job. The HTTP rules for
+recipe evaluation answers above are unchanged.
+
 Common arguments of the evaluation calls (they map to the CLI's layer options):
 
 | JSON | CLI | |

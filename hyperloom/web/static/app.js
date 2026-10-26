@@ -407,10 +407,10 @@
     renderHeartbeat(stale);
   }
   function renderJob() {
-    const panel = $("job-panel"), job = state.job;
+    const panel = $("job-panel"), job = state.launchRefusal || state.job, active = !state.launchRefusal && activeJob();
     panel.hidden = !job;
     if (!job) return;
-    panel.innerHTML = `<div class="row"><b>${esc(job.action || "Action")} · ${statusPill(job.state || job.status)}</b><span class="mono">${esc(job.id || job.job || "")}</span>${activeJob() && ["up", "recipes/deploy"].includes(job.action) ? button("Cancel start now", "cancel") : ""}${activeJob() ? button("Stop profile now", "stop", {style: "dan"}) : ""}</div><p>${display(job.progress, "waiting for progress")}</p>${job.error ? `<p class="field-error">${display(job.error)}</p><a class="btn" href="#/logs">View logs</a>` : ""}${job.result != null ? `<details><summary>Result (redacted)</summary><pre class="raw">${esc(JSON.stringify(job.result, null, 2))}</pre></details>` : ""}`;
+    panel.innerHTML = `<div class="row"><b>${esc(job.action || "Action")} · ${statusPill(job.state || job.status)}</b><span class="mono">${esc(job.id || job.job || "")}</span>${active && ["up", "recipes/deploy"].includes(job.action) ? button("Cancel start now", "cancel") : ""}${active ? button("Stop profile now", "stop", {style: "dan"}) : ""}</div><p>${display(job.progress, "waiting for progress")}</p>${job.error ? `<p class="field-error" role="alert">${display(job.error)}</p><a class="btn" href="#/logs">View logs</a>` : ""}${job.result != null ? `<details><summary>Result (redacted)</summary><pre class="raw">${esc(JSON.stringify(job.result, null, 2))}</pre></details>` : ""}`;
   }
   async function request(endpoint, options = {}) {
     const response = await fetch(api + endpoint, {cache: "no-store", credentials: "same-origin", ...options});
@@ -608,8 +608,14 @@
     render();
     try {
       state.job = await request(action, {method: "POST", headers: {"Content-Type": "application/json", "X-Hyperloom-CSRF": token}, body: JSON.stringify(args), signal: AbortSignal.timeout(30000)});
+      state.launchRefusal = null;
       state.fresh = false;
-    } catch (error) { state.fresh = false; refresh(); throw error; }
+    } catch (error) {
+      if (error.status === 400 && ["up", "recipes/deploy"].includes(action)) {
+        state.launchRefusal = {action, state: "refused", error: error.message, progress: "Launch refused before a job was created."};
+      }
+      state.fresh = false; refresh(); throw error;
+    }
     finally { state.busy = false; render(); }
     await refresh();
   }

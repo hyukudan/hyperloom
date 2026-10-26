@@ -163,6 +163,7 @@ class ServiceSpec:
     gate: list | None = None
     placement_supervision: dict | None = None
     replica_spool: bool = False
+    engine_sha: str | None = None
 
 
 def redact(argv, flags):
@@ -403,7 +404,7 @@ def render_placement_service(cluster, request, *, api_key):
                        dict(child_env(os.environ), **explicit), redact(argv, data["secret_flags"]),
                        deadline, policy["caps_gib"][uuid_key(anchor["uuid"])],
                        policy.get("free_commit_floor_gib", 4), data["ready_timeout_s"], {},
-                       sha, document, placement_supervision=policy, replica_spool=True)
+                       sha, document, placement_supervision=policy, replica_spool=True, engine_sha=data["engine_sha"])
 
 
 # Device selection and behaviour switches of the CUDA runtime are never inherited (the preset sets its own);
@@ -918,6 +919,7 @@ def prepare_service(spec):
         record["placement_supervision"] = spec.placement_supervision
     if spec.replica_spool:
         record["spool"] = str(directory / "spool")
+        record["engine_sha"] = spec.engine_sha
     return record
 
 
@@ -1134,6 +1136,18 @@ def visibility(service, apps=compute_apps, memory=gpu_memory, *, observer=None):
 
 def fidelity_gate(cluster, profile_name, prompts, request=_request, apps=compute_apps, memory=gpu_memory,
                   service=None, key=None):
+    """Select the owned native replica gate or the unchanged legacy prefill oracle."""
+    active = service
+    if active is None:
+        _, active = _running(profile_name)
+    if active.get("spool") or active.get("placement_supervision") is not None:
+        from . import replica_gate
+        return replica_gate.fidelity_gate(active, prompts)
+    return _legacy_fidelity_gate(cluster, profile_name, prompts, request, apps, memory, service, key)
+
+
+def _legacy_fidelity_gate(cluster, profile_name, prompts, request=_request, apps=compute_apps, memory=gpu_memory,
+                          service=None, key=None):
     """The preset's named oracle against a service (the profile's running one by default): state sha256, next token,
     logits FNV and state size at every oracle length (no handoff), plus the GPUs the process is visible on."""
     _, data, _ = _service(cluster, profile_name)
