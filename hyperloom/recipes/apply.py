@@ -103,10 +103,15 @@ def decode_set(bound):
     return next(s for s, r in bound["roles"].items() if r == "decode")
 
 
-def probe_report(recipe, bound, facts):
+def probe_report(recipe, bound, facts, *, cluster=None, ctx=None, inventory=None):
     """The core's probe report (§8.2) with exactly the bound devices, so the core's binding can only pick them.
     ``facts``: {"model", "model_sha256", "devices": {probe id: {kind, name, memory_gib, host_ram_gib,
     disk_read_gbytes_ps, driver}}, "links": [{kind, hosts, gbps}]} (capability values only)."""
+    if any(reader.placement_mode(r) for r in recipe["routes"]):
+        from . import devices
+        if cluster is None or ctx is None or inventory is None:
+            raise RecipeError("placement probe requires configured candidates")
+        return devices.candidates(cluster, ctx, inventory, facts)
     devices = []
     for device in recipe["match"]["devices"]:
         for member in bound["binding"][device["id"]]:

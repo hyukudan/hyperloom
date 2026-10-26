@@ -8,7 +8,7 @@ import json
 import time
 from pathlib import Path
 
-from . import apply, core, facts, reader
+from . import apply, core, devices, facts, grants, reader
 from .reader import RecipeError
 
 SUFFIXES = (".toml", ".json")
@@ -78,6 +78,8 @@ def evaluate(cluster, profile, path, layers, source, backend=None):
     base = resolve(path, Layers(), backend=backend).recipe   # structure only: binding never depends on layers
     inventory, gathered, raw, notes = source(ctx)
     ctx.limits = dict(ctx.limits or {}, node_runtime=facts.current_runtime(cluster, ctx, gathered.get("node_runtime")))
+    if any(reader.placement_mode(r) for r in base["routes"]):
+        return _placement_evaluation(cluster, path, layers, backend, ctx, base, inventory, gathered, raw, notes)
     bound = apply.bind(base, ctx, inventory)
     report = apply.probe_report(base, bound, gathered)
     identity = dict(report, binding=bound["binding"], workload=layers.workload,
@@ -103,6 +105,32 @@ def evaluate(cluster, profile, path, layers, source, backend=None):
             refusal = str(exc)
     return Evaluation(str(path), backend.label, resolved, effective_sha or "", ctx, bound, report, problems,
                       availability, decision, refusal, list(notes))
+
+
+def _placement_evaluation(cluster, path, layers, backend, ctx, base, inventory, gathered, raw, notes):
+    if not isinstance(backend, core.CoreBackend):
+        raise RecipeError("placement binding requires a compatible ts-recipe core")
+    report = apply.probe_report(base, None, gathered, cluster=cluster, ctx=ctx, inventory=inventory)
+    problems, binding, effective_sha = backend.match(path, Layers(), report, None)
+    bound = devices.bound(base, ctx, binding or {d["id"]: [] for d in base["match"]["devices"]})
+    identity = dict(report, binding=bound["binding"], workload=layers.workload,
+                    descriptors=apply.descriptors(bound, ctx))
+    resolved = resolve(path, layers, identity, backend)
+    if not problems:
+        problems, binding, effective_sha = backend.match(path, layers, report, identity)
+        if not problems:
+            bound = devices.bound(resolved.recipe, ctx, binding)
+    availability = facts.availability(resolved.recipe, bound, raw)
+    refusal = None
+    if not problems:
+        try:
+            grants.check(cluster, resolved.recipe, bound["binding"], report, raw["hosts"])
+            # Placement launch stays unavailable until its adapter and supervision are complete.
+            apply.refuse_unsupported(resolved.recipe)
+        except RecipeError as exc:
+            refusal = str(exc)
+    return Evaluation(str(path), backend.label, resolved, effective_sha or "", ctx, bound, report, problems,
+                      availability, None, refusal, list(notes))
 
 
 def saved_source(path):

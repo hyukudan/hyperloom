@@ -285,7 +285,8 @@ def gather(cluster, ctx, *, call, gpus=None, memory=None, pro_busy=None, cache=N
     hosts = {ctx.pc: {"free_ram_gib": pc_mem["free_gib"], "free_commit_gib": pc_mem["free_commit_gib"]}}
     pc_assets = cluster.assets.get(ctx.pc, {})
     for gpu in inventory["cuda"]:
-        row = {"name": gpu["name"], "memory_gib": gpu["memory_gib"], "host_ram_gib": pc_mem["total_gib"]}
+        row = {"name": gpu["name"], "memory_gib": gpu["memory_gib"], "host_ram_gib": pc_mem["total_gib"],
+               **{k: gpu[k] for k in ("uuid", "pci", "arch", "driver", "memory_bytes", "platform") if k in gpu}}
         if ctx.service is not None and gpu["uuid"] == ctx.service["uuid"]:
             asset = pc_assets.get(ctx.service.get("model_asset") or "")
             if asset is not None and cache is not None:
@@ -315,7 +316,7 @@ def gather(cluster, ctx, *, call, gpus=None, memory=None, pro_busy=None, cache=N
             gpu_result = call(mid, "gpu")
             doctor_result = call(mid, "doctor")
         except Exception as exc:  # any remote failure is the node being unavailable
-            devices[mid] = {"name": None, "memory_gib": None}
+            devices[mid] = {"name": None, "memory_gib": None, "present": False}
             avail_devices[mid] = {"available": False, "why": f"node unreachable: {exc}"}
             hosts[mid] = {"free_ram_gib": None}
             lan[mid] = {"up": False, "why": f"node unreachable: {exc}"}
