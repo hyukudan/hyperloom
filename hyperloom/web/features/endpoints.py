@@ -848,7 +848,7 @@ def configured(cluster, targets):
             preset_name = declared.get("preset", name)
             data = config.preset(preset_name)
             family = config.family(preset_name)
-            adapter = engines.adapter(family)
+            adapter = engines.release_adapter(preset_name)  # a key-file release binds the LAN with its key
             members = engines.router_members(family, engines.members(declared, family))
             port = declared.get("overrides", {}).get(render.port_flag(data), declared.get("port", data["port"]))
         except (OSError, ValueError, KeyError):

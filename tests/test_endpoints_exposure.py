@@ -63,6 +63,25 @@ class ConfiguredRowsTests(unittest.TestCase):
         self.assertNotEqual(again["target/zz"]["basis"], rows["target/zz"]["basis"])
         self.assertEqual(again["router"]["basis"], rows["router"]["basis"])
 
+    def test_a_key_file_release_is_lan_and_keyed(self):
+        # A release whose preset declares serve_auth "key-file" (and passes the key file) binds the LAN with its key;
+        # its row says so, not the family's loopback default. A release refused at launch does not render here either.
+        from hyperloom import engines
+        real = engines.load_preset
+        keyed = lambda name: (dict(real(name), serve_auth="key-file",
+                                   argv=real(name)["argv"] + ["--api-key-file", "{key_file}"])
+                              if name == "minimax-pair" else real(name))
+        profiles = {"minimax-pair": {"rank0": "halo-1", "rank1": "halo-2",
+                                     "api_key_files": {"halo-1": "/opt/hyperloom/secrets/engine.key"}}}
+        with mock.patch.object(engines, "load_preset", side_effect=keyed):
+            rows = {row["id"]: row for row in endpoints.configured(lab_cluster(profiles=profiles), [])}
+        row = rows["engine/minimax-pair/halo-1"]
+        self.assertEqual((row["configured_scope"], row["key_supported"], row["key_configured"]), ("lan", True, True))
+        unkeyed = lambda name: dict(real(name), serve_auth="key-file") if name == "minimax-pair" else real(name)
+        with mock.patch.object(engines, "load_preset", side_effect=unkeyed):
+            rows = {row["id"]: row for row in endpoints.configured(lab_cluster(profiles=profiles), [])}
+        self.assertIn("does not render", rows["engine/minimax-pair"]["error"])
+
     def test_router_address_is_exactly_the_rendered_one(self):
         local = lab_cluster(pc={"router_listen": "192.0.2.20:18610"})
         self.assertEqual(endpoints.router_listen(local)[1], {"address": "192.0.2.20", "port": 18610})

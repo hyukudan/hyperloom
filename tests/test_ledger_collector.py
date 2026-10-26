@@ -681,6 +681,22 @@ class FetchTests(unittest.TestCase):
         mm = ledger.sources_of(state("mm", "minimax-pair"))[0]
         self.assertIsNone(ledger._key(mm))
 
+    def test_a_key_file_release_is_read_over_the_lan_with_its_key(self):
+        # The launched release decides the bind: a serve_auth "key-file" preset binds the LAN and is read with its key.
+        from hyperloom import engines
+        real = engines.load_preset
+        keyed = lambda name: (dict(real(name), serve_auth="key-file",
+                                   argv=real(name)["argv"] + ["--api-key-file", "{key_file}"])
+                              if name == "minimax-pair" else real(name))
+        record = state("mm", "minimax-pair")
+        record["launch"]["preset"] = "minimax-pair"
+        self.assertEqual((ledger.sources_of(record)[0]["bind"], ledger.sources_of(record)[0]["keyed"]), ("loopback", False))
+        with mock.patch.object(engines, "load_preset", side_effect=keyed):
+            source = ledger.sources_of(record)[0]
+        self.assertEqual((source["bind"], source["keyed"], source["invalid"]), ("lan", True, None))
+        with mock.patch("hyperloom.secrets.get", return_value="s" * 64):
+            self.assertEqual(ledger._key(source), "s" * 64)
+
 
 if __name__ == "__main__":
     unittest.main()

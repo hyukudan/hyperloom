@@ -163,8 +163,16 @@ def _states(api):
             if isinstance(state.get("profile"), str)]
 
 
-def _adapter(family):
+def _adapter(family, preset=None):
+    """The launched release's adapter (a key-file release binds the LAN with its key), else its family's."""
     from hyperloom import engines
+    if isinstance(preset, str):
+        try:
+            release = engines.release_adapter(preset)
+            if release.family == family:
+                return release
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
     try:
         return engines.adapter(family)
     except (ValueError, KeyError):
@@ -176,7 +184,7 @@ def sources_of(state):
     profile = state["profile"]
     launch = state.get("launch") if isinstance(state.get("launch"), dict) else {}
     family = launch.get("family")
-    adapter = _adapter(family)
+    adapter = _adapter(family, launch.get("preset"))
     rendered = state.get("rendered_router") if isinstance(state.get("rendered_router"), dict) else {}
     machines = state.get("machines") if isinstance(state.get("machines"), dict) else {}
     out = []
