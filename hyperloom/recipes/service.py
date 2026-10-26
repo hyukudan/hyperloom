@@ -1379,7 +1379,10 @@ def derive(base_text, base_file, new_name, sets, base_id, backend):
     expected = _resolve_text(base_text, base_file, backend=backend, extra=[("edits.json", layer)]).to_json()
     tree = reader.load_text(base_text, base_file)
     for path, value in sets:
-        _tree_node(tree, path)[path.split(".")[-1]] = value
+        node, field = _tree_node(tree, path), path.split(".")[-1]
+        if ".components." in path and field in ("gib", "units"):
+            node.pop("gib" if field == "units" else "units", None)
+        node[field] = value
     tree["name"] = new_name
     tree["x-derived-from"] = {"recipe": base_id or base["name"], "name": base["name"],
                               "sha256": _sha256(base_text.encode("utf-8")), "set": [[p, v] for p, v in sets],
@@ -1411,6 +1414,8 @@ def _tree_node(tree, path):
         return route
     if parts[2] == "when":
         return route.setdefault("when", {})
+    if parts[2] in ("assist", "components"):
+        return route.setdefault(parts[2], {}).setdefault(parts[3], {})
     placement = route.setdefault("placement", {}).setdefault(parts[3], {})
     if len(parts) == 5:
         return placement

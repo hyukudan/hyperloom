@@ -107,7 +107,7 @@ MATCH_KEYS = {"model", "model_sha256", "engine", "devices", "links"}
 
 BUDGET_FIELDS = ("device_gib", "host_pinned_gib", "workspace_gib", "max_context_tokens", "max_batch", "margin_gib",
                  "margin_fraction", "dynamic_slots_per_layer", "ring_slots", "pinned_backing", "staging_buffers",
-                 "staging_mib", "tier_mode")
+                 "staging_mib", "tier_mode", "host_pageable_gib", "host_available_floor_gib")
 # §6.2: the only settable leaves besides limits, when, fallback and placement fields.
 SETTABLE_DEVICE = ("name", "memory_min_gib", "host_ram_min_gib", "disk_read_gbytes_ps_min", "h2d_gbytes_ps_min")
 SETTABLE_UNITS = ("layers", "rank", "list", "resident", "pinned")
@@ -527,6 +527,10 @@ def check(recipe):
                 raise RecipeError(f"{path}: PL_E_SCHEMA gib and units are exclusive")
             if "layers" in component:
                 raise RecipeError(f"{path}.layers: PL_E_CAPABILITY layer placement is reserved")
+        for placement in route["placement"].values():
+            for key in HOST:
+                if placement.get(key) == 0:
+                    del placement[key]
         w = route["when"]
         if w["prompt_tokens_max"] is not None and w["prompt_tokens_max"] < w["prompt_tokens_min"]:
             raise RecipeError(f"{where}.when.prompt_tokens_max: below prompt_tokens_min")
@@ -594,8 +598,12 @@ def settable_paths(recipe):
     paths += [f"match.links.{l['id']}.gbps_min" for l in recipe["match"]["links"]]
     for route in recipe["routes"]:
         base = f"routes.{route['id']}"
-        paths += [base + ".fallback", base + ".enabled"]
+        paths += [base + ".fallback", base + ".enabled", base + ".max_rows", base + ".max_sequences"]
         paths += [f"{base}.when.{k}" for k in WHEN]
+        for device in recipe["match"]["devices"]:
+            if device["id"] not in route["devices"] and device["kind"] in ("cuda", "hip") and device["count"] == 1:
+                paths += [f"{base}.assist.{device['id']}.{k}" for k in ASSIST]
+        paths += [f"{base}.components.{ident}.{k}" for ident in COMPONENT_IDS for k in ("device", "gib", "units")]
         for set_id in route["devices"]:
             paths += [f"{base}.placement.{set_id}.{k}" for k in PLACEMENT]
             for group in route["placement"].get(set_id, {}).get("units", []):
@@ -610,8 +618,12 @@ def _written_paths(tree):
             written |= {f"match.{kind}.{item.get('id')}.{k}" for k in item}
     for route in tree["routes"]:
         base = f"routes.{route.get('id')}"
-        written |= {f"{base}.{k}" for k in ("fallback", "enabled") if k in route}
+        written |= {f"{base}.{k}" for k in ("fallback", "enabled", "max_rows", "max_sequences") if k in route}
         written |= {f"{base}.when.{k}" for k in route.get("when", {})}
+        for key in ("assist", "components"):
+            for ident, table in route.get(key, {}).items():
+                if not ident.startswith("x-"):
+                    written |= {f"{base}.{key}.{ident}.{k}" for k in table}
         for set_id, placement in route.get("placement", {}).items():
             if set_id.startswith("x-"):
                 continue
@@ -634,9 +646,17 @@ def _locate(recipe, path):
         return item, parts[3], table[parts[3]][0]
     route = next(r for r in recipe["routes"] if r["id"] == parts[1])
     if len(parts) == 3:
-        return route, parts[2], "bool" if parts[2] == "enabled" else "id"
+        kind = _int(1, 65536) if parts[2] in ("max_rows", "max_sequences") else (
+            "bool" if parts[2] == "enabled" else "id")
+        return route, parts[2], kind
     if parts[2] == "when":
         return route["when"], parts[3], WHEN[parts[3]][0]
+    if parts[2] in ("assist", "components"):
+        table = ASSIST if parts[2] == "assist" else COMPONENT
+        entries = route.setdefault(parts[2], {})
+        if parts[3] not in entries:
+            entries[parts[3]] = _fields({}, table, ".".join(parts[:4]))
+        return entries[parts[3]], parts[4], table[parts[4]][0]
     placement = route["placement"][parts[3]]
     if len(parts) == 5:
         return placement, parts[4], PLACEMENT[parts[4]][0]
@@ -664,6 +684,16 @@ def parse_layer(text, origin, recipe, recipe_sha256, probe=None):
         raise RecipeError(f'{origin}: missing table "set"')
     layer = {"kind": "profile" if schema == PROFILE_SCHEMA else "override", "origin": origin,
              "source": tree.get("source", ""), "set": list(sets.items())}
+    # These checks do not need hardware, including when saving a profile for later use.
+    shadow = deepcopy(recipe)
+    for path, value in layer["set"]:
+        _, field, kind = _locate(shadow, path)
+        _value(kind, value, path)
+        parts = path.split(".")
+        if len(parts) == 5 and parts[0] == "routes" and parts[2] == "components" and field in ("gib", "units"):
+            other = ".".join(parts[:4]) + (".gib" if field == "units" else ".units")
+            if other in sets:
+                raise RecipeError(f"{origin}: PL_E_SCHEMA gib and units are exclusive in one layer")
     sha = tree.get("recipe_sha256")
     if schema == PROFILE_SCHEMA:
         if not isinstance(sha, str) or not SHA.fullmatch(sha):
@@ -689,11 +719,29 @@ def _check_profile_key(tree, origin, probe, recipe):
     for name in ("engine_sha256", "model_sha256"):
         if not isinstance(key.get(name), str) or not SHA.fullmatch(key[name]):
             raise RecipeError(f"{origin}: key.{name}: required (64 lowercase hex)")
+    optional = {d["id"] for d in recipe["match"]["devices"] if d.get("optional")}
+
+    def unbound(value):
+        return isinstance(value, dict) and set(value) == {"unbound"} and value["unbound"] is True
+
     for name, needed in (("devices", sets), ("drivers", gpu_sets), ("descriptors", sets)):
-        if not isinstance(key.get(name), dict) or set(key[name]) != set(needed):
+        needed = set(needed)
+        if name == "descriptors":
+            needed -= {s for s in optional if unbound(key["devices"].get(s))}
+        if not isinstance(key.get(name), dict) or not needed <= set(key[name]) <= set(sets if name != "drivers" else gpu_sets):
             raise RecipeError(f"{origin}: key.{name}: one entry for every set ({', '.join(needed)})")
     for set_id in sets:
         values = measured.get(set_id)
+        if set_id in optional and unbound(key["devices"][set_id]):
+            if not unbound(key["drivers"].get(set_id)) or not unbound(values):
+                raise RecipeError(f"{origin}: {set_id}: unbound optional set needs {{unbound: true}} in device/driver/probe keys")
+            if set_id in key["descriptors"] and not unbound(key["descriptors"][set_id]):
+                raise RecipeError(f"{origin}: key.descriptors.{set_id}: unbound optional set needs {{unbound: true}} or no entry")
+            continue
+        if not isinstance(key["devices"][set_id], list) or any(not isinstance(v, str) for v in key["devices"][set_id]):
+            raise RecipeError(f"{origin}: key.devices.{set_id}: expected an array of strings")
+        if not isinstance(key["descriptors"][set_id], list):
+            raise RecipeError(f"{origin}: key.descriptors.{set_id}: expected an array of strings")
         need = {"disk_read_gbytes_ps"} | ({"h2d_gbytes_ps"} if set_id in cuda_sets else set())
         if not isinstance(values, dict) or not need <= set(values):
             raise RecipeError(f"{origin}: probe.{set_id}: needs {', '.join(sorted(need))}")
@@ -701,15 +749,27 @@ def _check_profile_key(tree, origin, probe, recipe):
         raise StaleProfile(f"{origin}: profile stale: no identity (probe report) to check it against")
     if tree["workload"] != probe.get("workload"):
         raise StaleProfile(f"{origin}: profile stale: tuned for workload {tree['workload']}, now {probe.get('workload')}")
+    binding = probe.get("binding", {})
+    absent = set()
+    for set_id in optional:
+        now = not binding.get(set_id)
+        if now != unbound(key["devices"][set_id]):
+            raise StaleProfile(f"{origin}: profile stale: optional set {set_id} is {'unbound' if now else 'bound'} now: "
+                               "drop the profile or retune")
+        if now:
+            absent.add(set_id)
     for set_id, shas in key["descriptors"].items():
+        if set_id in absent:
+            continue
         if list(shas) != list((probe.get("descriptors") or {}).get(set_id, [])):
             raise StaleProfile(f"{origin}: profile stale: key.descriptors.{set_id} differs from the descriptors in use")
     drift = _value(_float(0, 1), tree.get("max_drift", 0.10), f"{origin}: max_drift")
     for name in ("engine_sha256", "model_sha256"):
         if name in key and key[name] != probe.get(name):
             raise StaleProfile(f"{origin}: profile stale: key.{name} differs from the probe")
-    binding = probe.get("binding", {})
     for set_id, ids in key.get("devices", {}).items():
+        if set_id in absent:
+            continue
         if [m["id"] for m in binding.get(set_id, [])] != list(ids):
             raise StaleProfile(f"{origin}: profile stale: key.devices.{set_id} differs from the binding")
     by_id = {d["id"]: d for d in probe.get("devices", [])}
@@ -719,6 +779,8 @@ def _check_profile_key(tree, origin, probe, recipe):
             if got != driver:
                 raise StaleProfile(f"{origin}: profile stale: key.drivers.{set_id} is {driver}, probed {got}")
     for set_id, values in measured.items():
+        if set_id in absent:
+            continue
         for name, tuned in values.items():
             current = [by_id.get(m["id"], {}).get(name) for m in binding.get(set_id, [])]
             if not current or any(v is None for v in current):
@@ -760,6 +822,39 @@ class Effective:
         return canonical_sha256(self.to_json())
 
 
+def _check_profile_layers(layers):
+    """Protect the memory layout a profile tunes, independent of the order layers were supplied."""
+    profiles = [layer for layer in layers if layer["kind"] == "profile"]
+    if not profiles:
+        return
+
+    def layout(parts):
+        return len(parts) >= 3 and parts[0] == "routes" and parts[2] in (
+            "assist", "components", "max_rows", "max_sequences")
+
+    tuned, routes = set(), set()
+    for layer in profiles:
+        for path, _ in layer["set"]:
+            parts = path.split(".")
+            if len(parts) >= 4 and parts[0] == "routes" and parts[2] == "placement":
+                tuned.add(".".join(parts[:4]))
+            if layout(parts):
+                routes.add(parts[1])
+    for layer in layers:
+        if layer["kind"] != "override":
+            continue
+        for path, _ in layer["set"]:
+            parts = path.split(".")
+            budget = (len(parts) == 5 and parts[0] == "routes" and parts[2] == "placement"
+                      and parts[4] in BUDGET_FIELDS)
+            route_tuned = len(parts) >= 2 and parts[0] == "routes" and (
+                parts[1] in routes or any(scope.startswith(f"routes.{parts[1]}.placement.") for scope in tuned))
+            if (parts[0] == "match" or (budget and (".".join(parts[:4]) in tuned or parts[1] in routes))
+                    or (layout(parts) and route_tuned)):
+                raise RecipeError(f"{layer['origin']}: {path} changes what the profile was tuned with: "
+                                  "drop the profile or retune")
+
+
 def resolve(text, origin="recipe", profile=None, overrides=(), sets=(), probe=None):
     """recipe + at most one profile ((text, origin)) + overrides files ([(text, origin)]) + --set entries ->
     Effective. Each layer applies atomically; a stale profile is recorded in ``refused`` and the run is untuned.
@@ -781,35 +876,30 @@ def resolve(text, origin="recipe", profile=None, overrides=(), sets=(), probe=No
         layers.append(parse_layer(body, name, recipe, sha))
     if sets:
         layers.append({"kind": "override", "origin": "--set", "source": "", "set": list(sets)})
-    profile_placements = set()
-    budget_overridden = []
+    _check_profile_layers(layers)
     for layer in layers:
         candidate, trace = deepcopy(eff.recipe), deepcopy(eff.trace)
-        if layer["kind"] == "profile":
-            profile_placements = {".".join(path.split(".")[:4]) for path, _ in layer["set"]
-                                  if path.startswith("routes.") and ".placement." in path}
-            for path in budget_overridden:
-                if path.startswith("match.") or ".".join(path.split(".")[:4]) in profile_placements:
-                    raise RecipeError(f"{layer['origin']}: profile added after an override of {path}: drop the "
-                                      "profile or retune")
+        paths = {path for path, _ in layer["set"]}
+        for path in paths:
+            parts = path.split(".")
+            if len(parts) == 5 and parts[0] == "routes" and parts[2] == "components" and parts[4] in ("gib", "units"):
+                other = ".".join(parts[:4]) + (".gib" if parts[4] == "units" else ".units")
+                if other in paths:
+                    raise RecipeError(f"{layer['origin']}: PL_E_SCHEMA gib and units are exclusive in one layer")
         for path, value in layer["set"]:
-            if layer["kind"] == "override" and (path.startswith("match.") or (
-                    ".placement." in path and path.split(".")[-1] in BUDGET_FIELDS and len(path.split(".")) == 5)):
-                applied = any(item["kind"] == "profile" for item in layers)
-                if applied and (path.startswith("match.") or ".".join(path.split(".")[:4]) in profile_placements):
-                    raise RecipeError(f"{layer['origin']}: {path} changes a budget the profile was tuned with: drop "
-                                      "the profile or retune")
-                budget_overridden.append(path)
-            container, field, kind = _locate(candidate, path)
-            entry = trace.setdefault(path, {"layer": "default", "origin": origin, "shadowed": []})
             pin = next((p for p in recipe["pin"] if path == p or path.startswith(p + ".")), None)
+            pinned = layer["kind"] == "profile" and pin is not None
+            container, field, kind = _locate(deepcopy(candidate) if pinned else candidate, path)
+            entry = trace.setdefault(path, {"layer": "default", "origin": origin, "shadowed": []})
             checked = _value(kind, value, path)
-            if layer["kind"] == "profile" and pin is not None:
+            if pinned:
                 entry["shadowed"].append({"value": checked, "layer": "profile", "origin": layer["origin"],
                                           "why": f"pinned by recipe: {pin}"})
                 continue
             entry["shadowed"].append({"value": container.get(field), "layer": entry["layer"],
                                       "origin": entry["origin"], "why": "overridden"})
+            if ".components." in path and field in ("gib", "units"):
+                container.pop("gib" if field == "units" else "units", None)
             container[field] = checked
             entry.update(layer=layer["kind"],
                          origin=layer["origin"] + (f" ({layer['source']})" if layer["source"] else ""))
