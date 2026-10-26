@@ -367,7 +367,9 @@ POST recipes/save-receipt {"name": "halo1-disk",
 ```
 
 A layer is checked against its recipe before it is written (an overrides layer is resolved with it; a tuning profile's
-schema, recipe and sha256 are checked, its fit to the hardware is judged where it is used).
+schema, recipe and sha256 are checked, its fit to the hardware is judged where it is used). Layer documents are read
+with the renamed `tierstream/*` schema ids too (same kinds, and a given document is stored as it is); the layers
+the portal builds keep the `strix-stream/*` ids.
 
 #### POST recipes/probe (job)
 

@@ -172,6 +172,19 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(status, 200, stored)
         listing = self.portal.request("GET", "recipes")[1]["result"]
         self.assertEqual(listing["receipts"][0]["host"], "halo-1")
+        # A receipt no answer could carry (NaN, an infinity) is refused when saved, and one written by hand is a row
+        # error: the catalog still answers.
+        for text in ('{"disk_read_gbytes_ps": NaN, "method": "direct", "host": "h", "path": "/m"}',
+                     '{"disk_read_gbytes_ps": 1e999, "method": "direct", "host": "h", "path": "/m"}'):
+            status, refused = self.portal.request("POST", "recipes/save-receipt", {"name": "bad", "text": text})
+            self.assertEqual((status, refused["ok"]), (200, False), refused)
+            self.assertIn("disk_read_gbytes_ps" if "1e999" in text else "NaN", json.dumps(refused))
+        (Path(stored["result"]["path"]).parent / "by-hand.json").write_text(
+            '{"disk_read_gbytes_ps": Infinity, "method": "direct", "host": "h", "path": "/m"}', encoding="utf-8")
+        status, answer = self.portal.request("GET", "recipes")
+        self.assertEqual(status, 200, answer)
+        row = next(r for r in answer["result"]["receipts"] if r["name"] == "by-hand")
+        self.assertIn("Infinity", row["error"])
 
     def test_transport_rules(self):
         self.assertEqual(self.portal.request("POST", "recipes/validate", {"recipe": QWEN}, csrf=False)[0], 403)

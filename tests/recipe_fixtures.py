@@ -45,18 +45,26 @@ class Isolated:
     use: APPDATA/LOCALAPPDATA/HOME point into it, and the stub reader is selected unless a core is configured."""
 
     def __init__(self, core=None):
-        # The strix-stream core when HYPERLOOM_SS_RECIPE names it (the same tests then run on the core), else the stub.
+        # The recipe core when HYPERLOOM_TS_RECIPE (else HYPERLOOM_SS_RECIPE) names it, as core.locate reads them (the
+        # same tests then run on the core), else the stub.
         if core is None:
-            core = bool(os.environ.get("HYPERLOOM_SS_RECIPE")) and Path(os.environ["HYPERLOOM_SS_RECIPE"]).is_file()
+            named = os.environ.get("HYPERLOOM_TS_RECIPE") or os.environ.get("HYPERLOOM_SS_RECIPE")
+            core = bool(named) and Path(named).is_file()
         self.temporary = tempfile.TemporaryDirectory(prefix="hl-recipes-test-")
         self.root = Path(self.temporary.name)
         env = {"APPDATA": str(self.root / "appdata"), "LOCALAPPDATA": str(self.root / "local"),
                "HOME": str(self.root / "home"), "XDG_CONFIG_HOME": str(self.root / "home" / ".config")}
         env.update(HYPERLOOM_RECIPE_STUB="1")      # `up --recipe` on the stub is allowed (non-production) in tests
         if not core:
-            env.update(HYPERLOOM_SS_RECIPE="")
+            env.update(HYPERLOOM_TS_RECIPE="", HYPERLOOM_SS_RECIPE="")
         self.patch = mock.patch.dict(os.environ, env)
         self.patch.start()
+        # The route table goes through the router's own parser when a TensorMeld with routes is reachable (the pinned
+        # one, or HYPERLOOM_TM_SRC), else it is accepted: the same rule as the recipe tests.
+        from hyperloom import render
+        from tests.test_recipes import _check_table
+        self.route_check = mock.patch.object(render, "check_route_table", _check_table)
+        self.route_check.start()
         from hyperloom.cli import config_path
         self.config = config_path()
         self.config.parent.mkdir(parents=True, exist_ok=True)
@@ -72,6 +80,7 @@ class Isolated:
 
     def close(self):
         service.use_config(None)
+        self.route_check.stop()
         self.patch.stop()
         self.temporary.cleanup()
 

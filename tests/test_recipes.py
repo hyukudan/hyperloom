@@ -19,6 +19,7 @@ from hyperloom import cli, modelfiles
 from hyperloom.paths import repo_root
 from hyperloom.recipes import apply, core, descriptors, facts, launch, probe, reader, session
 from hyperloom.recipes.reader import GIB_BYTES, RecipeError, StaleProfile
+from hyperloom.recipes.service import BUILTIN_DIR
 
 FIXTURES = Path(__file__).parent / "fixtures" / "recipes"
 MM = (FIXTURES / "minimax-lab.toml").read_text(encoding="utf-8")
@@ -1314,7 +1315,7 @@ def _core():
     return core.CoreBackend(core.Core(executable))
 
 
-EXAMPLES = FIXTURES / "examples"       # strix-stream 4f95e1d recipes/examples, the deployable files, unchanged
+EXAMPLES = BUILTIN_DIR   # strix-stream 4f95e1d recipes/examples, the deployable files, unchanged (portal catalog)
 # What hyperloom knows of each family's engine today (facts.FAMILY_PREFILL_*): only DS has cited prefill facts.
 LAB = {"deepseek-v4.1-flash": dict(topology="pair", caps=("import-state-parked",), prefill_batch=(1, None),
                                    prefill_chunk=4096),
