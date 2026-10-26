@@ -10,7 +10,11 @@ import unittest
 from unittest import mock
 import uuid
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    from unittest import SkipTest
+    raise SkipTest("requires the test extra (pytest)") from None
 
 from hyperloom import admission, cli, orchestrate, procs, rtx
 from hyperloom.recipes import apply, commands, core, launch, measurements, preflight, reader, service, session

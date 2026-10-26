@@ -115,8 +115,12 @@ For the complete security model and limitations, see [Technical overview — Sec
 
 ## Tests
 
-Install the test extra with `python -m pip install -e ".[test]"`, then run `python -m pytest -q`.
-Pytest runs both the existing unittest classes and the placement fixture/parameter tests on Windows and Linux.
+Run the stdlib-only suite with `python -m unittest discover -s tests -t . -v`; pytest-dependent modules
+skip cleanly when the test extra is absent. Runtime dependencies remain stdlib only.
+
+For the full suite, install the pinned test extra with `python -m pip install -e ".[test]"`, then run
+`python -m pytest -q`. Pytest runs both the existing unittest classes and the placement fixture/parameter
+tests on Windows and Linux. CI and `tools/ci-docker.sh` run both suites.
 Root discovery is limited to `tests/`; `third_party` is excluded, including when its submodules are populated.
 The pinned TensorMeld submodule must be available for router/parser and planner tests.
 

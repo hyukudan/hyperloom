@@ -4,7 +4,11 @@ from types import SimpleNamespace
 from unittest import mock
 import sys
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    from unittest import SkipTest
+    raise SkipTest("requires the test extra (pytest)") from None
 
 from hyperloom import rtx
 from hyperloom.recipes import content_cache, reader, runtime

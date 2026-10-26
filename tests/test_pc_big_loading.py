@@ -5,7 +5,11 @@ from types import SimpleNamespace
 from unittest import mock
 import ctypes as C
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    from unittest import SkipTest
+    raise SkipTest("requires the test extra (pytest)") from None
 
 from hyperloom import gpu_counters, pc_big, placement_supervision, rtx
 from hyperloom.recipes import preflight

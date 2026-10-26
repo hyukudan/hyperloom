@@ -11,7 +11,11 @@ import os
 import socket
 import threading
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    from unittest import SkipTest
+    raise SkipTest("requires the test extra (pytest)") from None
 
 from hyperloom import orchestrate, procs, rtx, placement_supervision
 from hyperloom.recipes import launch, commands, content_cache, core, runtime, session

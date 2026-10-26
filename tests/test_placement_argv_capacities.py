@@ -5,7 +5,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    from unittest import SkipTest
+    raise SkipTest("requires the test extra (pytest)") from None
 
 from hyperloom import admission, orchestrate, procs, rtx
 from hyperloom.recipes import launch, measurements, preflight, runtime, service, session

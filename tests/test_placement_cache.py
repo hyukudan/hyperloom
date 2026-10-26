@@ -6,7 +6,11 @@ from unittest import mock
 import json
 import os
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    from unittest import SkipTest
+    raise SkipTest("requires the test extra (pytest)") from None
 
 from hyperloom.recipes import content_cache, descriptors
 

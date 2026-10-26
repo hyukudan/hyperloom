@@ -4,7 +4,11 @@ import hashlib
 import json
 import sys
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    from unittest import SkipTest
+    raise SkipTest("requires the test extra (pytest)") from None
 
 from hyperloom.recipes import content_cache, runtime
 from hyperloom import rtx

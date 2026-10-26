@@ -10,7 +10,11 @@ import hashlib
 import json
 import subprocess
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    from unittest import SkipTest
+    raise SkipTest("requires the test extra (pytest)") from None
 
 from hyperloom import cli, device_policy, orchestrate, rtx
 from hyperloom.recipes import apply, commands, facts, probe, reader, service, launch, session

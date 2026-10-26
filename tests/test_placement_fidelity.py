@@ -7,7 +7,11 @@ import hashlib
 import json
 import uuid
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    from unittest import SkipTest
+    raise SkipTest("requires the test extra (pytest)") from None
 
 from hyperloom import replica_spool, rtx, replica_gate
 from hyperloom.recipes import runtime, service

@@ -6,7 +6,11 @@ from unittest import mock
 import json
 import math
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    from unittest import SkipTest
+    raise SkipTest("requires the test extra (pytest)") from None
 
 from hyperloom import admission, cli, orchestrate, placement_supervision, rtx
 from hyperloom.config import parse

@@ -1,6 +1,10 @@
 """CPU-only privacy policy regressions."""
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    from unittest import SkipTest
+    raise SkipTest("requires the test extra (pytest)") from None
 
 from tests.placement_fixtures import identity
 from tests.test_placement_privacy import private

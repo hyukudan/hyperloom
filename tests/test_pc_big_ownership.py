@@ -11,7 +11,11 @@ import tomllib
 from unittest import mock
 import uuid
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    from unittest import SkipTest
+    raise SkipTest("requires the test extra (pytest)") from None
 
 from hyperloom import device_policy, gpu_counters, pc_big, placement_supervision, procs, rtx
 from hyperloom.recipes import grants, measurements, preflight, reader, service

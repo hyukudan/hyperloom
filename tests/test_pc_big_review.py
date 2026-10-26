@@ -8,7 +8,11 @@ import json
 import sys
 import uuid
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    from unittest import SkipTest
+    raise SkipTest("requires the test extra (pytest)") from None
 
 from hyperloom import gpu_counters, pc_big, placement_supervision, rtx
 from hyperloom.recipes import launch, measurements, preflight, runtime, session

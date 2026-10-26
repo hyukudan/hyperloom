@@ -3,7 +3,11 @@
 from pathlib import Path
 import json
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    from unittest import SkipTest
+    raise SkipTest("requires the test extra (pytest)") from None
 
 from hyperloom.recipes import runtime
 from hyperloom.recipes.reader import RecipeError

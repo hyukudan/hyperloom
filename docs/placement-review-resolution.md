@@ -402,4 +402,36 @@ Evidence logs outside git: `hl-placement-r20-before313.log`, `hl-placement-r20-a
 `hl-placement-r20-regression-isolation.log`, `hl-placement-r20-legacy-ast.log`,
 `hl-placement-r20-privacy.log` and `hl-placement-r20-final-checks.log`.
 Privacy, UTF-8, LF and diff whitespace checks pass. TEMP/TMP were unchanged; submodules remain uninitialized.
-Work stayed on hl/placement at HEAD 7e6d7aa. No network, GPU work, additional worktree, commit or push was used.
+That follow-up is recorded in commit `583b5a9` on `hl/placement` (based on `7e6d7aa`). Its validation used
+no network, GPU work, additional worktree or push.
+
+## Test-extra conformance follow-up of 583b5a9
+
+The test extra pins pytest **8.4.2** (the version of the reference full-suite runs; the runs below also passed with 9.0.2); runtime dependencies remain empty. CI and the Docker
+helper retain unittest discovery, install `.[test]` and run pytest. README documents both commands.
+All 27 pytest imports are guarded by module-level `unittest.SkipTest` when pytest is absent. All 87
+baseline test modules import without discovery errors, with or without the extra available.
+
+Final Python 3.13.7 results:
+
+- Stdlib unittest: **1833 tests in 428.811 s; 3 failures, 44 errors, 96 skipped**.
+- Pytest 9.0.2: **3800 passed, 70 skipped, 47 failure events, 7 warnings**, plus **1519 passed subtests**,
+  in 546.92 s. Warnings include the previously documented background admission-thread issue.
+
+Both runs have exactly the same **46 unique failing IDs**, with none added or missing. The existing
+`test_answers_equal_the_cli` fails in two subtests, accounting for 47 events. Collection has no import
+errors. The owner's reference run with pytest 8.4.2 has the same 46 failing IDs.
+
+The unittest environment has no pytest; the full runner was staged offline from existing local packages.
+Stdlib `zoneinfo` reads the existing IANA database via `PYTHONTZPATH`, without importing a timezone package.
+Earlier attempts lacked that data or hit one socket abort; the socket test passes alone and in the final
+standalone suite. No test behavior was changed for those environment issues.
+
+G6 retains all **21 cases byte-identically**, with the unchanged fixture and reconstructed SHA-256
+`40489d24e0a9b64d9b6186b2742d2fff734e4d66e310dd1776d8b62c340168e7`.
+Evidence outside git: `hl-placement-conformance-unittest313.log`, `hl-placement-conformance-pytest313-final.log`,
+`hl-placement-conformance-failures.log` (all 46 IDs), `hl-placement-conformance-changes.log` (file:line)
+and `hl-placement-conformance-artifacts.log` (G6 and baseline imports).
+UTF-8/LF, diff whitespace and Docker shell syntax checks pass. TEMP/TMP were unchanged; submodules remain
+uninitialized. HEAD remains `583b5a9` on `hl/placement`; no network, GPU work, additional worktree, commit
+or push was used for this round.
