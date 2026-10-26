@@ -572,6 +572,13 @@ def _approval(deadline_s, approval):
         raise ValueError("deadline above 1140 seconds requires explicit approval")
 
 
+def validate_command(deadline_s, approval, queue_timeout_s):
+    """Passive launch-argument validation, shared by admission, snapshots, deploy and the final launch check."""
+    _approval(deadline_s, approval)
+    if type(queue_timeout_s) is not int or not 60 <= queue_timeout_s <= MAX_QUEUE_S:
+        raise ValueError(f"queue timeout must be 60..{MAX_QUEUE_S} seconds")
+
+
 def _release(client, machine, profile, configured, needs=None, rows_out=None):
     """The release to run; with needs=(binary, strings), each string must be in the release's static check.
     rows_out, if given, receives the release's listing row (its manifest)."""
@@ -709,9 +716,7 @@ def check_launch(cluster, profile, router="local", nodes=None, *, diagnostics=No
 
 def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s=1140, approval=None, queue_timeout_s=3600,
        diagnostics=None, vram_cap_gib=None, recipe=None, cancelled=None):
-    _approval(deadline_s, approval)
-    if type(queue_timeout_s) is not int or not 60 <= queue_timeout_s <= MAX_QUEUE_S:
-        raise ValueError(f"queue timeout must be 60..{MAX_QUEUE_S} seconds")
+    validate_command(deadline_s, approval, queue_timeout_s)
     settings, kind, defaults, engine, name, pair, diagnostics, mids = check_launch(
         cluster, profile, router, nodes, diagnostics=diagnostics, recipe=recipe is not None)
     declared = list(mids)

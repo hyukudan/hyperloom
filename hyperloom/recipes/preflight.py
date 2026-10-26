@@ -18,7 +18,14 @@ def check(cluster, path, layers, backend, recipe, bound, report, raw, effective_
           cache=None, observer_factory=None, busy=None, now=None, admission=None, identity=None, reviewed=None):
     """All Hyperloom-determinable placement refusals. No leases, locks, gates, helpers or children."""
     now = time.time() if now is None else now
-    used = grants.check(cluster, recipe, bound["binding"], report, raw["hosts"], now=now, anchors_only=True)
+    owners, ports, reclaimable = _reviewed_resources(reviewed, cluster)
+    hosts = {host: dict(memory) for host, memory in raw["hosts"].items()}
+    for host, credit in reclaimable.items():
+        for key in ("free_ram_gib", "free_commit_gib"):
+            if hosts.get(host, {}).get(key) is not None:
+                hosts[host][key] += credit / rtx.GIB
+    # Hypothetical credit belongs only to the reviewed pre-stop checks, never the physical sample or new policy.
+    used = grants.check(cluster, recipe, bound["binding"], report, hosts, now=now, anchors_only=True)
     rows = {grants.uuid_key(r.get("uuid", "")): r for r in report["devices"]}
     for uuid in used:
         row = rows[uuid]
@@ -50,7 +57,7 @@ def check(cluster, path, layers, backend, recipe, bound, report, raw, effective_
         plan = plans[route["id"]]
         if not isinstance(plan.get("devices"), list) or not plan["devices"] or not isinstance(plan.get("host"), dict):
             raise RecipeError("PL_E_SCHEMA core returned no touched devices or host budgets")
-        policy = grants.policy(cluster, recipe, route, bound["binding"], report, plan, raw["hosts"], now=now)
+        policy = grants.policy(cluster, recipe, route, bound["binding"], report, plan, hosts, now=now)
         policies[route["id"]] = policy
         used.update({grants.uuid_key(g["uuid"]): g for g in policy["grants"]})
         for device in plan["devices"]:
@@ -59,9 +66,9 @@ def check(cluster, path, layers, backend, recipe, bound, report, raw, effective_
                 raise RecipeError("PL_E_STALE placement device identity is unknown")
             sysmem.require(raw.get("sysmem_policy", "unknown"), placement=True, platform=row["platform"])
         pinned, pageable = policy["host_pinned_gib"], policy["host_pageable_gib"]
-        hosts = {m["host"] for sid in route["devices"] for m in bound["binding"][sid]}
-        for host in hosts:
-            memory = raw["hosts"].get(host, {})
+        route_hosts = {m["host"] for sid in route["devices"] for m in bound["binding"][sid]}
+        for host in route_hosts:
+            memory = hosts.get(host, {})
             status = {"free_physical_gib": memory.get("free_ram_gib", float("nan")),
                       "free_commit_gib": memory.get("free_commit_gib", float("nan"))}
             try:
@@ -72,7 +79,6 @@ def check(cluster, path, layers, backend, recipe, bound, report, raw, effective_
                     raise rtx.ServiceError("placement host charge would cross available RAM floor")
             except (rtx.ServiceError, ValueError, TypeError) as exc:
                 raise RecipeError("PL_E_FREE " + str(exc)) from exc
-    owners, ports = _reviewed_resources(reviewed)
     for uuid in sorted(used):
         # Probe an existing OS lock only. A missing lock must not create the runtime directory or lock file.
         if uuid not in owners and rtx.device_lock_path(used[uuid]["uuid"]).exists():
@@ -116,9 +122,9 @@ def check(cluster, path, layers, backend, recipe, bound, report, raw, effective_
     return plans
 
 
-def _reviewed_resources(reviewed):
+def _reviewed_resources(reviewed, cluster):
     """Only a reviewed controller's ready, live helper may account for its device locks and child port."""
-    owners, ports = {}, {}
+    owners, ports, reclaimable, credited = {}, {}, {}, set()
     for state in (reviewed or {}).values():
         record = state.get("prefill_service") or {}
         if not state.get("token") or not record.get("directory") or type(record.get("pid")) is not int:
@@ -149,7 +155,14 @@ def _reviewed_resources(reviewed):
         for uuid in uuids:
             owners.setdefault(uuid, set()).add(record["pid"])
         ports.setdefault(record.get("port"), set()).add(record["pid"])
-    return owners, ports
+        host = record.get("machine")
+        machine = getattr(cluster, "machines", {}).get(host)
+        if getattr(machine, "access", None) == "local" and record["pid"] not in credited:
+            credited.add(record["pid"])
+            credit = procs.private_resident_bytes(record["pid"])
+            if type(credit) is int and credit > 0:
+                reclaimable[host] = reclaimable.get(host, 0) + credit
+    return owners, ports, reclaimable
 
 
 def _handover_busy(uuid, pids, observer_factory):
@@ -208,13 +221,15 @@ def before_options(cluster, profile, options, *, router="local", cap=None, sourc
                    **({"reviewed": reviewed} if reviewed is not None else {}))
 
 
-def snapshot(digest, profile=None, *, source=None, stop=None):
+def snapshot(digest, profile=None, *, source=None, stop=None, approval=None):
+    from .. import orchestrate
     from . import service
     try:
         cluster, intent, options = service.options_from_inputs(digest, profile)
     except service.NotFound:
         # No placement document exists to admit. Keep legacy missing-snapshot job/error handling unchanged.
         return
+    orchestrate.validate_command(intent["deadline_s"], approval, intent["queue_timeout_s"])
     reviewed = None
     if stop is not None and includes(options):
         reviewed = service._states()
@@ -227,13 +242,20 @@ def cli(args, *, load_cluster=None):
     """Read and validate original inputs before CLI/portal admission can write its hold database."""
     command = getattr(args, "command", None)
     deploy = command == "recipe" and getattr(args, "operation", None) == "deploy"
-    if not deploy and (command != "up" or not (args.recipe or args.recipe_inputs)):
+    if not deploy and command != "up":
+        return
+    from .. import orchestrate
+    approval = commands._approval(args)
+    if not deploy and not args.recipe_inputs:
+        orchestrate.validate_command(args.deadline, approval, args.queue_timeout)
+    if not deploy and not (args.recipe or args.recipe_inputs):
         return
     from .. import cli as main_cli
     from . import launch, service
     with service.configured(args.config):
         if deploy or args.recipe_inputs:
             snapshot(args.inputs if deploy else args.recipe_inputs, None if deploy else args.profile,
+                     approval=approval,
                      **({"stop": args.stop or []} if deploy else {}))
             return
         cluster = (load_cluster or main_cli._cluster)(args.config)

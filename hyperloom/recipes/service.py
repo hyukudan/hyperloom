@@ -785,10 +785,13 @@ def rename(value, mapping):
     return value
 
 
-def up_options(cluster, recipe, profile=None, *, layers=None, dirs=(), intent=None):
+def up_options(cluster, recipe, profile=None, *, layers=None, dirs=(), intent=None, approval=None):
     """(cluster, intent, launch.Options) for ``up --recipe REF`` (a file, a recipe id or auto): everything is
     snapshotted first and the launch reads only the snapshot (its configuration copy included)."""
+    from .. import orchestrate
     from . import launch, preflight, session
+    command = dict(DEFAULT_INTENT, **(intent or {}))
+    orchestrate.validate_command(command["deadline_s"], approval, command["queue_timeout_s"])
     layers = layers or session.Layers()
     if recipe == "auto":
         if not profile:
@@ -1079,7 +1082,7 @@ def deploy(digest, stop=(), *, source=None, orchestrate=None, approval=None, job
     so a cancel undoes only what the deploy did (a cancelled deploy's error says what it had stopped)."""
     from .. import orchestrate as default_orchestrate
     from . import preflight
-    preflight.snapshot(digest, source=source, stop=stop)
+    preflight.snapshot(digest, source=source, stop=stop, approval=approval)
     orchestrate = orchestrate or default_orchestrate
     with launch_progress(job, "deploy") as progress:
         return _deploy(digest, stop, source, orchestrate, approval, progress)
@@ -1098,9 +1101,7 @@ def _deploy_pinned(digest, stop, source, orchestrate, approval, progress):
     profile = intent["profile"]
     progress.record(profile=profile)
     # The launch arguments' own checks (deadline, approval, queue timeout) before anything is stopped.
-    default_orchestrate._approval(intent["deadline_s"], approval)
-    if type(intent["queue_timeout_s"]) is not int or not 60 <= intent["queue_timeout_s"] <= default_orchestrate.MAX_QUEUE_S:
-        raise RecipeError("the snapshot's queue timeout is out of range")
+    default_orchestrate.validate_command(intent["deadline_s"], approval, intent["queue_timeout_s"])
     reviewed = _states()
     running = sorted(reviewed)
     if sorted(set(stop)) != running:
@@ -1133,7 +1134,8 @@ def _deploy_pinned(digest, stop, source, orchestrate, approval, progress):
                                          **{name: stop_outcome(stopped[-1]["down"])}))
     check()
     if preflight.includes(options):
-        preflight.snapshot(digest, source=source)
+        # Reviewed credits are gone: resample actual physical RAM and commit before any new launch state.
+        preflight.snapshot(digest, source=source, approval=approval)
     # The hand-over is checked again by up right after it takes ownership of the profile (no gap: a later cancel
     # sees "launching" and stops the launching profile through its own stop marker).
     try:

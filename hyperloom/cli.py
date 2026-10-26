@@ -1,7 +1,6 @@
 """Command line and local router controllers."""
 
 import argparse
-from datetime import datetime
 from dataclasses import asdict
 import importlib
 import ipaddress
@@ -390,15 +389,7 @@ def up_command(args, *, orchestrate=None, load_cluster=None):
 
 def _up_command(args, orchestrate, load_cluster):
     orchestrate = orchestrate or _module("hyperloom.orchestrate")
-    supplied = [args.approval_ref is not None, args.approval_lease is not None, args.approval_end is not None]
-    approval = None
-    if any(supplied):
-        if not all(supplied):
-            raise ValueError("approval requires --approval-ref, --approval-lease, and --approval-end")
-        end = datetime.fromisoformat(args.approval_end.replace("Z", "+00:00"))
-        if end.tzinfo is None:
-            raise ValueError("--approval-end must include a timezone")
-        approval = {"ref": args.approval_ref, "lease_s": args.approval_lease, "end_epoch": end.timestamp()}
+    approval = _module("hyperloom.recipes.commands")._approval(args)
     cluster = (load_cluster or _cluster)(args.config)
     from .recipes import preflight
     preflight.cli(args, load_cluster=lambda _: cluster)
@@ -427,6 +418,7 @@ def _up_command(args, orchestrate, load_cluster):
         service = _module("hyperloom.recipes.service")
         cluster, intent, recipe = service.up_options(
             cluster, args.recipe, args.profile, layers=layers, dirs=list(args.recipe_dir or []),
+            approval=approval,
             intent={"router": args.router, "deadline_s": args.deadline, "queue_timeout_s": args.queue_timeout})
         args.profile = intent["profile"]
     elif any((args.recipe_profile, args.recipe_overrides, args.recipe_set, args.recipe_dir, args.recipe_workload)):

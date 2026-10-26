@@ -75,6 +75,60 @@ def port_owned(address, port, pids):
         return False
 
 
+def private_resident_bytes(pid):
+    """Conservative reclaimable physical AND commit bytes; shared/file-backed pages earn no credit.
+
+    Unknown/inaccessible counters return zero. Never infer residency from an allocation budget or virtual size.
+    """
+    if type(pid) is not int or pid <= 0:
+        return 0
+    try:
+        if os.name == "nt":
+            from ctypes import wintypes
+            class Counters(ctypes.Structure):
+                # PROCESS_MEMORY_COUNTERS_EX2. Older systems leaving its extra fields empty earn no credit.
+                _fields_ = [("cb", wintypes.DWORD), ("faults", wintypes.DWORD)] + [
+                    (name, ctypes.c_size_t) for name in ("peak_ws", "ws", "peak_paged", "paged", "peak_nonpaged",
+                                                       "nonpaged", "pagefile", "peak_pagefile", "private", "private_ws")
+                ] + [("shared_commit", ctypes.c_uint64)]
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel.OpenProcess.restype = wintypes.HANDLE
+            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            kernel.CloseHandle.restype = wintypes.BOOL
+            query = ctypes.WinDLL("psapi", use_last_error=True).GetProcessMemoryInfo
+            query.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD]
+            query.restype = wintypes.BOOL
+            handle = kernel.OpenProcess(0x410, False, pid)  # QUERY_INFORMATION | VM_READ
+            if not handle:
+                return 0
+            try:
+                counters = Counters()
+                counters.cb = ctypes.sizeof(counters)
+                if not query(handle, ctypes.byref(counters), counters.cb):
+                    return 0
+                return min(counters.private, counters.private_ws)
+            finally:
+                kernel.CloseHandle(handle)
+        # Only private, commit-accounted anonymous mappings can restore both counters at exit.
+        credit, private, anonymous = 0, 0, 0
+        with (Path("/proc") / str(pid) / "smaps").open(encoding="ascii") as stream:
+            for line in stream:
+                key = line.split(":", 1)[0]
+                if key in ("Private_Clean", "Private_Dirty"):
+                    private += int(line.split()[1]) * 1024
+                elif key == "Anonymous":
+                    anonymous = int(line.split()[1]) * 1024
+                elif key == "VmFlags":
+                    flags = line.split()[1:]
+                    if "ac" in flags and "sh" not in flags:
+                        credit += min(private, anonymous)
+                    private, anonymous = 0, 0
+        return credit
+    except (OSError, ValueError, IndexError, AttributeError):
+        return 0
+
+
 class InstanceLock:
     """An OS lock, released even on a crash. The lock file is never unlinked."""
 

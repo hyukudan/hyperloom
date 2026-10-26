@@ -36,6 +36,18 @@ file or directory; an unlocked stale lock is allowed. A held/unreadable lock or 
 Checks release their temporary lock/socket immediately. The helper still takes its lifetime device locks and
 the owned child repeats the port check, so races after admission cannot bypass the launch checks.
 
+A reviewed deploy switch may credit the old child's measured private resident host bytes, bounded by its private
+commit, to the local host's physical/commit checks before shutdown. The reviewed controller, matching ready PID
+and devices, and held helper lock must prove ownership. Each PID earns credit once; budgets, shared/file-backed
+pages and unknown counters earn none. Credit changes only the hypothetical admission sample. After stopping the
+reviewed set, deploy gathers fresh physical RAM and commit without credit before calling up; the helper repeats
+the checks before spawn. Foreign pressure that still crosses any floor refuses before progress or pins.
+
+CLI up (including snapshot inputs), CLI deploy and direct deploy share passive approval, deadline and queue-timeout
+validation before admission holds, progress, snapshot publication or pins. Snapshot launches validate the saved
+intent. Approval parsing is shared too. Deploy checks again under its snapshot pin, and up checks at launch so an
+approval expiring after passive admission cannot bypass the later checks.
+
 Static ABI verification (round-2 finding 15): the installed CUDA 13.0 `cuda.h` declares `cuInit`, `cuDeviceGetCount`,
 `cuDeviceGet`, `cuDeviceGetLuid(char *, unsigned int *, CUdevice)` and
 `cuDeviceGetPCIBusId(char *, int, CUdevice)`; all five occur in the installed `nvcuda.dll` export table (769 names).
