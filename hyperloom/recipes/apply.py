@@ -388,7 +388,14 @@ def check_bounds(route, set_id, kind, ctx):
 
 
 def refuse_unsupported(recipe):
+    if any(any(key in device for key in ("optional", "uuid", "pci", "index"))
+           for device in recipe["match"]["devices"]):
+        raise RecipeError("PL_E_CAPABILITY placement selectors require a qualified placement adapter (schema only)")
     for route in recipe["routes"]:
+        if reader.placement_mode(route) or any(key in placement for placement in route["placement"].values()
+                                               for key in reader.HOST):
+            raise RecipeError(f"routes.{route['id']}: PL_E_CAPABILITY placement launch is unavailable until the "
+                              "placement adapter and release are qualified (schema only)")
         w = route["when"]
         if route["phase"] == "prefill" and (w["batch_min"] != 1 or w["batch_max"] is not None):
             raise RecipeError(f"routes.{route['id']}.when: batch predicates on prefill routes are not supported by the "

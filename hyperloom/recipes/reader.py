@@ -43,6 +43,7 @@ class StaleProfile(RecipeError):
 
 REQUIRED = object()
 DERIVED = object()   # absent means "derived by the core from the descriptor" (workspace_gib)
+ABSENT = object()    # added fields never insert defaults into legacy documents
 
 
 def _float(low, high=MAX_GIB, low_open=False):
@@ -62,6 +63,8 @@ DEVICE = {"id": ("id", REQUIRED), "kind": (_enum("cuda", "hip", "cpu"), REQUIRED
           "name": ("str", None), "memory_min_gib": (_float(0, low_open=True), REQUIRED),
           "host_ram_min_gib": (_float(0), 0.0), "disk_read_gbytes_ps_min": (_float(0), 0.0),
           "h2d_gbytes_ps_min": (_float(0), 0.0), "internal_link": ("internal_link", None)}
+DEVICE.update({"optional": ("bool", ABSENT), "uuid": ("str", ABSENT), "pci": ("str", ABSENT),
+               "index": (_int(0, 1023), ABSENT)})
 LINK = {"id": ("id", REQUIRED), "between": ("between", REQUIRED), **LINK_REQ}
 LIMITS = {"host_free_ram_floor_gib": (_float(0), 8.0), "host_free_commit_floor_gib": (_float(0), 0.0)}
 WHEN = {"prompt_tokens_min": (_int(0), 0), "prompt_tokens_max": (_int(0), None),
@@ -82,12 +85,23 @@ ENGINE = {"prefetch_layers": (_int(0, 8), 1), "chunk_tokens": (_int(0, 1048576),
           "routed_only_max_tokens": (_int(0, 1048576), 0), "idle_preload_layers": (_int(0, 64), 0),
           "max_copies_per_token": (_int(0, 65536), 0)}
 PLACEMENT = {**BUDGET, **OPTIONS, **ENGINE}
+HOST = {"host_pageable_gib": (_float(0), ABSENT), "host_available_floor_gib": (_float(0), ABSENT)}
+PLACEMENT.update(HOST)
+ASSIST = {"device_gib": (_float(0), 0.0), "margin_gib": (_float(0, 64), 0.5),
+          "margin_fraction": (_float(0, 0.5), 0.03)}
+COMPONENT_IDS = ("context", "dense", "head", "mtp", "buffers", "state", "window", "graphs", "drafter", "relay",
+                 "ple", "spares", "arena", "layer_slots", "expert_host", "layer_host", "expert_assist",
+                 "expert_compute", "expert_file", "engram", "staging", "pageable")
+ELASTIC_IDS = {"arena", "layer_slots", "expert_host", "layer_host", "expert_assist", "expert_compute", "expert_file"}
+DESTINATIONS = {"auto", "host_pinned", "host_pageable", "file"}
+COMPONENT = {"device": ("str", "auto"), "gib": (_float(0), ABSENT), "units": (_int(0, 2 ** 32), ABSENT),
+             "layers": ("layers", ABSENT)}
 UNITS = {"id": ("id", REQUIRED), "class": (_enum("moe", "blob"), REQUIRED), "layers": ("layers", None),
          "rank": (_enum("model", "list", "frequency"), "model"), "list": ("list", None),
          "resident": ("count", "fill"), "pinned": ("count", 0), "rest": (_enum("disk", "pinned", "peer"), "disk"),
          "peer": ("id", None)}
 ROUTE_KEYS = {"id", "phase", "devices", "execute", "handoff_route", "links", "when", "fallback", "placement",
-              "enabled"}
+              "enabled", "assist", "components", "max_rows", "max_sequences"}
 TOP_KEYS = {"schema", "name", "description", "generated_by", "pin", "match", "limits", "routes"}
 MATCH_KEYS = {"model", "model_sha256", "engine", "devices", "links"}
 
@@ -190,7 +204,7 @@ def _fields(obj, table, where):
             out[key] = _value(kind, obj[key], f"{where}.{key}")
         elif default is REQUIRED:
             raise RecipeError(f'{where}: missing key "{key}"')
-        else:
+        elif default is not ABSENT:
             out[key] = None if default is DERIVED else default
     return out
 
@@ -283,6 +297,9 @@ def load_text(text, origin="recipe"):
 def _placement(obj, route, where):
     _check_keys(obj, set(PLACEMENT) | {"units"}, where)
     out = _fields(obj, PLACEMENT, where)
+    for key in HOST:
+        if out.get(key) == 0:
+            del out[key]           # Tierstream omits zero-valued extension fields
     groups = []
     for raw, gwhere in _items(obj, "units", where):
         _check_keys(raw, set(UNITS), gwhere)
@@ -298,6 +315,59 @@ def _placement(obj, route, where):
         groups.append(group)
     out["units"] = groups
     return out
+
+
+def placement_mode(route):
+    """Only nonempty assist/component tables activate placement, as in Tierstream."""
+    return bool(route.get("assist") or route.get("components"))
+
+
+def _device_selectors(device, where):
+    if not device.get("optional", True):
+        del device["optional"]
+    if "uuid" in device:
+        uuid = device["uuid"]
+        pattern = r"GPU-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+        if device["kind"] == "cuda" and not re.fullmatch(pattern, uuid):
+            raise RecipeError(f"{where}.uuid: PL_E_SCHEMA expected a CUDA UUID (GPU- followed by lowercase hex)")
+        if device["kind"] == "hip" and (not uuid or len(uuid) > 64 or not re.fullmatch(r"[A-Za-z0-9-]+", uuid)):
+            raise RecipeError(f"{where}.uuid: PL_E_SCHEMA expected device UUID text")
+    if "pci" in device and not re.fullmatch(r"[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]", device["pci"]):
+        raise RecipeError(f"{where}.pci: PL_E_SCHEMA expected a PCI address dddd:bb:dd.f (lowercase)")
+    if any(k in device for k in ("optional", "uuid", "pci", "index")) and (
+            device["count"] != 1 or device["kind"] == "cpu"):
+        raise RecipeError(f"{where}: PL_E_SCHEMA optional / uuid / pci / index select one GPU with count 1")
+
+
+def _route_placement(raw, route, devices, where):
+    for key, fields in (("assist", ASSIST), ("components", COMPONENT)):
+        if key not in raw:
+            continue
+        table = raw[key]
+        if not isinstance(table, dict):
+            raise RecipeError(f"{where}.{key}: expected a table")
+        entries = {}
+        for ident, value in table.items():
+            if ident.startswith("x-"):
+                continue
+            path = f"{where}.{key}.{ident}"
+            if key == "assist":
+                if ident not in devices:
+                    raise RecipeError(f"{path}: PL_E_UNKNOWN_DEVICE not a match.devices set")
+                if ident in route["devices"]:
+                    raise RecipeError(f"{path}: PL_E_SCHEMA an assist is not listed in the executing devices")
+                if devices[ident]["count"] != 1 or devices[ident]["kind"] == "cpu":
+                    raise RecipeError(f"{path}: PL_E_SCHEMA an assist is one cuda or hip GPU with count 1")
+            elif ident not in COMPONENT_IDS:
+                raise RecipeError(f"{path}: PL_E_UNKNOWN_COMPONENT not a component id")
+            _check_keys(value, set(fields), path)
+            entries[ident] = _fields(value, fields, path)
+        if entries:
+            order = sorted(entries) if key == "assist" else [c for c in COMPONENT_IDS if c in entries]
+            route[key] = {ident: entries[ident] for ident in order}
+    for key in ("max_rows", "max_sequences"):
+        if key in raw:
+            route[key] = _value(_int(1, 65536), raw[key], f"{where}.{key}")
 
 
 def parse(text, origin="recipe"):
@@ -328,6 +398,7 @@ def parse(text, origin="recipe"):
     for raw, where in _items(match, "devices", "match", required=True):
         _check_keys(raw, set(DEVICE), where)
         device = _fields(raw, DEVICE, where)
+        _device_selectors(device, where)
         if device["h2d_gbytes_ps_min"] > 0 and device["kind"] != "cuda":
             raise RecipeError(f"{where}.h2d_gbytes_ps_min: cuda sets only")
         devices.append(device)
@@ -397,6 +468,7 @@ def parse(text, origin="recipe"):
         for d, placement in route["placement"].items():
             if placement["device_gib"] is None:
                 placement["device_gib"] = by_id[d]["memory_min_gib"]   # the default, made explicit as the core does
+        _route_placement(raw, route, by_id, where)
         routes.append(route)
     recipe["routes"] = routes
     recipe["pin"] = list(pins)
@@ -419,6 +491,15 @@ def check(recipe):
     devices = {d["id"]: d for d in recipe["match"]["devices"]}
     links = {l["id"]: l for l in recipe["match"]["links"]}
     routes = recipe["routes"]
+    active = any(placement_mode(r) for r in routes)
+    for device in devices.values():
+        if active and device["id"] in DESTINATIONS:
+            raise RecipeError(f"match.devices.{device['id']}: PL_E_SCHEMA reserved destination word")
+        if device.get("optional") and any(device["id"] in r["devices"] for r in routes):
+            raise RecipeError(f"match.devices.{device['id']}.optional: PL_E_SCHEMA executing sets cannot be optional")
+    # Required sets keep declaration order; optional binding follows set-id order.
+    recipe["match"]["devices"] = ([d for d in devices.values() if not d.get("optional")]
+                                  + sorted((d for d in devices.values() if d.get("optional")), key=lambda d: d["id"]))
     by_id = {}
     for route in routes:
         if route["id"] in by_id:
@@ -432,6 +513,20 @@ def check(recipe):
             raise RecipeError(f'routes: the last {phase} route ("{own[-1]["id"]}") must have an empty `when` (catch-all)')
     for route in routes:
         where = f"routes.{route['id']}"
+        if not placement_mode(route) and any(k in route for k in ("max_rows", "max_sequences")):
+            raise RecipeError(f"{where}: PL_E_SCHEMA max_rows / max_sequences need an assist or components table")
+        if placement_mode(route) and route["execute"] != "single":
+            raise RecipeError(f"{where}.execute: PL_E_SCHEMA a placement-mode route has one anchor: single")
+        for ident, component in route.get("components", {}).items():
+            path = f"{where}.components.{ident}"
+            if component["device"] not in DESTINATIONS | set(route["devices"]) | set(route.get("assist", {})):
+                raise RecipeError(f"{path}.device: PL_E_UNKNOWN_DEVICE not an anchor, assist or host/file destination")
+            if ("gib" in component or "units" in component) and ident not in ELASTIC_IDS:
+                raise RecipeError(f"{path}: PL_E_SCHEMA only elastic components take a size")
+            if "gib" in component and "units" in component:
+                raise RecipeError(f"{path}: PL_E_SCHEMA gib and units are exclusive")
+            if "layers" in component:
+                raise RecipeError(f"{path}.layers: PL_E_CAPABILITY layer placement is reserved")
         w = route["when"]
         if w["prompt_tokens_max"] is not None and w["prompt_tokens_max"] < w["prompt_tokens_min"]:
             raise RecipeError(f"{where}.when.prompt_tokens_max: below prompt_tokens_min")
@@ -760,7 +855,7 @@ def when_holds(when, tokens, batch):
 
 def placement_defaults():
     """The schema default of every optional placement field (required ones absent)."""
-    out = {k: (None if d is DERIVED else d) for k, (_, d) in PLACEMENT.items() if d is not REQUIRED}
+    out = {k: (None if d is DERIVED else d) for k, (_, d) in PLACEMENT.items() if d is not REQUIRED and d is not ABSENT}
     out["units"] = []
     return out
 
