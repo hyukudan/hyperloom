@@ -44,10 +44,6 @@ def run_cli(*argv, stdin=None):
     return code, (json.loads(text) if text else None), err.getvalue()
 
 
-def sha(text):
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
 class BuiltinTests(unittest.TestCase):
     def test_vendored_examples_match_their_manifest(self):
         manifest = json.loads(service.BUILTIN_MANIFEST.read_text(encoding="utf-8"))
@@ -323,8 +319,8 @@ class WriteTests(unittest.TestCase):
         mm_text = mm_text.replace('name = "minimax-m3.1-flash-lab"', 'name = "mm-base"', 1)
         with isolated():
             service.user_dir().mkdir(parents=True)
-            (service.user_dir() / "mm-base.toml").write_text(mm_text, encoding="utf-8")
-            base_sha = sha(mm_text)
+            (service.user_dir() / "mm-base.toml").write_text(mm_text, encoding="utf-8")    # CRLF on Windows
+            base_sha = hashlib.sha256((service.user_dir() / "mm-base.toml").read_bytes()).hexdigest()  # the raw file's
             group = "routes.prefill_long.placement.rtx.units.layers"
             pair = [(group + ".rank", "list"), (group + ".list", [3, 1, 2])]
             with self.assertRaisesRegex(RecipeError, "change together"):

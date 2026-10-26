@@ -57,6 +57,12 @@ class Isolated:
             env.update(HYPERLOOM_SS_RECIPE="")
         self.patch = mock.patch.dict(os.environ, env)
         self.patch.start()
+        # The route table goes through the router's own parser when a TensorMeld with routes is reachable (the pinned
+        # one, or HYPERLOOM_TM_SRC), else it is accepted: the same rule as the recipe tests.
+        from hyperloom import render
+        from tests.test_recipes import _check_table
+        self.route_check = mock.patch.object(render, "check_route_table", _check_table)
+        self.route_check.start()
         from hyperloom.cli import config_path
         self.config = config_path()
         self.config.parent.mkdir(parents=True, exist_ok=True)
@@ -72,6 +78,7 @@ class Isolated:
 
     def close(self):
         service.use_config(None)
+        self.route_check.stop()
         self.patch.stop()
         self.temporary.cleanup()
 

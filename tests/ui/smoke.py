@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import base64
 from contextlib import ExitStack
+import dataclasses
 import hashlib
 import http.client
 import io
@@ -326,6 +327,16 @@ def fixture_server(args):
         (config_file.parent / "recipes").mkdir(exist_ok=True)
         (config_file.parent / "recipes" / "qwen3.8-flash-next.fixture.toml").write_text(FIXTURE_RECIPE, encoding="utf-8")
         stack.enter_context(patch.object(render, "router_policies", lambda: ("nodes", "rtx", "auto", "routes")))
+        stack.enter_context(patch.object(render, "check_route_table", lambda table: None))
+        # The fixture's engine states its prefill bounds (one prefill of up to 8 prompts, whole prompts), so the
+        # fixture recipe's local prefill route is admissible; the real presets cite them per engine build.
+        from hyperloom.recipes import facts as recipe_facts
+        real_context = recipe_facts.context
+
+        def fixture_context(cluster, profile):
+            ctx = real_context(cluster, profile)
+            return dataclasses.replace(ctx, limits=dict(ctx.limits, prefill_batch=(8, None), prefill_chunk=0))
+        stack.enter_context(patch.object(recipe_facts, "context", fixture_context))
         os.environ.update(HYPERLOOM_RECIPE_STUB="1", HYPERLOOM_SS_RECIPE="")
         os.environ["HYPERLOOM_UI_INPROCESS"] = "1"  # patched backends: keep jobs in this process
         return cli.main(["ui", "--port", str(args.port), "--no-browser"])
