@@ -1,11 +1,11 @@
 {
   "1": {
-    "argv": ["<runtime>/cuda/111111111111/bin/strix-cuda-ds41-replica.exe", "<runtime>/model", "--phases", "chats0", "--serve", "{replica_spool}", "--placement", "<runtime>/placement.json", "--content-manifest", "<runtime>/manifest.json", "--receipts", "<runtime>/receipts.json"],
+    "argv": ["<runtime>/cuda/111111111111/bin/strix-cuda-ds41-replica.exe", "<runtime>/model", "--import-state", "<runtime>/import-state", "--receipt", "<runtime>/model-receipt", "--phases", "chats0", "--chats", "0", "--seqs-file", "<runtime>/sequences", "--serve", "{replica_spool}", "--placement", "<runtime>/placement.json", "--content-manifest", "<runtime>/manifest.json", "--receipts", "<runtime>/receipts.json"],
     "env": {"CUDA_DEVICE_ORDER": "PCI_BUS_ID", "CUDA_VISIBLE_DEVICES": "<anchor-uuid>"},
     "release": "1111111111111111111111111111111111111111"
   },
   "2": {
-    "argv": ["<runtime>/cuda/111111111111/bin/strix-cuda-ds41-replica.exe", "<runtime>/model", "--phases", "chats0", "--serve", "{replica_spool}", "--placement", "<runtime>/placement.json", "--content-manifest", "<runtime>/manifest.json", "--receipts", "<runtime>/receipts.json"],
+    "argv": ["<runtime>/cuda/111111111111/bin/strix-cuda-ds41-replica.exe", "<runtime>/model", "--import-state", "<runtime>/import-state", "--receipt", "<runtime>/model-receipt", "--phases", "chats0", "--chats", "0", "--seqs-file", "<runtime>/sequences", "--serve", "{replica_spool}", "--placement", "<runtime>/placement.json", "--content-manifest", "<runtime>/manifest.json", "--receipts", "<runtime>/receipts.json"],
     "env": {"CUDA_DEVICE_ORDER": "PCI_BUS_ID", "CUDA_VISIBLE_DEVICES": "<anchor-uuid>,<assist-uuid>"},
     "release": "1111111111111111111111111111111111111111"
   }

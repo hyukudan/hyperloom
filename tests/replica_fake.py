@@ -8,6 +8,16 @@ from unittest import mock
 from hyperloom.recipes import content_cache
 
 
+def startup_args(model):
+    """Readable native inputs for rendering tests; their contents are never offered to a real engine."""
+    model = Path(model)
+    paths = [model.parent / name for name in ("import-state", "model-receipt", "sequences")]
+    for path in paths:
+        path.write_bytes(b"synthetic native input")
+    return [str(model), "--import-state", str(paths[0]), "--receipt", str(paths[1]),
+            "--phases", "chats0", "--chats", "0", "--seqs-file", str(paths[2])]
+
+
 class FakeReplica:
     instances = []
 

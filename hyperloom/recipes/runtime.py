@@ -12,7 +12,7 @@ import json
 from pathlib import Path, PureWindowsPath
 import re
 
-from . import content_cache
+from . import content_cache, replica_args
 from .reader import RecipeError
 
 PRESET = Path(__file__).resolve().parents[1] / "presets" / "rtx-decode-ds41-placement.json"
@@ -22,7 +22,14 @@ SUGAR = frozenset(("--anchor", "--gpu-budget-gib", "--device-map"))
 SIZING = frozenset(("--arena-gib", "--spares", "--host-spares", "--max-rows", "--max-pinned-gib",
                     "--host-margin-gib", "--draft-device", "--draft-vocab", "--cache", "--layers", "--engram",
                     "--engram-cache-mb", "--chunk", "--chunk-size", "--positions", "--context", "--slots",
-                    "--vram-cap-gib", "--host-gib", "--max-sequences"))
+                    "--vram-cap-gib", "--host-gib", "--max-sequences", "--max-positions", "--predict",
+                    "--pressure-spares", "--draft", "--draft-keep", "--draft-keep-from", "--warmup-graphs",
+                    "--test-hooks", "--timing", "--stream-hashes", "--chat-logits", "--records-inline",
+                    "--route-stats", "--fuse-hc", "--fuse-shared",
+                    "--router-v2", "--router-pf", "--router-pf0", "--pdl", "--pdl-np", "--pdl-regs",
+                    "--shared-fork", "--qakv-s1", "--qakv-auto", "--attn-fork", "--ob-expand", "--moe-expand",
+                    "--ob-one", "--attn1", "--attn-h1", "--attn-pf", "--hc-cluster", "--hc-partial5",
+                    "--moe-v1b3", "--dsrtxk-off", "--fuse-off"))
 
 
 def preset():
@@ -189,12 +196,13 @@ def render(files, *, binary, argv=(), data=None):
     document = files.read()
     if document.get("engine") != data["engine"]:
         raise RecipeError("PL_E_CAPABILITY placement engine differs from the decode adapter")
+    if any(not isinstance(token, str) for token in argv):
+        raise RecipeError("PL_E_SCHEMA placement argv must contain only strings")
     conflicts = sorted({token.split("=", 1)[0] for token in argv}
                        & (SUGAR | SIZING | {"--placement", "--content-manifest", "--receipts"}))
     if conflicts:
         raise RecipeError("PL_E_CONFLICT placement owns allocation flags: " + ", ".join(conflicts))
-    if not argv or not isinstance(argv[0], str) or argv[0].startswith("--"):
-        raise RecipeError("PL_E_SCHEMA replica requires the positional model before options")
+    replica_args.validate(argv)
     return [str(binary), *argv, *files.argv()], visibility(document), document
 
 

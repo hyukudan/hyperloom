@@ -156,10 +156,10 @@ def test_5_native_replica_spool_round_trip(tmp_path):
                       free_commit_floor_gib=4)
         cluster = SimpleNamespace(machines={"local": SimpleNamespace(access="local", os="windows",
                                                                        install_root=str(tmp_path))})
-        request = runtime.Request("local", fixture.files, policy, argv=("model", "--max-positions", "32768"))
+        request = runtime.Request("local", fixture.files, policy, argv=tuple(fixture.argv))
         with mock.patch.object(runtime, "preset", return_value=fixture.data), mock.patch.object(rtx.time, "time", return_value=NOW):
             spec = rtx.render_placement_service(cluster, request, api_key="0" * 64)
-        assert spec.argv[1] == "model" and spec.replica_spool
+        assert spec.argv[1] == str(fixture.root / "model") and spec.replica_spool
         assert not {"--host", "--port", "--api-key"} & set(spec.argv)
         assert spec.argv.count("--placement") == spec.argv.count("--content-manifest") == spec.argv.count("--receipts") == 1
         # Exercise the real helper protocol; only process/GPU supervision is faked.

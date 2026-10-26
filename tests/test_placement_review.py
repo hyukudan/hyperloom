@@ -18,6 +18,7 @@ from hyperloom.recipes import commands, content_cache, core, descriptors, grants
 from hyperloom.recipes import preflight, reader, runtime, session, solver
 from tests import test_recipes
 from tests.test_recipes_grants import NOW, window
+from tests.replica_fake import startup_args
 
 
 def grant(identity, cap=90):
@@ -76,7 +77,8 @@ def test_02_actual_core_schema_renders_without_injected_manifest_hash(files):
     artifacts, document = files
     before = artifacts.placement.read_bytes()
     data = dict(runtime.preset(), engine_sha="1" * 40, capabilities=["placement-v1"])
-    assert runtime.render(artifacts, binary="fake", argv=["model"], data=data)[2] == document
+    assert runtime.render(artifacts, binary="fake", argv=startup_args(artifacts.placement.parent / "model"),
+                          data=data)[2] == document
     assert artifacts.placement.read_bytes() == before
     assert data["engine"] == document["engine"]
 
@@ -344,7 +346,8 @@ def test_01_evaluate_prepare_up_and_real_watchdog_with_fake_child(tmp_path, file
     monkeypatch.setattr(gpu_counters, "Observer", lambda: observer)
     dog = placement_supervision.Watchdog
     monkeypatch.setattr(placement_supervision, "Watchdog", lambda *a, **kw: dog(*a, clock=lambda: NOW, **kw))
-    inputs = {"routes": {"decode": dict(components=ref, selected_content=selected, receipts=str(artifacts.receipts))}}
+    inputs = {"routes": {"decode": dict(components=ref, selected_content=selected, receipts=str(artifacts.receipts),
+                                      argv=startup_args(model)[1:])}}
     options = launch.Options(str(path), placement_inputs=inputs)
     prepared = launch.prepare(cluster, "decode", options, router="local", vram_cap_gib=None, state_dir=tmp_path)
     assert prepared.evaluation.ok and prepared.evaluation.decision["placement"]
@@ -458,7 +461,7 @@ def test_02_genuine_core_output_renders_without_modifying_hashed_document(tmp_pa
     artifacts.placement.write_bytes(json.dumps(result.document).encode())
     original = artifacts.placement.read_bytes()
     data = dict(runtime.preset(), engine_sha="1" * 40, capabilities=["placement-v1"])
-    assert runtime.render(artifacts, binary="fake", argv=["model"], data=data)[2] == result.document
+    assert runtime.render(artifacts, binary="fake", argv=startup_args(tmp_path / "model"), data=data)[2] == result.document
     assert artifacts.placement.read_bytes() == original
 
 

@@ -13,6 +13,7 @@ from hyperloom.recipes import apply, content_cache, launch, runtime
 from hyperloom.recipes.reader import RecipeError
 from hyperloom import rtx
 from tests.portable_fixtures import read_fixture
+from tests.replica_fake import startup_args
 
 
 class PlacementRenderTests(unittest.TestCase):
@@ -26,6 +27,7 @@ class PlacementRenderTests(unittest.TestCase):
         self.uuids = ["GPU-" + str(uuid.uuid4()) for _ in range(2)]
         model = self.root / "model"
         model.write_bytes(b"synthetic model")
+        self.argv = startup_args(model)
         stat = model.stat()
         self.manifest = {"schema": content_cache.MANIFEST_SCHEMA, "files": [
             {"path": str(model), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns,
@@ -45,7 +47,7 @@ class PlacementRenderTests(unittest.TestCase):
         self.files.placement.write_bytes(json.dumps(self.document).encode())
 
     def render(self, **kwargs):
-        kwargs.setdefault("argv", [str(self.root / "model")])
+        kwargs.setdefault("argv", self.argv)
         return runtime.render(self.files, binary="<release>/bin/replica", data=self.data, **kwargs)
 
     def test_single_and_two_gpu_goldens(self):
@@ -64,7 +66,7 @@ class PlacementRenderTests(unittest.TestCase):
                       "caps_gib": {u.lower(): 10 for u in self.uuids[:count]}, "host_pinned_gib": 0,
                       "host_pageable_gib": 0, "free_commit_floor_gib": 4}
             machine = SimpleNamespace(access="local", os="windows", install_root=str(self.root))
-            request = runtime.Request("local", self.files, policy, argv=(str(self.root / "model"), "--phases", "chats0"))
+            request = runtime.Request("local", self.files, policy, argv=tuple(self.argv))
             with mock.patch.object(runtime, "preset", return_value=self.data), mock.patch.object(rtx.time, "time", return_value=NOW):
                 spec = rtx.render_placement_service(SimpleNamespace(machines={"local": machine}), request, api_key="0" * 64)
             argv = [str(a).replace(str(self.root), "<runtime>").replace("\\", "/") for a in spec.redacted]
@@ -95,7 +97,7 @@ class PlacementRenderTests(unittest.TestCase):
                   "host_pageable_gib": 0, "free_commit_floor_gib": 4}
         machine = SimpleNamespace(access="local", os="windows", install_root=str(self.root))
         cluster = SimpleNamespace(machines={"local": machine})
-        request = runtime.Request("local", self.files, policy, argv=(str(self.root / "model"),))
+        request = runtime.Request("local", self.files, policy, argv=tuple(self.argv))
         with mock.patch.object(runtime, "preset", return_value=self.data), \
                 mock.patch.object(rtx.time, "time", return_value=NOW), \
                 mock.patch.object(rtx, "memory_status", side_effect=AssertionError("pure preview")):
