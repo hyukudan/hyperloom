@@ -1,4 +1,4 @@
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from copy import deepcopy
 from dataclasses import replace
 import importlib.util
@@ -194,6 +194,30 @@ class OrchestrationTests(unittest.TestCase):
         state = orch.up(self.cluster, "qwen-replicas")             # no configuration set for the call: none recorded
         self.assertNotIn("config", state)
         self.assertEqual(orch.launch_states(config), {})
+
+    def test_an_up_from_another_configuration_is_refused_naming_the_owner(self):
+        # Profile names are unique across the configurations that share the runtime directory (docs/install.md).
+        from hyperloom.recipes import service
+        mine, theirs = self.directory / "a" / "cluster.json", self.directory / "b" / "cluster.json"
+        for config in (mine, theirs):
+            config.parent.mkdir()
+            config.write_text('{"fixture": true}', encoding="utf-8")
+        with service.configured(theirs):
+            state = orch.up(self.cluster, "qwen-replicas")
+        self.calls.clear()
+        for configured in (mine, None):
+            with self.subTest(configured=configured), ExitStack() as stack:
+                if configured is not None:
+                    stack.enter_context(service.configured(configured))
+                with self.assertRaises(orch.OrchestrationError) as caught:
+                    orch.up(self.cluster, "qwen-replicas")
+                self.assertIn(f"running from the configuration {theirs.resolve()}", str(caught.exception))
+                self.assertIn("unique across the configurations", str(caught.exception))
+        self.assertEqual(self.calls, [])
+        self.assertEqual(orch._read(orch._state_path("qwen-replicas")), state)        # untouched
+        with service.configured(theirs), self.assertRaises(orch.OrchestrationError) as caught:
+            orch.up(self.cluster, "qwen-replicas")                                    # its own: run down first
+        self.assertEqual(str(caught.exception), "profile has saved running state; run down before up")
 
     def test_failed_rollback_keeps_state_for_down_retry(self):
         self.fail.update({("halo-2", "lease"), ("halo-1", "stop")})

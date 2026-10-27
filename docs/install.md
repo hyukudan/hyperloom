@@ -134,6 +134,13 @@ Per node, set:
 
 `config validate` rejects unknown keys, non-private addresses and malformed values, and names the field.
 
+More than one configuration (`--config FILE`) can run on the same control machine, but they share one runtime
+directory (`%LOCALAPPDATA%\hyperloom\run`, Linux: `~/.config/hyperloom/run`) where each launch state is named by its
+profile: **profile names must be unique across those configurations**. An `up` of a profile name that another
+configuration is running is refused, and the message names that configuration's path; stop it there
+(`hloom down <profile> --config <path>`) or rename the profile in one of them. `status`, `logs` and `metrics` show
+the launches of `--config` (default: the default configuration); `--all-configs` shows every configuration's.
+
 ## 5. Pair each node (host key)
 
 hyperloom keeps its own `known_hosts` and connects only to a key you confirmed:
