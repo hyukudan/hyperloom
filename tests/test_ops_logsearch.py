@@ -209,6 +209,31 @@ class NodeSearchTests(unittest.TestCase):
         self.assertEqual(self.run_search(text="case")["results"], [])
         self.assertIsNotNone(node.protected(Path(os.path.realpath(self.tree.root / ".SSH"))))
 
+    def test_dot_files_and_dot_directories_are_never_searched(self):
+        (self.tree.root / ".netrc").write_text("machine lab login ERROR-netrc password x\n")
+        (self.tree.root / ".env").write_text("ERROR-env AWS_SECRET_ACCESS_KEY=abc\n")
+        (self.tree.root / ".config").mkdir()
+        (self.tree.root / ".config" / "app.log").write_text("ERROR-hidden-dir\n")
+        result = self.run_search(text="ERROR-")
+        self.assertEqual(result["results"], [])
+
+    def test_redaction_covers_the_common_credential_forms(self):
+        lines = {
+            "export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENG": "wJalrXUtnFEMIK7MDENG",
+            "login with password hunter3 now": "hunter3",
+            "Authorization: Basic dXNlcjpwYXNz": "dXNlcjpwYXNz",
+            "Authorization: Bearer abc.def.ghi": "abc.def.ghi",
+            '{"db.password": "s3cr3t-value"}': "s3cr3t-value",
+            "run --hf-token tk_123456 --other": "tk_123456",
+            "GITHUB_TOKEN: ghp_abcdef123": "ghp_abcdef123",
+            "fetch https://user:pa55word@example.invalid/x": "pa55word",
+            "client_secret='quoted value'": "quoted value",
+        }
+        for line, secret in lines.items():
+            with self.subTest(line=line):
+                self.assertNotIn(secret, node.redact(line))
+        self.assertEqual(node.redact("generated 512 tokens in 3.1 s"), "generated 512 tokens in 3.1 s")
+
     def test_output_budget(self):
         (self.tree.root / "big.log").write_text("".join(f"match {'y' * 380} {i}\n" for i in range(600)))
         result = self.run_search(text="match", max_results=500, context=2)
@@ -255,16 +280,19 @@ class PortalSearchTests(APIFixture, unittest.TestCase):
                 self.api.feature_post("logsearch/query", bad)
 
     def test_roots_are_validated_and_audited(self):
-        for roots in (["relative"], ["/srv/x/.ssh"], ["/etc/x"], ["/"], ["/a"] * 17):
+        # Only inside a root the configuration gives the machine (install root, lab directory, model roots), never a
+        # hidden directory: a home directory with its .netrc or .env is not a log root.
+        for roots in (["relative"], ["/srv/x/.ssh"], ["/etc/x"], ["/"], ["/a"] * 17, ["/srv/lab/runs"],
+                      ["/home/someone"], ["/opt/lab/.cache"], ["/opt/labx"]):
             with self.assertRaises(Exception, msg=roots):
                 self.api.feature_post("logsearch/roots", {"machine": "halo-1", "roots": roots})
-        self.api.feature_post("logsearch/roots", {"machine": "halo-1", "roots": ["/srv/lab/runs", "/srv/lab/runs"]})
+        self.api.feature_post("logsearch/roots", {"machine": "halo-1", "roots": ["/opt/lab/runs", "/opt/lab/runs"]})
         doc = self.api.read("logsearch", {})
         halo = next(m for m in doc["machines"] if m["machine"] == "halo-1")
-        self.assertEqual(halo["configured"], ["/srv/lab/runs"])
+        self.assertEqual(halo["configured"], ["/opt/lab/runs"])
         self.assertEqual([r["id"] for r in halo["roots"]], ["hyperloom", "root-0"])
         _, result = self.api.feature_post("logsearch/query", {"text": "alpha", "machines": ["halo-1"], "roots": ["root-0"]})
-        self.assertEqual(self.calls[-1][2]["roots"], ["/srv/lab/runs"])
+        self.assertEqual(self.calls[-1][2]["roots"], ["/opt/lab/runs"])
         self.assertNotIn("root", self.calls[-1][2])
         audit = [json.loads(line)["action"] for line in (Path(self.dir.name) / "audit.jsonl").read_text().splitlines()]
         self.assertIn("logsearch/roots", audit)

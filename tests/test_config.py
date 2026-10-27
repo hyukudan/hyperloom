@@ -205,5 +205,21 @@ class ConfigTests(unittest.TestCase):
                 parse(obj)
 
 
+    def test_the_ledger_and_the_mqtt_broker_are_configuration(self):
+        obj = example()
+        ledger = str(Path(tempfile.gettempdir()) / "coordination.md")
+        obj.setdefault("pc", {}).update(turn_ledger=ledger,
+                                        mqtt_broker={"host": "broker.lan", "port": 8883, "tls": True})
+        cluster = parse(obj)
+        self.assertEqual((cluster.pc["turn_ledger"], cluster.pc["mqtt_broker"]["host"]),
+                         (ledger, "broker.lan"))
+        for key, value in (("turn_ledger", "relative.md"), ("mqtt_broker", {"host": "a b"}),
+                           ("mqtt_broker", {"host": "x", "port": 0}), ("mqtt_broker", {"host": "x", "tls": "yes"}),
+                           ("mqtt_broker", {"host": "x", "password": "p"}), ("mqtt_broker", {})):
+            bad = example()
+            bad.setdefault("pc", {})[key] = value
+            with self.subTest(key=key, value=value), self.assertRaises(ConfigError):
+                parse(bad)
+
 if __name__ == "__main__":
     unittest.main()

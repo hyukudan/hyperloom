@@ -158,10 +158,10 @@
     UI.open({
       title: "Big-job ledger settings", confirm: "Save",
       body: `<p class="ops-note">The coordination log is read on this machine only (its last 2 MiB); a big job whose line names no cap uses the default cap.</p>
-        <label class="field" for="turns-ledger-path">Coordination log path<input class="inp" id="turns-ledger-path" value="${esc(s.ledger_path || "")}" placeholder="absolute path; empty to clear" spellcheck="false"></label>
+        <p class="ops-note">Coordination log: <span class="mono">${esc(s.ledger_path || "not configured")}</span> (set in the configuration file as pc.turn_ledger)</p>
         <div class="two"><label class="field" for="turns-ledger-cap">Default big-job cap (s)<input class="inp" id="turns-ledger-cap" type="number" min="60" max="7200" value="${esc(s.ledger_cap_s ?? 1800)}"></label>
         <label class="field" for="turns-pair-cap">Pair-turn cap of the lab rule (s)<input class="inp" id="turns-pair-cap" type="number" min="60" max="7200" value="${esc(s.pair_cap_s ?? 480)}"></label></div>`,
-      submit: () => UI.post("turns/settings", {ledger_path: document.getElementById("turns-ledger-path").value.trim() || null,
+      submit: () => UI.post("turns/settings", {
         ledger_cap_s: Number(document.getElementById("turns-ledger-cap").value), pair_cap_s: Number(document.getElementById("turns-pair-cap").value)}),
     });
   });

@@ -85,16 +85,17 @@ class DocumentTests(LibraryFeatureCase):
 class PostTests(LibraryFeatureCase):
     def test_roots_are_validated_and_audited(self):
         self.api.telemetry = self.store
-        status, result = self.api.feature_post("library/roots", {"machine": "halo-2", "roots": ["/srv/models"]})
-        self.assertEqual(result, {"machine": "halo-2", "roots": ["/srv/models"]})
-        self.assertEqual(self.store.get("prefs", "library/roots"), {"halo-2": ["/srv/models"]})
+        status, result = self.api.feature_post("library/roots", {"machine": "halo-2", "roots": ["/opt/assets/x"]})
+        self.assertEqual(result, {"machine": "halo-2", "roots": ["/opt/assets/x"]})
+        self.assertEqual(self.store.get("prefs", "library/roots"), {"halo-2": ["/opt/assets/x"]})
         for bad in ({"machine": "halo-2", "roots": ["relative"]}, {"machine": "nobody", "roots": []},
-                    {"machine": "halo-2", "roots": "x"}, {"machine": "halo-2"}):
+                    {"machine": "halo-2", "roots": "x"}, {"machine": "halo-2"},
+                    {"machine": "halo-2", "roots": ["/home/someone"]}):
             with self.subTest(bad), self.assertRaises(APIError):
                 self.api.feature_post("library/roots", bad)
         states = [row["result"]["state"] for row in self.audit() if row["action"] == "library/roots"]
         self.assertEqual(states.count("succeeded"), 1)
-        self.assertEqual(states.count("refused"), 4)
+        self.assertEqual(states.count("refused"), 5)
 
     def test_verification_and_its_node_jobs_are_refused(self):
         """Held like the copies: no route starts a verification or reads or cancels a node job, so nothing reaches

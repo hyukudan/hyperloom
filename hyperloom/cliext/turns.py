@@ -66,10 +66,6 @@ def settings(args):
     from hyperloom.web.features import turns
     api = _api(args)
     arguments = {}
-    if args.clear_ledger_path:
-        arguments["ledger_path"] = None
-    elif args.ledger_path is not None:
-        arguments["ledger_path"] = str(Path(args.ledger_path).absolute())
     for key in ("ledger_cap_s", "pair_cap_s"):
         if getattr(args, key) is not None:
             arguments[key] = getattr(args, key)
@@ -89,11 +85,8 @@ def add(commands):
     parser.add_argument("--recent", type=int, default=5, help="recent turns to list per node")
     parser.set_defaults(ext_run=safe(show))
     sub = parser.add_subparsers(dest="turns_operation")
-    change = sub.add_parser("settings", help="the ledger path and caps")
+    change = sub.add_parser("settings", help="the caps (the ledger path is the configuration's pc.turn_ledger)")
     change.add_argument("--config", type=Path, default=config_path())
-    group = change.add_mutually_exclusive_group()
-    group.add_argument("--ledger-path", help="the coordination log with the big-job lines (read on this machine)")
-    group.add_argument("--clear-ledger-path", action="store_true")
     change.add_argument("--ledger-cap-s", type=int, help="cap of a big job whose line states none (60..7200)")
     change.add_argument("--pair-cap-s", type=int, help="the lab rule's cap for pair turns (60..7200)")
     change.set_defaults(ext_run=safe(settings))

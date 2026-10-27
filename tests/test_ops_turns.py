@@ -478,12 +478,18 @@ class LedgerTests(APIFixture, unittest.TestCase):
         self.assertEqual((later["state"], [r["owner"] for r in later["stale"]]), ("free", ["job-f"]))
 
     def test_settings_and_document(self):
-        self.assertEqual(self.api.read("turns", {})["ledger"]["why"], "ledger path not configured (turns settings)")
-        with self.assertRaises(Exception):
-            self.api.feature_post("turns/settings", {"ledger_path": "relative.md"})
+        import dataclasses
+        self.assertEqual(self.api.read("turns", {})["ledger"]["why"],
+                         "ledger path not configured (pc.turn_ledger in the configuration file)")
+        # The ledger path is configuration: no portal setting names a file (an empty one would disable the guard).
+        for path in ("relative.md", str(self.path), str(Path(self.dir.name) / "empty.md")):
+            with self.assertRaisesRegex(Exception, "pc.turn_ledger"):
+                self.api.feature_post("turns/settings", {"ledger_path": path})
         with self.assertRaises(Exception):
             self.api.feature_post("turns/settings", {"ledger_cap_s": 5})
-        self.api.feature_post("turns/settings", {"ledger_path": str(self.path), "ledger_cap_s": 1200})
+        configured = dataclasses.replace(cluster_of(), pc={"turn_ledger": str(self.path)})
+        self.api._cluster = lambda: configured
+        self.api.feature_post("turns/settings", {"ledger_cap_s": 1200})
         ledger = self.api.read("turns", {})["ledger"]
         self.assertIn(ledger["state"], ("held", "free"))
         audit = [json.loads(line) for line in (Path(self.dir.name) / "audit.jsonl").read_text().splitlines()]

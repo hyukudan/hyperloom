@@ -109,7 +109,6 @@ import time as _time
 from .winproc import retry_sharing
 
 LIBRARY_PREFS = "library/roots"
-LEDGER_PREF = "turns/ledger_path"
 LEDGER_MAX = 64 * 1024 * 1024
 LEDGER_LINE = re.compile(r"- (\d{2}):(\d{2}) ([^\s:]+): PC-BIG (start|end)\b")
 MAX_ROOTS = 16
@@ -159,6 +158,39 @@ def _absolute_for(machine, value):
     return str(path)
 
 
+def _parts(machine, value):
+    path = (_PureWindowsPath if machine.os == "windows" else PurePosixPath)(value)
+    return [part.lower() for part in path.parts] if machine.os == "windows" else list(path.parts)
+
+
+def configured_bases(cluster, machine):
+    """The roots the configuration gives a machine: its install root and the parents of its configured assets
+    (and of the control machine's ``control_path`` assets); an extra root must lie inside one of them."""
+    bases = [machine.install_root]
+    local = control_machine(cluster)
+    for mid, assets in cluster.assets.items():
+        for asset in assets.values():
+            if mid == machine.id:
+                bases.append(str((_PureWindowsPath if machine.os == "windows" else PurePosixPath)(asset["path"]).parent))
+            if local is not None and local.id == machine.id and "control_path" in asset:
+                bases.append(str((_PureWindowsPath if machine.os == "windows" else PurePosixPath)(
+                    asset["control_path"]).parent))
+    return list(dict.fromkeys(bases))
+
+
+def inside_bases(machine, value, bases):
+    """Whether ``value`` is one of ``bases`` or below one, with no dot (hidden) directory in its own part."""
+    parts = _parts(machine, value)
+    for base in bases:
+        try:
+            head = _parts(machine, base)
+        except (TypeError, ValueError):
+            continue
+        if parts[:len(head)] == head and not any(part.startswith(".") for part in parts[len(head):]):
+            return True
+    return False
+
+
 def library_roots(cluster, store=None):
     """{machine id: [{path, source}]}: parents of the configured assets (``control_path`` ones belong to the control
     machine) and the operator's extra roots in prefs ``library/roots``."""
@@ -184,11 +216,14 @@ def library_roots(cluster, store=None):
             machine = cluster.machines.get(mid)
             if machine is None or not isinstance(values, list):
                 continue
+            bases = configured_bases(cluster, machine)
             for value in values:
                 try:
-                    add(mid, _absolute_for(machine, value), "prefs")
+                    path = _absolute_for(machine, value)
                 except ValueError:
                     continue
+                if inside_bases(machine, path, bases):     # a root saved by an earlier release elsewhere: not used
+                    add(mid, path, "prefs")
     return roots
 
 
@@ -198,8 +233,12 @@ def check_roots(cluster, machine_id, values):
     if not isinstance(values, list) or len(values) > MAX_ROOTS:
         raise ValueError("roots must be a list of at most 16 absolute directories")
     result = []
+    bases = configured_bases(cluster, machine)
     for value in values:
         path = _absolute_for(machine, value)
+        if not inside_bases(machine, path, bases):
+            raise ValueError(f"{machine.id}: an extra model root must lie inside a configured root ("
+                             + ", ".join(bases) + ") and outside hidden directories: " + path)
         if path not in result:
             result.append(path)
     return result
@@ -327,7 +366,7 @@ class _FileLock:
 
 class LedgerGuard:
     """No verification on the control machine while an RTX PRO big job is open in the coordination ledger
-    (prefs ``turns/ledger_path``). The whole file is evaluated at every check against a monotonic checkpoint of
+    (the configuration's ``pc.turn_ledger``). The whole file is evaluated at every check against a monotonic checkpoint of
     everything observed so far (identity, size, sha256 of that prefix): the file may only grow; a replaced, truncated
     or rewritten ledger blocks until the operator accepts it again (``hyperloom models ledger-accept``). Every
     evaluation that sees the file grow advances the checkpoint before it looks for open ``PC-BIG start`` lines, so a
@@ -452,7 +491,7 @@ class LedgerGuard:
 
     def accept(self, now=None):
         if self.ledger is None:
-            raise ValueError("no RTX big-job ledger is configured (prefs turns/ledger_path)")
+            raise ValueError("no RTX big-job ledger is configured (pc.turn_ledger in the configuration file)")
         with _FileLock(self.lock_path, wait_s=10, create=True):
             identity, data = self._read(_time.monotonic() + 30)
             state = {"identity": identity, "size": len(data), "sha256": _hashlib.sha256(data).hexdigest(),
@@ -462,7 +501,7 @@ class LedgerGuard:
 
     def describe(self):
         if self.ledger is None:
-            return {"configured": False, "why": "prefs turns/ledger_path is not set: the RTX big-job guard is off"}
+            return {"configured": False, "why": "pc.turn_ledger is not set in the configuration: the RTX big-job guard is off"}
         try:
             state = self._state()
         except ValueError as exc:
@@ -471,8 +510,18 @@ class LedgerGuard:
                                                  "advanced_at": state.get("advanced_at"), "size": state["size"]}}
 
 
+def configured_ledger(config_path):
+    """The configuration's big-job ledger (``pc.turn_ledger``), or None (never a portal preference)."""
+    from . import config as _config
+    try:
+        value = (_config.load(config_path).pc or {}).get("turn_ledger")
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, str) and value else None
+
+
 def ledger_guard(config_path, store=None):
-    return LedgerGuard(_Path(config_path).parent, _pref(store, LEDGER_PREF))
+    return LedgerGuard(_Path(config_path).parent, configured_ledger(config_path))
 
 
 # --- verification (held) --------------------------------------------------------------------------------------

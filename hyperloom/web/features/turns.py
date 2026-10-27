@@ -3,7 +3,8 @@ ledger of the control machine. Read-only.
 
 GET  turns                         per node: holder (cap, time left), verified waiting tickets with estimates, recent
                                    turns; the pair queue of the coordinating node; the big-job ledger
-POST turns/settings {ledger_path?, ledger_cap_s?, pair_cap_s?}   (audited) preferences (namespace ``turns``)
+POST turns/settings {ledger_cap_s?, pair_cap_s?}   (audited) preferences (namespace ``turns``); the ledger path is
+                                   the configuration's ``pc.turn_ledger`` (never a portal setting)
 
 The collector ``turns`` (every 30 s; once a minute while a turn is held, see hyperloom.pollbudget) calls the read-only ``turns`` node verb on every lab-mode machine with a lab
 directory (one call in flight per machine) and keeps each reply with its fetch time; the GET only composes the
@@ -209,10 +210,22 @@ def remote_holder_state(holder, coordinator, confirmed):
     return "running (confirmed by the first node)"
 
 
+LEDGER_FROM_CONFIG = ("the ledger path is set in the configuration file (pc.turn_ledger); the portal and the "
+                      "command line never change it")
+
+
+def configured_ledger(api):
+    """The big-job ledger of the configuration (``pc.turn_ledger``), or None."""
+    try:
+        value = (api.cluster().pc or {}).get("turn_ledger")
+    except Exception:  # noqa: BLE001 - an unreadable configuration: no ledger
+        return None
+    return value if isinstance(value, str) and value else None
+
+
 def _settings(api):
     stored = ops.pref(api, NAMESPACE, "settings", {}) or {}
-    return {"ledger_path": stored.get("ledger_path"), "ledger_cap_s": stored.get("ledger_cap_s", LEDGER_CAP_DEFAULT_S),
-            "pair_cap_s": stored.get("pair_cap_s", PAIR_CAP_DEFAULT_S)}
+    return _settings_from(api, stored)
 
 
 def compose(api, replies, now=None):
@@ -474,7 +487,7 @@ def ledger_state(records, now, default_cap):
 def ledger_view(api, settings, now):
     path = settings["ledger_path"]
     if not path:
-        return {"state": None, "why": "ledger path not configured (turns settings)"}
+        return {"state": None, "why": "ledger path not configured (pc.turn_ledger in the configuration file)"}
     try:
         records = ledger_records(path)
     except OSError as exc:
@@ -485,15 +498,11 @@ def ledger_view(api, settings, now):
 
 
 def save_settings(api, arguments):
-    ops.strict(arguments, ("ledger_path", "ledger_cap_s", "pair_cap_s"))
+    if isinstance(arguments, dict) and "ledger_path" in arguments:
+        raise ValueError(LEDGER_FROM_CONFIG)
+    ops.strict(arguments, ("ledger_cap_s", "pair_cap_s"))
     current = dict(ops.pref(api, NAMESPACE, "settings", {}, store=ops.store_for_write(api)) or {})
-    if "ledger_path" in arguments:
-        value = arguments["ledger_path"]
-        if value in (None, ""):
-            current.pop("ledger_path", None)
-        else:
-            ops.check_path(value, "ledger_path", windows=os.name == "nt")
-            current["ledger_path"] = value
+    current.pop("ledger_path", None)            # a path saved by an earlier release is never used
     for key in ("ledger_cap_s", "pair_cap_s"):
         if key in arguments:
             value = arguments[key]
@@ -501,11 +510,12 @@ def save_settings(api, arguments):
                 raise ValueError(key + " must be an integer number of seconds in 60..7200")
             current[key] = value
     ops.set_pref(api, NAMESPACE, "settings", current)
-    return {"settings": _settings_from(current)}
+    return {"settings": _settings_from(api, current)}
 
 
-def _settings_from(stored):
-    return {"ledger_path": stored.get("ledger_path"), "ledger_cap_s": stored.get("ledger_cap_s", LEDGER_CAP_DEFAULT_S),
+def _settings_from(api, stored):
+    return {"ledger_path": configured_ledger(api), "ledger_source": "configuration (pc.turn_ledger)",
+            "ledger_cap_s": stored.get("ledger_cap_s", LEDGER_CAP_DEFAULT_S),
             "pair_cap_s": stored.get("pair_cap_s", PAIR_CAP_DEFAULT_S)}
 
 

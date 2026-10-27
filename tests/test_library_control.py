@@ -36,24 +36,28 @@ class RootsTests(unittest.TestCase):
         roots = downloads.library_roots(self.cluster)
         self.assertEqual(roots["halo-1"], [{"path": "/opt/assets", "source": "config"}])
         self.assertEqual(roots["workstation"], [{"path": "C:\\hyperloom\\assets", "source": "config"}])
-        self.store.put("prefs", "library/roots", {"halo-1": ["/srv/models", "relative", "/opt/assets"],
+        self.store.put("prefs", "library/roots", {"halo-1": ["/opt/assets/extra", "relative", "/opt/assets",
+                                                             "/srv/models", "/opt/assets/.cache"],
                                                   "nobody": ["/x"], "halo-2": "not a list"})
         roots = downloads.library_roots(self.cluster, self.store)
-        self.assertEqual([r["path"] for r in roots["halo-1"]], ["/opt/assets", "/srv/models"])
+        # A root saved elsewhere (an earlier release) or in a hidden directory is never used.
+        self.assertEqual([r["path"] for r in roots["halo-1"]], ["/opt/assets", "/opt/assets/extra"])
         self.assertEqual(roots["halo-1"][1]["source"], "prefs")
 
     def test_set_roots_validates_per_os(self):
-        self.assertEqual(downloads.set_roots(self.cluster, self.store, "halo-1", ["/srv/models", "/srv/models"]),
-                         {"machine": "halo-1", "roots": ["/srv/models"]})
+        self.assertEqual(downloads.set_roots(self.cluster, self.store, "halo-1", ["/opt/assets/a", "/opt/assets/a"]),
+                         {"machine": "halo-1", "roots": ["/opt/assets/a"]})
         for machine, value in (("halo-1", "C:\\models"), ("halo-1", "/srv/../etc"), ("workstation", "/srv/models"),
-                               ("workstation", "D:relative"), ("halo-1", "relative")):
+                               ("workstation", "D:relative"), ("halo-1", "relative"),
+                               ("halo-1", "/srv/models"), ("halo-1", "/home/someone"), ("halo-1", "/opt/assets/.ssh"),
+                               ("workstation", "D:\\models")):     # only inside a configured root, never hidden
             with self.subTest(value), self.assertRaises(ValueError):
                 downloads.set_roots(self.cluster, self.store, machine, [value])
         with self.assertRaises(LookupError):
             downloads.set_roots(self.cluster, self.store, "nobody", [])
-        downloads.set_roots(self.cluster, self.store, "workstation", ["D:\\models"])
+        downloads.set_roots(self.cluster, self.store, "workstation", ["C:\\hyperloom\\assets\\more"])
         downloads.set_roots(self.cluster, self.store, "halo-1", [])
-        self.assertEqual(self.store.get("prefs", "library/roots"), {"workstation": ["D:\\models"]})
+        self.assertEqual(self.store.get("prefs", "library/roots"), {"workstation": ["C:\\hyperloom\\assets\\more"]})
 
 
 class RecordedReplyTests(unittest.TestCase):
@@ -66,6 +70,7 @@ class RecordedReplyTests(unittest.TestCase):
         with patch.object(downloads, "_node", return_value=reply) as node:
             obj = example()
             obj["machines"][2]["lab_dir"] = "/srv/lab"
+            obj["machines"][2]["install_root"] = "/opt/lab"          # the extra root lies inside it
             inventory = downloads.inventory(parse(obj), "halo-2", store, now=10)
         self.assertEqual(node.call_args.args[2]["roots"], ["/opt/assets", "/opt/lab/models"])
         root = inventory["roots"][0]

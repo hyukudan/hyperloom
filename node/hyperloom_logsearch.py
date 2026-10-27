@@ -7,7 +7,8 @@ refused when it is a filesystem root, the home directory itself, a system direct
 alternate data stream or a link. Directories are walked by descriptor without following links (POSIX: every
 directory and file is opened relative to its parent with O_NOFOLLOW and must be a directory or a regular file by
 fstat, so a swapped ancestor, a FIFO or a device is never read); credential directories (.ssh, .gnupg, secrets,
-keys, an install root's etc) and the payload's exclusions are pruned during the walk.
+keys, an install root's etc), every dot directory and dot file (.env, .netrc...) and the payload's exclusions are
+pruned during the walk.
 
 Matching is per line on lines capped at 4 KiB, newest files first, within one deadline, a directory-entry budget, a
 scanned-bytes budget, a file budget and a result budget; whole lines are redacted before they are cut for display.
@@ -47,11 +48,17 @@ DENY_POSIX = ("/proc", "/sys", "/dev", "/boot", "/etc", "/run", "/var/lib", "/ro
 LEVELS = {"error": re.compile(r"ERROR|FATAL|POISON|Traceback|panic|failed", re.I),
           "warning": re.compile(r"ERROR|FATAL|POISON|Traceback|panic|failed|WARN", re.I)}
 KEYS = ("text", "regex", "ignore_case", "root", "roots", "exclude", "since", "until", "process", "level", *LIMITS)
-# The portal's redaction patterns (hyperloom.web.api.redact), applied to whole lines on the node too.
+# Redaction of whole lines on the node (wider than the portal's document rules: free log text): credentials after
+# an authorization scheme, any name that carries key/secret/token/password/credential/auth (AWS_SECRET_ACCESS_KEY=,
+# "db.password": ...), the value after a password word ("password x"), option forms and URL user information.
 SECRET_PATTERNS = (
-    (re.compile(r"(?i)(Bearer\s+)\S+"), r"\1[redacted]"),
-    (re.compile(r'''(?ix)((?:["']?(?:api[_-]?key|handoff[_-]?api[_-]?key|password|secret|token)["']?)\s*[:=]\s*'''
-                r'''|--(?:api-key|handoff-api-key|password|token)\s+)(?:"[^"]*"|'[^']*'|[^\s,;}]+)'''), r"\1[redacted]"),
+    (re.compile(r"(?i)\b((?:Bearer|Basic|Digest|Token|Negotiate)\s+)[A-Za-z0-9+/=._~:-]+"), r"\1[redacted]"),
+    (re.compile(r'''(?ix)(["']?[\w.-]*(?:key|secret|token|passw(?:or)?d|pwd|credential|auth)[\w.-]*["']?\s*[:=]\s*)'''
+                r'''(?:"[^"]*"|'[^']*'|[^\s,;}]+)'''), r"\1[redacted]"),
+    (re.compile(r"(?i)(--[\w-]*(?:key|secret|token|passw(?:or)?d|credential)[\w-]*(?:\s+|=))(?!\[redacted\])\S+"),
+     r"\1[redacted]"),
+    (re.compile(r"(?i)\b(passw(?:or)?d|passwd|passphrase|pwd)(\s+)(?!\[redacted\])(?![:=])\S+"), r"\1\2[redacted]"),
+    (re.compile(r"(?i)(\b[a-z][a-z0-9+.-]*://)[^/\s:@]+:[^/\s@]+@"), r"\1[redacted]@"),
 )
 FD_WALK = (os.open in os.supports_dir_fd and os.scandir in os.supports_fd and hasattr(os, "O_DIRECTORY")
            and hasattr(os, "O_NOFOLLOW"))
@@ -227,7 +234,8 @@ class Budget:
 
 
 def _wanted(name, opts):
-    if SKIP_NAME.search(name) or PurePosixPath(name).suffix.lower() not in EXTENSIONS:
+    # Dot files (.env, .netrc, .bash_history...) are never searched.
+    if name.startswith(".") or SKIP_NAME.search(name) or PurePosixPath(name).suffix.lower() not in EXTENSIONS:
         return False
     return not opts["process"] or opts["process"].lower() in name.lower()
 
@@ -278,7 +286,7 @@ def walk(label, root, opts, budget, report, found):
                     if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & REPARSE:
                         continue
                     if stat.S_ISDIR(info.st_mode):
-                        if (depth + 1 > MAX_DEPTH or entry.name.lower() in PRUNE_DIRS
+                        if (depth + 1 > MAX_DEPTH or entry.name.lower() in PRUNE_DIRS or entry.name.startswith(".")
                                 or (marked and entry.name.lower() == "etc")
                                 or SKIP_NAME.search(entry.name)):
                             continue

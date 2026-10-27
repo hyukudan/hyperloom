@@ -14,7 +14,7 @@ def _unit(name, kind, size, files, status, newest, **manifest):
 
 
 def seed(store, now):
-    store.put("prefs", "library/roots", {"halo-2": ["/srv/models"], "workstation": ["D:\\models"]})
+    store.put("prefs", "library/roots", {"halo-2": ["/opt/hyperloom/halo-2/models"]})
     store.put("library/inventory", "halo-1", {"machine": "halo-1", "scanned_at": now - 420, "cache": "direct", "roots": [
         {"path": "/opt/models", "source": "config", "free_bytes": 612_000_000_000, "other_files": 2, "truncated": [],
          "units": [_unit("qwen-flash", "dir", 52_400_000_000, 5, "complete", now - 86400 * 3),
@@ -24,7 +24,7 @@ def seed(store, now):
     store.put("library/inventory", "halo-2", {"machine": "halo-2", "scanned_at": now - 400, "cache": "direct", "roots": [
         {"path": "/opt/models", "source": "config", "free_bytes": 701_000_000_000, "other_files": 0, "truncated": [],
          "units": [_unit("qwen-flash", "dir", 52_400_000_000, 5, "complete", now - 86400 * 3)]},
-        {"path": "/srv/models", "source": "prefs", "free_bytes": 1_400_000_000_000, "other_files": 0,
+        {"path": "/opt/hyperloom/halo-2/models", "source": "prefs", "free_bytes": 1_400_000_000_000, "other_files": 0,
          "truncated": ["files"], "units": [
              {"name": "large-archive", "kind": "dir", "bytes": None, "files": None, "newest_mtime": None, "links": None,
               "manifest": {"status": "unknown", "why": "scan bound reached: files"}}]}]})

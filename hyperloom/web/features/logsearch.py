@@ -5,7 +5,8 @@ GET  logsearch                    machines, their searchable roots (ids; paths c
                                   preferences only), limits and the regex rules; never opens a file
 POST logsearch/query {text|regex, ignore_case?, machines?, roots?, window_s? | since?/until?, process?, level?,
                       context?, max_results?}       synchronous, read-only
-POST logsearch/roots {machine, roots: [abs dirs]}   (audited) the configured lab roots of a machine
+POST logsearch/roots {machine, roots: [abs dirs]}   (audited) extra roots of a machine, each inside a root the
+                                  configuration gives it (install root, lab directory, model roots)
 
 Nodes run the `logs-search` verb (deadline 5 s, scanned bytes <= 64 MiB, files <= 2000, results <= 500 with
 2 context lines, secrets redacted, a regex in a worker process killed at the deadline). The control machine runs
@@ -65,9 +66,32 @@ def roots_of(api, machine, store=None):
     elif machine.access == "local":
         for index, (label, path) in enumerate(owned_directories(api)):
             rows.append((f"launch-{index}", label, path))
+    try:
+        bases = allowed_bases(api, machine)
+    except Exception:  # noqa: BLE001 - an unreadable configuration: no extra root
+        bases = []
     for index, path in enumerate(configured(api, store).get(machine.id, [])):
-        rows.append((f"root-{index}", path, path))
+        if isinstance(path, str) and _inside(path, machine.os, bases):   # an earlier release's root elsewhere: unused
+            rows.append((f"root-{index}", path, path))
     return rows
+
+
+def allowed_bases(api, machine):
+    """The roots the configuration gives a machine (its install root, its lab directory, its model roots): an extra
+    log root must lie inside one of them."""
+    from hyperloom import downloads
+    bases = [machine.install_root] + ([machine.lab_dir] if getattr(machine, "lab_dir", None) else [])
+    return bases + [base for base in downloads.configured_bases(api.cluster(), machine) if base not in bases]
+
+
+def _inside(path, system, bases):
+    flavour = PureWindowsPath if system == "windows" else PurePosixPath
+    parts = [p.lower() for p in flavour(path).parts] if system == "windows" else list(flavour(path).parts)
+    for base in bases:
+        head = [p.lower() for p in flavour(base).parts] if system == "windows" else list(flavour(base).parts)
+        if parts[:len(head)] == head and not any(part.startswith(".") for part in parts[len(head):]):
+            return True
+    return False
 
 
 def document(api, query):
@@ -238,9 +262,13 @@ def save_roots(api, arguments):
     roots = arguments["roots"]
     if not isinstance(roots, list) or len(roots) > MAX_ROOTS:
         raise ValueError(f"roots must be a list of at most {MAX_ROOTS} absolute directories")
+    bases = allowed_bases(api, machine)
     clean = []
     for path in roots:
         _check_root(path, machine.os)
+        if not _inside(path, machine.os, bases):
+            raise ValueError("a log root must lie inside a root the configuration gives this machine ("
+                             + ", ".join(bases) + ") and outside hidden directories")
         if path not in clean:
             clean.append(path)
     store = ops.store_for_write(api)

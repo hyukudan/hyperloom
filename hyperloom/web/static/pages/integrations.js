@@ -47,9 +47,7 @@
     const saved = m.settings.credential_saved;
     const form = `<div class="intg-form">
       ${check("intg-enabled", "Publish to the broker", v.enabled)}
-      ${check("intg-tls", "TLS (certificate and host name verified)", v.tls)}
-      ${input("intg-host", "Broker host", v.host, {hint: "Host name or IP address"})}
-      ${input("intg-port", "Port", v.port, {type: "number", hint: `Default ${v.tls ? 8883 : 1883}`, extra: 'min="1" max="65535"'})}
+      <p class="hint">Broker: <span class="mono">${esc(m.settings.host ? `${m.settings.host}:${m.settings.port}` : "not configured")}</span> · ${m.settings.tls ? "TLS (certificate and host name verified)" : "no TLS (a password is refused)"} · set in the configuration file (pc.mqtt_broker)</p>
       ${input("intg-prefix", "Topic prefix", v.topic_prefix, {hint: "1-4 segments of letters, digits, _ or -"})}
       ${input("intg-interval", "Metrics every (s)", v.interval_s, {type: "number", extra: 'min="5" max="300"'})}
       ${input("intg-username", "User name", v.username, {hint: "Optional"})}
@@ -115,9 +113,8 @@
   };
 
   function readField(el) {
-    const map = {"intg-host": "host", "intg-port": "port", "intg-prefix": "topic_prefix", "intg-interval": "interval_s", "intg-username": "username", "intg-client": "client_id"};
+    const map = {"intg-prefix": "topic_prefix", "intg-interval": "interval_s", "intg-username": "username", "intg-client": "client_id"};
     if (el.id === "intg-enabled") draft.values.enabled = el.checked;
-    else if (el.id === "intg-tls") draft.values.tls = el.checked;
     else if (el.id === "intg-password") draft.password = el.value;
     else if (el.id === "intg-clear") draft.clear = el.checked;
     else if (map[el.id]) draft.values[map[el.id]] = el.value;
@@ -125,7 +122,7 @@
   function settingsArguments() {
     const v = draft.values, text = value => (value == null || String(value).trim() === "" ? null : String(value).trim());
     const number = value => text(value) == null ? null : Number(value);
-    const args = {enabled: !!v.enabled, tls: !!v.tls, host: text(v.host), port: number(v.port), topic_prefix: text(v.topic_prefix) || "hyperloom",
+    const args = {enabled: !!v.enabled, topic_prefix: text(v.topic_prefix) || "hyperloom",
       username: text(v.username), client_id: text(v.client_id), interval_s: number(v.interval_s) ?? 10};
     if (draft.password) args.password = draft.password;
     else if (draft.clear) args.clear_password = true;

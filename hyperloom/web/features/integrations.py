@@ -60,6 +60,9 @@ PREFIX = re.compile(r"[A-Za-z0-9_-]{1,32}(?:/[A-Za-z0-9_-]{1,32}){0,3}")
 CLIENT_ID = re.compile(r"[A-Za-z0-9_-]{1,21}")      # + "-t" for the test connection stays within 23 characters
 TOPIC_PART = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 SETTINGS = ("enabled", "host", "port", "tls", "topic_prefix", "username", "client_id", "interval_s")
+EDITABLE = ("enabled", "topic_prefix", "username", "client_id", "interval_s")     # host, port, tls: configuration
+BROKER_WHY = "the broker (host, port, tls) is set in the configuration file (pc.mqtt_broker), never by a setting"
+TLS_WHY = "a password is only sent over TLS: set pc.mqtt_broker.tls to true in the configuration file"
 DEFAULTS = {"enabled": False, "host": None, "port": None, "tls": False, "topic_prefix": "hyperloom", "username": None,
             "client_id": None, "interval_s": 10, "revision": 0, "credential_ref": None}
 EVENTS_PER_RUN = 100
@@ -71,19 +74,48 @@ def _port(config):
     return config.get("port") or (8883 if config.get("tls") else 1883)
 
 
-def mqtt_settings(store):
-    """The saved settings over the defaults (never the password)."""
+def broker(cluster):
+    """{host, port, tls} of the configuration's ``pc.mqtt_broker`` (host None when there is none)."""
+    try:
+        value = (cluster.pc or {}).get("mqtt_broker") if cluster is not None else None
+    except AttributeError:
+        value = None
+    value = value if isinstance(value, dict) else {}
+    return {"host": value.get("host"), "port": value.get("port"), "tls": value.get("tls", False) is True}
+
+
+def _cluster_of(api):
+    try:
+        return api.cluster()
+    except Exception:  # noqa: BLE001 - an unreadable configuration: no broker
+        return None
+
+
+def mqtt_settings(store, cluster=None):
+    """The saved settings over the defaults (never the password), with the broker of the configuration (a host,
+    port or tls saved by an earlier release is never used)."""
     saved = store.get(NAMESPACE, MQTT_KEY) if store is not None else None
-    return {**DEFAULTS, **(saved if isinstance(saved, dict) else {})}
+    saved = {key: value for key, value in (saved if isinstance(saved, dict) else {}).items()
+             if key not in ("host", "port", "tls")}
+    return {**DEFAULTS, **saved, **broker(cluster)}
+
+
+def tls_refusal(config):
+    """Why these settings may not connect: a saved password over a connection without TLS."""
+    if config.get("username") and mqtt.password_saved(config.get("credential_ref")) and not config.get("tls"):
+        return TLS_WHY
+    return None
 
 
 def validate(arguments, current):
     """(settings, password action, password) from a save request; unknown fields are refused."""
     if not isinstance(arguments, dict):
         raise ValueError("JSON object required")
-    if set(arguments) - set(SETTINGS) - {"password", "clear_password"}:
-        raise ValueError("unknown settings field (allowed: " + ", ".join(SETTINGS + ("password", "clear_password")) + ")")
-    config = {**current, **{key: arguments[key] for key in SETTINGS if key in arguments}}
+    if set(arguments) & {"host", "port", "tls"}:
+        raise ValueError(BROKER_WHY)
+    if set(arguments) - set(EDITABLE) - {"password", "clear_password"}:
+        raise ValueError("unknown settings field (allowed: " + ", ".join(EDITABLE + ("password", "clear_password")) + ")")
+    config = {**current, **{key: arguments[key] for key in EDITABLE if key in arguments}}
     for key in ("enabled", "tls"):
         if not isinstance(config[key], bool):
             raise ValueError(key + " must be true or false")
@@ -91,7 +123,7 @@ def validate(arguments, current):
     if host is not None and (not isinstance(host, str) or not HOST.fullmatch(host)):
         raise ValueError("host must be a host name or an IP address")
     if config["enabled"] and not host:
-        raise ValueError("a broker host is required to enable publishing")
+        raise ValueError("a broker is required to enable publishing (pc.mqtt_broker in the configuration file)")
     port = config["port"]
     if port is not None and (type(port) is not int or not 1 <= port <= 65535):
         raise ValueError("port must be 1..65535")
@@ -117,6 +149,8 @@ def validate(arguments, current):
             raise ValueError("password must be 1..512 characters")
         if username is None:
             raise ValueError("a password needs a user name")
+        if not config.get("tls"):
+            raise ValueError(TLS_WHY)
     action = "set" if password is not None else "cleared" if clear else "unchanged"
     # Every save (also a password-only change) is a new revision, so a running publisher reconnects with it.
     config["revision"] = int(current.get("revision") or 0) + 1
@@ -138,12 +172,12 @@ def _password(config):
 
 def save(api, arguments):
     store = telemetry.open_store(api)
-    config, action, password = validate(arguments, mqtt_settings(store))
+    config, action, password = validate(arguments, mqtt_settings(store, _cluster_of(api)))
     if action == "set":
         mqtt.save_password(config["credential_ref"], password)
     elif action == "cleared":
         mqtt.clear_password(config["credential_ref"])
-    store.put(NAMESPACE, MQTT_KEY, config)
+    store.put(NAMESPACE, MQTT_KEY, {key: value for key, value in config.items() if key not in ("host", "port", "tls")})
     return {"saved": True, "credential": action, "mqtt": public_settings(config)}
 
 
@@ -173,9 +207,11 @@ def test_publish(api, arguments, connect=None):
     """One connection with a separate client id and no will (the publishing session is never displaced)."""
     if arguments:
         raise ValueError("test takes no arguments (it uses the saved settings)")
-    config = mqtt_settings(telemetry.open_store(api))
+    config = mqtt_settings(telemetry.open_store(api), _cluster_of(api))
     if not config.get("host"):
-        raise PermissionError("no broker configured")
+        raise PermissionError("no broker configured (pc.mqtt_broker in the configuration file)")
+    if tls_refusal(config):
+        raise PermissionError(tls_refusal(config))
     started = time.monotonic()
     deadline = started + mqtt.OPERATION_TIMEOUT_S        # one budget for the whole action
     username = config.get("username")
@@ -539,8 +575,8 @@ def _factory(settings, password, alive, on_exit, owner):
 def collect(api, now, factory=None):
     """Collector ``mqtt``: hold the publisher lease, keep the publisher in line with the settings, queue a round."""
     store = telemetry.open_store(api)
-    config = mqtt_settings(store)
-    if not config.get("enabled") or not config.get("host"):
+    config = mqtt_settings(store, _cluster_of(api))
+    if not config.get("enabled") or not config.get("host") or tls_refusal(config):
         stop_publisher(api, store)
         return []
     expires = claim_lease(store, _token(api), now)
@@ -985,13 +1021,15 @@ def state(api, query):
         why["mqtt"] = "settings store not open in this portal process (samplers disabled)"
         mqtt_doc = None
     else:
-        config = mqtt_settings(store)
+        config = mqtt_settings(store, _cluster_of(api))
         lease = store.get(OWNER_NAMESPACE, "lease") or {}
         mqtt_doc = {"settings": public_settings(config), "publisher": publisher_state(api), "topics": topics(config),
                     "queue_limit": mqtt.QUEUE_LIMIT,
                     "publishing_here": lease.get("owner") == _token(api) and lease.get("expires", 0) >= api.clock()}
         if mqtt_doc["publisher"] is None:
             why["publisher"] = ("publishing disabled" if not config.get("enabled") else
+                                "no broker configured (pc.mqtt_broker in the configuration file)" if not config.get("host")
+                                else tls_refusal(config) if tls_refusal(config) else
                                 "samplers not running in this portal process" if not sampling else
                                 "another portal process publishes" if lease.get("owner") not in (None, _token(api))
                                 and lease.get("expires", 0) >= api.clock() else "starting")

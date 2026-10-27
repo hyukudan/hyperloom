@@ -41,6 +41,8 @@ class Cluster:
 
 
 MAX_CONFIG_BYTES = 256 * 1024
+BROKER_HOST = re.compile(r"(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}"
+                         r"[A-Za-z0-9])?)*|[0-9A-Fa-f:.]{2,45}")
 PRESETS = Path(__file__).with_name("presets")
 
 
@@ -341,7 +343,20 @@ def parse(obj: dict) -> Cluster:
                 raise ConfigError(f"profile.prefill_service: {service['name']} does not hand off to {kind}")
         from . import knobs
         knobs.validate(p.get("advanced", {}), data)
-    pc = record(obj.get("pc", {}), "pc", optional=("router_listen", "ui_listen", "cuda", "recipe_dirs", "recipe_core"))
+    pc = record(obj.get("pc", {}), "pc", optional=("router_listen", "ui_listen", "cuda", "recipe_dirs", "recipe_core",
+                                                   "turn_ledger", "mqtt_broker"))
+    # The lab's RTX big-job ledger (the coordination log read on this machine) and the MQTT broker: set here only,
+    # never by a portal or command-line setting.
+    if "turn_ledger" in pc and not Path(text(pc["turn_ledger"], "pc.turn_ledger")).is_absolute():
+        raise ConfigError("pc.turn_ledger: expected an absolute path")
+    if "mqtt_broker" in pc:
+        broker = record(pc["mqtt_broker"], "pc.mqtt_broker", ("host",), ("port", "tls"))
+        if not BROKER_HOST.fullmatch(text(broker["host"], "pc.mqtt_broker.host")):
+            raise ConfigError("pc.mqtt_broker.host: expected a host name or an IP address")
+        if "port" in broker:
+            integer(broker["port"], "pc.mqtt_broker.port", 1, 65535)
+        if "tls" in broker:
+            boolean(broker["tls"], "pc.mqtt_broker.tls")
     # Recipes (hyperloom/recipes): the operator's recipe directories and the strix-stream core executable.
     if "recipe_dirs" in pc:
         if not isinstance(pc["recipe_dirs"], list) or len(pc["recipe_dirs"]) > 16:

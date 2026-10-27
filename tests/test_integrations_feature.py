@@ -46,6 +46,7 @@ class FakeAPI:
         self.audits = []
         self.machines = [{"id": "halo-1", "health": "online"}, {"id": "halo-2", "health": "offline"},
                          {"id": "bad id", "health": "online"}]
+        self.pc = {"mqtt_broker": {"host": "workstation", "tls": True}}     # the broker: configuration only
 
     def cluster(self):
         # Configured machines; their state comes from node_up samples written here as the fleet collector would.
@@ -55,7 +56,7 @@ class FakeAPI:
                                if m["health"] in codes], ts=self.clock())
         # The real contract: Cluster.machines maps machine id -> Machine.
         return config.Cluster(machines={m["id"]: types.SimpleNamespace(id=m["id"]) for m in self.machines},
-                              assets={}, profiles={}, router={}, pc={}, raw={})
+                              assets={}, profiles={}, router={}, pc=self.pc, raw={})
 
     def document(self, name, **fields):
         return {"schema": f"hyperloom/ui-{name}-v1", **fields}
@@ -107,8 +108,7 @@ class Base(unittest.TestCase):
         return publisher
 
     def enable(self, **extra):
-        return integrations.save_audited(self.api, {"enabled": True, "host": "workstation", "topic_prefix": "lab",
-                                                    "interval_s": 10, **extra})
+        return integrations.save_audited(self.api, {"enabled": True, "topic_prefix": "lab", "interval_s": 10, **extra})
 
     def collect(self):
         return integrations.collect(self.api, self.clock.now, factory=self.factory)
@@ -116,7 +116,8 @@ class Base(unittest.TestCase):
 
 class SettingsTests(Base):
     def test_validation(self):
-        bad = [{"enabled": "yes"}, {"host": "a b"}, {"host": "-x"}, {"enabled": True}, {"port": 0}, {"port": "1883"},
+        bad = [{"enabled": "yes"}, {"host": "a b"}, {"host": "-x"}, {"host": "broker.example"}, {"port": 1883},
+               {"tls": False}, {"port": 0}, {"port": "1883"},
                {"topic_prefix": "a/+"}, {"topic_prefix": "/a"}, {"topic_prefix": "a/b/c/d/e"}, {"client_id": "x" * 22},
                {"interval_s": 4}, {"password": "pw"}, {"username": "u", "password": "pw", "clear_password": True},
                {"unknown": 1}, {"username": ""}]
@@ -124,6 +125,30 @@ class SettingsTests(Base):
             with self.subTest(arguments=arguments), self.assertRaises(ValueError):
                 integrations.save_audited(self.api, arguments)
         self.assertTrue(all(result["state"] == "refused" for _, _, result in self.api.audits))
+
+    def test_the_broker_is_configuration_and_a_password_needs_tls(self):
+        with self.assertRaisesRegex(ValueError, "pc.mqtt_broker"):
+            integrations.save_audited(self.api, {"host": "broker.example"})       # never a client-chosen host
+        self.api.pc = {}
+        with self.assertRaisesRegex(ValueError, "a broker is required"):
+            self.enable()
+        self.api.pc = {"mqtt_broker": {"host": "workstation", "port": 1883}}       # no TLS
+        with self.assertRaisesRegex(ValueError, "only sent over TLS"):
+            self.enable(username="lab", password="pw")
+        self.enable(username="lab")                                               # no password: allowed
+        # A password saved while the broker had TLS is never sent once the configuration drops TLS.
+        self.api.pc = {"mqtt_broker": {"host": "workstation", "tls": True}}
+        self.enable(username="lab", password="pw")
+        self.api.pc = {"mqtt_broker": {"host": "workstation", "port": 1883}}
+        self.assertEqual(self.collect(), [])
+        self.assertEqual(self.publishers, [])
+        with self.assertRaisesRegex(PermissionError, "only sent over TLS"):
+            integrations.test_publish(self.api, {})
+        # A host saved by an earlier release is never used.
+        saved = dict(self.store.get(integrations.NAMESPACE, integrations.MQTT_KEY), host="elsewhere.example", tls=True)
+        self.store.put(integrations.NAMESPACE, integrations.MQTT_KEY, saved)
+        self.assertEqual(integrations.mqtt_settings(self.store, self.api.cluster())["host"], "workstation")
+        self.assertFalse(integrations.mqtt_settings(self.store, self.api.cluster())["tls"])
 
     def test_save_keeps_the_password_out_of_documents_and_audit(self):
         result = self.enable(username="lab", password="hunter2-pw")
@@ -135,7 +160,7 @@ class SettingsTests(Base):
         self.assertEqual(self.api.audits[-1][1]["credential"], "set")
         saved = self.store.get(integrations.NAMESPACE, integrations.MQTT_KEY)
         self.assertRegex(saved["credential_ref"], mqtt.SECRET_NAME)
-        self.assertEqual((saved["port"], saved["revision"]), (None, 1))
+        self.assertEqual((saved.get("port"), saved.get("host"), saved["revision"]), (None, None, 1))
         public = redact(integrations.public_settings(saved))
         self.assertEqual((public["credential_saved"], public["port"]), (True, 1883))
         # A password-only change is a new revision (the publisher reconnects with it); clearing removes the file.
@@ -144,14 +169,15 @@ class SettingsTests(Base):
         self.assertEqual(self.store.get(integrations.NAMESPACE, integrations.MQTT_KEY)["revision"], 2)
 
     def test_test_publish_uses_its_own_client_id_and_no_will(self):
-        self.enable(username="lab", password="pw", client_id="hyperloom-ab12")
+        self.api.pc = {"mqtt_broker": {"host": "workstation"}}       # the fake broker speaks plain MQTT: no password
+        self.enable(username="lab", client_id="hyperloom-ab12")
         broker = Broker()
         self.addCleanup(broker.close)
         result = integrations.test_publish(self.api, {}, connect=broker.connect)
         broker.thread.join(2)
         self.assertTrue(result["ok"])
         connect = parse_connect(broker.packets[0][2])
-        self.assertEqual((connect["client_id"], connect["flags"] & 0x04, connect["password"]), ("hyperloom-ab12-t", 0, b"pw"))
+        self.assertEqual((connect["client_id"], connect["flags"] & 0x04, connect.get("password")), ("hyperloom-ab12-t", 0, None))
         self.assertEqual(broker.publishes()[0]["topic"], "lab/portal/test")
         with self.assertRaises(ValueError):
             integrations.test_publish(self.api, {"host": "x"})
@@ -179,7 +205,7 @@ class PublishingTests(Base):
         points = self.collect()
         self.assertEqual(points, [("integrations_mqtt_connected", {}, 1, "state"), ("integrations_mqtt_queue", {}, 3, "gauge")])
         publisher = self.publishers[0]
-        self.assertEqual((publisher.settings["port"], publisher.started), (1883, True))
+        self.assertEqual((publisher.settings["port"], publisher.started), (8883, True))    # the broker's TLS port
         topics = [(m["topic"], m["payload"], m["qos"], m["retain"]) for m in publisher.messages]
         self.assertEqual(topics[:2], [("lab/status/halo-1", b"1", 0, True), ("lab/status/halo-2", b"0", 0, True)])
         metrics = json.loads(publisher.messages[2]["payload"])
@@ -431,11 +457,15 @@ class CLITests(unittest.TestCase):
     def test_cli_calls_the_same_functions(self):
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(telemetry, "_stores", {}) as opened:
             config = Path(directory) / "cluster.json"
+            from tests.test_config import example
+            raw = example()
+            raw.setdefault("pc", {})["mqtt_broker"] = {"host": "workstation", "tls": True}
+            config.write_text(json.dumps(raw), encoding="utf-8")
             # Nothing may reach the machine's real configuration directory, audit log or secret files.
             with mock.patch.object(secrets, "_directory", return_value=Path(directory) / "secrets"), \
                     mock.patch.object(cli, "config_path", return_value=config):
                 with contextlib.redirect_stdout(io.StringIO()) as out, mock.patch("sys.stdin", io.StringIO("cli-pw\n")):
-                    code = cli.main(["integrations", "mqtt-save", "--enable", "--host", "workstation", "--username",
+                    code = cli.main(["integrations", "mqtt-save", "--enable", "--username",
                                      "u", "--password-stdin", "--prefix", "lab", "--config", str(config)])
                 self.assertEqual(code, 0)
                 self.assertEqual(json.loads(out.getvalue())["credential"], "set")
@@ -444,14 +474,14 @@ class CLITests(unittest.TestCase):
                 saved.close()
                 self.assertEqual(mqtt.load_password(reference), "cli-pw")
                 with contextlib.redirect_stderr(io.StringIO()) as err:
-                    self.assertEqual(cli.main(["integrations", "mqtt-save", "--port", "0", "--config", str(config)]), 2)
-                self.assertIn("port", err.getvalue())
+                    self.assertEqual(cli.main(["integrations", "mqtt-save", "--interval", "1", "--config", str(config)]), 2)
+                self.assertIn("interval", err.getvalue())
             audit = [json.loads(line) for line in (Path(directory) / "audit.jsonl").read_text().splitlines()]
             self.assertEqual([entry["result"]["state"] for entry in audit], ["succeeded", "refused"])
             self.assertEqual(audit[0]["arguments"]["credential"], "set")
             self.assertNotIn("cli-pw", json.dumps(audit))
             for store in opened.values():
-                self.assertEqual(store.get(integrations.NAMESPACE, integrations.MQTT_KEY)["host"], "workstation")
+                self.assertNotIn("host", store.get(integrations.NAMESPACE, integrations.MQTT_KEY))
                 store.close()
 
 

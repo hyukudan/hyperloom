@@ -1,7 +1,7 @@
 """CLI for integrations: the same functions the portal calls.
 
 hyperloom integrations status                      the integrations document (JSON)
-hyperloom integrations mqtt-save [--enable|--disable] [--host H] [--port N] [--tls|--no-tls] [--prefix P]
+hyperloom integrations mqtt-save [--enable|--disable] [--prefix P]   (the broker: pc.mqtt_broker)
                                  [--username U | --no-username] [--client-id C] [--interval S]
                                  [--password-stdin | --clear-password]
 hyperloom integrations mqtt-test                   connect and publish <prefix>/portal/test once
@@ -39,12 +39,9 @@ def _save(args):
     arguments = {}
     if args.enabled is not None:
         arguments["enabled"] = args.enabled
-    for key, value in (("host", args.host), ("port", args.port), ("topic_prefix", args.prefix),
-                       ("client_id", args.client_id), ("interval_s", args.interval)):
+    for key, value in (("topic_prefix", args.prefix), ("client_id", args.client_id), ("interval_s", args.interval)):
         if value is not None:
             arguments[key] = value
-    if args.tls is not None:
-        arguments["tls"] = args.tls
     if args.no_username:
         arguments["username"] = None
     elif args.username is not None:
@@ -110,11 +107,6 @@ def add(commands):
     enabled = save.add_mutually_exclusive_group()
     enabled.add_argument("--enable", dest="enabled", action="store_const", const=True)
     enabled.add_argument("--disable", dest="enabled", action="store_const", const=False)
-    save.add_argument("--host")
-    save.add_argument("--port", type=int)
-    tls = save.add_mutually_exclusive_group()
-    tls.add_argument("--tls", dest="tls", action="store_const", const=True)
-    tls.add_argument("--no-tls", dest="tls", action="store_const", const=False)
     save.add_argument("--prefix", help="topic prefix")
     user = save.add_mutually_exclusive_group()
     user.add_argument("--username")
