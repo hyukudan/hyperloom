@@ -69,7 +69,7 @@ REDACTED = "[redacted]"
 # scheme word stays readable (Authorization: Bearer [redacted]). These checks read the value without its quotes
 # (--user "1000:1000" is a uid:gid as 1000:1000 is).
 _PLAIN = r"(?:None|null|true|false|True|False)"
-_COUNT = r"(?:\[?[0-9]+(?:[./][0-9]+)*|<[|\w./-]+>)"
+_COUNT = r"(?:\[?-?[0-9]+(?:[./][0-9]+)*|<[^\s<>]+>)"
 _KEPT_PLAIN = re.compile(_PLAIN + r"[)\],;]*")
 _KEPT_COUNT = re.compile(r"(?:" + _PLAIN + "|" + _COUNT + r")[)\],;]*")
 _UID_GID = re.compile(r"[0-9]+:[0-9]+")
@@ -107,14 +107,15 @@ _BACKSLASHES = re.compile(r"\\+")
 # it\'s fine stays one escape). A close is on the same line, before the end of an enclosing string.
 _QUOTE_RUN = re.compile(r"""(?<!\\)\\*['"]""")
 _NEWLINE = re.compile(r"\n")
-_CLOSE_BOUNDARY = " \t\n\r\f\v,;)]}'\""
+_REPR_AFTER = " \t\n\r\f\v,})]:"
+_CLOSE_BOUNDARY =" \t\n\r\f\v,;)]}'\""
 
 
 def _strings(text):
     """(starts, ends, cache): the quoted strings of ``text`` that open at a word boundary, in order (read once,
     left to right, as a shell reads them; a quote with no closing quote on its line is an ordinary character), and
     a cache for the closing quotes the value reader looks up (_closes)."""
-    starts, ends, failed, pos, size = [], [], {"'": -1, '"': -1}, 0, len(text)
+    starts, ends, failed, pos, size, cache = [], [], {"'": -1, '"': -1}, 0, len(text), {}
     while pos < size:
         quote = text[pos]
         if quote not in "'\"":
@@ -123,8 +124,7 @@ def _strings(text):
         end = -1
         if pos >= failed[quote]:
             if quote == "'":
-                end = text.find("'", pos + 1)
-                end = end if end != -1 and "\n" not in text[pos + 1:end] else -1
+                end = _close(text, cache, (("'", "shell"),), pos, size)
             else:
                 found = _DOUBLE_STRING.match(text, pos)
                 end = found.end() - 1 if found else -1
@@ -134,11 +134,18 @@ def _strings(text):
         if end == -1:
             pos += 1
             continue
-        if (pos == 0 or text[pos - 1] in _BOUNDARY) and (end + 1 == size or text[end + 1] in _BOUNDARY_AFTER):
+        # A string that a shell would close at an escaped apostrophe (a repr of JSON: '{"a": "b\' c"}') is not
+        # taken as one: its values read their own quotes.
+        run = end
+        while run > pos + 1 and text[run - 1] == "\\":
+            run -= 1
+        escaped = quote == "'" and (end - run) % 2 == 1
+        if (pos == 0 or text[pos - 1] in _BOUNDARY) and (end + 1 == size or text[end + 1] in _BOUNDARY_AFTER) and \
+                not escaped:
             starts.append(pos)
             ends.append(end)
         pos = end + 1
-    return starts, ends, {}
+    return starts, ends, cache
 
 
 def _first_after(positions, at):
@@ -192,8 +199,9 @@ def _shell_word(text, pos, stops="", strings=None):
     """(end, value): the shell word that starts at ``pos`` (also ending at any character of ``stops``: an
     assignment's value ends at , ; }) and its text without quotes or escapes. ``strings``: _strings(text), shared by
     every value of the text (it keeps the positions of the closing quotes). An apostrophe is read two ways, as a
-    repr writes it (a value's own \\' does not end it) and as a shell does (it ends at the next apostrophe:
-    'C:\\dir\\' x'y z'), and the longer word is the value."""
+    repr writes it (a value's own \\' does not end it, and the string ends before , } ) ] : a blank or the end:
+    {'password': 'a\\'" x'}) and as a shell does (it ends at the next apostrophe: 'C:\\dir\\' x), and the longer
+    word is the value."""
     if strings is None:
         strings = _strings(text)
     end, value = _read_word(text, pos, stops, strings, False)
@@ -230,8 +238,11 @@ def _read_word(text, pos, stops, strings, shell):
             elif run % 2 and (quote == '"' or quote == "'" and at == pos):
                 end = _close(text, cache, ((quote, "any"),), at + run, limit)
             if end != -1:
-                content = max(end - run, at + run + 1)  # without the close's own escaping: a longer run keeps
-                #                                         the value's escaped backslashes (\"hunter2\\\")
+                # Without the close's own escaping (at most the opening's run of backslashes): a longer run keeps
+                # the value's escaped backslashes (\"hunter2\\\"), a shorter one keeps every value character.
+                content = end
+                while content > max(end - run, at + run + 1) and text[content - 1] == "\\":
+                    content -= 1
                 value.append(text[at + run + 1:content])
                 at = end + 1
                 continue
@@ -239,8 +250,11 @@ def _read_word(text, pos, stops, strings, shell):
             at = min(at + run + run % 2, limit)
             continue
         if char in "'\"":
-            keys = (((char, "shell"),) if shell else ((char, "plain"), (char, "shell"))) if char == "'" else                 ((char, "plain"),)
-            end = _close(text, cache, keys, at, limit)
+            end = _close(text, cache, ((char, "shell" if char == "'" and shell else "plain"),), at, limit)
+            if char == "'" and not shell and end != -1 and end + 1 < size and text[end + 1] not in _REPR_AFTER:
+                end = -1                # a repr's string ends before , } ) ] : a blank or the end
+            if end == -1 and char == "'":
+                end = _close(text, cache, ((char, "shell"),), at, limit)
             if end != -1:
                 value.append(text[at + 1:end])
                 at = end + 1
@@ -251,7 +265,10 @@ def _read_word(text, pos, stops, strings, shell):
 
 
 def _unquoted(value):
-    """``value`` without the quotes around it, its backslashes kept (a Windows path)."""
+    """``value`` without the quotes around it, also escaped ones (\\"C:\\\\certs\\\\c.pem\\" in JSON), its backslashes
+    kept (a Windows path)."""
+    if len(value) > 3 and value[:2] == value[-2:] and value[:2] in ("\\\"", "\\'"):
+        return value[2:-2]
     return value[1:-1] if len(value) > 1 and value[0] in "'\"" and value[-1] == value[0] else value
 
 
@@ -354,13 +371,15 @@ GLUED_PASSWORD = (
 # u/U in one word (-sSu; -XPUT is -X PUT). The executable is matched in any case (CURL.EXE) and may be quoted, with
 # a path ("/usr/bin/curl", "C:\Program Files\curl\curl.exe"): the scan starts at its opening quote, so its closing
 # quote is not read as the start of a quoted argument. A string in escaped quotes (the command written inside a
-# JSON string: "curl -H \"Cookie: a;b\" -u ...") holds its separators too.
+# JSON string: "curl -H \"Cookie: a;b\" -u ...", also with the header's own escaped quotes: \"X: \\\"a;b\\\"\")
+# holds its separators too, and an option name may be in escaped quotes (curl \"-u\" \"a:b\").
 CURL_COMMAND = re.compile(r"""(?i)(?:(?P<q>["'])(?:[^"'\n]*[\\/])?)?\bcurl(?:\.exe)?\b(?(q)(?P=q))"""
-                          r"""(?:'[^'\n]*'|""" + _DOUBLE + r"""|\\"[^"\n]*\\"|\\[\s\S]|&(?![&\s]|$)|[^\n|;&'"\\]"""
-                          r"""|['"\\])*""")
+                          r"""(?:'[^'\n]*'|""" + _DOUBLE + r"""|(?<!\\)\\"(?:\\\\\\"|\\\\|[^"\\\n]|\\[^"\\\n])*\\""" '"'
+                          r"""|\\[\s\S]|&(?![&\s]|$)|[^\n|;&'"\\]|['"\\])*""")
 CURL_FLAGS = r"[sSfLkvqiIOJRgGnNpBMljaZV#:0-9]"
 CURL_OPTION = re.compile(r"""(?<=\s)(?P<o>(?P<q>["'])(?:-""" + CURL_FLAGS + r"""*(?:[uU]|(?P<e>E))"""
                          r"""|--(?:proxy-)?(?:user|(?P<c>cert)))(?P=q)\s+"""
+                         r"""|\\"(?:-""" + CURL_FLAGS + r"""*(?:[uU]|(?P<e3>E))|--(?:proxy-)?(?:user|(?P<c3>cert)))\\"\s+"""
                          r"""|["']?(?:-""" + CURL_FLAGS + r"""*(?:[uU]|(?P<e2>E))\s*"""
                          r"""|--(?:proxy-)?(?:user|(?P<c2>cert))(?:\s+|=)))""" + _START
                          + r"""|'[^'\n]*'|""" + _DOUBLE + r"""|\\.""")
@@ -418,7 +437,7 @@ def _curl_users(text, strings):
         for option in CURL_OPTION.finditer(text, command.start(), command.end()):
             if option.group("o") is None or option.start() < last:
                 continue
-            certificate = option.group("e") or option.group("c") or option.group("e2") or option.group("c2")
+            certificate = any(option.group(name) for name in ("e", "c", "e2", "c2", "e3", "c3"))
             end = _shell_word(text, option.end(), "", strings)[0]      # it may go on past the command
             raw = _unquoted(text[option.end():end])     # a certificate path as written (C:\certs\client.pem)
             hidden = end > option.end() and (not certificate or ":" in raw and not _WINDOWS_PATH.fullmatch(raw))

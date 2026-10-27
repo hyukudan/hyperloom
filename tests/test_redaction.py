@@ -209,6 +209,15 @@ SECRETS = {
     repr({"password": "a'\" SECsuffix"}): "SECsuffix",
     json.dumps('token "hunter2\\" ok'): "hunter2",
     json.dumps({"msg": 'token "hunter2\\\\" ok'}): "hunter2",
+    # a close shorter than its opening keeps the value's characters; escaped option names and headers in JSON; a
+    # repr of JSON whose value holds an apostrophe
+    "token=" + "\\" * 7 + '"512SECRET\\" ok': "SECRET",
+    "--user " + "\\" * 7 + '"1000:1000SECRT\\" x': "SECRT",
+    json.dumps({"cmd": 'curl "-u" "alice:OptSecret"'}): "OptSecret",
+    json.dumps({"cmd": r'curl -H "X: \"a;b\"" -u alice:HeaderSecret'}): "HeaderSecret",
+    json.dumps({"cmd": r'curl -H "X: \"a|b\"" -u alice:HeaderSecret2'}): "HeaderSecret2",
+    repr({"body": json.dumps({"password": "a' SecretSuffix"})}): "SecretSuffix",
+    repr(json.dumps({"password": "a' SecretSuffix2"})): "SecretSuffix2",
     # a scheme word that is itself a name with a value
     "api_key: Token : Sch3meName": "Sch3meName",
 }
@@ -272,6 +281,9 @@ READABLE = (
     json.dumps({"cmd": 'docker run --user "1000:1000" img'}),
     "max_tokens=\\'512\\' then", 'max_tokens=\\"512\\" then', 'token: \\"None\\" ok',
     "pad_token: </s>", "bos_token: <s>", "unk_token: <unk>", "eos_token: <|im_end|>",
+    "pad_token_id=-1", "eos_token: <\uff5cend\u2581of\u2581sentence\uff5c>",
+    json.dumps({"cmd": r'curl --cert "C:\certs\client.pem" https://example.invalid'}),
+    "curl -E 'C:\\certs\\' -H 'X-Trace: 1' https://example.invalid",
 )
 IMPLEMENTATIONS = {
     "shared": redaction.redact_text,
@@ -331,6 +343,10 @@ class SharedRulesTests(unittest.TestCase):
                 self.assertEqual(implementation("password=it\\'s fine and that\\'s all"),
                                  "password=[redacted] fine and that\\'s all")
                 self.assertEqual(implementation("api_key= db_pass (x)"), "api_key= [redacted] (x)")
+                self.assertEqual(implementation("export HF_TOKEN_PATH='C:\\hf\\' && python run.py --model 'Qwen/Qwen3'"),
+                                 "export HF_TOKEN_PATH=[redacted] && python run.py --model 'Qwen/Qwen3'")
+                self.assertEqual(implementation("app --password 'p\\' --user 'bob' --verbose"),
+                                 "app --password [redacted] --user 'bob' --verbose")
                 self.assertEqual(implementation("curl -u a:b -U c:d https://x && python -u serve.py"),
                                  "curl -u [redacted] -U [redacted] https://x && python -u serve.py")
                 self.assertEqual(implementation("mysql -u root -pXyz shop"), "mysql -u root -p[redacted] shop")
@@ -412,6 +428,11 @@ class SharedRulesTests(unittest.TestCase):
              ["curl", "--user=[redacted]", "-u[redacted]"]),
             (["app", "--api-key", "None", "--password=null", "--password", "Secret"],
              ["app", "--api-key", "None", "--password=null", "--password", "[redacted]"]),
+            # A quoted word at the start of an argument does not make the rest of it readable.
+            (["app", "--password", "'None' ArgSecret", "--password", "None"],
+             ["app", "--password", "[redacted]", "--password", "None"]),
+            (["curl", "--user='alice' smith:ArgSecret", "--hf-token=123 SECX"],
+             ["curl", "--user=[redacted]", "--hf-token=[redacted]"]),
             # An option name that keeps literal quotes.
             (["wget", '"--user"', "a:Sec"], ["wget", '"--user"', "[redacted]"]),
             (["curl", "'-u'", "a:S", "'--api-key=x'"], ["curl", "'-u'", "[redacted]", "'--api-key=[redacted]'"]),
