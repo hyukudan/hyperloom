@@ -583,10 +583,20 @@ def _tool(client):
     return ((reply.get("checks") or {}).get("tool") or {}).get("value")
 
 
+def _absent(client):
+    """True when the node has no node tool at all (a read-only test; a client without the test: unknown, False)."""
+    check = getattr(client, "has_tool", None)
+    return check is not None and not check()
+
+
 def _check_tools(clients, mids, profile):
-    """Refuse to start work with a node tool that differs from this checkout's (it may lack checks up relies on)."""
+    """Refuse to start work with a node tool that is absent or differs from this checkout's (it may lack checks up
+    relies on); the message names the command that deploys it."""
     expected = remote.tool_digest()
     for mid in mids:
+        if _absent(clients[mid]):
+            raise OrchestrationError(f"{mid}: no node tool on this machine yet; run 'hyperloom nodes update "
+                                     f"{profile or '<profile>'} --machine {mid}' first")
         deployed = _tool(clients[mid])
         if deployed != expected:
             raise OrchestrationError(f"{mid}: node tool differs from this checkout (deployed {str(deployed)[:12]}, "
@@ -603,7 +613,8 @@ def nodes_update(cluster, profile, machine=None, force=False):
     result = {}
     for mid in mids:
         client = _client(cluster.machines[mid])
-        if not force:
+        # A machine without the node tool has no lease records either (leases run through it): nothing to check.
+        if not force and not _absent(client):
             live = [row for row in _call(client, "status", {"root": cluster.machines[mid].install_root}).get("leases", [])
                     if row.get("state") not in ("stopped", "failed", "aborted", "cancelled", "canceled", "finished")]
             if live:

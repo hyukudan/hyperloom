@@ -271,7 +271,8 @@ def _doctor(args):
             tool = {"expected": remote.tool_digest()}
             if not client.has_tool(timeout=60):
                 _json({"node_tool": {**tool, "deployed": None, "status": "absent",
-                                     "hint": f"run 'hyperloom nodes update <profile> --machine {args.machine}'"}})
+                                     "hint": f"run 'hyperloom nodes update <profile> --machine {args.machine}' "
+                                             "(a machine without the tool has no lease to protect)"}})
                 return
             version = client.call("version", {}, timeout=60)
             tool["deployed"] = ((version.get("checks") or {}).get("tool") or {}).get("value")

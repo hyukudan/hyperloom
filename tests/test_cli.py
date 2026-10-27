@@ -121,6 +121,7 @@ class CLITests(unittest.TestCase):
         tool = json.loads(out)["node_tool"]
         self.assertEqual((tool["status"], tool["deployed"]), ("absent", None))
         self.assertIn("hyperloom nodes update", tool["hint"])
+        self.assertNotIn("--force", tool["hint"])
         client.bootstrap.assert_not_called()
         client.call.assert_not_called()
         client.has_tool.return_value = True
