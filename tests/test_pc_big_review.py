@@ -64,7 +64,7 @@ def test_measurement_uses_real_watchdog_with_zero_load_grace(monkeypatch, tmp_pa
     grant = dict(uuid=identity, vram_cap_gib=4, approval="test", window=window(),
                  gate=[sys.executable, "fake-gate"])
     row = dict(uuid=identity, _pc_big_guard=dict(pro_uuids=[identity],
-                                               preferences=str(tmp_path / "preferences.sqlite3")))
+                                               turn_ledger=None))
     result = measurements._gpu(row, grant, clock=lambda: now[0], lock_factory=lambda _: lock,
         gate_runner=lambda _: None, observer_factory=lambda: observer, watchdog_factory=watchdog,
         popen=lambda *a, **kw: child, job_factory=mock.Mock)
@@ -133,7 +133,7 @@ def scripted_watchdog(tmp_path, monkeypatch, *, ready_timeout=120):
         grant["vram_cap_gib"] = 90
     data["caps_gib"] = dict.fromkeys(keys, 90)
     data["caps_bytes"] = dict.fromkeys(keys, 90 * rtx.GIB)
-    data["pc_big_guard"] = dict(pro_uuids=[pro], preferences=str(tmp_path / "preferences.sqlite3"))
+    data["pc_big_guard"] = dict(pro_uuids=[pro], turn_ledger=None)
     now, hi, low, foreign = [0.0], [0], [0], [0]
     class Observer:
         def sample_many(self, pids):

@@ -1093,8 +1093,8 @@ def reviewed_stops(stop, *, profile=None):
         except (OSError, ValueError):
             kind = "unreadable"
         if kind == "unknown":
-            raise Conflict(f"{profile} has a saved launch state of an unknown configuration (launched before launch "
-                           "states recorded it): stop it first (it is listed and can be stopped here)")
+            raise ForeignConfiguration(f"{profile} has a saved launch state of an unknown configuration (launched before launch "
+                                       "states recorded it): stop it first (it is listed and can be stopped here)")
         raise ForeignConfiguration(f"{profile} has a saved launch state of another configuration: stop it there first")
     return reviewed
 

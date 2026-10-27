@@ -19,7 +19,6 @@ except ImportError:
 
 from hyperloom import device_policy, gpu_counters, pc_big, placement_supervision, procs, rtx
 from hyperloom.recipes import grants, measurements, preflight, reader, service
-from hyperloom.telemetry.store import Store
 from hyperloom.web.api import API, APIError
 from tests.test_placement_supervision import policy
 from tests.test_recipes_grants import NOW, window
@@ -48,7 +47,9 @@ def test_two_device_helper_and_watchdog_do_not_self_lock(tmp_path, monkeypatch):
     data = policy()
     keys = sorted(u.lower() for u in data["caps_gib"])
     pro = next(g["uuid"] for g in data["grants"] if g["uuid"].lower() == keys[0])
-    data["pc_big_guard"] = dict(pro_uuid=pro, preferences=str(tmp_path / "telemetry.sqlite3"))
+    ledger = tmp_path / "ledger.md"
+    ledger.write_text("", encoding="utf-8")
+    data["pc_big_guard"] = dict(pro_uuid=pro, turn_ledger=str(ledger))
     assist = keys[1]
     dogs, apps = [], [(pro, 99999, None), (assist, 99999, None)]
     real_dog = placement_supervision.Watchdog
@@ -100,9 +101,6 @@ def test_two_device_helper_and_watchdog_do_not_self_lock(tmp_path, monkeypatch):
         total[0] = 4000
         ledger = tmp_path / "ledger.md"
         ledger.write_text("12:00 operator: **PC-BIG start**\n", encoding="utf-8")
-        store = Store(tmp_path / "telemetry.sqlite3")
-        store.put("prefs", "turns/ledger_path", str(ledger))
-        store.close()
         dog._pc_big_next = 0
         assert "PC-BIG" in dog.check()
     finally:
@@ -190,7 +188,7 @@ def test_reviewed_handover_guard_uses_only_proven_live_owners(tmp_path, monkeypa
 def test_watchdog_rate_limits_pc_big_and_tolerates_only_transient_counters(tmp_path, monkeypatch):
     data = policy()
     pro = "GPU-" + str(uuid.uuid4())
-    data["pc_big_guard"] = dict(pro_uuid=pro, preferences=str(tmp_path / "telemetry.sqlite3"))
+    data["pc_big_guard"] = dict(pro_uuid=pro, turn_ledger=None)
     observer = mock.Mock()
     observer.sample.return_value = dict.fromkeys((u.lower() for u in data["caps_gib"]), 0)
     now = [NOW]
@@ -223,18 +221,17 @@ def test_watchdog_rate_limits_pc_big_and_tolerates_only_transient_counters(tmp_p
 def test_known_store_survives_policy_and_measurement_handoff(topology, tmp_path, monkeypatch, request):
     from tests.test_recipes_grants import GrantTests
     cluster, pro, assist = topology
-    preferences = tmp_path / "telemetry.sqlite3"
     ledger = tmp_path / "ledger.md"
     ledger.write_text("", encoding="utf-8")
     def create():
-        store = Store(preferences)
-        store.put("prefs", "turns/ledger_path", str(ledger))
-        store.close()
+        ledger.write_text("", encoding="utf-8")
     create()
+    cluster.pc["turn_ledger"] = str(ledger)
     h = GrantTests()
     h.setUp()
     request.addfinalizer(h.doCleanups)
     h.cluster.pc["cuda"]["pro_uuid"] = pro
+    h.cluster.pc["turn_ledger"] = str(ledger)
     h.recipe["routes"][0]["assist"]["aux"]["device_gib"] = 8
     h.binding["aux"] = [dict(id=h.aux, host="local")]
     h.cluster.pc["cuda"]["grants"].append(dict(h.grant, uuid=h.aux))
@@ -242,18 +239,18 @@ def test_known_store_survives_policy_and_measurement_handoff(topology, tmp_path,
                         dict(uuid=h.aux, set="aux", budget_bytes=8 * rtx.GIB)],
                 host=dict(pinned_budget_bytes=68 * rtx.GIB, pageable_budget_bytes=0))
     data = grants.policy(h.cluster, h.recipe, h.recipe["routes"][0], h.binding, h.report, plan, h.hosts, now=NOW)
-    assert data["pc_big_guard"]["preferences_required"]
+    assert data["pc_big_guard"]["turn_ledger"] == str(ledger)
     assert data["pc_big_guard"]["ledger_required"]
-    preferences.unlink()
+    ledger.unlink()
     with pytest.raises(rtx.ServiceError, match="PC-BIG"):
         placement_supervision.validate(data, now=NOW)
     create()
     def inventory():
-        preferences.unlink()
+        ledger.unlink()
         return [dict(uuid=assist, driver="test")]
     def runner(row, grant):
         pc_big.require_clear(row["_pc_big_guard"])
-        pytest.fail("deleted admission store was forgotten")
+        pytest.fail("deleted configured ledger was forgotten")
     with pytest.raises(reader.RecipeError, match="PC-BIG"):
         measurements.acquire(cluster, "xfer", runtime=tmp_path, uuid=assist, xfer_sha256="a" * 64,
                              store_id="test", clock=lambda: NOW, inventory=inventory, gpu_runner=runner)
@@ -292,7 +289,7 @@ def test_legacy_recipe_portal_error_uses_public_envelope(tmp_path, monkeypatch, 
 def test_unowned_pro_lock_refuses_on_next_full_tick(tmp_path, monkeypatch, signal):
     data = policy()
     pro = "GPU-" + str(uuid.uuid4())
-    data["pc_big_guard"] = dict(pro_uuids=[pro], preferences=str(tmp_path / "telemetry.sqlite3"))
+    data["pc_big_guard"] = dict(pro_uuids=[pro], turn_ledger=None)
     observer = mock.Mock()
     observer.sample.return_value = {u.lower(): 0 for u in data["caps_gib"]}
     now = [NOW]
@@ -328,7 +325,7 @@ def test_legacy_visible_changes_document_early_busy_order():
 def test_owned_pro_activity_uses_attributable_residual(tmp_path, monkeypatch, stage, signal):
     data = policy()
     pro, assist = sorted(u.lower() for u in data["caps_gib"])
-    data["pc_big_guard"] = dict(pro_uuids=[pro.upper()], preferences=str(tmp_path / "telemetry.sqlite3"))
+    data["pc_big_guard"] = dict(pro_uuids=[pro.upper()], turn_ledger=None)
     owners = {pro.upper(): {os.getpid(), 42}, assist: {42}}
     observer = mock.Mock()
     observer.sample.side_effect = lambda pid: {pro: (3000 if pid == os.getpid() else 1000) * (1 << 20), assist: 0}

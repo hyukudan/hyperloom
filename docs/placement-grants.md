@@ -32,14 +32,14 @@ and probe documents belong in local configuration/runtime storage; committed exa
 other than the derived PRO identities, independent of the observed model name. An explicit false is an operator policy
 choice; it does not grant a turn or remove that device's lock, idle check or gate. A conflicting device is refused
 when the PRO's existing `pcbig-<uuid>.lock` is held, `rtx.pro_busy` reports activity, or the ledger has any open
-PC-BIG start (including stale starts). The ledger path is the existing `prefs` / `turns/ledger_path` preference
-in the configuration directory's telemetry store. Each signal is checked before measurements/admission and again
-throughout supervision; partial ledger lines and unreadable configured signals refuse. An absent optional
-preference store/path configures no ledger signal. PRO identities come from `pc.cuda.pro_uuid`, configured local
+PC-BIG start (including stale starts). The ledger path comes from `pc.turn_ledger` in the cluster configuration,
+captured in the turn's guard. The guard reads no portal setting or telemetry database. Each signal is checked before
+measurements/admission and again throughout supervision; partial ledger lines and unreadable configured signals
+refuse. An absent `pc.turn_ledger` configures no ledger signal. PRO identities come from `pc.cuda.pro_uuid`, configured local
 prefill-service profile devices and bound placement anchors. Every derived PRO is checked. A conflicting probe
 without any reliable PRO identity refuses `PL_E_GRANT`; omitting the optional UUID never disables live checks.
-Once observed, a preference store or ledger setting cannot disappear and silently disable supervision.
-Checks never acquire the PRO lock or write the ledger/preferences.
+A configured ledger that disappears or becomes unreadable refuses; it cannot silently disable supervision.
+Checks never acquire the PRO lock or write the ledger or settings.
 
 After acquiring all selected locks, a placement helper skips the lock check for its own PROs. A legacy PC-BIG
 helper cannot acquire the same lock until the turn releases it. PRO lock acquisition preserves the configured UUID

@@ -31,7 +31,6 @@ class LeadReviewTests(unittest.TestCase):
                 dict(uuid=self.uuid, pc_big_conflict=True)])})
 
     def test_m1_each_live_signal_refuses_probe_before_cuda(self):
-        from hyperloom.telemetry.store import Store
         from tests.test_recipes_grants import GrantTests
         from tests.test_placement_supervision import policy
         helper = GrantTests()
@@ -39,9 +38,9 @@ class LeadReviewTests(unittest.TestCase):
         self.addCleanup(helper.doCleanups)
         helper.cluster.pc["cuda"]["pro_uuid"] = self.pro
         data = policy()
-        data["pc_big_guard"] = dict(pro_uuid=self.pro, preferences=str(self.root / "telemetry.sqlite3"))
+        data["pc_big_guard"] = dict(pro_uuid=self.pro, turn_ledger=str(self.root / "ledger.md"))
         ledger = self.root / "ledger.md"
-        ledger.write_text("- 12:00 operator: PC-BIG start\n", encoding="utf-8")
+        ledger.write_text("", encoding="utf-8")
         with service.configured(self.root / "config.json"), ExitStack() as stack:
             stack.enter_context(mock.patch.object(rtx, "device_lock_path", return_value=self.root / "pro.lock"))
             busy = stack.enter_context(mock.patch.object(rtx, "pro_busy", return_value=None))
@@ -49,6 +48,10 @@ class LeadReviewTests(unittest.TestCase):
                                                         side_effect=AssertionError("CUDA before refusal")))
             for signal in ("lock", "busy", "ledger", "ledger-markdown", "partial", "unreadable", "busy-unreadable"):
                 with self.subTest(signal=signal), ExitStack() as case:
+                    ledger.write_text("", encoding="utf-8")
+                    self.cluster.pc["turn_ledger"] = str(ledger)
+                    helper.cluster.pc["turn_ledger"] = str(ledger)
+                    data["pc_big_guard"]["turn_ledger"] = str(ledger)
                     if signal == "lock":
                         lock = procs.InstanceLock(self.root / "pro.lock").acquire()
                         case.callback(lock.close)
@@ -57,13 +60,16 @@ class LeadReviewTests(unittest.TestCase):
                     elif signal == "busy-unreadable":
                         busy.side_effect = rtx.ServiceError("counter unavailable")
                     else:
-                        if signal == "ledger-markdown":
+                        if signal == "ledger":
+                            ledger.write_text("- 12:00 operator: PC-BIG start\n", encoding="utf-8")
+                        elif signal == "ledger-markdown":
                             ledger.write_text("12:00 operator: **PC-BIG start**\n", encoding="utf-8")
                         elif signal == "partial":
                             ledger.write_text("- 12:00 operator: PC-BIG sta", encoding="utf-8")
-                        store = Store(self.root / "telemetry.sqlite3")
-                        store.put("prefs", "turns/ledger_path", str(self.root / "missing" if signal == "unreadable" else ledger))
-                        store.close()
+                        configured = str(self.root / "missing" if signal == "unreadable" else ledger)
+                        self.cluster.pc["turn_ledger"] = configured
+                        helper.cluster.pc["turn_ledger"] = configured
+                        data["pc_big_guard"]["turn_ledger"] = configured
                     with self.assertRaisesRegex(reader.RecipeError, "PC-BIG"):
                         measurements.acquire(self.cluster, "xfer", runtime=self.root, uuid=self.uuid,
                             xfer_sha256="a" * 64, store_id="test", clock=lambda: NOW,
@@ -78,11 +84,10 @@ class LeadReviewTests(unittest.TestCase):
             cuda.assert_not_called()
 
     def test_m1_watchdog_stops_when_live_window_opens(self):
-        from hyperloom.telemetry.store import Store
         from tests.test_placement_supervision import policy
         from tests.test_rtx import _binary_spec
         data = policy()
-        data["pc_big_guard"] = dict(pro_uuid=self.pro, preferences=str(self.root / "telemetry.sqlite3"))
+        data["pc_big_guard"] = dict(pro_uuid=self.pro, turn_ledger=str(self.root / "ledger.md"))
         killed = []
         observer = mock.Mock()
         observer.sample.return_value = dict.fromkeys((u.lower() for u in data["caps_gib"]), 0)
@@ -94,9 +99,6 @@ class LeadReviewTests(unittest.TestCase):
                     busy.return_value = None
                     ledger = self.root / "ledger.md"
                     ledger.write_text("", encoding="utf-8")
-                    store = Store(self.root / "telemetry.sqlite3")
-                    store.put("prefs", "turns/ledger_path", str(ledger))
-                    store.close()
                     dog = placement_supervision.Watchdog(replace(_binary_spec(), placement_supervision=data,
                         deadline=NOW + 600), 42, lambda: killed.append(1), lambda _: None, observer=observer,
                         clock=lambda: NOW, memory=lambda: dict(free_physical_gib=100, free_commit_gib=120),
@@ -116,24 +118,24 @@ class LeadReviewTests(unittest.TestCase):
                     self.assertEqual(killed, [1])
                     self.assertIn("PC-BIG", dog.reason)
 
-    def test_m1_known_preferences_cannot_disappear_or_clear_the_ledger(self):
+    def test_m1_configured_ledger_is_required_without_a_telemetry_database(self):
         from hyperloom import pc_big
-        from hyperloom.telemetry.store import Store
         ledger = self.root / "ledger.md"
         ledger.write_text("", encoding="utf-8")
-        preferences = self.root / "telemetry.sqlite3"
-        store = Store(preferences)
-        store.put("prefs", "turns/ledger_path", str(ledger))
-        store.close()
-        guard = dict(preferences=str(preferences))
-        self.assertFalse(pc_big.active(guard))
-        preferences.unlink()
-        with self.assertRaisesRegex(rtx.ServiceError, "PC-BIG"):
-            pc_big.active(guard)
-        store = Store(preferences)
-        store.close()
-        with self.assertRaisesRegex(rtx.ServiceError, "PC-BIG"):
-            pc_big.active(guard)
+        self.cluster.pc["turn_ledger"] = str(ledger)
+        guard = pc_big.context(self.cluster, [dict(uuid=self.uuid)])
+        with mock.patch.object(rtx, "pro_busy", return_value=None), \
+                mock.patch.object(rtx, "device_lock_path", return_value=self.root / "pro.lock"):
+            self.assertFalse(pc_big.active(guard))
+            ledger.write_text("- 12:00 operator: PC-BIG start\n", encoding="utf-8")
+            self.assertTrue(pc_big.active(guard))
+            ledger.unlink()
+            with self.assertRaisesRegex(rtx.ServiceError, "PC-BIG"):
+                pc_big.active(guard)
+            guard["turn_ledger"] = None
+            with self.assertRaisesRegex(rtx.ServiceError, "PC-BIG"):
+                pc_big.active(guard)
+        self.assertFalse((self.root / "telemetry.sqlite3").exists())
 
     def test_m2_measurement_observer_follows_lock_and_gate(self):
         events = []

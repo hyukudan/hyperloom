@@ -79,7 +79,7 @@ def loading_watchdog(tmp_path, monkeypatch, shape="growth", ready_timeout=120):
     data = policy()
     keys = sorted(u.lower() for u in data["caps_gib"])
     pro = keys[0]
-    data["pc_big_guard"] = dict(pro_uuids=[pro], preferences=str(tmp_path / "preferences.sqlite3"))
+    data["pc_big_guard"] = dict(pro_uuids=[pro], turn_ledger=None)
     counts = {}
     def sample(pid):
         n = counts.get(pid, 0)

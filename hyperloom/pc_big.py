@@ -3,15 +3,13 @@ from __future__ import annotations
 
 from contextlib import ExitStack
 from pathlib import Path
-import sqlite3
 import time
 
 from . import downloads, gpu_counters, procs, rtx
 
 
 def context(cluster, selected, *, anchors=()):
-    """Snapshot topology, not activity. Preferences and all live signals are reread on every check."""
-    from .recipes import service
+    """Snapshot topology and pc.turn_ledger; reread all live activity on every check."""
     cuda = cluster.pc.get("cuda", {})
     # Keep configured spelling for legacy lock filenames (case-sensitive on Linux), compare owners by UUID key.
     pros = {str(u).lower(): str(u) for u in anchors if u}
@@ -41,7 +39,7 @@ def context(cluster, selected, *, anchors=()):
             if not pros:
                 raise rtx.ServiceError("PC-BIG PRO identity is unavailable; turn refused")
             return {"pro_uuids": [pros[u] for u in sorted(pros)],
-                    "preferences": str(service.config_dir() / "telemetry.sqlite3")}
+                    "turn_ledger": cluster.pc.get("turn_ledger")}
     return None
 
 
@@ -130,8 +128,8 @@ def active(guard, *, owners=None, observer=None, observer_factory=None, locks_on
            attribution=None):
     """Held PRO lock, busy PRO or any open ledger start is a window. Unknown state refuses.
 
-    Missing optional preferences means no ledger signal is configured. Existing but unreadable
-    preferences, lock state, ledger bytes or busy counters are errors, never an idle result.
+    An absent pc.turn_ledger means no ledger signal is configured. An unreadable configured
+    ledger, lock state or busy counters are errors, never an idle result.
     """
     if not guard:
         return False
@@ -180,35 +178,22 @@ def active(guard, *, owners=None, observer=None, observer_factory=None, locks_on
         return False
     except CounterUnavailable:
         raise
-    except (OSError, ValueError, RuntimeError, sqlite3.Error, TypeError, KeyError, IndexError) as exc:
+    except (OSError, ValueError, RuntimeError, TypeError, KeyError, IndexError) as exc:
         raise rtx.ServiceError("PC-BIG state unreadable; turn refused") from exc
 
 
 def _ledger_active(guard):
-    preferences = Path(guard["preferences"])
-    try:
-        preferences.stat()
-    except FileNotFoundError:
-        if guard.get("preferences_required"):
-            raise ValueError("known preferences are unavailable")
-        return False
-    guard["preferences_required"] = True
-    from .telemetry.store import Store
-    store = Store(preferences, readonly=True)
-    try:
-        path = downloads._pref(store, downloads.LEDGER_PREF)
-    finally:
-        store.close()
+    path = guard.get("turn_ledger")
     if path is None:
         if guard.get("ledger_required"):
-            raise ValueError("known ledger preference is unavailable")
+            raise ValueError("known configured ledger is unavailable")
         return False
-    if not isinstance(path, str) or not path:
-        raise ValueError("invalid ledger preference")
+    if not isinstance(path, str) or not path or not Path(path).is_absolute():
+        raise ValueError("invalid pc.turn_ledger")
     guard["ledger_required"] = True
     # Reuse the legacy whole-file reader and complete-line parser. Unlike the portal's tail view, this
     # retains old open starts regardless of their age; an incomplete line also fails closed.
-    ledger = downloads.LedgerGuard(preferences.parent, path)
+    ledger = downloads.LedgerGuard(Path(path).parent, path)
     _, data = ledger._read(time.monotonic() + ledger.BUDGET_S)
     text = data.decode("utf-8", "strict")
     _, partial = ledger.open_starts(data)

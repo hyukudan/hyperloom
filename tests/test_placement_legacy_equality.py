@@ -1,4 +1,4 @@
-"""Legacy-facing results and error precedence remain equal to the local a8d112c source."""
+"""Legacy results follow a8d112c; configuration ownership refusals follow the hardened c806317 base."""
 
 from copy import deepcopy
 from functools import lru_cache
@@ -26,16 +26,16 @@ from tests.test_web_recipes import Portal, QWEN
 
 
 @lru_cache
-def baseline_text(module):
+def baseline_text(module, revision="a8d112c"):
     relative = Path(module.__file__).resolve().relative_to(Path(__file__).resolve().parents[1]).as_posix()
-    return subprocess.check_output(["git", "show", "a8d112c:" + relative], text=True, encoding="utf-8")
+    return subprocess.check_output(["git", "show", revision + ":" + relative], text=True, encoding="utf-8")
 
 
-def baseline(module, name):
-    definition = next(node for node in ast.walk(ast.parse(baseline_text(module)))
+def baseline(module, name, *, revision="a8d112c"):
+    definition = next(node for node in ast.walk(ast.parse(baseline_text(module, revision)))
                       if isinstance(node, ast.FunctionDef) and node.name == name)
     namespace = dict(vars(module))
-    exec(compile(ast.Module(body=[definition], type_ignores=[]), "a8d112c:" + name, "exec"), namespace)
+    exec(compile(ast.Module(body=[definition], type_ignores=[]), revision + ":" + name, "exec"), namespace)
     return namespace[name]
 
 
@@ -231,7 +231,7 @@ def test_11_portable_g6_reconstructs_original_frozen_bytes():
 
 
 @pytest.mark.parametrize("recorded", [False, True])
-def test_portal_foreign_target_deploy_matches_a8d112c(recorded):
+def test_portal_foreign_target_deploy_matches_hardened_base(recorded):
     with isolated() as env:
         cluster = orchestrate.load_cluster(env.config)
         digest = service.launch_inputs(cluster, service.locate(QWEN, cluster), session.Layers(),
@@ -245,16 +245,21 @@ def test_portal_foreign_target_deploy_matches_a8d112c(recorded):
         portal = Portal(env, orchestrator=fake)
         try:
             # Execute the base's deploy check and CLI-to-HTTP mapping on the same real snapshot and saved state.
-            old_deploy = baseline(service, "deploy")
+            old_deploy = baseline(service, "deploy", revision="c806317")
             with mock.patch.object(service, "deploy", old_deploy), \
-                    mock.patch.object(service, "_deploy_pinned", baseline(service, "_deploy_pinned")):
-                old = baseline(recipe_web, "in_process")(
+                    mock.patch.object(service, "_deploy_pinned", baseline(service, "_deploy_pinned", revision="c806317")):
+                old = baseline(recipe_web, "in_process", revision="c806317")(
                     ["recipe", "deploy", digest, "--config", str(env.config)], orchestrate.load_cluster)
             assert old.code == 4
             expected = (recipe_web.STATUS[old.code],
                         {"error": old.stderr.decode("utf-8").removeprefix("hyperloom: ")})
-            assert expected == (409, {"error": "qwen-replicas has a saved launch state of another configuration: "
-                                               "stop it there first"})
+            assert expected[0] == 409
+            if recorded:
+                assert expected[1] == {"error": "qwen-replicas has a saved launch state of another configuration: "
+                                              "stop it there first"}
+            else:
+                assert "unknown configuration" in expected[1]["error"]
+                assert "it is listed and can be stopped here" in expected[1]["error"]
             current = recipe_web.in_process(
                 ["recipe", "deploy", digest, "--config", str(env.config)], orchestrate.load_cluster)
             assert (current.code, current.stderr) == (old.code, old.stderr)

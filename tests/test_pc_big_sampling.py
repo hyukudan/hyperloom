@@ -24,7 +24,7 @@ def test_residual_brackets_bound_each_owned_pid(tmp_path, monkeypatch, stage, ca
     data = policy()
     keys = sorted(u.lower() for u in data["caps_gib"])
     pro = keys[0]
-    data["pc_big_guard"] = dict(pro_uuids=[pro], preferences=str(tmp_path / "preferences.sqlite3"))
+    data["pc_big_guard"] = dict(pro_uuids=[pro], turn_ledger=None)
     owners = {pro: {os.getpid(), 42}}
     child = {"growth": [1, 4, 4, 4], "release-foreign": [4, 1, 1, 1], "stable-foreign": [1],
              "ambiguous": [4, 1], "crossing-pids": [1, 4], "cap": [9]}.get(case, [4])
