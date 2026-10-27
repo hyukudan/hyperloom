@@ -234,7 +234,7 @@ def snapshot(digest, profile=None, *, source=None, stop=None, approval=None, job
         service.cancel_marker(job)  # Validate only; no progress file, directory or marker is created.
     cluster, intent, options = service.options_from_inputs(digest, profile)
     service.validate_snapshot(intent, approval)
-    reviewed = service.reviewed_stops(stop) if stop is not None else None
+    reviewed = service.reviewed_stops(stop, profile=intent["profile"]) if stop is not None else None
     before_options(cluster, intent["profile"], options, router=intent["router"], source=source, reviewed=reviewed)
 
 

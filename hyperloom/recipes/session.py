@@ -180,7 +180,6 @@ def _placement_evaluation(cluster, path, layers, backend, ctx, base, inventory, 
                           *, placement_inputs=None, identity=None, reviewed=None, observer=None):
     if not isinstance(backend, core.CoreBackend):
         raise RecipeError("placement binding requires a compatible ts-recipe core")
-    ctx.limits = dict(ctx.limits or {}, node_runtime=facts.current_runtime(cluster, ctx, gathered.get("node_runtime")))
     report = apply.probe_report(base, None, gathered, cluster=cluster, ctx=ctx, inventory=inventory)
     structural = Layers(overrides=layers.overrides, sets=layers.sets, workload=layers.workload)
     problems, binding, effective_sha = backend.match(path, layers if identity is not None else structural, report, identity)

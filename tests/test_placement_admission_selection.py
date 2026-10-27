@@ -59,6 +59,7 @@ def selection_env(tmp_path, monkeypatch):
     monkeypatch.setattr(preflight, "check", check)  # Native adapter/render are fake; grant validation is real.
     monkeypatch.setattr(launch, "_backend", lambda _: (backend, False))
     monkeypatch.setattr(launch.render, "router_policies", lambda: ("routes",))
+    monkeypatch.setattr(launch.render, "check_route_table", lambda _: None)  # Parser parity has separate tests.
     monkeypatch.setattr(session.apply, "refuse_unsupported", lambda *a, **kw: None)
     monkeypatch.setattr(runtime, "decision", lambda *a, **kw: {"placement": True})
     request = SimpleNamespace(files=mock.Mock())

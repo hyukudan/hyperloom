@@ -1,4 +1,4 @@
-"""Legacy-facing results and error precedence remain equal to the local ddc5640 source."""
+"""Legacy-facing results and error precedence remain equal to the local a8d112c source."""
 
 from copy import deepcopy
 from functools import lru_cache
@@ -26,14 +26,14 @@ from tests import test_web_summaries, test_recipes
 @lru_cache
 def baseline_text(module):
     relative = Path(module.__file__).resolve().relative_to(Path(__file__).resolve().parents[1]).as_posix()
-    return subprocess.check_output(["git", "show", "ddc5640:" + relative], text=True, encoding="utf-8")
+    return subprocess.check_output(["git", "show", "a8d112c:" + relative], text=True, encoding="utf-8")
 
 
 def baseline(module, name):
     definition = next(node for node in ast.walk(ast.parse(baseline_text(module)))
                       if isinstance(node, ast.FunctionDef) and node.name == name)
     namespace = dict(vars(module))
-    exec(compile(ast.Module(body=[definition], type_ignores=[]), "ddc5640:" + name, "exec"), namespace)
+    exec(compile(ast.Module(body=[definition], type_ignores=[]), "a8d112c:" + name, "exec"), namespace)
     return namespace[name]
 
 
@@ -50,7 +50,7 @@ def test_legacy_probe_report_ignores_cuda_driver_and_h2d():
     gathered = {"model": "test", "devices": {"synthetic": {"name": "GPU", "driver": "600",
                 "h2d_gbytes_ps": 30, "memory_gib": 96}}}
     old_facts = deepcopy(gathered)
-    old_facts["devices"]["synthetic"].pop("driver")  # ddc5640's PC gather never supplied driver identity.
+    old_facts["devices"]["synthetic"].pop("driver")  # a8d112c's PC gather never supplied driver identity.
     old_facts["devices"]["synthetic"].pop("h2d_gbytes_ps")
     assert apply.probe_report(recipe, bound, gathered) == baseline(apply, "probe_report")(recipe, bound, old_facts)
 
@@ -64,7 +64,8 @@ def test_legacy_nvidia_query_and_name_match_baseline(returncode):
     assert run.call_args_list == old_run.call_args_list
 
 
-def test_legacy_facts_do_not_collect_host_topology():
+def test_legacy_facts_do_not_collect_host_topology(monkeypatch):
+    monkeypatch.setattr(facts, "node_runtime", lambda *a: {})
     ctx = SimpleNamespace(pc="local", model="test", nodes=[], service=None)
     cluster = SimpleNamespace(assets={})
     with mock.patch("hyperloom.recipes.topology.host", side_effect=AssertionError("legacy topology walk")):
@@ -126,7 +127,7 @@ def test_legacy_context_error_precedes_reading_recipe_or_layers(tmp_path, monkey
 @pytest.mark.parametrize("input_kind", ["recipe", "profile", "override"])
 @pytest.mark.parametrize("invalid", ["missing", "malformed"])
 @pytest.mark.parametrize("backend_kind", ["stub", "core"])
-def test_legacy_unreadable_input_matches_ddc5640(tmp_path, operation, input_kind, invalid, backend_kind):
+def test_legacy_unreadable_input_matches_a8d112c(tmp_path, operation, input_kind, invalid, backend_kind):
     from hyperloom.recipes import core
     recipes = tmp_path / "recipes"
     recipes.mkdir()

@@ -185,6 +185,7 @@ class PassiveInventoryTests(unittest.TestCase):
         memory = {"total_gib": 128, "free_gib": 90, "free_commit_gib": 100}
         reader = mock.Mock(return_value=sysmem.NO_FALLBACK)
         stores = {"xfer_host": "host-class", "file_store": "store-class", "engram_store": "engram-class"}
+        self.enterContext(mock.patch.object(facts, "node_runtime", return_value={}))
         with mock.patch.object(probe, "read_bandwidth", side_effect=AssertionError("measurement")):
             inventory, gathered, raw, notes = facts.gather(cluster, ctx, call=mock.Mock(), gpus=lambda: [gpu],
                 memory=lambda: memory, transfer_identity=stores)

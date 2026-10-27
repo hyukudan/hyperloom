@@ -40,15 +40,19 @@ class ContentCacheTests(unittest.TestCase):
 
     @contextmanager
     def no_content_reads(self):
-        original = Path.open
+        original, original_builtin = Path.open, open
         content = {p.resolve() for p in self.selected.values()}
 
         def checked(path, *args, **kwargs):
             self.assertNotIn(path.resolve(), content, "admission must not open selected content")
             return original(path, *args, **kwargs)
 
+        def checked_builtin(path, *args, **kwargs):
+            self.assertNotIn(Path(path).resolve(), content, "admission must not open selected content")
+            return original_builtin(path, *args, **kwargs)
+
         with mock.patch.object(Path, "open", checked), \
-                mock.patch("builtins.open", side_effect=AssertionError("no content/header reads")), \
+                mock.patch("builtins.open", side_effect=checked_builtin), \
                 mock.patch.object(modelfiles, "read", side_effect=AssertionError("no header refresh")):
             yield
 
@@ -133,7 +137,8 @@ class ContentCacheTests(unittest.TestCase):
                 data = data["choices"][0]["components"]
             self.assertEqual(data, self.document)
             Path(argv[argv.index("--json-out") + 1]).write_text('{"cached": true}', encoding="utf-8")
-            return SimpleNamespace(returncode=0, stdout="cached plan", stderr="")
+            kwargs["stdout"].write(b"cached plan")
+            return SimpleNamespace(returncode=0)
 
         backend = core.CoreBackend(core.Core("cpu-ts-recipe", run=run))
         inputs = {"choices": [{"id": "spec", "components": self.ref, "selected_content": self.selected}]}

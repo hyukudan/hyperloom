@@ -145,7 +145,8 @@ class Core:
                 else:
                     doc = json.loads(text)
             except (OSError, ValueError, RecursionError) as exc:
-                raise RecipeError(f"{label} printed no valid JSON: {exc}") from exc
+                message = f"{label} printed no valid JSON" if placing else "ss-recipe printed no JSON"
+                raise RecipeError(f"{message}: {exc}") from exc
             if not isinstance(doc, dict):
                 raise RecipeError(f"{label} printed {type(doc).__name__}, not a JSON object")
             overrides = None

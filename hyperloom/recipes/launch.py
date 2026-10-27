@@ -371,6 +371,10 @@ def up_placement(cluster, profile, launch, *, deadline_s, cancelled=None, admitt
              "phase": "starting", "production": launch.production, "diagnostic": [],
              "recipe": launch.record(), "deadline": spec.deadline, "started_at": time.time(),
              "nodes": [], "devices": list(spec.placement_supervision["caps_bytes"])}
+    from . import service
+    if service.configured_file() is not None:
+        state["config"] = orchestrate.config_record(service.configured_file())
+
     def check():
         if cancelled is not None and cancelled():
             raise orchestrate.OrchestrationError("profile stop requested")

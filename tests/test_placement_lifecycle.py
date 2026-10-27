@@ -29,6 +29,10 @@ from tests.test_recipes_grants import NOW, window
 @pytest.mark.parametrize("fault", ["controller-death", "cancelled", "launch", "existing", "ready"])
 def test_placement_start_owns_handlers_watcher_and_rollback(tmp_path, monkeypatch, request, fault):
     path = tmp_path / "profile.json"
+    from hyperloom.recipes import service
+    config = tmp_path / "cluster.json"
+    config.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(service, "configured_file", lambda: config)
     spec = replace(test_rtx._binary_spec(), placement_supervision={"caps_bytes": {"synthetic": 1}})
     placement_request = SimpleNamespace(files=mock.Mock())
     prepared = SimpleNamespace(placement_request=placement_request, production=False, record=lambda: {})
@@ -55,6 +59,8 @@ def test_placement_start_owns_handlers_watcher_and_rollback(tmp_path, monkeypatc
     def detached(argv, log):
         state = orchestrate._read(path)
         assert state["phase"] == "starting"
+        assert orchestrate.owns(state, config)
+        assert not orchestrate.owns(state, tmp_path / "other.json")
         assert argv[-2:] == [str(path), state["token"]]
         assert calls == ["handlers"]
         calls.append("watcher")
@@ -116,6 +122,12 @@ def test_placement_start_owns_handlers_watcher_and_rollback(tmp_path, monkeypatc
     if fault == "ready":
         assert launch.up_placement(None, "profile", prepared, deadline_s=600)["phase"] == "running"
         assert helper["running"]
+        monkeypatch.setattr(orchestrate.secrets, "runtime_dir", lambda: tmp_path)
+        # The shared filter uses up-*.json basenames.
+        saved = orchestrate._read(path)
+        orchestrate._write(tmp_path / "up-profile.json", saved)
+        assert orchestrate.launch_states(config) == {"profile": saved}
+        assert orchestrate.launch_states(tmp_path / "other.json") == {}
         orchestrate._down_state(orchestrate._read(path))
     else:
         message = {"existing": "saved running state", "cancelled": "stop requested",

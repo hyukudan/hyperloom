@@ -211,9 +211,11 @@ class LaunchStatesTests(unittest.TestCase):
         seen = []
         fake = SimpleNamespace(up=lambda *a, **kw: seen.append(service.configured_file()) or {"state": "running"})
         args = cli.build_parser().parse_args(["up", "prof-b", "--config", str(self.config_b)])
-        cli.up_command(args, orchestrate=fake, load_cluster=lambda path: None)
-        with service.configured(self.config_a):                 # an ambient configuration never wins over --config
+        # This test injects only the launcher; passive profile validation is covered by preflight tests.
+        with mock.patch("hyperloom.recipes.preflight.cli"):
             cli.up_command(args, orchestrate=fake, load_cluster=lambda path: None)
+            with service.configured(self.config_a):             # an ambient configuration never wins over --config
+                cli.up_command(args, orchestrate=fake, load_cluster=lambda path: None)
         self.assertEqual(seen, [self.config_b.absolute()] * 2)
 
 

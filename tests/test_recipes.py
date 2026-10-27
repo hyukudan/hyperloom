@@ -220,9 +220,9 @@ class PlacementSchemaTests(unittest.TestCase):
                 self.parse(doc)
 
     def test_legacy_canonical_bytes_and_alias_schemas(self):
-        # Frozen from the integrated base reader before placement extensions.
-        for text, sha in ((DS, "2627249a59fe2b190fc7b45866f9551df2cf4dfba469aa0a8c8ea6c8b5e9e4d3"),
-                          (MM, "ff5ef8f9a51ae5f2b879244a2f22c8cc39ad2079e707cfeca74141551589c25e")):
+        # Frozen with a8d112c reader on these portable fixtures; shipped recipe hashes stay unchanged.
+        for text, sha in ((DS, "301a9b097f955aecd2c475f9f0d3008bac6a96ded86a5544db3067fbf9bd38eb"),
+                          (MM, "fa68cc0060695ec0ed88a56cc16686a1767e30f27431a6791e4bf55f1bd33c29")):
             self.assertEqual(reader.resolve(text).canonical_sha256(), sha)
             self.assertEqual(reader.resolve(text.replace("strix-stream/", "tierstream/")).canonical_sha256(), sha)
         shipped = {

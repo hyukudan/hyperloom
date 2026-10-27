@@ -47,6 +47,7 @@ def test_admission_resources_follow_selected_launch(tmp_path, monkeypatch, selec
     monkeypatch.setattr(orchestrate, "_state_path", lambda _: tmp_path / "state.json")
     monkeypatch.setattr(launch, "_backend", lambda _: (core.StubBackend(), False))
     monkeypatch.setattr(launch.render, "router_policies", lambda: ("routes",))
+    monkeypatch.setattr(launch.render, "check_route_table", lambda _: None)  # Parser parity has separate tests.
     source = lambda ctx, **kw: test_recipes.UpWithRecipeTests.source(SimpleNamespace(avail={}), ctx)
     monkeypatch.setattr(launch.commands, "live_source", lambda *a, **kw: source)
     prepared = []

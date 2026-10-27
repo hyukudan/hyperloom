@@ -1072,13 +1072,26 @@ def launch_progress(job, what, profile=None):
                 pass        # the job's own id: a marker left behind cancels nothing else (pruned after a day)
 
 
-def reviewed_stops(stop):
+def reviewed_stops(stop, *, profile=None):
     """Passive stop-list validation, repeated under the snapshot pin before the switch."""
     reviewed = _states()
     running = sorted(reviewed)
     if sorted(set(stop)) != running:
         raise Conflict(f"the running profiles are {', '.join(running) or 'none'}, not the reviewed "
                        f"{', '.join(sorted(set(stop))) or 'none'}: review the switch again")
+    from .. import orchestrate
+    if profile is not None and profile not in reviewed and orchestrate._state_path(profile).exists():
+        # Before anything is stopped: up would refuse this profile's saved state of another configuration (or one
+        # without the record) only after the switch had stopped the reviewed profiles.
+        try:
+            kind = orchestrate.ownership(orchestrate._read(orchestrate._state_path(profile)),
+                                                 config_file())
+        except (OSError, ValueError):
+            kind = "unreadable"
+        if kind == "unknown":
+            raise Conflict(f"{profile} has a saved launch state of an unknown configuration (launched before launch "
+                           "states recorded it): stop it first (it is listed and can be stopped here)")
+        raise Conflict(f"{profile} has a saved launch state of another configuration: stop it there first")
     return reviewed
 
 
@@ -1122,19 +1135,7 @@ def _deploy_pinned(digest, stop, source, orchestrate, approval, progress):
     progress.record(profile=profile)
     # The launch arguments' own checks (deadline, approval, queue timeout) before anything is stopped.
     validate_snapshot(intent, approval)
-    reviewed = reviewed_stops(stop)
-    if profile not in reviewed and default_orchestrate._state_path(profile).exists():
-        # Before anything is stopped: up would refuse this profile's saved state of another configuration (or one
-        # without the record) only after the switch had stopped the reviewed profiles.
-        try:
-            kind = default_orchestrate.ownership(default_orchestrate._read(default_orchestrate._state_path(profile)),
-                                                 config_file())
-        except (OSError, ValueError):
-            kind = "unreadable"
-        if kind == "unknown":
-            raise Conflict(f"{profile} has a saved launch state of an unknown configuration (launched before launch "
-                           "states recorded it): stop it first (it is listed and can be stopped here)")
-        raise Conflict(f"{profile} has a saved launch state of another configuration: stop it there first")
+    reviewed = reviewed_stops(stop, profile=profile)
     orchestrate.check_launch(cluster, profile, intent["router"], recipe=True)
     check()
     with tempfile.TemporaryDirectory(prefix="hl-recipe-deploy-") as directory:

@@ -55,6 +55,9 @@ def test_mixed_selection_preserves_real_legacy_probe_and_match(tmp_path, monkeyp
     monkeypatch.setattr(commands, "cache", lambda: None)
     monkeypatch.setattr(runtime, "preset", lambda: {"engine_sha": None})
     monkeypatch.setattr(launch.render, "router_policies", lambda: ("routes",))
+    monkeypatch.setattr(launch.render, "check_route_table", lambda _: None)
+    monkeypatch.setitem(facts.FAMILY_PREFILL_BATCH, "minimax-pair", test_recipes.MM_PREFILL_FACT)
+    monkeypatch.setitem(facts.FAMILY_PREFILL_CHUNK, "minimax-pair", ("--prefill-chunk", 4096))
     layers = session.Layers()
     source = commands.live_source(cluster)
     old = baseline(session, "evaluate")(cluster, "mm", path, layers, source)
@@ -156,7 +159,7 @@ def test_live_source_accepts_policy_without_mutation(monkeypatch):
     assert not hasattr(source, "identity")
 
 
-def test_legacy_evaluator_and_picker_are_ddc5640_code():
+def test_legacy_evaluator_and_picker_are_a8d112c_code():
     original = ast.parse(baseline_text(session))
     import inspect
     for old_name, new_name in (("evaluate", "_legacy_evaluate"), ("pick", "_legacy_pick")):
@@ -241,7 +244,8 @@ def test_16_effective_layer_selects_placement_and_policy(tmp_path, monkeypatch, 
     backend = core.CoreBackend(core.Core("fake"))
     backend.resolve = core.StubBackend().resolve
     backend.match = mock.Mock(return_value=([], binding, "a" * 64))
-    ctx = SimpleNamespace(pc="local", profile="decode", model="synthetic")
+    ctx = SimpleNamespace(pc="local", profile="decode", model="synthetic", limits={})
+    monkeypatch.setattr(session.facts, "current_runtime", lambda *a: {})
     monkeypatch.setattr(session.facts, "context", lambda *args: ctx)
     legacy_bind = mock.Mock(return_value={"binding": binding})
     if layer_kind == "profile":

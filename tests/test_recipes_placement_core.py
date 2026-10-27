@@ -97,6 +97,18 @@ class InvocationTests(unittest.TestCase):
                 placement.place("r.toml", route="r", probe={}, components={},
                                 backend=core.CoreBackend(core.Core("ts-recipe", run=run)))
 
+    def test_placement_output_channels_are_bounded(self):
+        for channel in ("stdout", "stderr", "json", "overrides"):
+            def run(argv, **kwargs):
+                Path(argv[argv.index("--json-out") + 1]).write_bytes(b" " * 65 if channel == "json" else b"{}")
+                Path(argv[argv.index("--emit-overrides") + 1]).write_bytes(b"x" * 65 if channel == "overrides" else b"")
+                if channel in ("stdout", "stderr"):
+                    kwargs[channel].write(b"x" * 65)
+                return SimpleNamespace(returncode=0)
+            with self.subTest(channel=channel), mock.patch.object(core, "MAX_OUTPUT", 64):
+                with self.assertRaisesRegex(reader.RecipeError, "exceeds"):
+                    core.Core("test-ts-recipe", run=run).placement(["solve", "r.toml", "--emit-overrides", "picked"])
+
     def test_unavailable_timeout_and_stub_are_refused(self):
         for exc in (FileNotFoundError("missing"), subprocess.TimeoutExpired("ts-recipe", 60)):
             with self.subTest(exc=exc), self.assertRaisesRegex(reader.RecipeError, "unavailable"):
