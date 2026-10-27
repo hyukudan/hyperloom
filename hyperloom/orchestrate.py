@@ -1390,8 +1390,7 @@ def logs(profile, process, tail=100, config_path=None, read=None, unknown=False)
     state = _read(_state_path(profile))
     kind = ownership(state, config_path) if config_path is not None else "own"
     if kind == "other" or (kind == "unknown" and not unknown):
-        raise OrchestrationError(f"{profile}: launched from another configuration" if kind == "other" else
-                                 f"{profile}: {UNKNOWN_CONFIG}")
+        raise OrchestrationError(f"{profile}: launched from another configuration")
     local = {"router": state.get("router") or {}, "prefill": state.get("prefill_service") or {}}.get(process, {})
     if local.get("directory") and (process == "prefill" or local.get("machine") == "local"):
         directory = Path(local["directory"])
