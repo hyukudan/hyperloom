@@ -94,23 +94,25 @@ _BOUNDARY = " \t\n\r\f\v=:([{,"
 _BOUNDARY_AFTER = " \t\n\r\f\v,;)]}"
 _LEXEME = re.compile(r"""[^'"\\]+|\\[\s\S]?""")
 _BACKSLASHES = re.compile(r"\\+")
-# The closing quote of a string in escaped quotes, by the number of backslashes c before its opening quote (1:
-# \"...\" in JSON written inside a string; 3: \\\"...\\\" when that is written inside a string again; 7): a quote
-# whose backslash run r has r mod 2(c+1) == c, as that encoding writes it (at depth 1, \\\\\" ends a value that
-# ends in a backslash; \\\" is a quote inside the value).
-_ESCAPED_CLOSE = {depth: re.compile(r"(?<!\\)(?:" + "\\\\" * (2 * depth + 2) + ")*" + "\\\\" * depth + '"')
-                  for depth in (1, 3, 7)}
-# An escaped apostrophe (a run of 1, 3 or 7 backslashes: a repr, a repr of a repr) opens a quoted part only where
-# a value starts, and an odd run at least as long closes it before a boundary (api_key=\'two words\', a value that
-# ends in a backslash: \'a b\\\'; while it\'s fine stays one escape).
-_ESCAPED_APOSTROPHE_CLOSE = {depth: re.compile(r"(?<!\\)(?:\\\\)*" + "\\\\" * depth + r"""'(?=[\s,;)\]}'"]|$)""")
-                             for depth in (1, 3, 7)}
+# Every quote of a text with the backslashes right before it is found once (_QUOTE_RUN), and each kind of closing
+# quote a value may ask for gets one sorted list of positions (_closes), so finding where a quoted part ends never
+# reads the text again. A plain apostrophe closes at the next apostrophe; a plain double quote at the next one not
+# escaped (an even run). Escaped double quotes open on a run c of 1, 3 or 7 backslashes (\"...\" in JSON written
+# inside a string; \\\"...\\\" when that is written inside a string again) and close, first, at a quote whose run r
+# has r mod 2(c+1) == c, as that encoding writes it (at depth 1, \\\\\" ends a value that ends in a backslash;
+# \\\" is a quote inside the value), else at any odd run of at least c, else at the next escaped quote. An escaped
+# apostrophe (a repr, a repr of a repr) opens only where a value starts and closes the same way, before a
+# boundary (api_key=\'two words\'; \'a b\\\' ends in a backslash; \'rock \\\'n\\\' roll\' holds apostrophes; while
+# it\'s fine stays one escape). A close is on the same line, before the end of an enclosing string.
+_QUOTE_RUN = re.compile(r"""(?<!\\)\\*['"]""")
+_NEWLINE = re.compile(r"\n")
+_CLOSE_BOUNDARY = " \t\n\r\f\v,;)]}'\""
 
 
 def _strings(text):
-    """(starts, ends, failed): the quoted strings of ``text`` that open at a word boundary, in order (read once,
+    """(starts, ends, cache): the quoted strings of ``text`` that open at a word boundary, in order (read once,
     left to right, as a shell reads them; a quote with no closing quote on its line is an ordinary character), and
-    where the value reader found no closing quote (kept for every value of the text, so no search is repeated)."""
+    a cache for the closing quotes the value reader looks up (_closes)."""
     starts, ends, failed, pos, size = [], [], {"'": -1, '"': -1}, 0, len(text)
     while pos < size:
         quote = text[pos]
@@ -138,26 +140,60 @@ def _strings(text):
     return starts, ends, {}
 
 
-def _failed(failed, key, at):
-    """Whether a search for a closing quote from ``at`` is known to fail: one from an earlier position on the same
-    line found none."""
-    span = failed.get(key)
-    return span is not None and span[0] <= at < span[1]
+def _first_after(positions, at):
+    """The index of the first of the sorted ``positions`` after ``at``."""
+    low, high = 0, len(positions)
+    while low < high:
+        middle = (low + high) // 2
+        if positions[middle] <= at:
+            low = middle + 1
+        else:
+            high = middle
+    return low
+
+
+def _closes(text, cache, key):
+    """The sorted positions of the quotes that close a quoted part of this kind: key is (quote, "plain"), (quote,
+    tier, opening run) with tier 1 (the encoding's own run) or 2 (any odd run at least as long), or (quote, "any")."""
+    if key in cache:
+        return cache[key]
+    if "quotes" not in cache:
+        size = len(text)
+        cache["quotes"] = [(found.end() - 1, found.end() - 1 - found.start(), text[found.end() - 1],
+                            found.end() == size or text[found.end()] in _CLOSE_BOUNDARY)
+                           for found in _QUOTE_RUN.finditer(text)]
+        cache["lines"] = [found.start() for found in _NEWLINE.finditer(text)]
+    quote, tier = key[0], key[1]
+    depth = key[2] if len(key) > 2 else 0
+    cache[key] = [at for at, run, char, boundary in cache["quotes"] if char == quote and (
+        (quote == "'" or run % 2 == 0) if tier == "plain" else run % 2 == 1 and (
+            tier == "any" or (quote == '"' or boundary) and (
+                run % (2 * depth + 2) == depth if tier == 1 else run >= depth)))]
+    return cache[key]
+
+
+def _close(text, cache, keys, at, limit):
+    """The first quote after ``at`` that closes a part of the first of ``keys`` that has one on the same line before
+    ``limit``; -1 if none."""
+    _closes(text, cache, ("'", "plain"))
+    lines = cache["lines"]
+    line = _first_after(lines, at)
+    end = min(limit, lines[line] if line < len(lines) else len(text))
+    for key in keys:
+        positions = _closes(text, cache, key)
+        index = _first_after(positions, at)
+        if index < len(positions) and positions[index] < end:
+            return positions[index]
+    return -1
 
 
 def _shell_word(text, pos, stops="", strings=None):
     """(end, value): the shell word that starts at ``pos`` (also ending at any character of ``stops``: an
     assignment's value ends at , ; }) and its text without quotes or escapes. ``strings``: _strings(text), shared by
-    every value of the text."""
-    starts, ends, failed = _strings(text) if strings is None else strings
+    every value of the text (it keeps the positions of the closing quotes)."""
+    starts, ends, cache = _strings(text) if strings is None else strings
     limit, enclosing = len(text), ""
-    low, high = 0, len(starts)
-    while low < high:                   # the last string that opens before pos
-        middle = (low + high) // 2
-        if starts[middle] < pos:
-            low = middle + 1
-        else:
-            high = middle
+    low = _first_after(starts, pos - 1)  # the last string that opens before pos
     if low and pos < ends[low - 1]:
         limit, enclosing = ends[low - 1], text[starts[low - 1]]
     value, at, size = [], pos, len(text)
@@ -170,43 +206,24 @@ def _shell_word(text, pos, stops="", strings=None):
         if char == "\\":
             run = _BACKSLASHES.match(text, at, limit).end() - at
             quote = text[at + run:at + run + 1]
-            closing = (_ESCAPED_CLOSE.get(run) if quote == '"' else
-                       _ESCAPED_APOSTROPHE_CLOSE.get(run) if quote == "'" and at == pos else None)
-            if closing is not None and not _failed(failed, (quote, run, limit), at):
-                found = closing.search(text, at + run + 1, limit)
-                if found is not None and "\n" not in text[at + run + 1:found.start()]:
-                    value.append(text[at + run + 1:found.start()])
-                    at = found.end()
-                    continue
-                line = text.find("\n", at, limit)  # no closing quote of this depth: none for a later one either
-                failed[quote, run, limit] = at, limit if line == -1 else line
-            if run % 2 and (quote == '"' or quote == "'" and at == pos) and \
-                    not _failed(failed, ("any", quote, limit), at):
-                # Escaping that matches no depth or boundary: the string still ends at the next escaped quote of
-                # its kind, whatever runs before it (hiding up to there rather than stopping at a blank inside it).
-                end = text.find("\\" + quote, at + run + 1, limit)
-                if end != -1 and "\n" not in text[at + run + 1:end]:
-                    value.append(text[at + run + 1:end])
-                    at = end + 2
-                    continue
-                line = text.find("\n", at, limit)
-                failed["any", quote, limit] = at, limit if line == -1 else line
+            end = -1
+            if run in (1, 3, 7) and (quote == '"' or quote == "'" and at == pos):
+                end = _close(text, cache, ((quote, 1, run), (quote, 2, run), (quote, "any")), at + run, limit)
+            elif run % 2 and (quote == '"' or quote == "'" and at == pos):
+                end = _close(text, cache, ((quote, "any"),), at + run, limit)
+            if end != -1:
+                value.append(text[at + run + 1:end])
+                at = end + 1
+                continue
             value.append(text[at + 1:min(at + run + run % 2, limit)])
             at = min(at + run + run % 2, limit)
             continue
-        if char in "'\"" and not _failed(failed, (char, limit), at):
-            if char == "'":
-                end = text.find("'", at + 1, limit)
-                end = end if end != -1 and "\n" not in text[at + 1:end] else -1
-            else:
-                found = _DOUBLE_STRING.match(text, at, limit)
-                end = found.end() - 1 if found else -1
+        if char in "'\"":
+            end = _close(text, cache, ((char, "plain"),), at, limit)
             if end != -1:
                 value.append(text[at + 1:end])
                 at = end + 1
                 continue
-            line = text.find("\n", at, limit)       # no closing quote: none for a later one on this line either
-            failed[char, limit] = at, limit if line == -1 else line
         value.append(char)
         at += 1
     return min(at, limit, size), "".join(value)
@@ -378,12 +395,15 @@ def _curl_users(text, strings):
         for option in CURL_OPTION.finditer(text, command.start(), command.end()):
             if option.group("o") is None or option.start() < last:
                 continue
-            end = _shell_word(text, option.end(), "", strings)[0]      # it may go on past the command
             certificate = option.group("e") or option.group("c") or option.group("e2") or option.group("c2")
+            end = _shell_word(text, option.end(), "", strings)[0]      # it may go on past the command
             raw = _unquoted(text[option.end():end])     # a certificate path as written (C:\certs\client.pem)
-            if end > option.end() and (not certificate or ":" in raw and not _WINDOWS_PATH.fullmatch(raw)):
+            hidden = end > option.end() and (not certificate or ":" in raw and not _WINDOWS_PATH.fullmatch(raw))
+            if hidden:
                 yield option.end(), end
-                last = end
+            if hidden or end > option.end() and text[option.end()] != "-":
+                last = end              # read, hidden or not (a certificate without a password): not read again;
+                #                         a certificate kept that looks like an option (--cert --next) is one
         pos = command.end()             # a value that runs on past it may hide the next command's start
 
 

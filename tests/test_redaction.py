@@ -191,6 +191,12 @@ SECRETS = {
     repr("curl -u 'u:SECa SECb\\' -H \"X: y\""): ("SECa", "SECb"),
     repr("Authorization: Bearer 'SECa SECb\\' \"x\""): ("SECa", "SECb"),
     repr({"body": repr("password='SECa SECb' \"x\"")}): ("SECa", "SECb"),
+    # a repr of a repr whose value holds its own apostrophes
+    repr({"body": repr({"password": "rock 'n' SEC1 roll \"x\""})}): ("SEC1", "roll"),
+    repr({"body": repr({"password": "Xy7'\"kSEC2 next", "user": "bob"})}): ("SEC2", "next"),
+    repr(repr({"password": "p' q\"SEC4"})): "SEC4",
+    repr({"body": repr({"token": "ab'; SEC6\""})}): "SEC6",
+    repr({"body": repr({"password": "x', SEC7\""})}): "SEC7",
     # a snake-case name's own value is not another value's end
     "db_pass a_key (SEC1X": "SEC1X",
     "x_secret a_key (SEC2X)": "SEC2X",
@@ -432,6 +438,17 @@ class SharedRulesTests(unittest.TestCase):
                  '\\\\\\\\\\"', 'k=\\"x\\\\\\\\\\" ', "k=\\'", "k=\\'x ", "a_key a_key (",
                  "--password \\'", "Bearer \\'", "password=\\'x ", "api_key: \\\\\\'", "token: \\'\\\\\\' ",
                  "curl --cert=\\'", "password=\\'a b ")
+        # Values whose closing quote is far away: one close at the end of the line, or none on many lines.
+        tails = (("curl -E \\'", "\\'"), ("curl --cert=\\'", "\\'"), ("curl -E \\'", "\\\\\\'"), ("curl -E \\\"", "\\\""),
+                 ("--password \\'a\n", ""), ("--password \\'a\\'b\n", ""), ("api_key: \\\\\\'a\n", ""),
+                 ("password=\\'a b\n", ""), ("a='\n", "'"), ("password=\\\"x\n", "\\\""))
+        for unit, tail in tails:
+            for name, implementation in (("shared", redaction.redact_text), ("portal", redact)):
+                self.assert_linear(name, unit + tail, lambda size, unit=unit, tail=tail, run=implementation: run(
+                    (unit * (size // len(unit) + 1))[:size] + tail))
+            # The node reads one line at a time.
+            self.assert_linear("node", unit + tail, lambda size, unit=unit, tail=tail: node.redact(
+                ((unit * (size // len(unit) + 1))[:size] + tail).replace("\n", " ")))
         for name, implementation in (("shared", redaction.redact_text), ("node", node.redact)):
             for unit in units:
                 self.assert_linear(name, unit, lambda size: implementation((unit * (size // len(unit) + 1))[:size]))
