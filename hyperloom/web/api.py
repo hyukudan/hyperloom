@@ -1371,11 +1371,12 @@ class API:
             self.admission_db = admission.for_config(self.config_path)
         return self.admission_db
 
-    def _resources_of_profile(self, profile, router=None):
+    def _resources_of_profile(self, profile, router=None, shown=False):
         """Resource ids a profile occupies (its nodes, its prefill service's machine and its router); everything
-        ("*") when unknown."""
+        ("*") when unknown. ``shown``: only the ids of this portal's configuration (a preview; holds are global)."""
         try:
-            return admission.profile_resources(self._cluster(), profile, self.orchestrate, router)
+            return admission.profile_resources(self._cluster(), profile, self.orchestrate, router,
+                                               config_path=self.config_path if shown else None)
         except Exception:
             return {"*"}
 
