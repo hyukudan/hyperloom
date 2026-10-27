@@ -10,6 +10,7 @@ import sqlite3
 import tempfile
 import threading
 import time
+import types
 import unittest
 from unittest import mock
 
@@ -18,6 +19,7 @@ from hyperloom.telemetry.store import Store
 from hyperloom.web.features import alerts, health
 from tests.test_health_engine import Clock, FakeAPI, T0
 
+REAL_CONFIGURED = alerts.configured_ports
 LOOPBACK = str(ipaddress.IPv4Address(0x7F000001))      # built at run time
 LOOPBACK6 = str(ipaddress.IPv6Address(1))
 HOST = ".".join(("hooks", "example", "test"))           # a reserved test name, built at run time
@@ -84,6 +86,12 @@ class Base(unittest.TestCase):
         self.addCleanup(self.api.admission_db.close)
         self.receiver = Receiver()
         self.addCleanup(self.receiver.close)
+        # The receiver's port is the configured local relay (pc.alert_local_ports); no other loopback port is.
+        port = frozenset({self.receiver.server.server_address[1]})
+        for patcher in (mock.patch.object(alerts, "_local_ports", port),
+                        mock.patch.object(alerts, "configured_ports", lambda api: port)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def channel(self, path="/hook/" + TOKEN, **fields):
         return alerts.save_channel(self.store, {"name": "lab", "kind": "webhook", "url": self.receiver.url(path),
@@ -108,7 +116,8 @@ class Base(unittest.TestCase):
 
 class URLTests(Base):
     def test_rules(self):
-        for good in (f"https://{HOST}/a?b=1", f"http://{LOOPBACK}:9/x", f"http://[{LOOPBACK6}]:8080/t"):
+        port = self.receiver.server.server_address[1]
+        for good in (f"https://{HOST}/a?b=1", f"http://{LOOPBACK}:{port}/x", f"http://[{LOOPBACK6}]:{port}/t"):
             self.assertEqual(alerts.check_url(good), good)
         for bad in (f"http://{HOST}/a", f"ftp://{HOST}/y", f"https://{USERINFO}@{HOST}/", f"https://{HOST}/a#f",
                     f"https://{HOST}/a b", f"https://{HOST}/\n", "https://" + "a" * 2050, "https:///path", "", None,
@@ -134,6 +143,30 @@ class URLTests(Base):
         self.assertFalse(result["ok"])
         self.assertIn("public addresses", result["error"])
         self.assertEqual(connects, [])
+
+    def test_loopback_only_on_a_configured_port(self):
+        """This machine's other services (the portal, an engine, a database) are not channel targets: loopback is
+        refused on any port the configuration does not list, when saved and at connect time (a name resolving there)."""
+        port = self.receiver.server.server_address[1]
+        other = port + 1 if port < 65535 else port - 1
+        for bad in (f"http://{LOOPBACK}:{other}/x", f"http://[{LOOPBACK6}]:{other}/t", f"https://{LOOPBACK}/x",
+                    f"https://[::ffff:{LOOPBACK}]:{other}/x"):
+            with self.subTest(url=bad), self.assertRaisesRegex(ValueError, "pc.alert_local_ports"):
+                alerts.check_url(bad)
+        connects = []
+        rows = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (LOOPBACK, other))]
+        with mock.patch.object(alerts.socket, "getaddrinfo", return_value=rows), \
+                mock.patch.object(alerts.socket.socket, "connect", side_effect=lambda *a: connects.append(a)):
+            result = alerts.send(f"https://{HOST}:{other}/x", "webhook", "test", "m-1", [], T0)
+        self.assertEqual((result["ok"], connects), (False, []))
+        # Without the setting no loopback port is allowed; the setting is read from the configuration.
+        with mock.patch.object(alerts, "configured_ports", REAL_CONFIGURED):
+            alerts._configure(self.api)
+            with self.assertRaisesRegex(ValueError, "pc.alert_local_ports"):
+                alerts.check_url(self.receiver.url("/x"))
+            self.api.cluster = lambda: types.SimpleNamespace(pc={"alert_local_ports": [port]})
+            alerts._configure(self.api)
+            self.assertEqual(alerts.check_url(self.receiver.url("/x")), self.receiver.url("/x"))
 
     def test_url_lives_only_in_the_secret_file(self):
         record = self.channel()

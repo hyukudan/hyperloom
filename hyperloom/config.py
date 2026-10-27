@@ -344,7 +344,7 @@ def parse(obj: dict) -> Cluster:
         from . import knobs
         knobs.validate(p.get("advanced", {}), data)
     pc = record(obj.get("pc", {}), "pc", optional=("router_listen", "ui_listen", "cuda", "recipe_dirs", "recipe_core",
-                                                   "turn_ledger", "mqtt_broker"))
+                                                   "turn_ledger", "mqtt_broker", "alert_local_ports"))
     # The lab's RTX big-job ledger (the coordination log read on this machine) and the MQTT broker: set here only,
     # never by a portal or command-line setting.
     if "turn_ledger" in pc and not Path(text(pc["turn_ledger"], "pc.turn_ledger")).is_absolute():
@@ -357,6 +357,12 @@ def parse(obj: dict) -> Cluster:
             integer(broker["port"], "pc.mqtt_broker.port", 1, 65535)
         if "tls" in broker:
             boolean(broker["tls"], "pc.mqtt_broker.tls")
+    # Loopback ports an alert channel may post to (a local relay); every other port on this machine is refused.
+    if "alert_local_ports" in pc:
+        if not isinstance(pc["alert_local_ports"], list) or len(pc["alert_local_ports"]) > 16:
+            raise ConfigError("pc.alert_local_ports: expected a list of at most 16 ports")
+        for index, port in enumerate(pc["alert_local_ports"]):
+            integer(port, f"pc.alert_local_ports[{index}]", 1, 65535)
     # Recipes (hyperloom/recipes): the operator's recipe directories and the strix-stream core executable.
     if "recipe_dirs" in pc:
         if not isinstance(pc["recipe_dirs"], list) or len(pc["recipe_dirs"]) > 16:

@@ -17,7 +17,7 @@
     const {esc, button} = H();
     const f = view.form;
     const option = (list, value) => list.map(o => `<option value="${esc(o)}" ${o === value ? "selected" : ""}>${esc(o)}</option>`).join("");
-    const urlRule = "https, or http only to a numeric loopback address; no user credentials; no fragment";
+    const urlRule = "https to a public address, or http to a numeric loopback address on a port listed in pc.alert_local_ports; no user credentials; no fragment";
     return `<section class="card hl-edit" aria-label="${f.id ? "Edit channel" : "Add a channel"}"><h2>${f.id ? `Edit · ${esc(f.name)}` : "Add a channel"}</h2><div class="grid g2 hl-form">
       <div class="field"><label for="alert-name">Name</label><input class="inp" id="alert-name" maxlength="64" data-page-action="alerts-field" data-key="name" value="${esc(f.name)}" autocomplete="off"></div>
       <div class="field"><label for="alert-kind">Kind</label><select class="inp" id="alert-kind" data-page-action="alerts-field" data-key="kind" ${f.id ? "disabled" : ""}>${option(d.kinds || ["webhook", "push"], f.kind)}</select><span class="hint">${f.id ? "The kind of a saved channel cannot change; add a new channel for another kind." : "Webhook: a JSON document per message. Push: the message text posted to a topic URL."}</span></div>

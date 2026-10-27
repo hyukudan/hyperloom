@@ -88,19 +88,42 @@ def check_url(url):
         numeric = None
     if scheme == "http" and not (numeric is not None and numeric.is_loopback):
         raise ValueError("http is allowed only to a numeric loopback address; use https")
-    if numeric is not None and not reachable(numeric):
+    if numeric is not None and not reachable(numeric, port or (443 if scheme == "https" else 80)):
         raise ValueError(PRIVATE_WHY)
     return url
 
 
-PRIVATE_WHY = "a channel reaches only public addresses or this machine's loopback (not a private network address)"
+PRIVATE_WHY = ("a channel reaches only public addresses, or this machine's loopback on a port listed in "
+               "pc.alert_local_ports (never a private network address)")
+
+# The loopback ports a channel may use: only those the configuration lists (pc.alert_local_ports, a local relay the
+# operator runs). Any other port on this machine is another service's (the portal itself, an engine, a database),
+# so it is refused like a private address. Set from the configuration by every entry point below.
+_local_ports = frozenset()
 
 
-def reachable(address):
-    """Whether a channel may connect to this address: this machine's loopback, or a public (global) address."""
+def configured_ports(api):
+    """The configuration's ``pc.alert_local_ports`` (empty when unset or unreadable)."""
+    try:
+        ports = (api.cluster().pc or {}).get("alert_local_ports") or ()
+    except Exception:  # noqa: BLE001 - an unreadable configuration allows no loopback port
+        return frozenset()
+    return frozenset(port for port in ports if type(port) is int and 1 <= port <= 65535)
+
+
+def _configure(api):
+    global _local_ports
+    _local_ports = configured_ports(api)
+
+
+def reachable(address, port):
+    """Whether a channel may connect to this address and port: a public (global) address, or this machine's
+    loopback on a configured local port."""
     if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
         address = address.ipv4_mapped
-    return address.is_loopback or (address.is_global and not address.is_multicast)
+    if address.is_loopback:
+        return port in _local_ports
+    return address.is_global and not address.is_multicast
 
 
 def mask(url):
@@ -579,7 +602,7 @@ class _Attempt:
         port = port or (443 if scheme == "https" else 80)
         last = None
         resolved = [row for row in self.resolve(host, port)
-                    if reachable(ipaddress.ip_address(str(row[4][0]).split("%", 1)[0]))]
+                    if reachable(ipaddress.ip_address(str(row[4][0]).split("%", 1)[0]), port)]
         if not resolved:
             raise ConnectionError(PRIVATE_WHY)
         for family, kind, proto, _, address in resolved:
@@ -730,6 +753,7 @@ def _unmark(store, owner, generation, cid, keys, now):
 def deliver(api, now, store=None, clock=time.monotonic, sender=None):
     """The ``alerts`` collector body: send due messages (lease holder only), oldest first per channel, within the
     run budget. Returns no points."""
+    _configure(api)
     store = store or telemetry.open_store(api)
     prepare(store)
     owner = health.owner_of(api)
@@ -855,6 +879,7 @@ def _audited(api, action, arguments, work):
 
 
 def channels_post(api, arguments):
+    _configure(api)
     store = telemetry.open_store(api)
     return _audited(api, "alerts/channels", arguments, lambda: save_channel(store, arguments, api.clock()))
 
@@ -870,6 +895,7 @@ def delete_post(api, arguments):
 
 
 def test_post(api, arguments):
+    _configure(api)
     store = telemetry.open_store(api)
 
     def work():
@@ -882,6 +908,7 @@ def test_post(api, arguments):
 def document(api, query):
     if query:
         raise ValueError("alerts takes no query arguments")
+    _configure(api)
     store = telemetry.existing_store(api)
     lists = {"kinds": list(KINDS), "severities": list(SEVERITIES), "reminders": list(REMINDERS)}
     if store is None:

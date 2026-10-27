@@ -208,14 +208,17 @@ class ConfigTests(unittest.TestCase):
     def test_the_ledger_and_the_mqtt_broker_are_configuration(self):
         obj = example()
         ledger = str(Path(tempfile.gettempdir()) / "coordination.md")
-        obj.setdefault("pc", {}).update(turn_ledger=ledger,
+        obj.setdefault("pc", {}).update(turn_ledger=ledger, alert_local_ports=[8090],
                                         mqtt_broker={"host": "broker.lan", "port": 8883, "tls": True})
         cluster = parse(obj)
+        self.assertEqual(cluster.pc["alert_local_ports"], [8090])
         self.assertEqual((cluster.pc["turn_ledger"], cluster.pc["mqtt_broker"]["host"]),
                          (ledger, "broker.lan"))
         for key, value in (("turn_ledger", "relative.md"), ("mqtt_broker", {"host": "a b"}),
                            ("mqtt_broker", {"host": "x", "port": 0}), ("mqtt_broker", {"host": "x", "tls": "yes"}),
-                           ("mqtt_broker", {"host": "x", "password": "p"}), ("mqtt_broker", {})):
+                           ("mqtt_broker", {"host": "x", "password": "p"}), ("mqtt_broker", {}),
+                           ("alert_local_ports", [0]), ("alert_local_ports", "8090"),
+                           ("alert_local_ports", list(range(1, 18)))):
             bad = example()
             bad.setdefault("pc", {})[key] = value
             with self.subTest(key=key, value=value), self.assertRaises(ConfigError):
