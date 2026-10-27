@@ -554,11 +554,7 @@ It starts only when the engine ships a CUDA FRONT with an HTTP serving API, `/he
 ## 8. Conventions
 - **Repo:** `hyukudan/hyperloom` (private). Package and CLI: `hyperloom`. Node tool: `hyperloom-node`.
 - **Python:** stdlib only (PC ≥ 3.11, node system python3 ≥ 3.10); `unittest`.
-- **Commit author** `hyukudan <19479239+hyukudan@users.noreply.github.com>`, with these trailers:
-  ```
-  Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
-  Claude-Session: https://claude.ai/code/session_01YQhXyYBxNnjq4twCoox8bT
-  ```
+- **Commit author** `hyukudan <19479239+hyukudan@users.noreply.github.com>`, with no trailers (no co-author or session lines).
 - **License:** proprietary/private for now; the `NOTICE` file preserves component licenses.
 
 ## 9. Build process with Sol (after main's OK)
