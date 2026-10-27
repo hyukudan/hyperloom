@@ -100,14 +100,17 @@ _BACKSLASHES = re.compile(r"\\+")
 # ends in a backslash; \\\" is a quote inside the value).
 _ESCAPED_CLOSE = {depth: re.compile(r"(?<!\\)(?:" + "\\\\" * (2 * depth + 2) + ")*" + "\\\\" * depth + '"')
                   for depth in (1, 3, 7)}
-# An escaped apostrophe opens a quoted part only where a value starts, and closes it before a boundary
-# (api_key=\'two words\', while it\'s fine stays one escape).
-_ESCAPED_APOSTROPHE_CLOSE = re.compile(r"""(?<!\\)\\'(?=[\s,;)\]}'"]|$)""")
+# An escaped apostrophe (a run of 1, 3 or 7 backslashes: a repr, a repr of a repr) opens a quoted part only where
+# a value starts, and an odd run at least as long closes it before a boundary (api_key=\'two words\', a value that
+# ends in a backslash: \'a b\\\'; while it\'s fine stays one escape).
+_ESCAPED_APOSTROPHE_CLOSE = {depth: re.compile(r"(?<!\\)(?:\\\\)*" + "\\\\" * depth + r"""'(?=[\s,;)\]}'"]|$)""")
+                             for depth in (1, 3, 7)}
 
 
 def _strings(text):
-    """(starts, ends): the quoted strings of ``text`` that open at a word boundary, in order (read once, left to
-    right, as a shell reads them; a quote with no closing quote on its line is an ordinary character)."""
+    """(starts, ends, failed): the quoted strings of ``text`` that open at a word boundary, in order (read once,
+    left to right, as a shell reads them; a quote with no closing quote on its line is an ordinary character), and
+    where the value reader found no closing quote (kept for every value of the text, so no search is repeated)."""
     starts, ends, failed, pos, size = [], [], {"'": -1, '"': -1}, 0, len(text)
     while pos < size:
         quote = text[pos]
@@ -132,13 +135,21 @@ def _strings(text):
             starts.append(pos)
             ends.append(end)
         pos = end + 1
-    return starts, ends
+    return starts, ends, {}
+
+
+def _failed(failed, key, at):
+    """Whether a search for a closing quote from ``at`` is known to fail: one from an earlier position on the same
+    line found none."""
+    span = failed.get(key)
+    return span is not None and span[0] <= at < span[1]
 
 
 def _shell_word(text, pos, stops="", strings=None):
     """(end, value): the shell word that starts at ``pos`` (also ending at any character of ``stops``: an
-    assignment's value ends at , ; }) and its text without quotes or escapes. ``strings``: _strings(text)."""
-    starts, ends = _strings(text) if strings is None else strings
+    assignment's value ends at , ; }) and its text without quotes or escapes. ``strings``: _strings(text), shared by
+    every value of the text."""
+    starts, ends, failed = _strings(text) if strings is None else strings
     limit, enclosing = len(text), ""
     low, high = 0, len(starts)
     while low < high:                   # the last string that opens before pos
@@ -150,7 +161,6 @@ def _shell_word(text, pos, stops="", strings=None):
     if low and pos < ends[low - 1]:
         limit, enclosing = ends[low - 1], text[starts[low - 1]]
     value, at, size = [], pos, len(text)
-    failed = {"'": -1, '"': -1}
     while at < size:
         char = text[at]
         if at >= limit:                 # the enclosing string ends
@@ -161,29 +171,30 @@ def _shell_word(text, pos, stops="", strings=None):
             run = _BACKSLASHES.match(text, at, limit).end() - at
             quote = text[at + run:at + run + 1]
             closing = (_ESCAPED_CLOSE.get(run) if quote == '"' else
-                       _ESCAPED_APOSTROPHE_CLOSE if quote == "'" and run == 1 and at == pos else None)
-            if closing is not None and at >= failed.get(quote + str(run), -1):
+                       _ESCAPED_APOSTROPHE_CLOSE.get(run) if quote == "'" and at == pos else None)
+            if closing is not None and not _failed(failed, (quote, run, limit), at):
                 found = closing.search(text, at + run + 1, limit)
                 if found is not None and "\n" not in text[at + run + 1:found.start()]:
                     value.append(text[at + run + 1:found.start()])
                     at = found.end()
                     continue
                 line = text.find("\n", at, limit)  # no closing quote of this depth: none for a later one either
-                failed[quote + str(run)] = limit if line == -1 else line
-            if run % 2 and quote == '"' and at >= failed.get("any", -1):
-                # Escaping that matches no depth: the string still ends at the next escaped quote, whatever runs
-                # before it (hiding up to there rather than stopping at a blank inside it).
-                end = text.find('\\"', at + run + 1, limit)
+                failed[quote, run, limit] = at, limit if line == -1 else line
+            if run % 2 and (quote == '"' or quote == "'" and at == pos) and \
+                    not _failed(failed, ("any", quote, limit), at):
+                # Escaping that matches no depth or boundary: the string still ends at the next escaped quote of
+                # its kind, whatever runs before it (hiding up to there rather than stopping at a blank inside it).
+                end = text.find("\\" + quote, at + run + 1, limit)
                 if end != -1 and "\n" not in text[at + run + 1:end]:
                     value.append(text[at + run + 1:end])
                     at = end + 2
                     continue
                 line = text.find("\n", at, limit)
-                failed["any"] = limit if line == -1 else line
+                failed["any", quote, limit] = at, limit if line == -1 else line
             value.append(text[at + 1:min(at + run + run % 2, limit)])
             at = min(at + run + run % 2, limit)
             continue
-        if char in "'\"" and at >= failed[char]:
+        if char in "'\"" and not _failed(failed, (char, limit), at):
             if char == "'":
                 end = text.find("'", at + 1, limit)
                 end = end if end != -1 and "\n" not in text[at + 1:end] else -1
@@ -195,7 +206,7 @@ def _shell_word(text, pos, stops="", strings=None):
                 at = end + 1
                 continue
             line = text.find("\n", at, limit)       # no closing quote: none for a later one on this line either
-            failed[char] = limit if line == -1 else line
+            failed[char, limit] = at, limit if line == -1 else line
         value.append(char)
         at += 1
     return min(at, limit, size), "".join(value)

@@ -184,6 +184,13 @@ SECRETS = {
     "{'body': '{\\'api_key\\': \\'sk abc\\'}'}": ("sk", "abc"),
     "api_key=\\'SECa SECb\\' tail": ("SECa", "SECb"),
     "api_key:\\'SEC2X SEC3X\\'": ("SEC2X", "SEC3X"),
+    # ... that ends in a backslash, and a repr of a repr
+    repr("password='SECa SECb\\' \"x\""): ("SECa", "SECb"),
+    "X='password=\\'Sec two\\\\\\''": ("Sec", "two"),
+    "api_key=\\'SECa SECb\\\\\\' tail": ("SECa", "SECb"),
+    repr("curl -u 'u:SECa SECb\\' -H \"X: y\""): ("SECa", "SECb"),
+    repr("Authorization: Bearer 'SECa SECb\\' \"x\""): ("SECa", "SECb"),
+    repr({"body": repr("password='SECa SECb' \"x\"")}): ("SECa", "SECb"),
     # a snake-case name's own value is not another value's end
     "db_pass a_key (SEC1X": "SEC1X",
     "x_secret a_key (SEC2X)": "SEC2X",
@@ -422,7 +429,9 @@ class SharedRulesTests(unittest.TestCase):
                  "--oauth2-bearer ", '"\\', "\\'", ": '", "=' x'", '\\"', 'key=\\"', '{\\"key\\": \\"',
                  "Token 'Bearer ", "x_secret ", "hf_secret ", "ghp_", "sshpass -vp ", '"--user" ', "\\\\\\\"",
                  '\\\\\\"k\\\\\\":\\\\\\"', "a_secret (", "a_key (x a_key ", "curl -E ", "\\\\",
-                 '\\\\\\\\\\"', 'k=\\"x\\\\\\\\\\" ', "k=\\'", "k=\\'x ", "a_key a_key (")
+                 '\\\\\\\\\\"', 'k=\\"x\\\\\\\\\\" ', "k=\\'", "k=\\'x ", "a_key a_key (",
+                 "--password \\'", "Bearer \\'", "password=\\'x ", "api_key: \\\\\\'", "token: \\'\\\\\\' ",
+                 "curl --cert=\\'", "password=\\'a b ")
         for name, implementation in (("shared", redaction.redact_text), ("node", node.redact)):
             for unit in units:
                 self.assert_linear(name, unit, lambda size: implementation((unit * (size // len(unit) + 1))[:size]))
