@@ -30,7 +30,7 @@ import time
 import uuid
 from urllib.request import ProxyHandler, Request, build_opener
 
-from hyperloom import __version__, admission, cli, config, engines, nodegate, nodepoll, orchestrate, pollbudget, remote, render, secrets
+from hyperloom import __version__, admission, cli, config, engines, nodegate, nodepoll, orchestrate, pollbudget, redaction, remote, render, secrets
 from hyperloom.adapters import engine, router
 from hyperloom.paths import repo_root
 from hyperloom.stats import Window
@@ -170,13 +170,6 @@ def _binds_loopback(profile, status, cluster):
 DATA_TOKEN_KEY = re.compile(r"(?:[a-z0-9_]*_)?tokens(?:_[a-z0-9_]+)?|(?:[a-z0-9_]*_)?token_(?:ids|count|counts|budget)"
                             r"|tokenizer(?:_[a-z0-9_]+)?", re.I)
 COMPRESSED_IDS = re.compile(r"gz:b64:[A-Za-z0-9+/]+={0,2}")
-# Free text: a bare Hugging Face token (hf_ and 30+ token characters: hf_transfer stays) and curl's user:password
-# options (-u, -su, -U, --user, --proxy-user) within the same command (bounded, up to a pipe or `;` outside
-# quotes); any tool's `--user name:password` (USER_OPTION; a numeric uid:gid stays).
-HF_TOKEN = re.compile(r"\bhf_[A-Za-z0-9]{30,}\b")
-CURL_USER = re.compile(r"""\b(curl\b(?:'[^'\n]*'|"[^"\n]*"|[^\n|;'"]){0,2048}?\s"""
-                       r"""(?:-[A-Za-z]*[uU]\s*|--(?:proxy-)?user(?:\s+|=)))(?!\[redacted\])(?:"[^"]*"|'[^']*'|\S+)""")
-USER_OPTION = re.compile(r"(--(?:proxy-)?user(?:\s+|=))(?!\[redacted\])(?![0-9]+:[0-9]+(?:\s|$))[^\s:]*:\S+")
 
 
 def _token_data(key, item):
@@ -221,25 +214,9 @@ def redact(value, text=True):
                 not exempt else redact(item, text)
         return result
     if isinstance(value, (list, tuple)):
-        result, hide = [], False
-        # A curl command (also behind sudo, env or a wrapper): its -u/-U value, separate or glued (-ualice:pw).
-        curl = any(isinstance(item, str) and re.search(r"(?:^|[\\/])curl(?:\.exe)?$", item, re.I) for item in value[:4])
-        for item in value:
-            # After a user option, only a name:password value is hidden (`systemd-run --user --scope` stays).
-            hidden = hide is True or (hide == "user" and isinstance(item, str) and ":" in item
-                                      and not re.fullmatch(r"[0-9]+:[0-9]+", item))      # a uid:gid stays
-            glued = curl and isinstance(item, str) and re.fullmatch(r"(-[A-Za-z]*?[uU])[^\s:]*:.*", item, re.S)
-            result.append("[redacted]" if hidden else glued.group(1) + "[redacted]" if glued else redact(item, text))
-            hide = isinstance(item, str) and (item in ("--api-key", "--handoff-api-key", "--password", "--token") or (
-                "user" if item in ("--user", "--proxy-user") or curl and re.fullmatch(r"-[A-Za-z]*[uU]", item) else False))
-        return result
+        return redaction.redact_argv(value, lambda item: redact(item, text))
     if isinstance(value, str) and text:
-        value = re.sub(r"(?i)(Bearer\s+)\S+", r"\1[redacted]", value)
-        value = re.sub(HF_TOKEN, "[redacted]", value)
-        value = re.sub(CURL_USER, r"\1[redacted]", value)
-        value = USER_OPTION.sub(r"\1[redacted]", value)
-        return re.sub(r'''(?ix)((?:["']?(?:api[_-]?key|handoff[_-]?api[_-]?key|password|secret|token)["']?)\s*[:=]\s*|--(?:api-key|handoff-api-key|password|token)\s+)(?:"[^"]*"|'[^']*'|[^\s,;}]+)''',
-                      r"\1[redacted]", value)
+        return redaction.redact_text(value)         # the repository's one set of free-text rules
     return value
 
 

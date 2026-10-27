@@ -1,0 +1,207 @@
+"""One set of redaction rules (hyperloom/redaction.py): the node's log search keeps a verbatim copy (it is deployed
+as standalone files); one case table runs against every implementation, and redaction time stays linear."""
+
+import importlib.util
+import json
+from pathlib import Path
+import re
+import time
+import unittest
+
+from hyperloom import redaction
+from hyperloom.web.api import redact
+
+ROOT = Path(__file__).resolve().parent.parent
+NODE_FILE = ROOT / "node" / "hyperloom_logsearch.py"
+spec = importlib.util.spec_from_file_location("hyperloom_logsearch_redaction_under_test", NODE_FILE)
+node = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(node)
+
+HF = "hf_AbCdEfGhIjKlMnOpQrStUvWxYz01234567"
+# A line and the secret(s) that must not survive in it.
+SECRETS = {
+    # names and option forms
+    "export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENG": "wJalrXUtnFEMIK7MDENG",
+    "login with password hunter3 now": "hunter3",
+    '{"db.password": "s3cr3t-value"}': "s3cr3t-value",
+    "db.password: 123456": "123456",
+    "api_key=12345": "12345",
+    "run --hf-token tk_123456 --other": "tk_123456",
+    "run --db-password=Opt10nPw": "Opt10nPw",
+    "x--api-key Gl8edOpt": "Gl8edOpt",
+    "GITHUB_TOKEN: ghp_abcdef123": "ghp_abcdef123",
+    "X-Auth-Token: abcdefghij": "abcdefghij",
+    "client_secret='quoted value'": "quoted value",
+    "HF_TOKEN=hf_xYz123": "hf_xYz123",
+    "HF_TOKEN hf_xYz123": "hf_xYz123",
+    "export DB_PASSWORD  s3cr3tval": "s3cr3tval",
+    "hf_token\thf_lowercase9": "hf_lowercase9",
+    "PASS=x9secret": "x9secret",
+    "db_pass: plainpw7": "plainpw7",
+    "max_tokens=notanumber": "notanumber",
+    "MAX_TOKENS 16,leak3d": "leak3d",
+    "--max-tokens 16;leak4d": "leak4d",
+    "HF_TOKEN 1000:1000secret": "1000secret",
+    # authorization schemes
+    "Authorization: Basic dXNlcjpwYXNz": "dXNlcjpwYXNz",
+    "authorization: basic lowercaseonly": "lowercaseonly",
+    "Authorization: Bearer abc.def.ghi": "abc.def.ghi",
+    "sent Bearer abc!def": "abc!def",
+    "using Token ghp_abc123xyz": "ghp_abc123xyz",
+    # URL user information
+    "fetch https://user:pa55word@example.invalid/x": "pa55word",
+    # clients that take a password after -p
+    "mysql -u root -pXyzzy42 shop": "Xyzzy42",
+    "mysqldump -h db -pAnother7 --all": "Another7",
+    "mariadb-dump -pMaria9 db": "Maria9",
+    "sshpass -p Sp4ce sshx": "Sp4ce",
+    "sshpass -pGlu3d ssh host": "Glu3d",
+    # bare Hugging Face tokens
+    "download with " + HF + " ok": HF,
+    "token is hf_abcdefghijklmnopqrstuvwxyzabcdefgh": "hf_abcdefghijklmnopqrstuvwxyzabcdefgh",
+    # curl's user options: every form, every occurrence, wherever they are in the command
+    "curl -u alice:Wonder7land https://example.invalid/x": "Wonder7land",
+    "curl -sSu bob:Pa55-w0rd -o out.json https://example.invalid": "Pa55-w0rd",
+    "curl -su bob:Pa55-w1rd https://example.invalid": "Pa55-w1rd",
+    "curl --user carol:hunter4 https://example.invalid": "hunter4",
+    "curl --user=dave:Sw0rdfish https://example.invalid": "Sw0rdfish",
+    "curl -ueve:Gl0bal https://example.invalid": "Gl0bal",
+    "curl -x http://proxy.invalid -U frank:Pr0xyPw https://example.invalid": "Pr0xyPw",
+    "curl --proxy-user gil:Pr0xy2 https://example.invalid": "Pr0xy2",
+    "curl -u 'gina:two words' https://example.invalid": "two words",
+    "sudo curl -u hal:Sud0pw https://example.invalid": "Sud0pw",
+    "sudo -H -u root /usr/bin/curl -u ida:Wr4pped https://example.invalid": "Wr4pped",
+    "wget --user hank:C0mbined https://example.invalid": "C0mbined",
+    "curl -H 'Cookie: a=1; b=2' -u ivy:C00kieJar https://example.invalid": "C00kieJar",
+    'curl -H "Accept: a|b" -u jo:P1peLine https://example.invalid': "P1peLine",
+    "curl -u alice:FirstSecret -U bob:SecondSecret https://example.invalid": ("FirstSecret", "SecondSecret"),
+    "curl -u kim:N3xtOne https://a.invalid --next -u lee:N3xtTwo https://b.invalid": ("N3xtOne", "N3xtTwo"),
+    "curl https://example.invalid/" + "a" * 5000 + " -u max:L0ngPrefix": "L0ngPrefix",
+    "curl https://example.invalid/?a=1&b=2 -u ned:Amp3rsand": "Amp3rsand",
+    "curl -u olga:Semi;colon https://example.invalid": ("Semi", "colon"),
+    "curl https://example.invalid \\\n  -u pat:C0ntinued": "C0ntinued",
+    "curl's -u quinn:Ap0strophe": "Ap0strophe",
+}
+# Text that must stay exactly as it is.
+READABLE = (
+    "generated 512 tokens in 3.1 s", "keyboard input ignored", "pass 2 of 3 finished", "mysql connection pool size 8",
+    "hf_transfer enabled, hf_hub_download retried, hf_qwen3moe loaded", "HF_HUB_ENABLE_HF_TRANSFER=1",
+    "docker run --user 1000:1000 img", "curl -sS https://example.invalid | python3 -u -",
+    "systemd-run --user --scope -p MemoryMax=16G", "curl -sS https://example.invalid/health",
+    "python -u serve.py --port 8000",
+    "curl -sS https://example.invalid && python -u serve.py",
+    "curl -sS https://example.invalid || python -u serve.py",
+    "curl -sS https://example.invalid && systemd-run --user --scope true",
+    "curl -sS https://example.invalid & docker run --user 1000:1000 img",
+    "curl -sS https://example.invalid; docker run --user 1000:1000 img",
+    "max_tokens=512", "max_tokens 16", "MAX_TOKENS 5", "--max-num-batched-tokens 8192", "--prompt-tokens 9000",
+    "SamplingParams(n=1, max_tokens=512, temperature=0.7)", "token: 151643", "token-identical: 2/3 (first pass)",
+    "budget bound violated by the endpoint: max_tokens 16, reported 21 completion tokens",
+    "--max-tokens=512, --max-num-batched-tokens 8192;",
+    "Token counters are reset", "needs imported token counts", "basic setup done",
+    "--tokenizer /models/qwen", "tokenizer=/models/qwen",
+)
+IMPLEMENTATIONS = {
+    "shared": redaction.redact_text,
+    "node": node.redact,
+    "portal text": redact,
+    "portal document": lambda line: redact({"stderr": line, "lines": [line]})["lines"][0],
+}
+
+
+class SharedRulesTests(unittest.TestCase):
+    def test_the_node_copy_is_identical(self):
+        marker, end = "# --- shared redaction rules", "# --- end of shared redaction rules ---\n"
+
+        def block(path):
+            text = path.read_text(encoding="utf-8")
+            self.assertEqual(text.count(marker), 1, path)
+            return text[text.index(marker):text.index(end) + len(end)]
+        self.assertEqual(block(NODE_FILE), block(ROOT / "hyperloom" / "redaction.py"))
+        # The compiled rules too: pattern source and flags, and each replacement.
+        compiled = lambda p: (p.pattern, p.flags)
+        self.assertEqual([(compiled(p), r) for p, r in node.SECRET_PATTERNS],
+                         [(compiled(p), r) for p, r in redaction.SECRET_PATTERNS])
+        self.assertEqual([tuple(map(compiled, pair)) for pair in node.GLUED_PASSWORD],
+                         [tuple(map(compiled, pair)) for pair in redaction.GLUED_PASSWORD])
+        for name in ("CURL_COMMAND", "CURL_OPTION", "USER_OPTION", "HF_TOKEN"):
+            self.assertEqual(compiled(getattr(node, name)), compiled(getattr(redaction, name)), name)
+        for name in ("_glued_password", "_curl_users", "redact_text"):
+            self.assertEqual(getattr(node, name).__code__.co_code, getattr(redaction, name).__code__.co_code, name)
+        # The node tool stays self-contained: it never imports the hyperloom package.
+        self.assertIsNone(re.search(r"^\s*(?:from|import)\s+hyperloom\b", NODE_FILE.read_text(encoding="utf-8"), re.M))
+
+    def test_every_implementation_masks_the_secrets_and_keeps_the_text(self):
+        for name, implementation in IMPLEMENTATIONS.items():
+            for line, secrets in SECRETS.items():
+                with self.subTest(implementation=name, line=line[:80]):
+                    result = implementation(line)
+                    self.assertIn("[redacted]", result)
+                    for secret in (secrets,) if isinstance(secrets, str) else secrets:
+                        self.assertNotIn(secret, result)
+            for text in READABLE:
+                with self.subTest(implementation=name, text=text):
+                    self.assertEqual(implementation(text), text)
+
+    def test_what_stays_around_a_redacted_value(self):
+        for name, implementation in IMPLEMENTATIONS.items():
+            with self.subTest(implementation=name):
+                self.assertEqual(implementation("curl -u a:b -U c:d https://x && python -u serve.py"),
+                                 "curl -u [redacted] -U [redacted] https://x && python -u serve.py")
+                self.assertEqual(implementation("mysql -u root -pXyz shop"), "mysql -u root -p[redacted] shop")
+                self.assertEqual(implementation("export HF_TOKEN=" + HF), "export HF_TOKEN=[redacted]")
+                self.assertEqual(implementation("Authorization: Bearer abc.def"), "Authorization: Bearer [redacted]")
+
+    def test_argument_lists(self):
+        cases = [
+            (["sudo", "-H", "-u", "root", "/usr/bin/curl", "-u", "alice:Secret", "https://x"],
+             ["sudo", "-H", "-u", "root", "/usr/bin/curl", "-u", "[redacted]", "https://x"]),
+            (["curl", "-ubruce:Wonder7land", "-sSUbob:Pr0xy", "https://x", "--next", "--user", "c:d", "https://y"],
+             ["curl", "-u[redacted]", "-sSU[redacted]", "https://x", "--next", "--user", "[redacted]", "https://y"]),
+            (["curl", "-sS", "https://x", "&&", "python3", "-u", "serve.py", "a:b"],
+             ["curl", "-sS", "https://x", "&&", "python3", "-u", "serve.py", "a:b"]),
+            (["docker", "run", "--user", "1000:1000", "--user", "kim:pw", "img"],
+             ["docker", "run", "--user", "1000:1000", "--user", "[redacted]", "img"]),
+            (["systemd-run", "--user", "--scope", "true"], ["systemd-run", "--user", "--scope", "true"]),
+            (["mysql", "-uroot", "-pXyzzy42", "shop"], ["mysql", "-uroot", "-p[redacted]", "shop"]),
+            (["sshpass", "-p", "Sp4ce", "ssh", "-p", "2222", "host"],
+             ["sshpass", "-p", "[redacted]", "ssh", "-p", "2222", "host"]),
+            (["vllm", "serve", "--max-num-batched-tokens", "8192", "--tokenizer", "/m", "--hf-token", "tk_1x",
+              "--api-key", "k", "--password", "p"],
+             ["vllm", "serve", "--max-num-batched-tokens", "8192", "--tokenizer", "/m", "--hf-token", "[redacted]",
+              "--api-key", "[redacted]", "--password", "[redacted]"]),
+            (["env", "HF_HUB_ENABLE_HF_TRANSFER=1", "HF_TOKEN=" + HF, HF],
+             ["env", "HF_HUB_ENABLE_HF_TRANSFER=1", "HF_TOKEN=[redacted]", "[redacted]"]),
+        ]
+        for argv, expected in cases:
+            with self.subTest(argv=argv):
+                self.assertEqual(redaction.redact_argv(argv), expected)
+                self.assertEqual(redact(argv), expected)
+                self.assertEqual(redact({"argv": argv})["argv"], expected)
+        self.assertEqual(redact("curl -u x:y " + HF, text=False), "curl -u x:y " + HF)     # documents' prose
+
+    def test_redaction_time_grows_linearly(self):
+        # Lines built to make a backtracking rule re-scan: long runs of name characters with and without a
+        # credential word, repeated separators, options, clients, quotes and URL schemes.
+        units = ("a", "=", "token", "keyw", "TOKEN_", "pass_", "--key", "--", "a.", "a://", "curl ", "curl -",
+                 "curl '", "curl -u ", "'x", '"', "mysql ", "sshpass ", "--user=", "--user=x", " -p", "Token ",
+                 "Bearer ", "hf_", "\\\n", "x--key", "key=", "A_", "_")
+        for name, implementation in (("shared", redaction.redact_text), ("node", node.redact)):
+            for unit in units:
+                timings = []
+                for size in (8000, 32000):
+                    line = (unit * (size // len(unit) + 1))[:size]
+                    best = float("inf")
+                    for _ in range(3):
+                        started = time.perf_counter()
+                        implementation(line)
+                        best = min(best, time.perf_counter() - started)
+                    timings.append(best)
+                with self.subTest(implementation=name, unit=unit, timings=timings):
+                    # 4x the input: well under 8x the time (a quadratic rule takes 16x), above a noise floor.
+                    self.assertLess(timings[1], max(8 * timings[0], 0.05))
+                    self.assertLess(timings[1], 2.0)
+
+
+if __name__ == "__main__":
+    unittest.main()

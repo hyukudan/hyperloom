@@ -48,47 +48,127 @@ DENY_POSIX = ("/proc", "/sys", "/dev", "/boot", "/etc", "/run", "/var/lib", "/ro
 LEVELS = {"error": re.compile(r"ERROR|FATAL|POISON|Traceback|panic|failed", re.I),
           "warning": re.compile(r"ERROR|FATAL|POISON|Traceback|panic|failed|WARN", re.I)}
 KEYS = ("text", "regex", "ignore_case", "root", "roots", "exclude", "since", "until", "process", "level", *LIMITS)
-# Redaction of whole lines on the node (wider than the portal's document rules: free log text): credentials after
-# an authorization scheme, any name that carries key/secret/token/password/credential/auth (AWS_SECRET_ACCESS_KEY=,
-# "db.password": ...), the value after a password word ("password x"), option forms, URL user information, curl's
-# user:password option and bare Hugging Face tokens.
+# Redaction: the repository's one set of rules (hyperloom/redaction.py); this tool is deployed as standalone
+# files, so the block below is a verbatim copy (tests/test_redaction.py asserts they are identical).
+# --- shared redaction rules (node/hyperloom_logsearch.py keeps a verbatim copy) ---
+# Credentials after an authorization scheme, any name that carries key/secret/token/password/credential/auth
+# (AWS_SECRET_ACCESS_KEY=, "db.password": ...), the value after a password word ("password x"), option forms, URL
+# user information, the value after an environment-style name, clients that take a password after -p, curl's user
+# options, any tool's --user name:password and bare Hugging Face tokens.
+REDACTED = "[redacted]"
+# Linear forms: a name is matched as a whole run from the position where the run starts ((?=(run))\N takes the
+# run once and never gives it back, as an atomic group would); a lookahead checks that the run carries a
+# credential word. A name whose only such word is token (max_tokens, --max-num-batched-tokens, token_ids,
+# "token-identical") keeps a number as its value (max_tokens=512, token: 151643, token-identical: 2/3 stay; any
+# other value is hidden); tokenizer names are not credentials. An authorization scheme already handled stays
+# readable (Authorization: Bearer [redacted]).
 SECRET_PATTERNS = (
-    (re.compile(r"(?i)\b((?:Bearer|Basic|Digest|Token|Negotiate)\s+)[A-Za-z0-9+/=._~:-]+"), r"\1[redacted]"),
-    (re.compile(r'''(?ix)(?<![\w.-])(["']?[\w.-]*(?:key|secret|token|pass|pwd|credential|auth)[\w.-]*["']?\s*[:=]\s*)'''
-                r'''(?:"[^"]*"|'[^']*'|[^\s,;}]+)'''), r"\1[redacted]"),
-    (re.compile(r"(?i)(--[\w-]*(?:key|secret|token|passw(?:or)?d|credential)[\w-]*(?:\s+|=))(?!\[redacted\])\S+"),
+    # An authorization header's credentials whatever they look like; after a scheme word elsewhere, Bearer's value
+    # and a value that looks like a credential (8+ characters with a digit, +, / or =, or an upper-case letter after
+    # the first): "Token counters" and "basic setup" stay readable.
+    (re.compile(r"""(?i)(\b(?:proxy-)?authorization["']?\s*[:=]\s*["']?(?:Bearer|Basic|Digest|Token|Negotiate)\s+)"""
+                r"""(?!\[redacted\])[^\s"',;]+"""), r"\1[redacted]"),
+    (re.compile(r"""(?i)\b(Bearer\s+|(?:Basic|Digest|Token|Negotiate)\s+(?=[^\s"',;]{8})"""
+                r"""(?=[^\s"',;]*?(?:[0-9+/=]|(?<![\s"',;])(?-i:[A-Z]))))(?!\[redacted\])[^\s"',;]+"""),
      r"\1[redacted]"),
+    (re.compile(r'''(?ix)(?<![\w.-])(["']?(?:(?=[\w.-]*?(key|secret|pass|pwd|credential|auth))'''
+                r'''|(?=[\w.-]*?token(?!iz)))(?=([\w.-]*))\3["']?\s*[:=]\s*'''
+                r'''(?:(?:Bearer|Basic|Digest|Token|Negotiate)\s+(?=\[redacted\]))?)'''
+                r'''(?(2)|(?![0-9]+(?:[./][0-9]+)*(?=[)\]]*(?:[\s,;}]|$))))(?:"[^"]*"|'[^']*'|[^\s,;}]+)'''),
+     r"\1[redacted]"),
+    # An option whose name carries a credential word (--hf-token x, --db-password=x), also glued after other
+    # characters of the word (x--api-key x): the run before the option's first -- is kept as it is.
+    (re.compile(r"(?i)(?<![\w-])(\w*(?:-\w+)*)(--(?:(?=[\w-]*?(key|secret|passw(?:or)?d|credential))"
+                r"|(?=[\w-]*?token(?!iz)))(?=([\w-]*))\4"
+                r"(?:\s+|=))(?(3)|(?![0-9]+(?:[./][0-9]+)*(?=[)\],;]*(?:\s|$))))(?!\[redacted\])\S+"),
+     r"\1\2[redacted]"),
     (re.compile(r"(?i)\b(passw(?:or)?d|passwd|passphrase|pwd)(\s+)(?!\[redacted\])(?![:=])\S+"), r"\1\2[redacted]"),
-    (re.compile(r"(?i)(\b[a-z][a-z0-9+.-]*://)[^/\s:@]+:[^/\s@]+@"), r"\1[redacted]@"),
+    (re.compile(r"(?i)(?<![a-z0-9+.-])(?=[a-z0-9+.-]*?(?<!\w)[a-z])((?=([a-z0-9+.-]*))\2://)[^/\s:@]+:[^/\s@]+@"),
+     r"\1[redacted]@"),
     # An environment-style name and its value separated by blanks only (`HF_TOKEN hf_x`, `export DB_PASS s3`): the
     # name is upper case or snake case, so prose such as "512 tokens in 3.1 s" stays readable.
-    (re.compile(r"\b((?:[A-Z0-9]+_)*[A-Z0-9]*(?:KEY|SECRET|TOKEN|PASS|PWD|CREDENTIALS?|AUTH)[A-Z0-9]*(?:_[A-Z0-9]+)*"
-                r"|(?i:[a-z0-9]+(?:_[a-z0-9]+)*_[a-z0-9]*(?:key|secret|token|pass|pwd|credentials?|auth)[a-z0-9]*"
-                r"(?:_[a-z0-9]+)*|[a-z0-9]*(?:key|secret|token|pass|pwd|credentials?|auth)[a-z0-9]*(?:_[a-z0-9]+)+))"
-                r"(\s+)(?![:=])(?!\[redacted\])\S+"), r"\1\2[redacted]"),
-    # Clients that take the password glued to a short option (`mysql -pX`, `sshpass -pX`, `sshpass -p X`).
-    (re.compile(r"(?i)\b((?:mysql\w*|mariadb[\w-]*)\b[^\n]*?\s-p)(?!\[redacted\])(?=\S)\S+"), r"\1[redacted]"),
-    (re.compile(r"(?i)\b(sshpass\b[^\n]*?\s-p\s*)(?!\[redacted\])\S+"), r"\1[redacted]"),
-    # curl's user and password options (`curl -u user:pw`, `curl -su user:pw`, `--user user:pw`, `--user=user:pw`,
-    # the proxy's -U / --proxy-user) within the same command (bounded, up to a pipe or `;` outside quotes), and any
-    # other tool's `--user name:password` (a numeric uid:gid, as in `docker run --user 1000:1000`, stays).
-    (re.compile(r"""\b(curl\b(?:'[^'\n]*'|"[^"\n]*"|[^\n|;'"]){0,2048}?\s"""
-                r"""(?:-[A-Za-z]*[uU]\s*|--(?:proxy-)?user(?:\s+|=)))(?!\[redacted\])(?:"[^"]*"|'[^']*'|\S+)"""),
-     r"\1[redacted]"),
-    (re.compile(r"(--(?:proxy-)?user(?:\s+|=))(?!\[redacted\])(?![0-9]+:[0-9]+(?:\s|$))[^\s:]*:\S+"), r"\1[redacted]"),
-    # A bare Hugging Face access token (no name before it): hf_ and 30 or more token characters (library and model
-    # names such as hf_transfer or hf_hub_download stay readable).
-    (re.compile(r"\bhf_[A-Za-z0-9]{30,}\b"), "[redacted]"),
+    (re.compile(r"\b((?:(?=[A-Z0-9_]*?(KEY|SECRET|PASS|PWD|CREDENTIALS?|AUTH))|(?=[A-Z0-9_]*?TOKEN(?!IZ)))"
+                r"[A-Z0-9]+(?:_[A-Z0-9]+)*"
+                r"|(?i:(?:(?=[a-z0-9_]*?(key|secret|pass|pwd|credentials?|auth))"
+                r"|(?=[a-z0-9_]*?token(?!iz)))[a-z0-9]+(?:_[a-z0-9]+)+))"
+                r"(\s+)(?(2)|(?(3)|(?![0-9]+(?:[./][0-9]+)*(?=[)\],;]*(?:\s|$)))))(?![:=])(?!\[redacted\])\S+"),
+     r"\1\4[redacted]"),
 )
+# Clients that take the password after -p (`mysql -pX`, `mariadb-dump -pX`, `sshpass -p X`), later on the line.
+GLUED_PASSWORD = (
+    (re.compile(r"(?i)\b(?:mysql\w*|mariadb[\w-]*)\b"), re.compile(r"(?i)([^\n]*?\s-p)(?!\[redacted\])(?=\S)\S+")),
+    (re.compile(r"(?i)\bsshpass\b"), re.compile(r"(?i)([^\n]*?\s-p\s*)(?!\[redacted\])\S+")),
+)
+# curl's user and password options (-u user:pw, -su user:pw, -uuser:pw, --user, --user=, the proxy's -U and
+# --proxy-user), every one of them (also after --next), within the same command: up to a newline (a backslash
+# continues the line), a pipe, `;`, `&&` or a background `&` outside quotes (a value glued to that separator stays
+# whole: `-u a:b;c` hides `a:b;c`). An unpaired quote is an ordinary character.
+CURL_COMMAND = re.compile(r"""\bcurl\b(?:'[^'\n]*'|"[^"\n]*"|\\\n|&(?![&\s]|$)|[^\n|;&'"]|['"])*\S*""")
+CURL_OPTION = re.compile(r"""'[^'\n]*'|"[^"\n]*"|(?<=\s)(-[A-Za-z]*[uU]\s*|--(?:proxy-)?user(?:\s+|=))"""
+                         r"""(?!\[redacted\])(?:"[^"]*"|'[^']*'|\S+)""")
+# Any other tool's `--user name:password` (a numeric uid:gid, as in `docker run --user 1000:1000`, stays). The
+# value is looked for up to the next such option, so a run of options is read once.
+USER_OPTION = re.compile(r"(--(?:proxy-)?user(?:\s+|=))(?!\[redacted\])(?![0-9]+:[0-9]+(?:\s|$))"
+                         r"(?:(?!--(?:proxy-)?user(?:\s|=))[^\s:])*:\S+")
+# A bare Hugging Face access token (no name before it): hf_ and 30 or more token characters (library and model
+# names such as hf_transfer or hf_hub_download stay readable).
+HF_TOKEN = re.compile(r"\bhf_[A-Za-z0-9]{30,}\b")
+
+
+def _glued_password(text):
+    for client, option in GLUED_PASSWORD:
+        parts, last, pos = [], 0, 0
+        while True:
+            found = client.search(text, pos)
+            if found is None:
+                break
+            value = option.match(text, found.end())
+            if value is None:           # none later on this line either: go to the next line
+                pos = text.find("\n", found.end())
+                if pos < 0:
+                    break
+                continue
+            parts += [text[last:value.end(1)], REDACTED]
+            last = pos = value.end()
+        text = "".join(parts) + text[last:]
+    return text
+
+
+def _curl_users(text):
+    parts, last, pos = [], 0, 0
+    while True:
+        command = CURL_COMMAND.search(text, pos)
+        if command is None:
+            break
+        for option in CURL_OPTION.finditer(text, command.start(), command.end()):
+            if option.group(1) is None or option.start() < last:
+                continue
+            option = CURL_OPTION.match(text, option.start())       # its value may go on past the command
+            if option is None or option.group(1) is None:
+                continue
+            parts += [text[last:option.end(1)], REDACTED]
+            last = option.end()
+        pos = max(command.end(), last)
+    return "".join(parts) + text[last:]
+
+
+def redact_text(text):
+    """``text`` with every credential the shared rules recognise replaced by [redacted]."""
+    for pattern, replacement in SECRET_PATTERNS:
+        text = pattern.sub(replacement, text)
+    text = _curl_users(_glued_password(text))
+    text = USER_OPTION.sub(r"\1[redacted]", text)
+    return HF_TOKEN.sub(REDACTED, text)
+# --- end of shared redaction rules ---
+
+
 FD_WALK = (os.open in os.supports_dir_fd and os.scandir in os.supports_fd and hasattr(os, "O_DIRECTORY")
            and hasattr(os, "O_NOFOLLOW"))
 REPARSE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 
 def redact(line):
-    for pattern, replacement in SECRET_PATTERNS:
-        line = pattern.sub(replacement, line)
-    return line
+    return redact_text(line)
 
 
 def show(line):
