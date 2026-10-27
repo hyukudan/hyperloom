@@ -1978,12 +1978,15 @@ class API:
                 raise APIError("another mutating job is running", 409)
         checked_resources, selected = None, None
         if action == "recipes/deploy" or (action == "up" and (arguments.get("recipe") or arguments.get("recipe_inputs"))):
-            from hyperloom.recipes import preflight
+            from hyperloom.recipes import preflight, service
             try:
                 argv = self._deploy_argv(arguments) if action == "recipes/deploy" else self._recipe_up_argv(arguments)
                 parsed = cli.build_parser(recipe_web.RaisingParser).parse_args(argv)
                 checked_resources = preflight.cli(parsed, load_cluster=self._recipe_loader)
                 selected = getattr(parsed, "_prepared_selection", None)
+            except service.ForeignConfiguration as exc:
+                self._audit(action, arguments, {"state": "refused", "error": str(exc)})
+                raise APIError(str(exc), 409) from exc
             except (OSError, ValueError, RuntimeError) as exc:
                 self._audit(action, arguments, {"state": "refused", "error": str(exc)})
                 raise APIError("recipe preflight refused: " + _preflight_reason(exc) + "; see local audit", 400) from exc

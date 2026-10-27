@@ -18,9 +18,11 @@ except ImportError:
 
 from hyperloom import cli, device_policy, orchestrate, rtx
 from hyperloom.recipes import apply, commands, facts, probe, reader, service, launch, session
-from hyperloom.web import api
+from hyperloom.web import api, recipes as recipe_web
 
 from tests import test_web_summaries, test_recipes
+from tests.recipe_fixtures import isolated
+from tests.test_web_recipes import Portal, QWEN
 
 
 @lru_cache
@@ -213,3 +215,50 @@ def test_11_portable_g6_reconstructs_original_frozen_bytes():
     from tests.portable_fixtures import read_fixture
     path = Path(__file__).parent / "fixtures/render/legacy-eb9ae96.json"
     assert hashlib.sha256(read_fixture(path).encode()).hexdigest() == "40489d24e0a9b64d9b6186b2742d2fff734e4d66e310dd1776d8b62c340168e7"
+
+
+@pytest.mark.parametrize("recorded", [False, True])
+def test_portal_foreign_target_deploy_matches_a8d112c(recorded):
+    with isolated() as env:
+        cluster = orchestrate.load_cluster(env.config)
+        digest = service.launch_inputs(cluster, service.locate(QWEN, cluster), session.Layers(),
+                                       intent=dict(service.DEFAULT_INTENT, profile="qwen-replicas"))
+        state = orchestrate._state_path("qwen-replicas")
+        state.parent.mkdir(parents=True, exist_ok=True)
+        owner = orchestrate.config_record(env.root / "other" / "cluster.json") if recorded else None
+        state.write_text(json.dumps({"profile": "qwen-replicas", "config": owner}), encoding="utf-8")
+        saved = state.read_bytes()
+        fake = mock.Mock(wraps=orchestrate)
+        portal = Portal(env, orchestrator=fake)
+        try:
+            # Execute the base's deploy check and CLI-to-HTTP mapping on the same real snapshot and saved state.
+            old_deploy = baseline(service, "deploy")
+            with mock.patch.object(service, "deploy", old_deploy), \
+                    mock.patch.object(service, "_deploy_pinned", baseline(service, "_deploy_pinned")):
+                old = baseline(recipe_web, "in_process")(
+                    ["recipe", "deploy", digest, "--config", str(env.config)], orchestrate.load_cluster)
+            assert old.code == 4
+            expected = (recipe_web.STATUS[old.code],
+                        {"error": old.stderr.decode("utf-8").removeprefix("hyperloom: ")})
+            assert expected == (409, {"error": "qwen-replicas has a saved launch state of another configuration: "
+                                               "stop it there first"})
+            current = recipe_web.in_process(
+                ["recipe", "deploy", digest, "--config", str(env.config)], orchestrate.load_cluster)
+            assert (current.code, current.stderr) == (old.code, old.stderr)
+            assert portal.request("POST", "recipes/deploy", {"inputs": digest}) == expected
+            assert portal.api._jobs == {}
+            assert portal.api._active is None
+            assert not (env.config.parent / "run" / "admission.sqlite3").exists()
+            fake.down.assert_not_called()
+            fake.up.assert_not_called()
+            assert state.read_bytes() == saved
+            audit = json.loads(portal.api.audit_path.read_text(encoding="utf-8").splitlines()[-1])
+            assert audit["result"] == {"state": "refused", "error": expected[1]["error"]}
+            # Stop-list conflicts keep the generic preflight response and their full local explanation.
+            assert portal.request("POST", "recipes/deploy", {"inputs": digest, "stop": ["qwen-replicas"]}) == (
+                400, {"error": "recipe preflight refused: preflight checks failed; see local audit"})
+            audit = json.loads(portal.api.audit_path.read_text(encoding="utf-8").splitlines()[-1])
+            assert audit["result"] == {"state": "refused", "error": "the running profiles are none, not the reviewed "
+                                                                    "qwen-replicas: review the switch again"}
+        finally:
+            portal.close()

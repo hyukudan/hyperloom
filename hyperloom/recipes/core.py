@@ -67,14 +67,15 @@ def locate(cluster=None):
     return None
 
 
-def _bounded(stream, what):
-    data = stream.read(MAX_OUTPUT + 1)
-    if len(data) > MAX_OUTPUT:
-        raise RecipeError(f"ss-recipe {what} exceeds {MAX_OUTPUT >> 20} MiB")
+def _bounded(stream, what, label="ss-recipe", *, limit=None):
+    limit = MAX_OUTPUT if limit is None else limit
+    data = stream.read(limit + 1)
+    if len(data) > limit:
+        raise RecipeError(f"{label} {what} exceeds {limit >> 20} MiB")
     try:
         return data.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise RecipeError(f"ss-recipe {what} is not UTF-8") from exc
+        raise RecipeError(f"{label} {what} is not UTF-8") from exc
 
 
 @dataclass(frozen=True)
@@ -125,7 +126,7 @@ class Core:
                     raise RecipeError(f"{label} unavailable: {exc}") from exc
                 stdout.seek(0)
                 stderr.seek(0)
-                text, err = _bounded(stdout, "output"), _bounded(stderr, "error output")
+                text, err = _bounded(stdout, "output", label), _bounded(stderr, "error output", label)
             if placing and out.returncode != 0:
                 # Keep the core's PL_E_* diagnostics, including prefixes, details and indentation, verbatim.
                 raise RecipeError(err.rstrip("\r\n") or "ts-recipe refused")
@@ -141,7 +142,7 @@ class Core:
             try:
                 if placing:
                     with json_path.open("rb") as stream:
-                        doc = json.loads(_bounded(stream, "placement JSON output"))
+                        doc = json.loads(_bounded(stream, "placement JSON output", label))
                 else:
                     doc = json.loads(text)
             except (OSError, ValueError, RecursionError) as exc:

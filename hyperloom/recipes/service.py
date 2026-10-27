@@ -62,6 +62,10 @@ class Conflict(RecipeError):
     """A write against a file that changed, or an id/name already taken: the CLI exits 4, the portal answers 409."""
 
 
+class ForeignConfiguration(Conflict):
+    """A deploy target has saved state belonging to another configuration or without an owner record."""
+
+
 # --- places ------------------------------------------------------------------------------------------------------
 
 # The cluster configuration in use (`--config`), per call: a context variable, so a portal request (or an in-process
@@ -1085,13 +1089,13 @@ def reviewed_stops(stop, *, profile=None):
         # without the record) only after the switch had stopped the reviewed profiles.
         try:
             kind = orchestrate.ownership(orchestrate._read(orchestrate._state_path(profile)),
-                                                 config_file())
+                                         config_file())
         except (OSError, ValueError):
             kind = "unreadable"
         if kind == "unknown":
             raise Conflict(f"{profile} has a saved launch state of an unknown configuration (launched before launch "
                            "states recorded it): stop it first (it is listed and can be stopped here)")
-        raise Conflict(f"{profile} has a saved launch state of another configuration: stop it there first")
+        raise ForeignConfiguration(f"{profile} has a saved launch state of another configuration: stop it there first")
     return reviewed
 
 

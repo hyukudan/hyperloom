@@ -212,6 +212,9 @@ def test_product_legacy_deploy_preflight_refuses_with_400_before_job_or_hold():
             assert set(body) == {"error"}
             assert "recipe preflight refused:" in body["error"]
             assert body["error"] == "recipe preflight refused: preflight checks failed; see local audit"
+            audit = json.loads(portal.api.audit_path.read_text(encoding="utf-8").splitlines()[-1])
+            assert audit["result"]["state"] == "refused"
+            assert audit["result"]["error"] == "recipe inputs " + "0" * 64 + ": no snapshot (it may have expired: plan again)"
             status, body = portal.request("POST", "recipes/deploy", {"inputs": digest})
             assert status == 400
             assert set(body) == {"error"}

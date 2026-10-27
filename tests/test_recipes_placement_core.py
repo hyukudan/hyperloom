@@ -106,8 +106,22 @@ class InvocationTests(unittest.TestCase):
                     kwargs[channel].write(b"x" * 65)
                 return SimpleNamespace(returncode=0)
             with self.subTest(channel=channel), mock.patch.object(core, "MAX_OUTPUT", 64):
-                with self.assertRaisesRegex(reader.RecipeError, "exceeds"):
+                with self.assertRaisesRegex(reader.RecipeError, "ts-recipe .*exceeds"):
                     core.Core("test-ts-recipe", run=run).placement(["solve", "r.toml", "--emit-overrides", "picked"])
+
+    def test_output_decoding_and_limits_keep_legacy_tool_label(self):
+        for placing in (False, True):
+            label = "ts-recipe" if placing else "ss-recipe"
+            for channel in ("stdout", "stderr"):
+                for data, reason in ((b"x" * 65, "exceeds"), (b"\xff", "is not UTF-8")):
+                    def run(argv, **kwargs):
+                        kwargs[channel].write(data)
+                        return SimpleNamespace(returncode=0)
+                    with self.subTest(placing=placing, channel=channel, reason=reason), \
+                            mock.patch.object(core, "MAX_OUTPUT", 64):
+                        what = "output" if channel == "stdout" else "error output"
+                        with self.assertRaisesRegex(reader.RecipeError, f"^{label} {what} {reason}"):
+                            core.Core(label, run=run).call(["place" if placing else "validate", "r.toml"])
 
     def test_unavailable_timeout_and_stub_are_refused(self):
         for exc in (FileNotFoundError("missing"), subprocess.TimeoutExpired("ts-recipe", 60)):

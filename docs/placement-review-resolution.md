@@ -435,3 +435,22 @@ and `hl-placement-conformance-artifacts.log` (G6 and baseline imports).
 UTF-8/LF, diff whitespace and Docker shell syntax checks pass. TEMP/TMP were unchanged; submodules remain
 uninitialized. HEAD remains `583b5a9` on `hl/placement`; no network, GPU work, additional worktree, commit
 or push was used for this round.
+
+## Rebase minor fixes against a8d112c
+
+Portal deploy preflight preserves foreign-configuration conflicts as HTTP 409 with the base's message. Regression cases
+compare foreign and unrecorded target states with the base deploy check and CLI exit 4 transport mapping, before
+any job, hold or stop. A specific `Conflict` subtype keeps CLI exit 4 while other preflight refusals, including
+stop-list conflicts, retain the fixed redacted HTTP 400 and full local audit text.
+
+`probe --manifest` captures stdout and stderr in binary temporary files, reads at most `MAX_JSON_BYTES + 1` per
+channel and decodes strict UTF-8 through the core's bounded reader. Oversize and malformed encoding refuse;
+deadline handling and valid refusal text remain covered. Core output-limit and encoding diagnostics name
+`ts-recipe` for placement while keeping legacy `ss-recipe` wording.
+
+Focused validation: **214 passed, 3 skipped**, including the new regressions, legacy comparisons against a8d112c,
+all **21 G6 renders byte-identical**, and privacy checks. Full Python 3.13.7 / pytest 8.4.2: **47 failed, 3847 passed,
+69 skipped, 4 warnings** in 479.00 s. The failing-ID set exactly matches the reference's 47: none added or missing.
+Unittest discovery has zero import errors: **1858 tests** with the test extra, **1876** with stdlib only.
+Evidence logs remain outside git: `hl-placement-minors-focused-final.log`, `hl-placement-minors-pytest313-final.log`,
+`hl-placement-minors-failure-comparison.log` and `hl-placement-minors-checks.log`. TEMP/TMP are unchanged.

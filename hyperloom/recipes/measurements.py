@@ -13,6 +13,7 @@ from pathlib import Path
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 from types import SimpleNamespace
 
@@ -175,19 +176,22 @@ def manifest(cluster, files, window, *, clock=time.time, run=subprocess.run):
     remaining = end - clock()
     if remaining <= 0:
         raise RecipeError("PL_E_GRANT manifest window has expired")
-    try:
-        result = run(argv, capture_output=True, text=True, timeout=remaining, **no_window())
-    except subprocess.TimeoutExpired as exc:
-        raise RecipeError("PL_E_GRANT manifest stopped at the approved window deadline") from exc
-    except OSError as exc:
-        raise RecipeError("PL_E_CAPABILITY ts-recipe manifest unavailable") from exc
-    approved(window, now=clock())
+    with tempfile.TemporaryFile("w+b") as stdout, tempfile.TemporaryFile("w+b") as stderr:
+        try:
+            result = run(argv, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, timeout=remaining, **no_window())
+        except subprocess.TimeoutExpired as exc:
+            raise RecipeError("PL_E_GRANT manifest stopped at the approved window deadline") from exc
+        except OSError as exc:
+            raise RecipeError("PL_E_CAPABILITY ts-recipe manifest unavailable") from exc
+        approved(window, now=clock())
+        stdout.seek(0)
+        stderr.seek(0)
+        text = core._bounded(stdout, "manifest output", "ts-recipe", limit=content_cache.MAX_JSON_BYTES)
+        err = core._bounded(stderr, "manifest error output", "ts-recipe", limit=content_cache.MAX_JSON_BYTES)
     if result.returncode:
-        raise RecipeError(result.stderr.rstrip() or "PL_E_STALE ts-recipe manifest refused")
+        raise RecipeError(err.rstrip() or "PL_E_STALE ts-recipe manifest refused")
     try:
-        if len(result.stdout.encode("utf-8")) > content_cache.MAX_JSON_BYTES:
-            raise ValueError("manifest too large")
-        document = json.loads(result.stdout)
+        document = json.loads(text)
         entries = content_cache.ManifestStore._entries(document)
         if set(entries) != {os.path.normcase(str(Path(p).resolve())) for p in files}:
             raise ValueError("manifest differs from requested files")
