@@ -81,6 +81,7 @@ def allowed_bases(api, machine):
     log root must lie inside one of them."""
     from hyperloom import downloads
     bases = [machine.install_root] + ([machine.lab_dir] if getattr(machine, "lab_dir", None) else [])
+    bases = [base for base in bases if not downloads.too_wide(machine, base)]
     return bases + [base for base in downloads.configured_bases(api.cluster(), machine) if base not in bases]
 
 

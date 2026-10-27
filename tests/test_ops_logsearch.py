@@ -10,7 +10,7 @@ import time
 import unittest
 from unittest import mock
 
-from hyperloom.web.features import ops
+from hyperloom.web.features import logsearch, ops
 from tests.test_ops_turns import APIFixture
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -313,6 +313,15 @@ class PortalSearchTests(APIFixture, unittest.TestCase):
         self.assertNotIn("root", self.calls[-1][2])
         audit = [json.loads(line)["action"] for line in (Path(self.dir.name) / "audit.jsonl").read_text().splitlines()]
         self.assertIn("logsearch/roots", audit)
+
+    def test_an_asset_directly_in_a_home_never_opens_the_home(self):
+        cluster = self.api.cluster()
+        cluster.assets.setdefault("halo-1", {})["loose"] = {"path": "/home/someone/loose.gguf", "bytes": 1}
+        with mock.patch.object(type(self.api), "cluster", lambda api: cluster):
+            self.assertNotIn("/home/someone", logsearch.allowed_bases(self.api, cluster.machines["halo-1"]))
+            for roots in (["/home/someone"], ["/home/someone/runs"]):
+                with self.subTest(roots=roots), self.assertRaises(Exception):
+                    self.api.feature_post("logsearch/roots", {"machine": "halo-1", "roots": roots})
 
     def test_overlapping_searches_are_coalesced_per_machine(self):
         import threading as threads

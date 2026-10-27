@@ -44,6 +44,29 @@ class RootsTests(unittest.TestCase):
         self.assertEqual([r["path"] for r in roots["halo-1"]], ["/opt/assets", "/opt/assets/extra"])
         self.assertEqual(roots["halo-1"][1]["source"], "prefs")
 
+    def test_an_asset_directly_in_a_home_never_opens_the_home(self):
+        # The parent of an asset kept directly in a home directory is that home: never a root nor a base for one.
+        self.cluster.assets["halo-1"]["loose"] = {"path": "/home/someone/loose.gguf", "bytes": 1,
+                                                  "control_path": "C:\\Users\\someone\\loose.gguf"}
+        self.cluster.assets["halo-1"]["top"] = {"path": "/top.gguf", "bytes": 1}
+        roots = downloads.library_roots(self.cluster)
+        self.assertEqual(roots["halo-1"], [{"path": "/opt/assets", "source": "config"}])
+        self.assertEqual(roots["workstation"], [{"path": "C:\\hyperloom\\assets", "source": "config"}])
+        for machine, value in (("halo-1", "/home/someone"), ("halo-1", "/home/someone/models"), ("halo-1", "/top"),
+                               ("workstation", "C:\\Users\\someone\\Documents")):
+            with self.subTest(value), self.assertRaises(ValueError):
+                downloads.set_roots(self.cluster, self.store, machine, [value])
+        # A model directory inside a home is still a root.
+        self.cluster.assets["halo-1"]["kept"] = {"path": "/home/someone/models/kept.gguf", "bytes": 1}
+        self.assertIn({"path": "/home/someone/models", "source": "config"},
+                      downloads.library_roots(self.cluster)["halo-1"])
+        for machine, value, wide in (("halo-1", "/", True), ("halo-1", "/home", True), ("halo-1", "/root", True),
+                                     ("halo-1", "/root/models", False), ("halo-1", "/var/home/someone", True),
+                                     ("workstation", "D:\\", True), ("workstation", "C:\\Users", True),
+                                     ("workstation", "C:\\Users\\someone\\models", False)):
+            with self.subTest(value=value):
+                self.assertEqual(downloads.too_wide(self.cluster.machines[machine], value), wide)
+
     def test_set_roots_validates_per_os(self):
         self.assertEqual(downloads.set_roots(self.cluster, self.store, "halo-1", ["/opt/assets/a", "/opt/assets/a"]),
                          {"machine": "halo-1", "roots": ["/opt/assets/a"]})

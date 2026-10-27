@@ -163,9 +163,31 @@ def _parts(machine, value):
     return [part.lower() for part in path.parts] if machine.os == "windows" else list(path.parts)
 
 
+def too_wide(machine, value):
+    """Whether a directory is a home directory or above it (``/``, ``/home``, ``/home/<user>``, ``/root``,
+    ``C:\\``, ``C:\\Users\\<user>``, this machine's own home): never a root, whatever file sits directly in it."""
+    try:
+        parts = _parts(machine, value)
+    except (TypeError, ValueError):
+        return True
+    if machine.os == "windows":
+        if len(parts) <= 1 or (parts[1] == "users" and len(parts) <= 3):
+            return True
+    elif len(parts) <= 1 or (parts[1] in ("home", "Users") and len(parts) <= 3) or parts[1:] == ["root"] or \
+            (parts[1:3] == ["var", "home"] and len(parts) <= 4):
+        return True
+    if getattr(machine, "access", None) == "local":
+        try:
+            return parts == _parts(machine, str(_Path.home()))
+        except (TypeError, ValueError, RuntimeError):
+            return False
+    return False
+
+
 def configured_bases(cluster, machine):
     """The roots the configuration gives a machine: its install root and the parents of its configured assets
-    (and of the control machine's ``control_path`` assets); an extra root must lie inside one of them."""
+    (and of the control machine's ``control_path`` assets); an extra root must lie inside one of them. A home
+    directory (an asset kept directly in it) is never one: it would open the whole home."""
     bases = [machine.install_root]
     local = control_machine(cluster)
     for mid, assets in cluster.assets.items():
@@ -175,7 +197,7 @@ def configured_bases(cluster, machine):
             if local is not None and local.id == machine.id and "control_path" in asset:
                 bases.append(str((_PureWindowsPath if machine.os == "windows" else PurePosixPath)(
                     asset["control_path"]).parent))
-    return list(dict.fromkeys(bases))
+    return [base for base in dict.fromkeys(bases) if not too_wide(machine, base)]
 
 
 def inside_bases(machine, value, bases):
@@ -198,7 +220,8 @@ def library_roots(cluster, store=None):
     local = control_machine(cluster)
 
     def add(mid, path, source):
-        if mid in roots and path not in [row["path"] for row in roots[mid]] and len(roots[mid]) < MAX_ROOTS:
+        if mid in roots and path not in [row["path"] for row in roots[mid]] and len(roots[mid]) < MAX_ROOTS \
+                and not too_wide(cluster.machines[mid], path):
             roots[mid].append({"path": path, "source": source})
 
     for mid, assets in cluster.assets.items():
