@@ -269,7 +269,7 @@ Pinned in [`versions.lock`](../versions.lock) and as git submodules under `third
 
 | Component | Pin | License | What hyperloom uses |
 |---|---|---|---|
-| [TensorMeld](https://github.com/hyukudan/tensormeld) | `7165e98` (0.2.0a2) | MIT | `serve-replicas` router (`replica-router-v1`: OpenAI/Anthropic relay with SSE, replica balancing, prefill placement, `/api/status`, `/metrics`); `probe` and `link-probe` for inventory and links; `plan-hetero` for placement proposals; `bench-protocol` for client-side benchmarks. Its config parser validates every router config hyperloom renders. |
+| [TensorMeld](https://github.com/hyukudan/tensormeld) | `7165e98` (0.2.0a2) on the nodes; `409003a` for the local router (see SPEC 1.1) | MIT | `serve-replicas` router (`replica-router-v1`: OpenAI/Anthropic relay with SSE, replica balancing, prefill placement, `/api/status`, `/metrics`); `probe` and `link-probe` for inventory and links; `plan-hetero` for placement proposals; `bench-protocol` for client-side benchmarks. Its config parser validates every router config hyperloom renders. |
 | [Strix Halo engine](https://github.com/hyukudan/strix-halo-engine-lab) | `70ec42b9` | Apache-2.0 | `strix-hip-decode-token --http-serve` (Qwen replicas), `strix-deepseek41-serve` (DeepSeek pair over USB4, `READY` / `STOPPED` events, `/admin/drain`, state import), `strix-cuda-ds41-prefill-service` (RTX prefill). The pin moves to the merge commit once it lands on the engine's `main`. |
 | [strix-trellis](https://github.com/hyukudan/strix-trellis) | `5acf090` (0.3.0) | Apache-2.0 | static library + C header linked into the DeepSeek engine build: trellis-quantized dense layers (shared expert and output head). |
 
