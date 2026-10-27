@@ -9,7 +9,8 @@
   const R = {catalog: null, error: null, model: "", profile: "", selected: "", detail: null, detailError: null,
     edits: {}, raw: {}, fieldErrors: {}, parseErrors: {}, editsError: null, explain: null, check: null, simulate: null, tokens: 8192,
     plan: null, planKey: null, diff: null, compare: "", active: null, routes: null, tuning: "", overrides: [],
-    source: null, sourceCheck: null, busy: {}, timer: null, lastLoad: 0};
+    source: null, sourceCheck: null, busy: {}, timer: null, lastLoad: 0,
+    matrix: null, start: {cls: "", goal: "any", recipe: "", profile: "", ready: null}};
   const esc = value => H().esc(value);
   const object = value => value !== null && typeof value === "object" && !Array.isArray(value);
   const busy = key => !!R.busy[key];
@@ -45,12 +46,18 @@
       const listing = await get("recipes");
       if (!listing.ok) throw new Error(listing.error || "recipe list unavailable");
       R.catalog = listing.result; R.error = null;
+      loadMatrix();                                 // not awaited: load's callers continue with the catalog
       const models = modelsWithRecipes();
       // Default: the first model a configured deployment profile serves (what can actually run here).
       if (!R.model || !models.includes(R.model)) R.model = models.find(m => (R.catalog.models[m] || []).length) || models[0] || "";
       const serving = R.catalog.models[R.model] || [];
       if (!serving.includes(R.profile)) R.profile = serving[0] || "";
     } catch (error) { R.error = error.message; }
+    rerender();
+  }
+  async function loadMatrix() {
+    try { R.matrix = (await get("recipes/matrix")).result; delete R.busy["matrix:error"]; }
+    catch (error) { R.busy["matrix:error"] = error.message; }
     rerender();
   }
   async function poll() {
@@ -292,8 +299,83 @@
     const row = current() || {};
     return `<h2 class="section">${esc(R.selected)} <span class="sub">${esc(R.detail.name)} · sha256 ${esc((R.detail.sha256 || "").slice(0, 12))}</span></h2>${actions()}${H().card("Trade-offs", tradeoffs(row), "quality, speed and memory as the recipe states them")}<div class="grid g2">${hardwareCard()}${previewCard()}</div>${fieldsCard()}${layersCard()}${sourceCard()}${compareCard()}`;
   }
+  // --- get started: model -> hardware class -> goal -> readiness. Reads recipes/matrix and recipes/ready (offline
+  // answers) and the page's own status; it proposes commands and opens the workbench, it never launches anything.
+  const GOALS = {any: ["any goal", []], short: ["first token on short prompts", [["ttft_1k_s", 1]]],
+    long: ["first token on long prompts", [["ttft_32k_s", 1], ["ttft_8k_s", 1]]], decode: ["decode speed", [["decode_tok_s", -1]]]};
+  const STATE_PILL = {ok: "ok", warn: "warn", todo: "info", blocked: "err", skipped: "off"};
+  const pill = state => `<span class="pill p-${STATE_PILL[state] || "off"}">${esc(state)}</span>`;
+  const readyRow = id => (R.matrix?.cells || []).flatMap(c => c.recipes).find(r => r.id === id) || {profiles: []};
+  function score(recipe) {
+    // Only measured figures rank; a recipe without one for the goal goes after those that have it.
+    for (const [key, sign] of GOALS[R.start.goal][1]) {
+      const figure = recipe.figures.find(f => f.key === key && f.measured && typeof f.value === "number");
+      if (figure) return sign * figure.value;
+    }
+    return Infinity;
+  }
+  function figureTag(f) {
+    const prompt = /^ttft_(\d+k)_s$/.exec(f.key || "");
+    const text = `${f.label}${prompt ? " " + prompt[1].toUpperCase() : ""} ${f.value} ${f.unit}`;
+    const sources = (f.sources || []).map(s => s.ref || `${s.id}: no source`).join("; ");
+    const about = f.measured ? "measured · " + sources : (f.basis || "unmeasured") + (sources ? " · " + sources : "");
+    return `<span class="tag basis-${esc(f.measured ? "measured" : f.basis || "none")}" title="${esc(about)}">${esc(text)}${f.measured ? "" : ` · ${esc(f.basis || "unmeasured")}`}</span>`;
+  }
+  function readyBlock() {
+    const S = R.start, doc = S.ready;
+    if (!S.recipe) return "";
+    const profiles = readyRow(S.recipe).profiles || [];
+    const head = `<h3 class="section">${esc(S.recipe)}${S.profile ? " on " + esc(S.profile) : ""}</h3>` + (profiles.length > 1 ? `<div class="field"><label for="recipe-start-profile">Profile</label><select class="inp" id="recipe-start-profile">${profiles.map(p => `<option value="${esc(p)}"${p === S.profile ? " selected" : ""}>${esc(p)}</option>`).join("")}</select></div>` : "");
+    if (busy("ready")) return head + '<p class="hint">checking…</p>';
+    if (R.busy["ready:error"]) return head + H().unavailable(R.busy["ready:error"]);
+    if (!doc) return head;
+    const r = doc.result;
+    if (!r) return head + refusal(doc);
+    const copy = text => text ? `<div class="row"><code class="mono">${esc(text)}</code><button type="button" class="btn sm" data-recipe-action="copy" data-text="${esc(text)}">Copy</button></div>` : "";
+    const steps = r.steps.map(s => H().cells([pill(s.state), esc(s.title), `${esc(s.detail || "")}${s.state !== "ok" ? copy(s.fix) : ""}`])).join("");
+    const running = (R.active?.deployments || []).filter(d => d.profile === r.profile);
+    const live = running.length ? `<div class="banner info">${esc(r.profile)} is running now: deploying replaces it (the workbench asks first).</div>` : "";
+    const next = r.ready
+      ? `<p>${H().statusPill("ready")} Next: preview what up decides, then deploy (both in the workbench, through the GPU turn and lease).</p>${copy(r.commands.plan)}${copy(r.commands.up)}<div class="row"><button type="button" class="btn pri" data-recipe-action="start-open" data-id="${esc(r.recipe)}" data-profile="${esc(r.profile || "")}">Open in the workbench</button></div>`
+      : `<p>${H().statusPill(r.next ? "warn" : "off")} Not ready${r.next ? `: next step <b>${esc(r.next.step)}</b>` : ""}.</p>`;
+    return head + live + next + H().table(["State", "Step", "Detail"], steps, "Readiness") + `<p class="hint">Checked only when up starts: ${esc(r.checked_at_start.join("; "))}.</p>` + cli(doc);
+  }
+  function recipeTile(r) {
+    const status = r.command ? H().tag(r.status) : `<span class="tag basis-target" title="${esc(r.blocker || "")}">pending</span>`;
+    const figures = r.figures.filter(f => typeof f.value === "number").map(figureTag).join("") || '<span class="hint">no figures</span>';
+    const check = r.command ? "" : `disabled title="${esc("pending: " + (r.blocker || "it does not launch"))}"`;
+    return `<article class="card recipe-card${r.id === R.start.recipe ? " sel" : ""}"><div class="row between"><b>${esc(r.id)}</b>${status}</div>${r.description ? `<p class="hint">${esc(r.description)}</p>` : ""}<div class="chips">${figures}</div>${r.blocker ? `<p class="hint">Pending: ${esc(r.blocker)}</p>` : ""}<div class="row"><button type="button" class="btn sm pri" data-recipe-action="start-ready" data-id="${esc(r.id)}" ${check}>Check readiness</button><button type="button" class="btn sm" data-recipe-action="open" data-id="${esc(r.id)}">Open</button></div></article>`;
+  }
+  function startCard() {
+    const M = R.matrix, S = R.start;
+    const about = "which recipe runs this model on your hardware, and what is still missing";
+    if (!M) return H().card("Get started", R.busy["matrix:error"] ? H().unavailable(R.busy["matrix:error"]) : '<div class="skeleton" aria-label="Loading"></div>', about);
+    const labels = Object.fromEntries(M.hardware.map(h => [h.class, h.label]));
+    const cells = M.cells.filter(c => c.model === R.model);
+    const chips = cells.map(c => {
+      const runnable = c.recipes.filter(r => r.command).length;
+      const why = c.recipes.length ? "" : `disabled title="${esc(`no recipe for ${R.model} on ${labels[c.class]} yet`)}"`;
+      return `<button type="button" class="btn sm${S.cls === c.class ? " pri" : ""}" aria-pressed="${S.cls === c.class}" data-recipe-action="start-class" data-class="${esc(c.class)}" ${why}>${esc(labels[c.class])} · ${runnable}/${c.recipes.length}</button>`;
+    }).join("");
+    const cell = cells.find(c => c.class === S.cls);
+    const sorted = cell ? [...cell.recipes].sort((a, b) => (!a.command - !b.command) || (score(a) - score(b)) || a.id.localeCompare(b.id)) : [];
+    const goal = `<div class="field"><label for="recipe-goal">Goal</label><select class="inp" id="recipe-goal">${Object.entries(GOALS).map(([k, [label]]) => `<option value="${k}"${k === S.goal ? " selected" : ""}>${esc(label)}</option>`).join("")}</select></div>`;
+    return H().card("Get started", `<p class="hint">Model (above), then hardware, goal and readiness. Runnable / all recipes per hardware class. Figures marked measured name their sources (hover); the others show their basis. Nothing here launches: the commands and the workbench do, through the GPU turn and lease.</p><div class="chips" role="group" aria-label="Hardware">${chips}</div>${cell ? `<div class="row">${goal}</div><div class="grid g3 recipe-cards">${sorted.map(recipeTile).join("")}</div>` : ""}${readyBlock()}`, about);
+  }
+  async function checkReady(id, profile) {
+    const profiles = readyRow(id).profiles || [];
+    Object.assign(R.start, {recipe: id, ready: null,
+      profile: profile ?? (profiles.includes(R.start.profile) ? R.start.profile : profiles[0] || "")});
+    delete R.busy["ready:error"];
+    await run("ready", async () => {
+      const query = new URLSearchParams({recipe: id, ...(R.start.profile ? {profile: R.start.profile} : {})});
+      const doc = await get("recipes/ready?" + query);
+      if (R.start.recipe === id) R.start.ready = doc;     // a newer choice wins
+    });
+  }
+
   function render() {
-    return header() + activeCard() + H().card("Profiles of " + (R.model || "…"), profileCards(), "pick one; built-in ones are read-only examples") + detail();
+    return header() + startCard() + activeCard() + H().card("Profiles of " + (R.model || "…"), profileCards(), "pick one; built-in ones are read-only examples") + detail();
   }
 
   // --- dialog ---------------------------------------------------------------------------------------------------
@@ -350,6 +432,10 @@
   // --- actions ----------------------------------------------------------------------------------------------------
   const handlers = {
     open: control => select(control.dataset.id),
+    "start-class": control => { Object.assign(R.start, {cls: control.dataset.class, recipe: "", ready: null}); rerender(); },
+    "start-ready": control => checkReady(control.dataset.id),
+    "start-open": control => { if (control.dataset.profile) R.profile = control.dataset.profile; select(control.dataset.id); },
+    copy: control => { navigator.clipboard?.writeText(control.dataset.text).then(() => H().announce("Copied"), () => H().announce("Copy failed: select the text instead")); },
     "reset-edits": () => { R.edits = {}; R.raw = {}; R.fieldErrors = {}; R.parseErrors = {}; R.editsError = null; R.explain = null; rerender(); },
     check: () => run("check", async () => { R.check = await post("recipes/validate", {recipe: R.selected, profile: R.profile, ...layerArgs(), ...editArgs()}, HARDWARE_S); }),
     simulate: () => run("simulate", async () => { R.simulate = await post("recipes/explain", {recipe: R.selected, profile: R.profile, prompt_tokens: Number(R.tokens) || 0, ...layerArgs(), ...editArgs()}, HARDWARE_S); }),
@@ -410,7 +496,9 @@
   });
   document.addEventListener("change", event => {
     const t = event.target;
-    if (t.id === "recipe-model") { R.model = t.value; R.profile = (R.catalog.models[R.model] || [])[0] || ""; R.selected = ""; R.detail = null; rerender(); }
+    if (t.id === "recipe-model") { R.model = t.value; R.profile = (R.catalog.models[R.model] || [])[0] || ""; R.selected = ""; R.detail = null; Object.assign(R.start, {cls: "", recipe: "", ready: null}); rerender(); }
+    else if (t.id === "recipe-goal") { R.start.goal = t.value; rerender(); }
+    else if (t.id === "recipe-start-profile") checkReady(R.start.recipe, t.value);
     else if (t.id === "recipe-profile") { R.profile = t.value; R.check = R.simulate = null; rerender(); }
     else if (t.id === "recipe-tuning") { R.tuning = t.value; scheduleValidate(); rerender(); }
     else if (t.id === "recipe-compare") { R.compare = t.value; R.diff = null; rerender(); }

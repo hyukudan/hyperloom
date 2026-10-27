@@ -626,8 +626,9 @@ def keyboard_walkthrough(client, server):
         print("PASS keyboard " + action + " (Tab, reverse Tab, Space, Escape)", flush=True)
 
 
-def recipes_walkthrough(client, server):
-    """Drive the Recipes & profiles page: open a recipe, an invalid field shows its inline error, a server refusal is
+def recipes_walkthrough(client, server, output=None):
+    """Drive the Recipes & profiles page: Get started (a hardware class lists its recipes, readiness answers step by
+    step with the next command), open a recipe, an invalid field shows its inline error, a server refusal is
     shown, fixing it clears the errors, the preview answers (its refusal gates Deploy with the reason), and a copy is
     saved into the user directory and listed."""
     def wait(expression, timeout=60):
@@ -645,6 +646,17 @@ def recipes_walkthrough(client, server):
         client.evaluate(f"document.querySelector({json.dumps(selector)}).click()")
     client.call("Emulation.setDeviceMetricsOverride", width=1440, height=1000, deviceScaleFactor=1, mobile=False)
     client.call("Page.navigate", url=server.url + "#/recipes")
+    wait("!!document.querySelector('[data-recipe-action=start-class][data-class=\"rtx-prefill\"]')")
+    if not client.evaluate("[...document.querySelectorAll('[data-recipe-action=start-class]')].every(b => !b.disabled || b.title)"):
+        raise AssertionError("recipes walkthrough: a disabled hardware class must say why")
+    click('[data-recipe-action=start-class][data-class="rtx-prefill"]')
+    wait("!!document.querySelector('[data-recipe-action=start-ready][data-id=\"qwen3.8-flash-next.lab\"]')")
+    click('[data-recipe-action=start-ready][data-id="qwen3.8-flash-next.lab"]')
+    wait("/router applies recipe routes/.test(document.querySelector('main').innerText)"
+         " && /recipe ready/.test(document.querySelector('main').innerText)")
+    if output is not None:
+        png = base64.b64decode(client.call("Page.captureScreenshot", format="png", captureBeyondViewport=True)["data"])
+        (Path(output) / "recipes-get-started.png").write_bytes(png)
     wait("!!document.querySelector('[data-recipe-action=open][data-id=\"qwen3.8-flash-next.lab\"]')")
     click('[data-recipe-action=open][data-id="qwen3.8-flash-next.lab"]')
     minimum, maximum = "routes.prefill_rtx.when.prompt_tokens_min", "routes.prefill_rtx.when.prompt_tokens_max"
@@ -1347,7 +1359,7 @@ def browser_smoke(chrome, server, output, *, keyboard=False, keyboard_only=False
                 if client.errors:
                     raise AssertionError(json.dumps(client.errors))
                 if not keyboard_only:
-                    print("PASS recipes walkthrough: edit, inline refusal, fix, preview, " + recipes_walkthrough(client, server)
+                    print("PASS recipes walkthrough: edit, inline refusal, fix, preview, " + recipes_walkthrough(client, server, output)
                           + ", save copy", flush=True)
                     if not recipes_only:
                         print("PASS service worker: " + shell_service_worker(client, server), flush=True)
