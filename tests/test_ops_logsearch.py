@@ -271,6 +271,7 @@ class NodeSearchTests(unittest.TestCase):
         result = self.run_search(text="match", max_results=500, context=2)
         self.assertLessEqual(len(json.dumps(result["results"])), node.OUTPUT_BUDGET)
         self.assertIn("output", result["report"]["truncated"])
+        self.assertNotIn("deadline", result["report"]["truncated"])     # redaction stays linear in a long word
 
 
 class PortalSearchTests(APIFixture, unittest.TestCase):

@@ -54,7 +54,7 @@ KEYS = ("text", "regex", "ignore_case", "root", "roots", "exclude", "since", "un
 # user:password option and bare Hugging Face tokens.
 SECRET_PATTERNS = (
     (re.compile(r"(?i)\b((?:Bearer|Basic|Digest|Token|Negotiate)\s+)[A-Za-z0-9+/=._~:-]+"), r"\1[redacted]"),
-    (re.compile(r'''(?ix)(["']?[\w.-]*(?:key|secret|token|pass|pwd|credential|auth)[\w.-]*["']?\s*[:=]\s*)'''
+    (re.compile(r'''(?ix)(?<![\w.-])(["']?[\w.-]*(?:key|secret|token|pass|pwd|credential|auth)[\w.-]*["']?\s*[:=]\s*)'''
                 r'''(?:"[^"]*"|'[^']*'|[^\s,;}]+)'''), r"\1[redacted]"),
     (re.compile(r"(?i)(--[\w-]*(?:key|secret|token|passw(?:or)?d|credential)[\w-]*(?:\s+|=))(?!\[redacted\])\S+"),
      r"\1[redacted]"),
