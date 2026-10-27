@@ -319,7 +319,7 @@
     const text = `${f.label}${prompt ? " " + prompt[1].toUpperCase() : ""} ${f.value} ${f.unit}`;
     const sources = (f.sources || []).map(s => s.ref || `${s.id}: no source`).join("; ");
     const about = f.measured ? "measured · " + sources : (f.basis || "unmeasured") + (sources ? " · " + sources : "");
-    return `<span class="tag basis-${esc(f.measured ? "measured" : f.basis || "none")}" title="${esc(about)}">${esc(text)}${f.measured ? "" : ` · ${esc(f.basis || "unmeasured")}`}</span>`;
+    return `<span class="tag basis-${esc(f.measured ? "measured" : f.basis || "none")}" title="${esc(about)}">${f.measured ? "" : "estimate · "}${esc(text)}${f.measured ? "" : ` · ${esc(f.basis || "unmeasured")}`}</span>`;
   }
   function readyBlock() {
     const S = R.start, doc = S.ready;
@@ -342,7 +342,12 @@
   }
   function recipeTile(r) {
     const status = r.command ? H().tag(r.status) : `<span class="tag basis-target" title="${esc(r.blocker || "")}">pending</span>`;
-    const figures = r.figures.filter(f => typeof f.value === "number").map(figureTag).join("") || '<span class="hint">no figures</span>';
+    // Measured figures and estimates are shown apart; only measured ones rank (score).
+    const numeric = r.figures.filter(f => typeof f.value === "number");
+    const measured = numeric.filter(f => f.measured).map(figureTag).join("");
+    const estimates = numeric.filter(f => !f.measured).map(figureTag).join("");
+    const figures = (measured ? `<span class="hint">Measured</span>${measured}` : '<span class="hint">no measured figures</span>') +
+      (estimates ? `</div><div class="chips"><span class="hint">Estimates</span>${estimates}` : "");
     const check = r.command ? "" : `disabled title="${esc("pending: " + (r.blocker || "it does not launch"))}"`;
     return `<article class="card recipe-card${r.id === R.start.recipe ? " sel" : ""}"><div class="row between"><b>${esc(r.id)}</b>${status}</div>${r.description ? `<p class="hint">${esc(r.description)}</p>` : ""}<div class="chips">${figures}</div>${r.blocker ? `<p class="hint">Pending: ${esc(r.blocker)}</p>` : ""}<div class="row"><button type="button" class="btn sm pri" data-recipe-action="start-ready" data-id="${esc(r.id)}" ${check}>Check readiness</button><button type="button" class="btn sm" data-recipe-action="open" data-id="${esc(r.id)}">Open</button></div></article>`;
   }

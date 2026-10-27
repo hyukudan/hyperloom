@@ -269,9 +269,12 @@ def matrix_text(result):
                 lines.append(f"  {labels[cell['class']]:<30} no recipe")
                 continue
             for r in cell["recipes"]:
-                figures = ", ".join(f"{_figure_label(f)} {f['value']:g} {f['unit']}" + ("" if f["measured"] else
-                                    f" ({f['basis'] or 'unmeasured'})") for f in r["figures"]
-                                    if isinstance(f["value"], (int, float)))
+                numeric = [f for f in r["figures"] if isinstance(f["value"], (int, float))]
+                measured = ", ".join(f"{_figure_label(f)} {f['value']:g} {f['unit']}" for f in numeric if f["measured"])
+                estimates = ", ".join(f"{_figure_label(f)} {f['value']:g} {f['unit']} ({f['basis'] or 'unmeasured'})"
+                                      for f in numeric if not f["measured"])
+                figures = "; ".join(part for part in (measured and "measured: " + measured,
+                                                      estimates and "estimates: " + estimates) if part)
                 state = r["status"] + (f": {r['blocker']}" if r["blocker"] else "")
                 lines.append(f"  {labels[cell['class']]:<30} {r['id']} [{state}]" + (f" {figures}" if figures else ""))
                 if r["command"]:
