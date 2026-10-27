@@ -234,11 +234,22 @@ class NodeSearchTests(unittest.TestCase):
             "GITHUB_TOKEN: ghp_abcdef123": "ghp_abcdef123",
             "fetch https://user:pa55word@example.invalid/x": "pa55word",
             "client_secret='quoted value'": "quoted value",
+            "HF_TOKEN hf_xYz123": "hf_xYz123",
+            "export DB_PASSWORD  s3cr3tval": "s3cr3tval",
+            "hf_token\thf_lowercase9": "hf_lowercase9",
+            "PASS=x9secret": "x9secret",
+            "db_pass: plainpw7": "plainpw7",
+            "mysql -u root -pXyzzy42 shop": "Xyzzy42",
+            "mysqldump -h db -pAnother7 --all": "Another7",
+            "sshpass -p Sp4ce sshx": "Sp4ce",
         }
         for line, secret in lines.items():
             with self.subTest(line=line):
                 self.assertNotIn(secret, node.redact(line))
-        self.assertEqual(node.redact("generated 512 tokens in 3.1 s"), "generated 512 tokens in 3.1 s")
+        for prose in ("generated 512 tokens in 3.1 s", "keyboard input ignored",
+                      "pass 2 of 3 finished", "mysql connection pool size 8"):
+            with self.subTest(prose=prose):
+                self.assertEqual(node.redact(prose), prose)
 
     def test_output_budget(self):
         (self.tree.root / "big.log").write_text("".join(f"match {'y' * 380} {i}\n" for i in range(600)))
