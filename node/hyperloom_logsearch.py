@@ -69,7 +69,7 @@ REDACTED = "[redacted]"
 # scheme word stays readable (Authorization: Bearer [redacted]). These checks read the value without its quotes
 # (--user "1000:1000" is a uid:gid as 1000:1000 is).
 _PLAIN = r"(?:None|null|true|false|True|False)"
-_COUNT = r"(?:\[?[0-9]+(?:[./][0-9]+)*|<[|\w.-]+>)"
+_COUNT = r"(?:\[?[0-9]+(?:[./][0-9]+)*|<[|\w./-]+>)"
 _KEPT_PLAIN = re.compile(_PLAIN + r"[)\],;]*")
 _KEPT_COUNT = re.compile(r"(?:" + _PLAIN + "|" + _COUNT + r")[)\],;]*")
 _UID_GID = re.compile(r"[0-9]+:[0-9]+")
@@ -96,8 +96,9 @@ _LEXEME = re.compile(r"""[^'"\\]+|\\[\s\S]?""")
 _BACKSLASHES = re.compile(r"\\+")
 # Every quote of a text with the backslashes right before it is found once (_QUOTE_RUN), and each kind of closing
 # quote a value may ask for gets one sorted list of positions (_closes), so finding where a quoted part ends never
-# reads the text again. A plain apostrophe closes at the next apostrophe; a plain double quote at the next one not
-# escaped (an even run). Escaped double quotes open on a run c of 1, 3 or 7 backslashes (\"...\" in JSON written
+# reads the text again. A plain quote closes at the next one of its kind that is not escaped (an even run: in a
+# repr, a value's own \' does not end it); an apostrophe with none closes at the next apostrophe, as a shell
+# reads 'C:\dir\'. Escaped double quotes open on a run c of 1, 3 or 7 backslashes (\"...\" in JSON written
 # inside a string; \\\"...\\\" when that is written inside a string again) and close, first, at a quote whose run r
 # has r mod 2(c+1) == c, as that encoding writes it (at depth 1, \\\\\" ends a value that ends in a backslash;
 # \\\" is a quote inside the value), else at any odd run of at least c, else at the next escaped quote. An escaped
@@ -166,7 +167,7 @@ def _closes(text, cache, key):
     quote, tier = key[0], key[1]
     depth = key[2] if len(key) > 2 else 0
     cache[key] = [at for at, run, char, boundary in cache["quotes"] if char == quote and (
-        (quote == "'" or run % 2 == 0) if tier == "plain" else run % 2 == 1 and (
+        run % 2 == 0 if tier == "plain" else True if tier == "shell" else run % 2 == 1 and (
             tier == "any" or (quote == '"' or boundary) and (
                 run % (2 * depth + 2) == depth if tier == 1 else run >= depth)))]
     return cache[key]
@@ -190,8 +191,25 @@ def _close(text, cache, keys, at, limit):
 def _shell_word(text, pos, stops="", strings=None):
     """(end, value): the shell word that starts at ``pos`` (also ending at any character of ``stops``: an
     assignment's value ends at , ; }) and its text without quotes or escapes. ``strings``: _strings(text), shared by
-    every value of the text (it keeps the positions of the closing quotes)."""
-    starts, ends, cache = _strings(text) if strings is None else strings
+    every value of the text (it keeps the positions of the closing quotes). An apostrophe is read two ways, as a
+    repr writes it (a value's own \\' does not end it) and as a shell does (it ends at the next apostrophe:
+    'C:\\dir\\' x'y z'), and the longer word is the value."""
+    if strings is None:
+        strings = _strings(text)
+    end, value = _read_word(text, pos, stops, strings, False)
+    cache = strings[2]
+    if "escaped apostrophe" not in cache:
+        cache["escaped apostrophe"] = "\\'" in text
+    if cache["escaped apostrophe"]:
+        shell = _read_word(text, pos, stops, strings, True)
+        if shell[0] > end:
+            return shell
+    return end, value
+
+
+def _read_word(text, pos, stops, strings, shell):
+    """_shell_word, with apostrophes read as a shell reads them or (shell false) as a repr writes them."""
+    starts, ends, cache = strings
     limit, enclosing = len(text), ""
     low = _first_after(starts, pos - 1)  # the last string that opens before pos
     if low and pos < ends[low - 1]:
@@ -212,9 +230,8 @@ def _shell_word(text, pos, stops="", strings=None):
             elif run % 2 and (quote == '"' or quote == "'" and at == pos):
                 end = _close(text, cache, ((quote, "any"),), at + run, limit)
             if end != -1:
-                content = end                   # the value ends before the closing quote's backslashes
-                while content > at + run + 1 and text[content - 1] == "\\":
-                    content -= 1
+                content = max(end - run, at + run + 1)  # without the close's own escaping: a longer run keeps
+                #                                         the value's escaped backslashes (\"hunter2\\\")
                 value.append(text[at + run + 1:content])
                 at = end + 1
                 continue
@@ -222,7 +239,8 @@ def _shell_word(text, pos, stops="", strings=None):
             at = min(at + run + run % 2, limit)
             continue
         if char in "'\"":
-            end = _close(text, cache, ((char, "plain"),), at, limit)
+            keys = (((char, "shell"),) if shell else ((char, "plain"), (char, "shell"))) if char == "'" else                 ((char, "plain"),)
+            end = _close(text, cache, keys, at, limit)
             if end != -1:
                 value.append(text[at + 1:end])
                 at = end + 1
@@ -335,9 +353,11 @@ GLUED_PASSWORD = (
 # `a:b;c`). An unpaired quote is an ordinary character. Only option letters that take no argument can come before
 # u/U in one word (-sSu; -XPUT is -X PUT). The executable is matched in any case (CURL.EXE) and may be quoted, with
 # a path ("/usr/bin/curl", "C:\Program Files\curl\curl.exe"): the scan starts at its opening quote, so its closing
-# quote is not read as the start of a quoted argument.
+# quote is not read as the start of a quoted argument. A string in escaped quotes (the command written inside a
+# JSON string: "curl -H \"Cookie: a;b\" -u ...") holds its separators too.
 CURL_COMMAND = re.compile(r"""(?i)(?:(?P<q>["'])(?:[^"'\n]*[\\/])?)?\bcurl(?:\.exe)?\b(?(q)(?P=q))"""
-                          r"""(?:'[^'\n]*'|""" + _DOUBLE + r"""|\\[\s\S]|&(?![&\s]|$)|[^\n|;&'"\\]|['"\\])*""")
+                          r"""(?:'[^'\n]*'|""" + _DOUBLE + r"""|\\"[^"\n]*\\"|\\[\s\S]|&(?![&\s]|$)|[^\n|;&'"\\]"""
+                          r"""|['"\\])*""")
 CURL_FLAGS = r"[sSfLkvqiIOJRgGnNpBMljaZV#:0-9]"
 CURL_OPTION = re.compile(r"""(?<=\s)(?P<o>(?P<q>["'])(?:-""" + CURL_FLAGS + r"""*(?:[uU]|(?P<e>E))"""
                          r"""|--(?:proxy-)?(?:user|(?P<c>cert)))(?P=q)\s+"""

@@ -201,6 +201,14 @@ SECRETS = {
     "db_pass a_key (SEC1X": "SEC1X",
     "x_secret a_key (SEC2X)": "SEC2X",
     "sshpass -h hf_probe_secret a_key (SEC1X": "SEC1X",
+    # a curl command written inside a JSON string, its separators in escaped quotes; a repr value's own apostrophe;
+    # a value in escaped quotes that ends in a backslash
+    '{"cmd":"curl -H \\"Cookie: a;b\\" -u alice:Secret1"}': "Secret1",
+    '{"cmd":"curl -H \\"X: a|b\\" -u alice:Secret2"}': "Secret2",
+    json.dumps({"cmd": 'curl -H "Cookie: a;b" -u alice:Secret3 https://example.invalid'}): "Secret3",
+    repr({"password": "a'\" SECsuffix"}): "SECsuffix",
+    json.dumps('token "hunter2\\" ok'): "hunter2",
+    json.dumps({"msg": 'token "hunter2\\\\" ok'}): "hunter2",
     # a scheme word that is itself a name with a value
     "api_key: Token : Sch3meName": "Sch3meName",
 }
@@ -263,6 +271,7 @@ READABLE = (
     '{"body": "{\\"token\\": null, \\"max_new_tokens\\": \\"1024\\"}"}',
     json.dumps({"cmd": 'docker run --user "1000:1000" img'}),
     "max_tokens=\\'512\\' then", 'max_tokens=\\"512\\" then', 'token: \\"None\\" ok',
+    "pad_token: </s>", "bos_token: <s>", "unk_token: <unk>", "eos_token: <|im_end|>",
 )
 IMPLEMENTATIONS = {
     "shared": redaction.redact_text,
@@ -398,6 +407,11 @@ class SharedRulesTests(unittest.TestCase):
              ["curl", "-E", "[redacted]", "-E[redacted]", "--cert=[redacted]", "--cert", "C:\\c.pem", "-E", "c.pem"]),
             (["curl", "--cert=C:\\c.pem", "-EC:\\c.pem", "--cert", '"C:\\c.pem"', "-Ec.pem:S"],
              ["curl", "--cert=C:\\c.pem", "-EC:\\c.pem", "--cert", '"C:\\c.pem"', "-E[redacted]"]),
+            # An argument is one whole value, blanks included; a credential option keeps None/null/true/false.
+            (["curl", "--user=alice smith:Secret", "-ualice smith:Secret"],
+             ["curl", "--user=[redacted]", "-u[redacted]"]),
+            (["app", "--api-key", "None", "--password=null", "--password", "Secret"],
+             ["app", "--api-key", "None", "--password=null", "--password", "[redacted]"]),
             # An option name that keeps literal quotes.
             (["wget", '"--user"', "a:Sec"], ["wget", '"--user"', "[redacted]"]),
             (["curl", "'-u'", "a:S", "'--api-key=x'"], ["curl", "'-u'", "[redacted]", "'--api-key=[redacted]'"]),
