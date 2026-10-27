@@ -1,0 +1,254 @@
+{
+ "entries": {
+  "1087": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1106": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1316": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1377": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1474": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1537": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1552": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1577": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1602": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1720": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1722": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1732": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1778": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1788": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1801": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1867": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1900": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1907": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1913": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1949": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1999": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "2054": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "2092": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "2119": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "2120": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "2166": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "2283": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "2296": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "2320": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "2326": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "2384": {
+   "node": "dash value",
+   "portal": "dash value"
+  },
+  "2531": {
+   "node": "glued scheme",
+   "portal": "glued scheme"
+  },
+  "2540": {
+   "node": "dash value",
+   "portal": "dash value"
+  },
+  "2568": {
+   "node": "glued scheme",
+   "portal": "glued scheme"
+  },
+  "2594": {
+   "node": "dash value",
+   "portal": "dash value"
+  },
+  "2616": {
+   "node": "dash value",
+   "portal": "dash value"
+  },
+  "2628": {
+   "node": "dash value",
+   "portal": "dash value"
+  },
+  "2658": {
+   "node": "glued scheme",
+   "portal": "glued scheme"
+  },
+  "2660": {
+   "node": "dash value",
+   "portal": "dash value"
+  },
+  "2730": {
+   "node": "dash value",
+   "portal": "dash value"
+  },
+  "2746": {
+   "node": "dash value",
+   "portal": "dash value"
+  },
+  "2799": {
+   "node": "dash value",
+   "portal": "dash value"
+  },
+  "2807": {
+   "node": "dash value",
+   "portal": "dash value"
+  },
+  "2858": {
+   "node": "dash value",
+   "portal": "dash value"
+  },
+  "2870": {
+   "node": "dash value",
+   "portal": "dash value"
+  },
+  "2882": {
+   "node": "dash value",
+   "portal": "dash value"
+  },
+  "2918": {
+   "node": "glued scheme",
+   "portal": "glued scheme"
+  },
+  "2989": {
+   "node": "glued name",
+   "portal": "glued name"
+  },
+  "2994": {
+   "node": "dash value",
+   "portal": "dash value"
+  },
+  "3019": {
+   "node": "glued name",
+   "portal": "glued name"
+  },
+  "3023": {
+   "node": "glued name",
+   "portal": "glued name"
+  },
+  "3044": {
+   "node": "glued name",
+   "portal": "glued name"
+  },
+  "3057": {
+   "node": "glued scheme",
+   "portal": "glued scheme"
+  },
+  "3122": {
+   "node": "glued scheme",
+   "portal": "glued scheme"
+  },
+  "513": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "604": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "608": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "61": {
+   "node": "dash value",
+   "portal": "dash value"
+  },
+  "855": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "985": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "989": {
+   "node": "decoded",
+   "portal": "decoded"
+  }
+ },
+ "reasons": {
+  "dash value": "a value after a password or credential word that starts with -- is hidden, as 2a7c803 hid it",
+  "decoded": "hidden in a decoded string literal as the same text is hidden in plain text",
+  "glued name": "a snake-case name with letters glued after its credential word, as 2a7c803 read it",
+  "glued scheme": "Bearer glued after other characters is a scheme word, as 2a7c803 read it"
+ }
+}

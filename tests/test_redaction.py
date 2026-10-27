@@ -478,7 +478,10 @@ class SharedRulesTests(unittest.TestCase):
                  '\\\\\\"k\\\\\\":\\\\\\"', "a_secret (", "a_key (x a_key ", "curl -E ", "\\\\",
                  '\\\\\\\\\\"', 'k=\\"x\\\\\\\\\\" ', "k=\\'", "k=\\'x ", "a_key a_key (",
                  "--password \\'", "Bearer \\'", "password=\\'x ", "api_key: \\\\\\'", "token: \\'\\\\\\' ",
-                 "curl --cert=\\'", "password=\\'a b ")
+                 "curl --cert=\\'", "password=\\'a b ",
+                 # string literals nested in string literals (decoded and read again, 4 layers deep)
+                 json.dumps({"m": json.dumps({"password": "a b"})}), repr(json.dumps({"token": "x\\"})),
+                 json.dumps(json.dumps(json.dumps('"'))), '"\\"\\\\\\"')
         # Values whose closing quote is far away: one close at the end of the line, or none on many lines.
         tails = (("curl -E \\'", "\\'"), ("curl --cert=\\'", "\\'"), ("curl -E \\'", "\\\\\\'"), ("curl -E \\\"", "\\\""),
                  ("--password \\'a\n", ""), ("--password \\'a\\'b\n", ""), ("api_key: \\\\\\'a\n", ""),
@@ -502,6 +505,21 @@ class SharedRulesTests(unittest.TestCase):
                     item = (unit * (size // len(unit) + 1))[:size] + "!"
                     implementation(["curl", item, "-u", item, "--user", item, "sshpass", "-p", item, "mysql", item])
                 self.assert_linear(name, unit, run)
+
+    def test_64_kb_worst_cases(self):
+        # One 64 KB line (or text, for the portal) per worst case found so far, string literals nested in string
+        # literals among them (each decoded layer is read once more): each stays well under a second.
+        nested = json.dumps({"log": json.dumps({"password": "a b\\", "api_key": "x"})})
+        units = ("--password \\'", "curl -E \\'", "Bearer \\'", "\\\\\\\"", "'\\'\"", nested, repr(nested),
+                 json.dumps(repr(nested)), '"\\"' * 3, "'\\\\'", "a_key (", "--key=", "x\\\"y ", "{\\\"k\\\": \\\"")
+        for unit in units:
+            line = (unit * (65536 // len(unit) + 1))[:65536]
+            for name, implementation in (("shared", redaction.redact_text), ("node", node.redact),
+                                         ("portal", redact)):
+                with self.subTest(implementation=name, unit=unit[:40]):
+                    started = time.perf_counter()
+                    implementation(line if name != "portal" else line.replace(" ", "\n", 64))
+                    self.assertLess(time.perf_counter() - started, 1.0)
 
     def assert_linear(self, name, unit, run):
         timings = []

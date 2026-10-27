@@ -9,21 +9,23 @@ Every rule runs in time linear in the text's length (tests/test_redaction.py mea
 lines): a name is matched once from where it starts, never re-scanned from each of its characters, and a value is
 read once.
 
-Known limits, chosen on purpose: the node redacts one log line at a time, so a command continued with a backslash
-on the next line (`curl https://x \\` then `-u a:b`) is seen without its curl; a lowercase name with the credential
-word inside it (db_password_prod) hides a value after = or : only, so prose such as "key_cache shape" stays; a
-blank-separated value that starts with -- is the next option (password --verbose); a token option keeps a number
-(--hf-token 123456789012); `--user name:group` is hidden as a name:password would be; an argument list that only
-mentions mysql hides a later glued -p value; a snake-case name that is itself the hidden value of another name is
-not read as a name when a parenthesis follows it, so a message after a value such as hf_probe_secret stays
-readable (`api_key= db_pass (x)` shows "(x)"; a snake-case name's own value does not count: `db_pass a_key (x`
-hides x); a bare hf_ or GitHub token word is hidden only when it is 30+ token
-characters or calls itself a secret; JSON escaped more than three times over (more than 7 backslashes before a
-quote) is read as plain text; a credential value that holds a double quote and a blank, shell-quoted inside a
-single-quoted command (ssh host 'export HF_TOKEN='"'"'"q r x'"'"'', as shlex.quote writes it), shows the words
-after its first blank, as written, JSON-encoded ({"cmd": "ssh host 'export HF_TOKEN='\\"'\\"'\\"q r x..."}) or in a
-repr ('bash -c \\'env API_KEY=\\'"\\'"\\'a"b x...'): the quote that ends the value cannot be told from the shell's
-'"'"' without reading the nested command as a shell would; a client certificate's password is hidden for curl only (-E, --cert).
+Text is also read decoded: a string literal written with escapes (JSON "...", a Python repr '...') is unescaped,
+up to 4 layers deep, and what the rules hide in it is hidden in the literal too; a decoded layer only adds to what
+the text itself hides. tests/test_redaction_corpus.py runs a fixed corpus against frozen copies of earlier rules.
+
+Known limits (also in docs/redaction.md, with the follow-ups):
+
+    limit                                                      example                         result
+    the node reads one line: a continued command is split      curl https://x \\ / -u a:pw     a:pw shown
+    a credential word inside a lower-case name: = or : only    db_password_prod pw             unchanged
+    a token option keeps a number                              --hf-token 123456789012         unchanged
+    --user name:group is hidden like name:password             docker run --user root:root     [redacted]
+    an argument list that mentions mysql hides a glued -p      ["echo", "mysql", "-pretty"]    -p[redacted]
+    a name that ends another value, then a parenthesis         api_key= db_pass (x)            (x) shown
+    bare hf_ / GitHub words: 30+ characters or "secret"        hf_hub_download                 unchanged
+    a shell-quoted value with " and a blank in a quoted        ssh host 'export HF_TOKEN=      r x shown
+      command (as written, JSON-encoded or in a repr)            '"'"'"q r x'"'"''
+    certificate passwords: curl only                           wget --certificate c.pem:pw     unchanged
 """
 
 import re
@@ -56,7 +58,7 @@ _QUOTES = re.compile(r"""['"]""")
 _NESTED_BEARER = re.compile(r"(?i)\bbearer\s+\S")
 _DOUBLE = r'''"(?:[^"\\\n]|\\.)*"'''
 _DOUBLE_STRING = re.compile(_DOUBLE)
-_NOT_OPTION = r"(?!-[A-Za-z](?:\s|$)|--[A-Za-z])"   # a blank-separated value is not the next option (-U, --next)
+_NOT_OPTION = r"(?!-[A-Za-z](?:\s|$))"   # a blank-separated value is not the next short option (-u a:pw -U b:c)
 _START = r"(?!\[redacted\])(?=\S)"                 # where a value starts (one already hidden is not read again)
 # A shell word: quoted parts (a backslash escapes inside double quotes and outside quotes) and unquoted
 # characters, concatenated (-u'alice:foo'bar and api_key=a' two words' are one word each); a quote with no closing
@@ -179,6 +181,12 @@ def _shell_word(text, pos, stops="", strings=None):
     repr writes it (a value's own \\' does not end it, and the string ends before , } ) ] : a blank or the end:
     {'password': 'a\\'" x'}) and as a shell does (it ends at the next apostrophe: 'C:\\dir\\' x), and the longer
     word is the value."""
+    return _shell_words(text, pos, stops, strings)[:2]
+
+
+def _shell_words(text, pos, stops="", strings=None):
+    """(end, value, shorter): _shell_word, and where the shorter of its two readings ends (a name after it is
+    still read: {'a_key': 'it\\'s"x', 'secret': " y'"} hides y too)."""
     if strings is None:
         strings = _strings(text)
     end, value = _read_word(text, pos, stops, strings, False)
@@ -188,8 +196,9 @@ def _shell_word(text, pos, stops="", strings=None):
     if cache["escaped apostrophe"]:
         shell = _read_word(text, pos, stops, strings, True)
         if shell[0] > end:
-            return shell
-    return end, value
+            return shell[0], shell[1], end
+        return end, value, shell[0]
+    return end, value, end
 
 
 def _read_word(text, pos, stops, strings, shell):
@@ -285,7 +294,7 @@ SECRET_PATTERNS = (
     # _keep_scheme_value.
     (re.compile(r"""(?i)\b(?:proxy-)?authorization["']?\s*[:=]\s*["']?(?:Bearer|Basic|Digest|Token|Negotiate)\s+"""
                 + _START), "", _keep_nothing),
-    (re.compile(r"""(?i)\b(?:(?P<bearer>Bearer)|Basic|Digest|Token|Negotiate)\s+""" + _START), "",
+    (re.compile(r"""(?i)(?:(?P<bearer>Bearer)|\b(?:Basic|Digest|Token|Negotiate))\s+""" + _START), "",
      _keep_scheme_value),
     (re.compile(r'''(?ix)(?<![\w.-])(?:(?<!\\)\\*["'])?(?:(?=[\w.-]*?(?P<cred>key|secret|pass|pwd|credential|auth))'''
                 r'''|(?=[\w.-]*?token(?!iz)))(?=([\w.-]*))\2(?:\\*["'])?\s*[:=]\s*'''
@@ -311,7 +320,7 @@ SECRET_PATTERNS = (
                 r"[A-Z0-9]+(?:_[A-Z0-9]+)*"
                 r"|(?P<lower>(?i:(?:(?=[a-z0-9_]*?(?P<cred2>key|secret|pass|pwd|credentials?|auth))"
                 r"|(?=[a-z0-9_]*?token(?!iz)))"
-                r"[a-z0-9]+(?:_[a-z0-9]+)*_[a-z0-9]*(?:key|secret|token|pass(?:wd|word)?|pwd|credentials?|auth)s?)))"
+                r"[a-z0-9]+(?:_[a-z0-9]+)*_[a-z0-9]*(?:key|secret|token|pass(?:wd|word)?|pwd|credentials?|auth)[a-z0-9]*)))"
                 r"\s+(?![:=])" + _NOT_OPTION + _START), "", _keep_token_value),
     # Any other tool's `--user name:password` (a numeric uid:gid, as in `docker run --user 1000:1000`, stays; a
     # --user followed by another option, as in `systemd-run --user --setenv=A=/x:/y`, takes no value; the option
@@ -382,14 +391,14 @@ def _values(text, strings):
             pos = found.end()
             if pos < read:
                 continue
-            end, value = _shell_word(text, pos, stops, strings)
+            end, value, shorter = _shell_words(text, pos, stops, strings)
             # A snake-case name before a parenthesis ("hf_probe_secret (the job ...)") may be another value's
             # end: its value is hidden only if the name is not inside another hidden value, and is not taken as
             # read, so a name inside it is still read on its own.
             conditional = found.groupdict().get("lower") and text[pos] == "(" and not _QUOTES.search(text, pos, end)
             if end > pos and not keep(found, value):
                 yield pos, end, found.end("lower") - 1 if conditional else -1 if found.groupdict().get("lower") else None
-            read = pos if conditional else end
+            read = pos if conditional else shorter
     for client, option, miss in GLUED_PASSWORD:
         pos = 0
         while True:
@@ -426,12 +435,11 @@ def _curl_users(text, strings):
         pos = command.end()             # a value that runs on past it may hide the next command's start
 
 
-def redact_text(text):
-    """``text`` with every credential the shared rules recognise replaced by [redacted] (overlapping or touching
-    hidden spans become one)."""
+def _layer_spans(text):
+    """The spans the rules hide in ``text`` itself (layer 0)."""
     strings = _strings(text)
     found = [*_values(text, strings), *((start, end, None) for start, end in _curl_users(text, strings))]
-    spans = sorted((start, end) for start, end, name in found if name is None or name == -1)
+    spans = [(start, end) for start, end, name in found if name is None or name == -1]
     union, ends = [], []                # the hidden spans merged, to look a name up in them
     for start, end in sorted((start, end) for start, end, name in found if name is None):
         if union and start <= ends[-1]:
@@ -441,17 +449,88 @@ def redact_text(text):
             ends.append(end)
     for start, end, name in found:
         if name is not None and name != -1:
-            low, high = 0, len(union)
-            while low < high:           # the last merged span that starts at or before the name
-                middle = (low + high) // 2
-                if union[middle] <= name:
-                    low = middle + 1
-                else:
-                    high = middle
+            low = _first_after(union, name)     # the last merged span that starts at or before the name
             if not (low and name < ends[low - 1]):
                 spans.append((start, end))
+    return spans
+
+
+# Encoded text: a string literal written with escapes (JSON "...", a Python repr '...' or "...") is also read decoded,
+# with the same rules, and what they hide there is hidden in the literal too: {"log": "{\"password\": \"a b\"}"}
+# hides a b as {"password": "a b"} does. Literals are found in one pass, only those holding a backslash escape are
+# decoded, by a small unescaper that maps every decoded character to its escaped characters and stops at an escape
+# it does not know; layers go 4 deep. The spans hidden in the text itself always stay hidden (the decoded layers can
+# only add to them), and each layer reads each character once.
+_LITERAL_START = re.compile(r"""['"]""")
+_LITERAL = {'"': re.compile(r'"(?:[^"\\\n]|\\.)*"'), "'": re.compile(r"'(?:[^'\\\n]|\\.)*'")}
+_SIMPLE_ESCAPE = {'"': '"', "'": "'", "\\": "\\", "/": "/", "n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f"}
+_HEX = re.compile(r"[0-9A-Fa-f]+")
+_LAYERS = 4
+
+
+def _decoded(text, start, end):
+    """(decoded, starts, ends): the literal text[start:end] (without its quotes) unescaped, and for each decoded
+    character the span of text it was written with; decoding stops at an escape it does not know."""
+    decoded, starts, ends, at = [], [], [], start
+    while at < end:
+        char = text[at]
+        if char != "\\":
+            decoded.append(char)
+            starts.append(at)
+            ends.append(at + 1)
+            at += 1
+            continue
+        code = text[at + 1:at + 2]
+        if code in _SIMPLE_ESCAPE and at + 1 < end:
+            decoded.append(_SIMPLE_ESCAPE[code])
+            size = 2
+        elif code in ("x", "u") and at + 1 < end:
+            size = 4 if code == "x" else 6
+            digits = text[at + 2:at + size]
+            if at + size > end or len(digits) != size - 2 or _HEX.fullmatch(digits) is None:
+                break
+            decoded.append(chr(int(digits, 16)))
+        else:
+            break                       # an escape it does not know: the rest stays undecoded
+        starts.append(at)
+        ends.append(at + size)
+        at += size
+    return "".join(decoded), starts, ends
+
+
+def _hidden(text, depth=0):
+    """The spans to hide in ``text``: the rules' own, and what they hide in its escaped string literals, decoded."""
+    spans = _layer_spans(text)
+    if depth >= _LAYERS or "\\" not in text:
+        return spans
+    pos, failed, size = 0, {"'": -1, '"': -1}, len(text)
+    while True:
+        found = _LITERAL_START.search(text, pos)
+        if found is None:
+            break
+        at, quote = found.start(), found.group()
+        literal = _LITERAL[quote].match(text, at) if at >= failed[quote] else None
+        if literal is None:             # no closing quote on this line: none for a later quote of this kind either
+            if at >= failed[quote]:
+                line = text.find("\n", at)
+                failed[quote] = size if line == -1 else line
+            pos = at + 1
+            continue
+        pos = literal.end()
+        if "\\" not in text[at + 1:pos - 1]:
+            continue
+        decoded, starts, ends = _decoded(text, at + 1, pos - 1)
+        for start, end in _hidden(decoded, depth + 1):
+            if start < end:
+                spans.append((starts[start], ends[end - 1]))
+    return spans
+
+
+def redact_text(text):
+    """``text`` with every credential the shared rules recognise replaced by [redacted] (overlapping or touching
+    hidden spans become one)."""
     parts, last = [], 0
-    for start, end in sorted(spans):
+    for start, end in sorted(_hidden(text)):
         if end <= start:
             continue
         if start <= last and parts:
