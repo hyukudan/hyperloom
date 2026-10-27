@@ -140,8 +140,13 @@ class NodePoll:
             # A local lab machine's turn check (no ssh): the turns reader itself, on this thread's cadence.
             worker = threading.Thread(target=self._local_turns, args=(local,), daemon=True,
                                       name="hyperloom-node-poll-local")
-            worker.start()
-            started.append(worker)
+            try:
+                worker.start()
+                started.append(worker)
+            except Exception:  # noqa: BLE001 - no worker: the slot is given back, the next tick tries again
+                with self._lock:
+                    self._busy.discard(LOCAL)
+                    self._last.pop(LOCAL, None)
         for machine in machines:
             with self._lock:
                 if machine.id in self._busy:

@@ -170,6 +170,22 @@ class PollTests(unittest.TestCase):
         self.assertEqual(turns.sample(self.api, 0), [])          # the collector adds no second check
         self.assertEqual(len(fetched), 4)
 
+    def test_a_local_turn_worker_that_cannot_start_is_retried(self):
+        cluster = self.api.cluster()
+        cluster.machines["bench"] = dataclasses.replace(cluster.machines["halo-1"], id="bench", access="local",
+                                                        ssh_target=None)
+        real = threading.Thread.start
+
+        def start(thread):
+            if thread.name == "hyperloom-node-poll-local":
+                raise RuntimeError("can't start new thread")
+            return real(thread)
+        with mock.patch.object(turns, "fetch") as fetch:
+            with mock.patch.object(threading.Thread, "start", start):
+                self.run_for(2)
+            self.run_for(2)
+        fetch.assert_called_once()
+
     def test_a_failed_poll_is_each_part_s_error_and_a_busy_node_waits(self):
         self.poll._call = mock.Mock(side_effect=OSError("ssh refused"))
         self.poll.page_seen()
@@ -314,6 +330,20 @@ class NodeVerbTests(unittest.TestCase):
                                                        "tail": 5}}]})
             self.assertEqual(sorted(p.name for p in root.iterdir()), [".hyperloom-root"])
             self.assertEqual(reply["parts"]["s"].get("leases"), [], reply["parts"]["s"])
+
+    def test_a_home_is_never_a_model_root_on_the_node(self):
+        import importlib
+        import sys
+        sys.path.insert(0, str(NODE))
+        self.addCleanup(sys.path.remove, str(NODE))
+        models = importlib.import_module("hyperloom_models")
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / "accounts" / "researcher"
+            home.mkdir(parents=True)
+            with mock.patch.object(models.Path, "home", return_value=home):
+                for value in (home, home.parent):
+                    with self.subTest(value=value), self.assertRaisesRegex(ValueError, "home directory"):
+                        models.scan_root(str(value), None)
 
     def test_a_dead_waiter_is_reported_not_settled_by_the_poll(self):
         import importlib
