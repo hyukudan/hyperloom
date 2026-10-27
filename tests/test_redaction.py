@@ -155,6 +155,19 @@ SECRETS = {
     "sshpass -vp Gr0uped ssh host": "Gr0uped",
     "curl --pass Phr4se -E cert.pem https://example.invalid": "Phr4se",
     "ghp_abcdef0123456789abcdef0123456789abcd": "ghp_abcdef0123456789abcdef0123456789abcd",
+    # JSON escaped twice, a quote inside an escaped string, a name that is another value's end
+    '{"log": "{\\"body\\": \\"{\\\\\\"password\\\\\\": \\\\\\"hunter2 Tw1ce\\\\\\"}\\"}"}': ("hunter2", "Tw1ce"),
+    '{\\\\\\"api_key\\\\\\": \\\\\\"sk-abc123\\\\\\"}': "sk-abc123",
+    '{\\"password\\":\\"a\\\\\\"b SECc\\"}': "SECc",
+    "api_key= db_pass 'HF_TOKEN SECx'": "SECx",
+    'password db_pass "z hf_key SECa"': "SECa",
+    "hf_probe_secret 'HF_TOKEN SECz'": "SECz",
+    "Bearer db_pass 'HF_TOKEN SECu'": "SECu",
+    "api_key= db_pass Sec0nd": "Sec0nd",
+    "hf_probe_secret (HF_TOKEN SECp)": "SECp",
+    # a client certificate's password
+    "curl -E cert.pem:CertPw https://example.invalid": "CertPw",
+    "curl --cert 'cert.pem:two words' https://example.invalid": ("two", "words"),
 }
 # Forms other components rely on (synthetic values), each in the messages that carry it: the exact masked text.
 PLACEMENT_FORMS = {
@@ -205,6 +218,8 @@ READABLE = (
     'docker run --user "1000:1000" img', "docker run --user '1000:1000' img",
     'curl -H "Authorization: Bearer [redacted]" -d "x y" https://example.invalid',
     "curl's manual page",
+    "ghs_runner ok", "ghr_ready", "gho_offset=3", "ghu_users table",
+    "curl -E cert.pem https://example.invalid", "curl.exe -E C:\\certs\\client.pem https://example.invalid",
 )
 IMPLEMENTATIONS = {
     "shared": redaction.redact_text,
@@ -261,6 +276,9 @@ class SharedRulesTests(unittest.TestCase):
     def test_what_stays_around_a_redacted_value(self):
         for name, implementation in IMPLEMENTATIONS.items():
             with self.subTest(implementation=name):
+                self.assertEqual(implementation("password=it\\'s fine and that\\'s all"),
+                                 "password=[redacted] fine and that\\'s all")
+                self.assertEqual(implementation("api_key= db_pass (x)"), "api_key= [redacted] (x)")
                 self.assertEqual(implementation("curl -u a:b -U c:d https://x && python -u serve.py"),
                                  "curl -u [redacted] -U [redacted] https://x && python -u serve.py")
                 self.assertEqual(implementation("mysql -u root -pXyz shop"), "mysql -u root -p[redacted] shop")
@@ -333,6 +351,11 @@ class SharedRulesTests(unittest.TestCase):
              ["app", "--api-key=[redacted]", "--max-tokens=512", "--hf-token=[redacted]", "--user=1000:1000"]),
             (["curl", "--oauth2-bearer", "S"], ["curl", "--oauth2-bearer", "[redacted]"]),
             (["curl", "--pass", "S", "--bypass", "x"], ["curl", "--pass", "[redacted]", "--bypass", "x"]),
+            (["curl", "-E", "cert:Sec", "-Ec:S", "--cert=c.pem:S", "--cert", "C:\\c.pem", "-E", "c.pem"],
+             ["curl", "-E", "[redacted]", "-E[redacted]", "--cert=[redacted]", "--cert", "C:\\c.pem", "-E", "c.pem"]),
+            # An option name that keeps literal quotes.
+            (["wget", '"--user"', "a:Sec"], ["wget", '"--user"', "[redacted]"]),
+            (["curl", "'-u'", "a:S", "'--api-key=x'"], ["curl", "'-u'", "[redacted]", "'--api-key=[redacted]'"]),
             (["sshpass", "-vp", "Sec", "ssh", "-p", "22"], ["sshpass", "-vp", "[redacted]", "ssh", "-p", "22"]),
             (["sshpass", "-vpSec", "ssh", "-p", "22"], ["sshpass", "-vp[redacted]", "ssh", "-p", "22"]),
             (["docker", "run", "--user", '"1000:1000"', "--user", "'kim:pw'", "img"],
@@ -371,14 +394,16 @@ class SharedRulesTests(unittest.TestCase):
                  'key="\\', "key=a'", 'key=a"b ', "--user '", "--user a'", '"/curl', "'curl\"", '"C:\\x\\', "Bearer '",
                  " '", "a' ", "x='", "\"'", "Bearer a'", "-u a:' ", "\" -u ", "'-u' ", "it's ", "=\"", "CURL -u ",
                  "--oauth2-bearer ", '"\\', "\\'", ": '", "=' x'", '\\"', 'key=\\"', '{\\"key\\": \\"',
-                 "Token 'Bearer ", "x_secret ", "hf_secret ", "ghp_", "sshpass -vp ", '"--user" ')
+                 "Token 'Bearer ", "x_secret ", "hf_secret ", "ghp_", "sshpass -vp ", '"--user" ', "\\\\\\\"",
+                 '\\\\\\"k\\\\\\":\\\\\\"', "a_secret (", "a_key (x a_key ", "curl -E ", "\\\\")
         for name, implementation in (("shared", redaction.redact_text), ("node", node.redact)):
             for unit in units:
                 self.assert_linear(name, unit, lambda size: implementation((unit * (size // len(unit) + 1))[:size]))
         # Argument lists: every item of a portal list goes through them; long items whose suffix fails a pattern.
         for name, implementation in (("shared", redaction.redact_argv), ("portal", redact)):
             for unit in ("--key", "--token", "-u", "-s", "/mysql", "mariadb-", "--", "a:", "-p", "--user=a:",
-                         "--api-key=", "--max-tokens=1", "'", '"', "://curl", "curl.exe"):
+                         "--api-key=", "--max-tokens=1", "'", '"', "://curl", "curl.exe", "-E", "\"--user\"",
+                         "'"):
                 def run(size, unit=unit):
                     item = (unit * (size // len(unit) + 1))[:size] + "!"
                     implementation(["curl", item, "-u", item, "--user", item, "sshpass", "-p", item, "mysql", item])

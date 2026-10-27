@@ -73,7 +73,9 @@ _COUNT = r"(?:\[?[0-9]+(?:[./][0-9]+)*|<[|\w.-]+>)"
 _KEPT_PLAIN = re.compile(_PLAIN + r"[)\],;]*")
 _KEPT_COUNT = re.compile(r"(?:" + _PLAIN + "|" + _COUNT + r")[)\],;]*")
 _UID_GID = re.compile(r"[0-9]+:[0-9]+")
+_WINDOWS_PATH = re.compile(r"[A-Za-z]:[\\/][^:]*")       # C:\certs\client.pem: a certificate without a password
 _CREDENTIAL_LOOK = re.compile(r"[0-9+/=]|.[A-Z]")
+_QUOTES = re.compile(r"""['"]""")
 _NESTED_BEARER = re.compile(r"(?i)\bbearer\s+\S")
 _DOUBLE = r'''"(?:[^"\\\n]|\\.)*"'''
 _DOUBLE_STRING = re.compile(_DOUBLE)
@@ -81,8 +83,9 @@ _NOT_OPTION = r"(?!-[A-Za-z](?:\s|$)|--[A-Za-z])"   # a blank-separated value is
 _START = r"(?!\[redacted\])(?=\S)"                 # where a value starts (one already hidden is not read again)
 # A shell word: quoted parts (a backslash escapes inside double quotes and outside quotes) and unquoted
 # characters, concatenated (-u'alice:foo'bar and api_key=a' two words' are one word each); a quote with no closing
-# quote on its line is an ordinary character; a backslash before a newline ends the word; an escaped quote pair
-# is a quoted part too (\"two words\" in JSON written inside a string: {\"password\": \"x y\"}). A value inside a quoted
+# quote on its line is an ordinary character; a backslash before a newline ends the word; a pair of escaped
+# double quotes is a quoted part too, at any depth up to 7 backslashes (\"two words\" in JSON written inside a
+# string: {\"password\": \"x y\"}; a quote with more backslashes is inside it: \"a\\\"b c\"). A value inside a quoted
 # string that opens and closes at a word boundary (-H "X-Api-Key: abc", '{"password": "x y"}', bash -c "curl -u
 # a:b") ends where that string ends; a string glued to more text (' ... a:b'c d') is not such a string, so the
 # value pairs its own quotes. Each value is read once: a reader never goes back over text it has read.
@@ -90,6 +93,10 @@ _WORD = r"""(?:'[^'\n]*'|""" + _DOUBLE + r"""|\\.|[^\s'"\\]|['"\\])+"""
 _BOUNDARY = " \t\n\r\f\v=:([{,"
 _BOUNDARY_AFTER = " \t\n\r\f\v,;)]}"
 _LEXEME = re.compile(r"""[^'"\\]+|\\[\s\S]?""")
+_BACKSLASHES = re.compile(r"\\+")
+# The closing quote of a string in escaped quotes, by the number of backslashes before its quotes (1: \"...\" in
+# JSON written inside a string; 3: \\\"...\\\" when that is written inside a string again; up to 7).
+_ESCAPED_CLOSE = (None, *(re.compile(r"(?<!\\)" + "\\\\" * depth + '"') for depth in range(1, 8)))
 
 
 def _strings(text):
@@ -137,7 +144,7 @@ def _shell_word(text, pos, stops="", strings=None):
     if low and pos < ends[low - 1]:
         limit, enclosing = ends[low - 1], text[starts[low - 1]]
     value, at, size = [], pos, len(text)
-    failed = {"'": -1, '"': -1, "\\'": -1, '\\"': -1}
+    failed = {"'": -1, '"': -1}
     while at < size:
         char = text[at]
         if at >= limit:                 # the enclosing string ends
@@ -145,17 +152,18 @@ def _shell_word(text, pos, stops="", strings=None):
         if char.isspace() or char in stops or char == enclosing or text[at:at + 2] == "\\\n":
             break
         if char == "\\":
-            quote = text[at + 1:at + 2]
-            if quote in ("'", '"') and at >= failed["\\" + quote]:
-                end = text.find("\\" + quote, at + 2, limit)
-                if end != -1 and "\n" not in text[at + 2:end]:
-                    value.append(text[at + 2:end])
-                    at = end + 2
+            run = _BACKSLASHES.match(text, at, limit).end() - at
+            if run % 2 and run < len(_ESCAPED_CLOSE) and text[at + run:at + run + 1] == '"' and \
+                    at >= failed.get(run, -1):
+                found = _ESCAPED_CLOSE[run].search(text, at + run + 1, limit)
+                if found is not None and "\n" not in text[at + run + 1:found.start()]:
+                    value.append(text[at + run + 1:found.start()])
+                    at = found.end()
                     continue
-                line = text.find("\n", at, limit)  # no closing escaped quote: none for a later one either
-                failed["\\" + quote] = limit if line == -1 else line
-            value.append(text[at + 1:min(at + 2, limit)])
-            at = min(at + 2, limit)
+                line = text.find("\n", at, limit)  # no closing quote of this depth: none for a later one either
+                failed[run] = limit if line == -1 else line
+            value.append(text[at + 1:min(at + run + run % 2, limit)])
+            at = min(at + run + run % 2, limit)
             continue
         if char in "'\"" and at >= failed[char]:
             if char == "'":
@@ -213,8 +221,8 @@ SECRET_PATTERNS = (
                 + _START), "", _keep_nothing),
     (re.compile(r"""(?i)\b(?:(?P<bearer>Bearer)|Basic|Digest|Token|Negotiate)\s+""" + _START), "",
      _keep_scheme_value),
-    (re.compile(r'''(?ix)(?<![\w.-])(?:\\?["'])?(?:(?=[\w.-]*?(?P<cred>key|secret|pass|pwd|credential|auth))'''
-                r'''|(?=[\w.-]*?token(?!iz)))(?=([\w.-]*))\2(?:\\?["'])?\s*[:=]\s*'''
+    (re.compile(r'''(?ix)(?<![\w.-])(?:(?<!\\)\\*["'])?(?:(?=[\w.-]*?(?P<cred>key|secret|pass|pwd|credential|auth))'''
+                r'''|(?=[\w.-]*?token(?!iz)))(?=([\w.-]*))\2(?:\\*["'])?\s*[:=]\s*'''
                 r'''(?!(?:Bearer|Basic|Digest|Token|Negotiate)\s+\[redacted\])'''
                 r'''(?:(?:Bearer|Basic|Digest|Token|Negotiate)\s+(?=[^\s,;}]))?''' + _START), ",;}",
      _keep_token_value),
@@ -232,7 +240,7 @@ SECRET_PATTERNS = (
     # An environment-style name and its value separated by blanks only (`HF_TOKEN hf_x`, `export DB_PASS s3`): the
     # name is upper case, or snake case ending with the credential word (hf_token, db_pass), so prose such as
     # "512 tokens in 3.1 s" or "key_cache shape" stays readable. A snake-case name inside a value another rule hides
-    # is that value, not a name (HF_TOKEN hf_probe_secret (the job...): "(the" stays).
+    # is that value, not a name, before a parenthesis (HF_TOKEN hf_probe_secret (the job...): "(the" stays).
     (re.compile(r"\b(?:(?:(?=[A-Z0-9_]*?(?P<cred>KEY|SECRET|PASS|PWD|CREDENTIALS?|AUTH))|(?=[A-Z0-9_]*?TOKEN(?!IZ)))"
                 r"[A-Z0-9]+(?:_[A-Z0-9]+)*"
                 r"|(?P<lower>(?i:(?:(?=[a-z0-9_]*?(?P<cred2>key|secret|pass|pwd|credentials?|auth))"
@@ -246,9 +254,11 @@ SECRET_PATTERNS = (
      _keep_user),
     # A bare Hugging Face access token (no name before it): hf_ and 30 or more token characters, or an hf_ word
     # that calls itself a secret (hf_probe_secret); library and model names such as hf_transfer, hf_hub_download
-    # or hf_token stay readable. A bare GitHub token: ghp_, gho_, ghu_, ghs_, ghr_ or github_pat_ and its characters.
+    # or hf_token stay readable. A bare GitHub token: ghp_, gho_, ghu_, ghs_, ghr_ or github_pat_ and 30 or more
+    # characters, or such a word that calls itself a secret (ghs_runner, gho_offset stay).
     (re.compile(r"(?P<v>\bhf_(?:[A-Za-z0-9]{30,}|(?=\w*?(?i:secret))[A-Za-z0-9_]+)\b"
-                r"|\b(?:gh[pousr]|github_pat)_[A-Za-z0-9_]+)"), "", _keep_nothing),
+                r"|\b(?:gh[pousr]|github_pat)_(?:[A-Za-z0-9_]{30,}|(?=\w*?(?i:secret))[A-Za-z0-9_]+)\b)"), "",
+     _keep_nothing),
 )
 # Clients that take a password after -p: mysql and mariadb tools glued (`mysql -pX`, `mariadb-dump -p'x y'`; -P is
 # the port), anywhere later on the line; sshpass among its own options (`sshpass -p X`, `sshpass -f file` has none,
@@ -264,7 +274,8 @@ GLUED_PASSWORD = (
      re.compile(r"(?=(" + _SSHPASS_OPTIONS + r"))\1")),
 )
 # curl's user and password options (-u user:pw, -su user:pw, -uuser:pw, --user, --user=, the proxy's -U and
-# --proxy-user, also quoted: "-u" "a:b", "--user=a:b"), every one of them (also after --next), within the same
+# --proxy-user, also quoted: "-u" "a:b", "--user=a:b"; a client certificate's password: -E cert:pw, --cert
+# cert:pw, the whole value when it holds a colon that is not a Windows drive's), every one of them (also after --next), within the same
 # command: up to a newline (a backslash continues the line), a pipe, `;`, `&&` or a background `&` outside quotes (a
 # backslash-escaped character is not a separator; a value glued to a separator stays whole: `-u a:b;c` hides
 # `a:b;c`). An unpaired quote is an ordinary character. Only option letters that take no argument can come before
@@ -274,14 +285,16 @@ GLUED_PASSWORD = (
 CURL_COMMAND = re.compile(r"""(?i)(?:(?P<q>["'])(?:[^"'\n]*[\\/])?)?\bcurl(?:\.exe)?\b(?(q)(?P=q))"""
                           r"""(?:'[^'\n]*'|""" + _DOUBLE + r"""|\\[\s\S]|&(?![&\s]|$)|[^\n|;&'"\\]|['"\\])*""")
 CURL_FLAGS = r"[sSfLkvqiIOJRgGnNpBMljaZV#:0-9]"
-CURL_OPTION = re.compile(r"""(?<=\s)(?P<o>(?P<q>["'])(?:-""" + CURL_FLAGS + r"""*[uU]|--(?:proxy-)?user)(?P=q)\s+"""
-                         r"""|["']?(?:-""" + CURL_FLAGS + r"""*[uU]\s*|--(?:proxy-)?user(?:\s+|=)))""" + _START
+CURL_OPTION = re.compile(r"""(?<=\s)(?P<o>(?P<q>["'])(?:-""" + CURL_FLAGS + r"""*(?:[uU]|(?P<e>E))"""
+                         r"""|--(?:proxy-)?(?:user|(?P<c>cert)))(?P=q)\s+"""
+                         r"""|["']?(?:-""" + CURL_FLAGS + r"""*(?:[uU]|(?P<e2>E))\s*"""
+                         r"""|--(?:proxy-)?(?:user|(?P<c2>cert))(?:\s+|=)))""" + _START
                          + r"""|'[^'\n]*'|""" + _DOUBLE + r"""|\\.""")
 
 
 def _values(text, strings):
-    """(start, end, name): every value the rules and the -p clients hide; name is where a snake-case name
-    ends (its last character), a value only if that name is not inside another hidden value."""
+    """(start, end, name): every value the rules and the -p clients hide; name, when set, is where a snake-case
+    name ends (its last character): that value is hidden only if the name is not inside another hidden value."""
     for pattern, stops, keep in SECRET_PATTERNS:
         pos, read = 0, 0
         while True:
@@ -298,9 +311,14 @@ def _values(text, strings):
             pos = found.end()
             if pos < read:
                 continue
-            read, value = _shell_word(text, pos, stops, strings)
-            if read > pos and not keep(found, value):
-                yield pos, read, found.end("lower") - 1 if found.groupdict().get("lower") else None
+            end, value = _shell_word(text, pos, stops, strings)
+            # A snake-case name before a parenthesis ("hf_probe_secret (the job ...)") may be another value's
+            # end: its value is hidden only if the name is not inside another hidden value, and is not taken as
+            # read, so a name inside it is still read on its own.
+            conditional = found.groupdict().get("lower") and text[pos] == "(" and not _QUOTES.search(text, pos, end)
+            if end > pos and not keep(found, value):
+                yield pos, end, found.end("lower") - 1 if conditional else None
+            read = pos if conditional else end
     for client, option, miss in GLUED_PASSWORD:
         pos = 0
         while True:
@@ -325,8 +343,10 @@ def _curl_users(text, strings):
         for option in CURL_OPTION.finditer(text, command.start(), command.end()):
             if option.group("o") is None or option.start() < last:
                 continue
-            end = _shell_word(text, option.end(), "", strings)[0]      # its value may go on past the command
-            if end > option.end():
+            end = _shell_word(text, option.end(), "", strings)[0]      # it may go on past the command
+            certificate = option.group("e") or option.group("c") or option.group("e2") or option.group("c2")
+            raw = text[option.end():end]        # a certificate path as written (C:\certs\client.pem)
+            if end > option.end() and (not certificate or ":" in raw and not _WINDOWS_PATH.fullmatch(raw)):
                 yield option.end(), end
                 last = end
         pos = command.end()             # a value that runs on past it may hide the next command's start
