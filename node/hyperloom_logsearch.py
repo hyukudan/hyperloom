@@ -70,9 +70,19 @@ _COUNT = r"(?:\[?[0-9]+(?:[./][0-9]+)*|<[|\w.-]+>)"
 _END = r"(?=[)\]]*(?:[\s,;}]|$))"              # the end of a name=value value
 _END_WORD = r"(?=[)\],;]*(?:\s|$))"            # the end of a blank-separated value
 # A shell word: quoted parts (a backslash escapes inside double quotes) and unquoted characters, concatenated
-# (-u'alice:foo'bar is one word); an unpaired quote is an ordinary character.
+# (-u'alice:foo'bar is one word); an unpaired quote is an ordinary character, and so is a quote after the word's
+# first part that is followed by a blank (it closes a string the word sits in: -H "X-Api-Key: abc" ends at abc").
+# _word(stops): a word that also ends at any of the characters in stops (an assignment's value ends at , ; }).
 _DOUBLE = r'''"(?:[^"\\\n]|\\.)*"'''
-_WORD = r"""(?:""" + _DOUBLE + r"""|'[^'\n]*'|\\.|[^\s'"\\]|['"\\])+"""
+
+
+def _word(stops=""):
+    plain = r"""\\.|[^\s'"\\""" + stops + r"""]|['"\\]"""
+    quoted = _DOUBLE + r"""|'[^'\n]*'"""
+    return (r"(?:" + quoted + "|" + plain + r")(?:(?!['\"](?:[\s" + stops + r"]|$))(?:" + quoted + ")|" + plain + ")*")
+
+
+_WORD = _word()
 _VALUE = r"(?P<v>" + _WORD + r")"
 _NOT_OPTION = r"(?!-[A-Za-z](?:\s|$)|--[A-Za-z])"   # a blank-separated value is not the next option (-U, --next)
 SECRET_PATTERNS = (
@@ -80,14 +90,15 @@ SECRET_PATTERNS = (
     # and a value that looks like a credential (8+ characters, not only digits, with a digit, +, / or =, or an
     # upper-case letter after the first): "Token counters", "basic setup" and "the token 12345678" stay readable.
     re.compile(r"""(?i)\b(?:proxy-)?authorization["']?\s*[:=]\s*["']?(?:Bearer|Basic|Digest|Token|Negotiate)\s+"""
-               r"""(?!\[redacted\])(?P<v>[^\s"',;]+)"""),
-    re.compile(r"""(?i)\b(?:Bearer\s+|(?:Basic|Digest|Token|Negotiate)\s+(?=[^\s"',;]{8})(?![0-9]+(?![^\s"',;]))"""
+               r"""["']?(?!\[redacted\])(?P<v>[^\s"',;]+)"""),
+    re.compile(r"""(?i)\b(?:Bearer\s+["']?|(?:Basic|Digest|Token|Negotiate)\s+["']?"""
+               r"""(?=[^\s"',;]{8})(?![0-9]+(?![^\s"',;]))"""
                r"""(?=[^\s"',;]*?(?:[0-9+/=]|(?<![\s"',;])(?-i:[A-Z]))))(?!\[redacted\])(?P<v>[^\s"',;]+)"""),
     re.compile(r'''(?ix)(?<![\w.-])["']?(?:(?=[\w.-]*?(key|secret|pass|pwd|credential|auth))'''
                r'''|(?=[\w.-]*?token(?!iz)))(?=([\w.-]*))\2["']?\s*[:=]\s*'''
                r'''(?:(?:Bearer|Basic|Digest|Token|Negotiate)\s+(?=[^\s,;}]))?'''
                r'''(?!''' + _PLAIN + _END + r''')(?(1)|(?!''' + _COUNT + _END + r'''))'''
-               r'''(?P<v>"[^"]*"|'[^']*'|[^\s,;}]+)'''),
+               r'''(?P<v>''' + _word(",;}") + r''')'''),
     # An option whose name carries a credential word (--hf-token x, --db-password=x), also glued after other
     # characters of the word (x--api-key x): matched from the start of the word, up to its first --.
     re.compile(r"(?i)(?<![\w-])\w*(?:-\w+)*--(?:(?=[\w-]*?(key|secret|passw(?:or)?d|credential))"
@@ -109,9 +120,10 @@ SECRET_PATTERNS = (
                r"(?![:=])(?!\[redacted\])" + _NOT_OPTION + _VALUE),
     # Any other tool's `--user name:password` (a numeric uid:gid, as in `docker run --user 1000:1000`, stays; a
     # --user followed by another option, as in `systemd-run --user --setenv=A=/x:/y`, takes no value). The value is
-    # looked for up to the next such option, so a run of options is read once.
+    # looked for up to the next such option, so a run of options is read once; the value hidden is the whole word
+    # (--user 'alice:two words').
     re.compile(r"--(?:proxy-)?user(?:\s+(?!-)|=)(?!\[redacted\])(?![0-9]+:[0-9]+(?:\s|$))"
-               r"(?P<v>(?:(?!--(?:proxy-)?user(?:\s|=))[^\s:])*:\S+)"),
+               r"(?=(?:(?!--(?:proxy-)?user(?:\s|=))\S)*?:\S|[\"'][^\"'\n]*:)" + _VALUE),
     # A bare Hugging Face access token (no name before it): hf_ and 30 or more token characters (library and model
     # names such as hf_transfer or hf_hub_download stay readable).
     re.compile(r"(?P<v>\bhf_[A-Za-z0-9]{30,}\b)"),
@@ -134,7 +146,10 @@ GLUED_PASSWORD = (
 # separator; a value glued to a separator stays whole: `-u a:b;c` hides `a:b;c`; a value is a whole shell word,
 # -u'a:b'c). An unpaired quote is an ordinary character. Only option letters that take no argument can come before
 # u/U in one word (-sSu; -XPUT is -X PUT).
-CURL_COMMAND = re.compile(r"""\bcurl\b(?:'[^'\n]*'|""" + _DOUBLE + r"""|\\[\s\S]|&(?![&\s]|$)|[^\n|;&'"\\]|['"\\])*""")
+# The executable may be quoted, with a path ("/usr/bin/curl", "C:\Program Files\curl\curl.exe"): the scan starts
+# at its opening quote, so its closing quote is not read as the start of a quoted argument.
+CURL_COMMAND = re.compile(r"""(?:(?P<q>["'])(?:[^"'\n]*[\\/])?)?\bcurl(?:\.exe)?\b(?(q)(?P=q))"""
+                          r"""(?:'[^'\n]*'|""" + _DOUBLE + r"""|\\[\s\S]|&(?![&\s]|$)|[^\n|;&'"\\]|['"\\])*""")
 CURL_FLAGS = r"[sSfLkvqiIOJRgGnNpBMljaZV#:0-9]"
 CURL_OPTION = re.compile(r"""'[^'\n]*'|""" + _DOUBLE + r"""|\\.|(?<=\s)(-""" + CURL_FLAGS + r"""*[uU]\s*"""
                          r"""|--(?:proxy-)?user(?:\s+|=))(?!\[redacted\])""" + _VALUE)

@@ -31,9 +31,19 @@ _COUNT = r"(?:\[?[0-9]+(?:[./][0-9]+)*|<[|\w.-]+>)"
 _END = r"(?=[)\]]*(?:[\s,;}]|$))"              # the end of a name=value value
 _END_WORD = r"(?=[)\],;]*(?:\s|$))"            # the end of a blank-separated value
 # A shell word: quoted parts (a backslash escapes inside double quotes) and unquoted characters, concatenated
-# (-u'alice:foo'bar is one word); an unpaired quote is an ordinary character.
+# (-u'alice:foo'bar is one word); an unpaired quote is an ordinary character, and so is a quote after the word's
+# first part that is followed by a blank (it closes a string the word sits in: -H "X-Api-Key: abc" ends at abc").
+# _word(stops): a word that also ends at any of the characters in stops (an assignment's value ends at , ; }).
 _DOUBLE = r'''"(?:[^"\\\n]|\\.)*"'''
-_WORD = r"""(?:""" + _DOUBLE + r"""|'[^'\n]*'|\\.|[^\s'"\\]|['"\\])+"""
+
+
+def _word(stops=""):
+    plain = r"""\\.|[^\s'"\\""" + stops + r"""]|['"\\]"""
+    quoted = _DOUBLE + r"""|'[^'\n]*'"""
+    return (r"(?:" + quoted + "|" + plain + r")(?:(?!['\"](?:[\s" + stops + r"]|$))(?:" + quoted + ")|" + plain + ")*")
+
+
+_WORD = _word()
 _VALUE = r"(?P<v>" + _WORD + r")"
 _NOT_OPTION = r"(?!-[A-Za-z](?:\s|$)|--[A-Za-z])"   # a blank-separated value is not the next option (-U, --next)
 SECRET_PATTERNS = (
@@ -41,14 +51,15 @@ SECRET_PATTERNS = (
     # and a value that looks like a credential (8+ characters, not only digits, with a digit, +, / or =, or an
     # upper-case letter after the first): "Token counters", "basic setup" and "the token 12345678" stay readable.
     re.compile(r"""(?i)\b(?:proxy-)?authorization["']?\s*[:=]\s*["']?(?:Bearer|Basic|Digest|Token|Negotiate)\s+"""
-               r"""(?!\[redacted\])(?P<v>[^\s"',;]+)"""),
-    re.compile(r"""(?i)\b(?:Bearer\s+|(?:Basic|Digest|Token|Negotiate)\s+(?=[^\s"',;]{8})(?![0-9]+(?![^\s"',;]))"""
+               r"""["']?(?!\[redacted\])(?P<v>[^\s"',;]+)"""),
+    re.compile(r"""(?i)\b(?:Bearer\s+["']?|(?:Basic|Digest|Token|Negotiate)\s+["']?"""
+               r"""(?=[^\s"',;]{8})(?![0-9]+(?![^\s"',;]))"""
                r"""(?=[^\s"',;]*?(?:[0-9+/=]|(?<![\s"',;])(?-i:[A-Z]))))(?!\[redacted\])(?P<v>[^\s"',;]+)"""),
     re.compile(r'''(?ix)(?<![\w.-])["']?(?:(?=[\w.-]*?(key|secret|pass|pwd|credential|auth))'''
                r'''|(?=[\w.-]*?token(?!iz)))(?=([\w.-]*))\2["']?\s*[:=]\s*'''
                r'''(?:(?:Bearer|Basic|Digest|Token|Negotiate)\s+(?=[^\s,;}]))?'''
                r'''(?!''' + _PLAIN + _END + r''')(?(1)|(?!''' + _COUNT + _END + r'''))'''
-               r'''(?P<v>"[^"]*"|'[^']*'|[^\s,;}]+)'''),
+               r'''(?P<v>''' + _word(",;}") + r''')'''),
     # An option whose name carries a credential word (--hf-token x, --db-password=x), also glued after other
     # characters of the word (x--api-key x): matched from the start of the word, up to its first --.
     re.compile(r"(?i)(?<![\w-])\w*(?:-\w+)*--(?:(?=[\w-]*?(key|secret|passw(?:or)?d|credential))"
@@ -70,9 +81,10 @@ SECRET_PATTERNS = (
                r"(?![:=])(?!\[redacted\])" + _NOT_OPTION + _VALUE),
     # Any other tool's `--user name:password` (a numeric uid:gid, as in `docker run --user 1000:1000`, stays; a
     # --user followed by another option, as in `systemd-run --user --setenv=A=/x:/y`, takes no value). The value is
-    # looked for up to the next such option, so a run of options is read once.
+    # looked for up to the next such option, so a run of options is read once; the value hidden is the whole word
+    # (--user 'alice:two words').
     re.compile(r"--(?:proxy-)?user(?:\s+(?!-)|=)(?!\[redacted\])(?![0-9]+:[0-9]+(?:\s|$))"
-               r"(?P<v>(?:(?!--(?:proxy-)?user(?:\s|=))[^\s:])*:\S+)"),
+               r"(?=(?:(?!--(?:proxy-)?user(?:\s|=))\S)*?:\S|[\"'][^\"'\n]*:)" + _VALUE),
     # A bare Hugging Face access token (no name before it): hf_ and 30 or more token characters (library and model
     # names such as hf_transfer or hf_hub_download stay readable).
     re.compile(r"(?P<v>\bhf_[A-Za-z0-9]{30,}\b)"),
@@ -95,7 +107,10 @@ GLUED_PASSWORD = (
 # separator; a value glued to a separator stays whole: `-u a:b;c` hides `a:b;c`; a value is a whole shell word,
 # -u'a:b'c). An unpaired quote is an ordinary character. Only option letters that take no argument can come before
 # u/U in one word (-sSu; -XPUT is -X PUT).
-CURL_COMMAND = re.compile(r"""\bcurl\b(?:'[^'\n]*'|""" + _DOUBLE + r"""|\\[\s\S]|&(?![&\s]|$)|[^\n|;&'"\\]|['"\\])*""")
+# The executable may be quoted, with a path ("/usr/bin/curl", "C:\Program Files\curl\curl.exe"): the scan starts
+# at its opening quote, so its closing quote is not read as the start of a quoted argument.
+CURL_COMMAND = re.compile(r"""(?:(?P<q>["'])(?:[^"'\n]*[\\/])?)?\bcurl(?:\.exe)?\b(?(q)(?P=q))"""
+                          r"""(?:'[^'\n]*'|""" + _DOUBLE + r"""|\\[\s\S]|&(?![&\s]|$)|[^\n|;&'"\\]|['"\\])*""")
 CURL_FLAGS = r"[sSfLkvqiIOJRgGnNpBMljaZV#:0-9]"
 CURL_OPTION = re.compile(r"""'[^'\n]*'|""" + _DOUBLE + r"""|\\.|(?<=\s)(-""" + CURL_FLAGS + r"""*[uU]\s*"""
                          r"""|--(?:proxy-)?user(?:\s+|=))(?!\[redacted\])""" + _VALUE)
@@ -154,21 +169,36 @@ def redact_text(text):
 # Argument lists (the portal's argv documents; the node searches lines only). A credential option hides the next
 # argument (--api-key x, --db-password x; a token option such as --hf-token or --max-num-batched-tokens hides it
 # unless it is a number, as the text rules do); --user/--proxy-user hide a following name:password (a uid:gid such
-# as 1000:1000 stays); after a client found anywhere in the list (behind sudo, env or a wrapper too) up to a shell
-# separator: curl's -u/-U value, separate or glued (-ualice:pw), the password glued to -p for mysql/mariadb, and
-# sshpass's -p value among its own options (the wrapped command's -p, ssh's port, stays).
+# as 1000:1000, or another option, stays). The command of the list (its first argument, the program after a
+# wrapper such as sudo, env or timeout and the wrapper's options, the command sshpass runs, or the first argument
+# after a shell separator) sets the client: curl's -u/-U value, separate or glued (-ualice:pw), the password glued
+# to -p for mysql/mariadb, sshpass's -p value among its own options. Any other argument is only a value, whatever
+# its file name (https://example.invalid/mysql does not make the arguments after it mysql's). A list of arguments
+# only (--api-key x ...) has options before any command.
 # Every pattern here is matched once per argument, without backtracking into a failing suffix: an option name is
-# a whole --word, then searched for its credential word; a client is a whole file name.
+# a whole --word, then searched for its credential word; a program is a whole file name.
 ARGV_OPTION = re.compile(r"--[\w-]*")
 ARGV_CREDENTIAL_WORD = re.compile(r"(?i)key|secret|passw(?:or)?d|credential")
 ARGV_TOKEN_WORD = re.compile(r"(?i)token(?!iz)")
 ARGV_KEPT = re.compile(r"\[?[0-9]+(?:[./][0-9]+)*\]?|<[|\w.-]+>|" + _PLAIN)
 ARGV_CLIENT = re.compile(r"(?i)(curl|mysql\w*|mariadb[\w-]*|sshpass)(?:\.exe)?")
+ARGV_WRAPPER = re.compile(r"(?i)(?:sudo|doas|env|nice|nohup|timeout|time|stdbuf|ionice|taskset|chrt|setsid|exec|"
+                          r"command|xargs|runuser|systemd-run|wsl)(?:\.exe)?")
+# A wrapper option that takes the next argument (sudo -u root, env -u NAME, nice -n 10, timeout -s KILL), and a
+# wrapper's positional argument (timeout's duration, taskset's mask, chrt's priority) or environment assignment.
+ARGV_WRAPPER_ARGUMENT = {"-u", "-g", "-C", "-D", "-p", "-r", "-t", "-U", "-T", "-h", "-n", "-c", "-k", "-s", "-S",
+                         "-P", "--unit", "--property", "--setenv", "--uid", "--gid", "--working-directory"}
+ARGV_WRAPPER_VALUE = re.compile(r"[0-9][0-9a-fA-Fx.,:-]*[smhd]?|[A-Za-z_][A-Za-z0-9_]*=.*", re.S)
 ARGV_PATH = re.compile(r"[\\/]")
 ARGV_GLUED = {"curl": re.compile(r"(-" + CURL_FLAGS + r"*[uU])[^\s:]*:.*", re.S),
               "mysql": re.compile(r"(-p)(?!\[redacted\]).+", re.S),
               "sshpass": re.compile(r"(-p)(?!\[redacted\]).+", re.S)}
 ARGV_SEPARATORS = {"|", "||", "&&", ";", "&"}
+
+
+def _program(item):
+    """The program an argument names (its file name, without quotes), lower case."""
+    return ARGV_PATH.split(item.strip("\"'"))[-1].strip("\"'").lower()
 
 
 def redact_argv(value, each=None):
@@ -177,6 +207,7 @@ def redact_argv(value, each=None):
     if each is None:
         each = lambda item: redact_text(item) if isinstance(item, str) else item
     result, hide, client = [], False, None
+    command, wrapped = True, False      # the next argument may name the command; inside a wrapper's options
     for item in value:
         if not isinstance(item, str):
             result.append(each(item))
@@ -186,16 +217,29 @@ def redact_argv(value, each=None):
         hidden = hide is True or (hide == "user" and ":" in item and not item.startswith("-")
                                   and not re.fullmatch(r"[0-9]+:[0-9]+", item)) or (
             hide == "count" and not ARGV_KEPT.fullmatch(item))
-        glued = client is not None and ARGV_GLUED[client].fullmatch(item)
+        glued = client is not None and not hidden and ARGV_GLUED[client].fullmatch(item)
         result.append(REDACTED if hidden else glued.group(1) + REDACTED if glued else each(item))
-        found = ARGV_CLIENT.fullmatch(ARGV_PATH.split(item)[-1])
-        if client == "sshpass" and (hidden or glued or hide != "argument" and not item.startswith("-")):
-            client = None               # past sshpass's own options: the wrapped command (ssh -p 2222)
+        argument = hide == "argument"
+        if client == "sshpass" and (hidden or glued):
+            client, command = None, True        # its password given: the next argument is the command it runs
+        elif client == "sshpass" and not argument and not item.startswith("-"):
+            client, command = None, True        # past sshpass's own options: this argument is the command
         if item in ARGV_SEPARATORS:
-            client = None
-        elif found:
-            name = found.group(1).lower()
-            client = "curl" if name == "curl" else "sshpass" if name == "sshpass" else "mysql"
+            client, command, wrapped, hide = None, True, False, False
+            continue
+        if command and not hidden and not glued and (wrapped or not item.startswith("-")):
+            if wrapped and (argument or item.startswith("-") or ARGV_WRAPPER_VALUE.fullmatch(item)):
+                hide = "argument" if item in ARGV_WRAPPER_ARGUMENT else False
+                continue                        # a wrapper's option, its argument or an assignment
+            program = _program(item)
+            if ARGV_WRAPPER.fullmatch(program):
+                wrapped, hide = True, False
+                continue
+            found = ARGV_CLIENT.fullmatch(program)
+            client = None if found is None else ("curl" if found.group(1).lower() == "curl" else
+                                                 "sshpass" if found.group(1).lower() == "sshpass" else "mysql")
+            command, wrapped, hide = False, False, False
+            continue
         option = ARGV_OPTION.fullmatch(item) is not None
         if option and ARGV_CREDENTIAL_WORD.search(item) or client == "sshpass" and item == "-p":
             hide = True

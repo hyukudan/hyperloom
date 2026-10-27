@@ -94,6 +94,20 @@ SECRETS = {
     "mysql -u root -ppassword -e 'select 1' && curl --user fay:Mix3d https://example.invalid": ("-ppassword", "Mix3d"),
     "HF_TOKEN " + HF + " curl -u gus:Aft3r https://example.invalid": (HF, "Aft3r"),
     "sshpass -p token ssh host; curl -u hal:Tok3nPw https://example.invalid": ("-p token", "Tok3nPw"),
+    # a quoted executable, also a Windows path with blanks
+    'sudo "/usr/bin/curl" -u "ivo:Qu0tedExe" https://example.invalid': "Qu0tedExe",
+    "'curl' -u jan:Qu0ted2 https://example.invalid": "Qu0ted2",
+    '"C:\\Program Files\\curl\\bin\\curl.exe" -u kai:W1nPath https://example.invalid': "W1nPath",
+    "& 'C:\\tools\\curl.exe' --user lia:W1nPs https://example.invalid": "W1nPs",
+    # every value rule reads a whole shell word
+    "api_key='foo'bar": ("foo", "bar"),
+    'api_key="in\\"side"': "side",
+    '{"password": "two words", "user": "x"}': "two words",
+    "wget --user 'mia:two words' https://example.invalid": ("two", "words"),
+    "tool --user=nia:'gl ued' x": ("gl", "ued"),
+    "export DB_PASSWORD 'sp aced'": ("sp", "aced"),
+    "Authorization: Bearer 'qu0ted.t0ken'": "qu0ted.t0ken",
+    "sent Bearer \"qu0ted.t0ken2\"": "qu0ted.t0ken2",
     "command -v curl >/dev/null&&curl -u rae:Gl0edAnd https://example.invalid": "Gl0edAnd",
     "type curl;curl -u sam:Gl0edSemi https://example.invalid": "Gl0edSemi",
     "curl -sS https://a.invalid|curl -u tim:Gl0edPipe -T - https://b.invalid": "Gl0edPipe",
@@ -158,7 +172,7 @@ class SharedRulesTests(unittest.TestCase):
                          [tuple(map(compiled, rule)) for rule in redaction.GLUED_PASSWORD])
         for name in ("CURL_COMMAND", "CURL_OPTION"):
             self.assertEqual(compiled(getattr(node, name)), compiled(getattr(redaction, name)), name)
-        for name in ("_glued_password", "_curl_users", "redact_text"):
+        for name in ("_word", "_glued_password", "_curl_users", "redact_text"):
             self.assertEqual(getattr(node, name).__code__.co_code, getattr(redaction, name).__code__.co_code, name)
         # The node tool stays self-contained: it never imports the hyperloom package.
         self.assertIsNone(re.search(r"^\s*(?:from|import)\s+hyperloom\b", NODE_FILE.read_text(encoding="utf-8"), re.M))
@@ -208,6 +222,20 @@ class SharedRulesTests(unittest.TestCase):
              ["sshpass", "-P", "assword:", "-p", "[redacted]", "ssh", "-p", "22"]),
             (["curl", "-XPUT", "-u", "a:b", "https://x"], ["curl", "-XPUT", "-u", "[redacted]", "https://x"]),
             (["mysql", "-P3306", "-pXyz", "db"], ["mysql", "-P3306", "-p[redacted]", "db"]),
+            # Only the command (after a wrapper and its options, or a separator) chooses the client.
+            (["curl", "https://example.invalid/mysql", "-u", "alice:Secret"],
+             ["curl", "https://example.invalid/mysql", "-u", "[redacted]"]),
+            (["curl", "-u", "a:pw/mysql", "-U", "b:Second"], ["curl", "-u", "[redacted]", "-U", "[redacted]"]),
+            (["sudo", '"/usr/bin/curl"', "-u", "a:b"], ["sudo", '"/usr/bin/curl"', "-u", "[redacted]"]),
+            (["C:\\Program Files\\curl\\curl.exe", "-u", "a:b"],
+             ["C:\\Program Files\\curl\\curl.exe", "-u", "[redacted]"]),
+            (["env", "A=1", "-u", "X", "timeout", "10", "nice", "-n", "5", "curl", "-u", "a:b"],
+             ["env", "A=1", "-u", "X", "timeout", "10", "nice", "-n", "5", "curl", "-u", "[redacted]"]),
+            (["systemd-run", "--user", "--scope", "-p", "MemoryMax=16G", "curl", "-u", "a:b"],
+             ["systemd-run", "--user", "--scope", "-p", "MemoryMax=16G", "curl", "-u", "[redacted]"]),
+            (["sshpass", "-p", "pw", "curl", "-u", "a:b"], ["sshpass", "-p", "[redacted]", "curl", "-u", "[redacted]"]),
+            (["make", "&&", "mysql", "-pS3"], ["make", "&&", "mysql", "-p[redacted]"]),
+            (["echo", "mysql", "-pretty"], ["echo", "mysql", "-pretty"]),
             (["systemd-run", "--user", "--setenv=PYTHONPATH=/foo:/bar", "python3", "-u", "app.py"],
              ["systemd-run", "--user", "--setenv=PYTHONPATH=/foo:/bar", "python3", "-u", "app.py"]),
             (["C:\\tools\\curl.exe", "-#u", "a:b", "-Zuc:d"],
@@ -233,7 +261,8 @@ class SharedRulesTests(unittest.TestCase):
                  "curl '", "curl -u ", "'x", '"', "mysql ", "sshpass ", "--user=", "--user=x", " -p", "Token ",
                  "Bearer ", "hf_", "\\\n", "x--key", "key=", "A_", "_", "sshpass -f '", "sshpass -d ",
                  "sshpass\n -f ", 'sshpass -P "', "sshpass -e ", "mysql -P3 ", "a_b_", "pad_token: <", "redis://:",
-                 '"\\"', "'\\'\"", '\\"', 'curl "\\', "x\\ ", "curl -u'a'", "password -U ")
+                 '"\\"', "'\\'\"", '\\"', 'curl "\\', "x\\ ", "curl -u'a'", "password -U ", 'key="', "key='x",
+                 'key="\\', "key=a'", 'key=a"b ', "--user '", "--user a'", '"/curl', "'curl\"", '"C:\\x\\', "Bearer '")
         for name, implementation in (("shared", redaction.redact_text), ("node", node.redact)):
             for unit in units:
                 self.assert_linear(name, unit, lambda size: implementation((unit * (size // len(unit) + 1))[:size]))
