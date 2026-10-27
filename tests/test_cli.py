@@ -224,5 +224,83 @@ class CLITests(unittest.TestCase):
         self.assertEqual(result.stdout.strip(), "Phase 1a")
 
 
+class StopWithoutAdmissionTests(unittest.TestCase):
+    """A stop never depends on the admission database: down goes ahead when it is unreadable, and a release that
+    fails after a done down never turns it into a failure. A deploy without it starts nothing (no traceback)."""
+
+    def setUp(self):
+        import sqlite3
+        from hyperloom import admission
+        self.sqlite3 = sqlite3
+        self.orchestrate = Mock()
+        self.orchestrate.down.return_value = {"state": "stopped"}
+        self.admission = SimpleNamespace(Refused=admission.Refused, for_config=Mock(),
+                                         profile_resources=Mock(return_value={"halo-1", "router"}))
+        modules = {"hyperloom.orchestrate": self.orchestrate, "hyperloom.admission": self.admission}
+        real = importlib.import_module
+        patcher = patch.object(cli, "_module", side_effect=lambda name: modules.get(name) or real(name))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        cluster = patch.object(cli, "_cluster", return_value=SimpleNamespace(machines={}, profiles={}))
+        cluster.start()
+        self.addCleanup(cluster.stop)
+
+    def invoke(self, *args):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            status = cli.main(list(args))
+        return status, out.getvalue(), err.getvalue()
+
+    def test_down_goes_ahead_when_the_admission_database_is_unreadable(self):
+        self.admission.for_config.side_effect = self.sqlite3.DatabaseError("file is not a database")
+        status, out, err = self.invoke("down", "qwen-replicas")
+        self.assertEqual(status, 0, err)
+        self.orchestrate.down.assert_called_once_with("qwen-replicas", force=False)
+        self.assertEqual(json.loads(out), {"state": "stopped"})
+        self.assertIn("admission unavailable", err)
+        self.assertNotIn("Traceback", err)
+        database = Mock()
+        database.acquire.side_effect = self.sqlite3.OperationalError("database is locked")
+        self.admission.for_config.side_effect, self.admission.for_config.return_value = None, database
+        self.assertEqual(self.invoke("down", "qwen-replicas")[0], 0)
+        self.assertEqual(self.orchestrate.down.call_count, 2)
+
+    def test_a_failing_release_never_hides_a_done_down(self):
+        database = Mock()
+        database.acquire.return_value = "hold-1"
+        database.release.side_effect = self.sqlite3.OperationalError("disk I/O error")
+        self.admission.for_config.return_value = database
+        status, out, err = self.invoke("down", "qwen-replicas")
+        self.assertEqual(status, 0, err)
+        self.assertEqual(json.loads(out), {"state": "stopped"})
+        database.release.assert_called_once_with("hold-1")
+        self.assertIn("could not be released", err)
+
+    def test_a_renewal_thread_that_cannot_start_never_blocks_a_down(self):
+        database = Mock()
+        database.acquire.return_value = "hold-1"
+        self.admission.for_config.return_value = database
+        import threading as threads
+
+        class NoThread(threads.Thread):
+            def start(self):
+                raise RuntimeError("can't start new thread")
+        with patch.object(threads, "Thread", NoThread):
+            status, out, err = self.invoke("down", "qwen-replicas")
+            self.assertEqual(status, 0, err)
+            self.orchestrate.down.assert_called_once_with("qwen-replicas", force=False)
+            database.release.assert_called_once_with("hold-1")             # the hold is given back at once
+            with patch.object(cli, "up_command", side_effect=AssertionError("deployed")):
+                self.assertEqual(self.invoke("up", "qwen-replicas")[0], 1)    # a deploy starts nothing
+
+    def test_a_deploy_without_the_admission_database_starts_nothing(self):
+        self.admission.for_config.side_effect = self.sqlite3.DatabaseError("file is not a database")
+        with patch.object(cli, "up_command", side_effect=AssertionError("deployed")):
+            status, _, err = self.invoke("up", "qwen-replicas")
+        self.assertEqual(status, 1)
+        self.assertIn("admission unavailable", err)
+        self.assertNotIn("Traceback", err)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -236,6 +236,32 @@ class APITests(unittest.TestCase):
         self.assertEqual(job["state"], "failed")
         self.remote.KnownHosts.return_value.pin.assert_not_called()
 
+    def test_a_stop_goes_ahead_when_the_admission_database_is_unavailable(self):
+        import sqlite3
+        broken = Mock()
+        broken.acquire.side_effect = sqlite3.DatabaseError("file is not a database")
+        self.api.admission_db = broken
+        self.api._resources_of_profile = lambda profile, router=None: {"halo-1", "router"}
+        bench = Mock()
+        with self.api._job_lock:                  # a benchmark of this process that holds an overlapping machine
+            self.api._features_running["bench-1"] = bench
+            self.api._hold_resources["bench-1"] = {"halo-1"}
+            self.api._features_running["bench-2"] = Mock()
+            self.api._hold_resources["bench-2"] = {"halo-9"}
+        self.addCleanup(lambda: [self.api._features_running.pop(j, None) for j in ("bench-1", "bench-2")])
+        job = wait_job(self.api, self.api.mutate("down", {"profile": "qwen-replicas"}))
+        self.assertEqual(job["state"], "succeeded")
+        self.assertIn("admission unavailable", job["warning"])
+        self.orch.down.assert_called_once_with("qwen-replicas", force=False)
+        bench.cancel.assert_called_once()
+        self.api._features_running["bench-2"].cancel.assert_not_called()
+        audit = [json.loads(line) for line in self.api.audit_path.read_text().splitlines()]
+        self.assertIn("admission unavailable", audit[-1]["result"]["warning"])
+        with self.assertRaises(APIError) as caught:            # a deploy is still refused without it
+            self.api.mutate("up", {"profile": "qwen-replicas"})
+        self.assertEqual(caught.exception.status, 503)
+        self.orch.up.assert_not_called()
+
     def test_failure_audited_and_next_job_allowed(self):
         self.orch.up.side_effect = RuntimeError("api_key=hidden failed")
         job = wait_job(self.api, self.api.mutate("up", {"profile": "qwen-replicas"}))

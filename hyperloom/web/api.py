@@ -436,6 +436,7 @@ class API:
         self._features_running = {}     # job id -> JobContext of every running feature job
         self.admission_db = None        # tests inject one; else the configuration's shared database (C11)
         self._holds = {}                # job id -> admission hold id (core, stop and admitted feature jobs)
+        self._hold_resources = {}       # job id -> the resources of its hold (a stop without admission uses them)
         self._heartbeat = None
         self._heartbeat_lock = threading.Lock()     # a hold is published only once the renewal thread runs
         self.recipes = recipe_web.Runner()
@@ -1175,6 +1176,7 @@ class API:
                     self._heartbeat = heartbeat
                 with self._job_lock:
                     self._holds[jid] = hold
+                    self._hold_resources[jid] = set(resources)
         except Exception:
             try:
                 self._admission().release(hold)
@@ -1186,6 +1188,7 @@ class API:
     def _unhold(self, jid):
         with self._job_lock:
             hold = self._holds.pop(jid, None)
+            self._hold_resources.pop(jid, None)
         if hold:
             try:
                 self._admission().release(hold)
@@ -1765,19 +1768,33 @@ class API:
                 raise APIError("another mutating job is running", 409)
             if not priority:
                 self._active = jid      # reserved while the shared admission decides
+        unheld = None       # a stop that goes ahead without the shared admission: why
         if occupying or stopping:
             # A stop is never refused: registering it cancels overlapping benchmarks (in every process) and its
             # hold keeps new ones out until it finishes. A deploy is refused while a benchmark holds its resources.
             try:
                 self._hold(jid, "stop" if stopping else "core", resources, action + " " + str(profile or ""))
             except Exception as exc:
-                with self._job_lock:
-                    if self._active == jid:
-                        self._active = None
-                error = exc if isinstance(exc, APIError) else APIError(f"admission unavailable: {exc}", 503)
-                self._audit(action, arguments, {"state": "refused", "error": str(error)})
-                raise error from exc
-            if stopping:
+                if stopping and not isinstance(exc, APIError):
+                    # The admission database is unavailable: a stop still goes ahead (it never depends on it). The
+                    # benchmarks of this process that overlap are cancelled here; other processes' see it no more.
+                    unheld = f"admission unavailable ({type(exc).__name__}: {exc}); stopped without its hold"
+                    with self._job_lock:
+                        contexts = [self._features_running[j] for j, held in self._hold_resources.items()
+                                    if j in self._features_running and admission._overlap(held, resources)]
+                    for context in contexts:
+                        try:
+                            context.cancel("stopped: " + action + " " + str(profile or ""))
+                        except Exception:  # noqa: BLE001 - it sees the stop at its own next check, or ends
+                            pass
+                else:
+                    with self._job_lock:
+                        if self._active == jid:
+                            self._active = None
+                    error = exc if isinstance(exc, APIError) else APIError(f"admission unavailable: {exc}", 503)
+                    self._audit(action, arguments, {"state": "refused", "error": str(error)})
+                    raise error from exc
+            if stopping and unheld is None:
                 with self._job_lock:
                     contexts = [self._features_running[j] for j in self._holds if j in self._features_running]
                 for context in contexts:
@@ -1789,6 +1806,8 @@ class API:
             job = {"job": jid, "id": jid, "action": action, "arguments": redact(arguments),
                    "state": "running", "started_at": self.clock(), "finished_at": None,
                    "result": None, "error": None, "progress": "calling CLI service"}
+            if unheld is not None:
+                job["warning"] = unheld
             accepted = self._accepted(action, arguments, jid)
             if accepted is None:
                 self._jobs[jid] = job
@@ -1811,7 +1830,7 @@ class API:
                 update = {"state": "failed", "result": None, "error": redact(str(exc))}
             self._unhold(jid)
             try:
-                self._audit(action, arguments, {"job": jid, **update})
+                self._audit(action, arguments, {"job": jid, **update, **({"warning": unheld} if unheld else {})})
             except OSError as exc:
                 update = {"state": "failed", "result": update["result"], "error": redact("audit write failed: " + str(exc))}
             with self._job_lock:

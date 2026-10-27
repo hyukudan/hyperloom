@@ -735,11 +735,18 @@ def _admission_hold(args):
         except Exception:
             resources = {"*"}
     # The hold lives next to the configuration this command executes with (the portal's jobs pass the same one).
-    database = admission.for_config(getattr(args, "config", None) or config_path())
     try:
+        database = admission.for_config(getattr(args, "config", None) or config_path())
         hold = database.acquire(kind, resources, label=f"cli {args.command} {getattr(args, 'profile', '') or ''}".strip())
     except admission.Refused as exc:
         raise RuntimeError(str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - sqlite3.Error, OSError: the shared admission cannot be used
+        if kind != "stop":
+            raise RuntimeError(f"admission unavailable ({type(exc).__name__}: {exc}); nothing started") from exc
+        # A stop never depends on the admission: it goes ahead (benchmarks of other processes are not cancelled).
+        print(f"hyperloom: admission unavailable ({type(exc).__name__}: {exc}); stopping without its hold",
+              file=sys.stderr)
+        return lambda: None
     import threading
     stop = threading.Event()
 
@@ -749,11 +756,28 @@ def _admission_hold(args):
                 database.renew(hold)
             except Exception:  # noqa: BLE001 - a transient database error: retried at the next renewal
                 pass
-    threading.Thread(target=renew, name="hyperloom-cli-admission", daemon=True).start()
+    try:
+        threading.Thread(target=renew, name="hyperloom-cli-admission", daemon=True).start()
+    except Exception as exc:  # noqa: BLE001 - e.g. can't start new thread: the hold is given back
+        try:
+            database.release(hold)
+        except Exception:  # noqa: BLE001 - its lease lapses by itself
+            pass
+        if kind != "stop":
+            raise RuntimeError(f"admission hold could not be kept ({type(exc).__name__}: {exc}); nothing started") from exc
+        print(f"hyperloom: the admission hold could not be kept ({type(exc).__name__}: {exc}); stopping without it",
+              file=sys.stderr)
+        return lambda: None
 
     def release():
+        # Runs in main's finally: a failing release never turns a finished command (a done down) into a failure;
+        # the hold's lease then lapses by itself.
         stop.set()
-        database.release(hold)
+        try:
+            database.release(hold)
+        except Exception as exc:  # noqa: BLE001
+            print(f"hyperloom: the admission hold could not be released ({type(exc).__name__}: {exc}); "
+                  "it lapses with its lease", file=sys.stderr)
     return release
 
 

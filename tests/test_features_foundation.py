@@ -297,8 +297,9 @@ class APIDispatchTests(unittest.TestCase):
     def test_an_admission_error_releases_the_slot(self):
         import sqlite3
         with mock.patch.object(self.api.admission_db, "acquire", side_effect=sqlite3.OperationalError("locked")):
+            # (A down goes ahead without the admission: tests/test_web_api.py and tests/test_cli.py.)
             for action, arguments in (("demo/exclusive-on", {}), ("demo/bench", {"on": ["halo-1"]}),
-                                      ("up", {"profile": "qwen"}), ("down", {"profile": "qwen"})):
+                                      ("up", {"profile": "qwen"})):
                 with self.subTest(action=action):
                     with self.assertRaises(APIError) as caught:
                         self.api.mutate(action, arguments)
