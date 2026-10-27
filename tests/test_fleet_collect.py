@@ -159,6 +159,22 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual([mid for mid, verb, _ in self.api.calls].count("halo-2"), 2)
         self.assertEqual(self.store.get(machines.HOSTS, "halo-2")["skip_why"], "previous node call still in flight")
 
+    def test_a_worker_that_cannot_start_gives_the_gate_back(self):
+        self.api.answers = {"halo-1": host("halo-1"), "halo-2": host("halo-2")}
+        real = threading.Thread
+
+        class NoThread(real):
+            def start(self):
+                raise RuntimeError("can't start new thread")
+        with mock.patch.object(machines.threading, "Thread", NoThread):
+            self.round(1_800_000_000.0)
+        self.assertEqual(self.api.calls, [])
+        self.assertIn("could not start", self.store.get(machines.HOSTS, "halo-1")["skip_why"])
+        for mid in ("halo-1", "halo-2"):                    # the gates are free again: not leaked
+            free = machines.node_gate(self.api, mid)
+            self.assertIsNotNone(free)
+            free()
+
     def test_loopback_engines_rank_zero_only_with_identity(self):
         self.records = pair_records()
         self.records.update(replica_records())

@@ -2,6 +2,8 @@
 
 import copy
 import json
+import threading
+import time
 from pathlib import Path
 import unittest
 from unittest import mock
@@ -293,6 +295,72 @@ class CollectorTests(unittest.TestCase):
         self.replies["halo-1"] = rebooted
         self.run_at(1_800_000_020.0)
         self.assertIsNone(self.store.get(usb4.NODE_NS, "halo-1")["summary"]["links"][0]["changed"])
+
+
+class GateTests(unittest.TestCase):
+    """The usb4 collector never waits on a node gate: a busy machine or one whose previous call still runs is skipped
+    (its last report stays), and a worker that cannot start gives the gate back."""
+
+    def setUp(self):
+        import tempfile
+        temporary = tempfile.TemporaryDirectory(prefix="hyperloom-usb4-gate-")
+        self.addCleanup(temporary.cleanup)
+        self.clock = Clock()
+        self.api = FakeAPI(self.clock)
+        self.addCleanup(self.api.telemetry.close)
+        self.api.config_path = Path(temporary.name) / "cluster.json"
+        self.calls = []
+        self.block = threading.Event()
+        self.addCleanup(self.block.set)
+
+        def fetch(api, machine, payload):
+            self.calls.append(machine.id)
+            if machine.id == "halo-1" and not self.block.is_set():
+                self.block.wait(10)
+            reply = copy.deepcopy(report(machine.id))
+            return reply
+        for patcher in (mock.patch.object(usb4, "fetch", fetch),
+                        mock.patch.object(usb4, "_cached_stats", lambda api, now: None),
+                        mock.patch.object(usb4, "JOIN_S", 0.3)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_a_busy_or_running_machine_is_skipped_without_waiting(self):
+        from hyperloom import nodegate
+        self.block.set()
+        usb4.sample(self.api, 1_800_000_000.0)
+        before = self.api.telemetry.get(usb4.NODE_NS, "halo-2")["summary"]["collected_at"]
+        release = nodegate.try_hold(self.api.config_path, "halo-2")    # another call holds halo-2
+        try:
+            self.block.clear()
+            started = time.monotonic()
+            usb4.sample(self.api, 1_800_000_030.0)                     # halo-1 hangs past the join
+            usb4.sample(self.api, 1_800_000_060.0)                     # halo-1 still in flight
+            self.assertLess(time.monotonic() - started, 3)
+        finally:
+            release()
+        self.assertEqual(self.calls.count("halo-2"), 1)                 # never called while its gate was held
+        self.assertEqual(self.calls.count("halo-1"), 2)                 # never two calls in flight
+        node = self.api.telemetry.get(usb4.NODE_NS, "halo-2")
+        self.assertEqual(node["summary"]["collected_at"], before)       # the last report stays
+        self.assertIn("another node call holds", node["skipped"])
+        self.assertIn("still running", self.api.telemetry.get(usb4.NODE_NS, "halo-1")["skipped"])
+        self.block.set()
+
+    def test_a_worker_that_cannot_start_gives_the_gate_back(self):
+        from hyperloom import nodegate
+        real = threading.Thread
+
+        class NoThread(real):
+            def start(self):
+                raise RuntimeError("can't start new thread")
+        with mock.patch.object(usb4.threading, "Thread", NoThread):
+            usb4.sample(self.api, 1_800_000_000.0)
+        self.assertEqual(self.calls, [])
+        for mid in ("halo-1", "halo-2"):
+            release = nodegate.try_hold(self.api.config_path, mid)
+            self.assertIsNotNone(release)
+            release()
 
 
 class ExchangeTests(unittest.TestCase):

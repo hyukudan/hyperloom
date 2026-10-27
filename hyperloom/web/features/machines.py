@@ -573,15 +573,20 @@ def collect_nodes(api, now):
         if release is None:
             skipped[machine.id] = "previous node call still in flight"
             continue
-        payload = {}
-        if machine.id in state.cpu:
-            payload["cpu"] = state.cpu[machine.id]
-        if targets.get(machine.id):
-            payload["engine_status"] = [{"port": t["port"], "paths": list(ENGINE_PATHS)} for t in targets[machine.id]]
-        thread = threading.Thread(target=work, args=(machine, release, payload), daemon=True,
-                                  name="hyperloom-fleet-" + machine.id)
+        try:
+            payload = {}
+            if machine.id in state.cpu:
+                payload["cpu"] = state.cpu[machine.id]
+            if targets.get(machine.id):
+                payload["engine_status"] = [{"port": t["port"], "paths": list(ENGINE_PATHS)} for t in targets[machine.id]]
+            thread = threading.Thread(target=work, args=(machine, release, payload), daemon=True,
+                                      name="hyperloom-fleet-" + machine.id)
+            thread.start()
+        except Exception as exc:  # noqa: BLE001 - no worker (e.g. can't start new thread): the gate is given back
+            release()
+            skipped[machine.id] = f"the node call could not start: {type(exc).__name__}: {exc}"[:300]
+            continue
         threads.append(thread)
-        thread.start()
     deadline = time.monotonic() + ROUND_S
     for thread in threads:
         thread.join(max(0.0, deadline - time.monotonic()))

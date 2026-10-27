@@ -20,7 +20,7 @@ refreshes the portal snapshot. POST ``usb4/refresh`` asks the sampler for a coll
 import math
 import threading
 
-from hyperloom import telemetry
+from hyperloom import nodegate, telemetry
 from hyperloom.telemetry.store import BASELINES
 
 
@@ -70,13 +70,31 @@ def fetch(api, machine, payload):
     return api.node(machine, "usb4", payload)
 
 
+_inflight = set()          # (id(api), machine id) while a usb4 call of that portal to that machine runs
+_inflight_lock = threading.Lock()
+SKIPPED = "skipped"
+
+
+def _gate(api, machine):
+    """The machine's node gate taken now or not at all (never waits: a busy machine is skipped this round, so no
+    thread queues on the gate and the core and the command line are never starved). A release function, or None."""
+    config_path = getattr(api, "config_path", None)
+    if machine.access != "ssh" or config_path is None:
+        return lambda: None
+    return nodegate.try_hold(config_path, machine.id)
+
+
 def _calls(api, targets, payloads):
-    """{machine id: (result, error)} with at most MAX_PARALLEL calls at a time, each joined within JOIN_S."""
+    """{machine id: (result, error)} with at most MAX_PARALLEL calls at a time, each joined within JOIN_S. A machine
+    whose previous call still runs, or whose node gate another call holds, answers (None, SKIPPED + why) without a
+    call: its previous report stays."""
     out = {}
     lock = threading.Lock()
 
-    def one(machine):
+    def one(machine, release, key):
         try:
+            if machine.access == "ssh" and getattr(api, "config_path", None) is not None:
+                nodegate.adopt(api.config_path, machine.id)    # this thread makes the call: api.node re-enters
             result, error = fetch(api, machine, payloads[machine.id]), None
             if not isinstance(result, dict):
                 result, error = None, "node returned no USB4 report"
@@ -84,14 +102,38 @@ def _calls(api, targets, payloads):
                 result, error = None, str(result["error"])[:300]
         except Exception as exc:          # one unreachable node must not hide the others
             result, error = None, f"{type(exc).__name__}: {exc}"[:300]
+        finally:
+            release()
+            with _inflight_lock:
+                _inflight.discard(key)
         with lock:
             out[machine.id] = (result, error)
 
     for start in range(0, len(targets), MAX_PARALLEL):
-        batch = [threading.Thread(target=one, args=(m,), daemon=True, name="hyperloom-usb4-" + m.id)
-                 for m in targets[start:start + MAX_PARALLEL]]
-        for thread in batch:
-            thread.start()
+        batch = []
+        for machine in targets[start:start + MAX_PARALLEL]:
+            key = (id(api), machine.id)
+            with _inflight_lock:
+                if key in _inflight:
+                    out[machine.id] = (None, SKIPPED + ": the previous call to this machine is still running")
+                    continue
+                _inflight.add(key)
+            release = None
+            try:
+                release = _gate(api, machine)
+                if release is None:
+                    raise LookupError("another node call holds this machine")
+                thread = threading.Thread(target=one, args=(machine, release, key), daemon=True,
+                                          name="hyperloom-usb4-" + machine.id)
+                thread.start()
+            except Exception as exc:  # noqa: BLE001 - busy gate, or no worker: given back, skipped this round
+                if release is not None:
+                    release()
+                with _inflight_lock:
+                    _inflight.discard(key)
+                out[machine.id] = (None, f"{SKIPPED}: {exc}"[:300])
+                continue
+            batch.append(thread)
         for thread in batch:
             thread.join(JOIN_S)
     with lock:
@@ -451,6 +493,11 @@ def sample(api, now):
     for machine in targets:
         result, error = results[machine.id]
         previous = store.get(NODE_NS, machine.id) or {}
+        if error is not None and error.startswith(SKIPPED):
+            # Not called this round: the previous report stays as it is, with the reason.
+            previous["skipped"], previous["skipped_at"] = error, now
+            store.put(NODE_NS, machine.id, previous)
+            continue
         if error is not None:
             parts = {name: None for name in SOURCES if name != "journal" or payloads[machine.id]}
             previous["sources"] = _sources(previous.get("sources"), parts, now, error=error)
