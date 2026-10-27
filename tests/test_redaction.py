@@ -168,6 +168,28 @@ SECRETS = {
     # a client certificate's password
     "curl -E cert.pem:CertPw https://example.invalid": "CertPw",
     "curl --cert 'cert.pem:two words' https://example.invalid": ("two", "words"),
+    # a value in escaped quotes that ends in a backslash or holds a quote, in JSON written inside a string, once or
+    # twice: the next field is still read
+    **{json.dumps({"log": json.dumps(record)}): secret for record, secret in (
+        ({"password": "C:\\dir\\", "api_key": "a b SEC2"}, "SEC2"),
+        ({"password": "pw\\", "msg": "ok", "token": "a SEC3"}, "SEC3"),
+        ({"client_secret": "x\\", "access_token": "ya29 SEC4"}, "SEC4"),
+        ({"password": "a\\\\", "api_key": "b SEC7"}, "SEC7"),
+        ({"password": 'q"x y', "api_key": "c SEC8"}, ("SEC8", "x y")))},
+    **{json.dumps({"l": json.dumps({"log": json.dumps(record)})}): secret for record, secret in (
+        ({"password": "C:\\dir\\", "api_key": "a b SEC2"}, "SEC2"),
+        ({"password": 'q"x y', "api_key": "c SEC8"}, ("SEC8", "x y")))},
+    # a value in escaped apostrophes
+    "X='password=\\'Sec two\\''": ("Sec", "two"),
+    "{'body': '{\\'api_key\\': \\'sk abc\\'}'}": ("sk", "abc"),
+    "api_key=\\'SECa SECb\\' tail": ("SECa", "SECb"),
+    "api_key:\\'SEC2X SEC3X\\'": ("SEC2X", "SEC3X"),
+    # a snake-case name's own value is not another value's end
+    "db_pass a_key (SEC1X": "SEC1X",
+    "x_secret a_key (SEC2X)": "SEC2X",
+    "sshpass -h hf_probe_secret a_key (SEC1X": "SEC1X",
+    # a scheme word that is itself a name with a value
+    "api_key: Token : Sch3meName": "Sch3meName",
 }
 # Forms other components rely on (synthetic values), each in the messages that carry it: the exact masked text.
 PLACEMENT_FORMS = {
@@ -220,6 +242,8 @@ READABLE = (
     "curl's manual page",
     "ghs_runner ok", "ghr_ready", "gho_offset=3", "ghu_users table",
     "curl -E cert.pem https://example.invalid", "curl.exe -E C:\\certs\\client.pem https://example.invalid",
+    'curl --cert "C:\\Program Files\\certs\\c.pem" https://example.invalid',
+    "curl --cert 'C:\\certs\\c.pem' https://example.invalid", 'curl --cert="C:\\certs\\c.pem" https://example.invalid',
 )
 IMPLEMENTATIONS = {
     "shared": redaction.redact_text,
@@ -353,6 +377,8 @@ class SharedRulesTests(unittest.TestCase):
             (["curl", "--pass", "S", "--bypass", "x"], ["curl", "--pass", "[redacted]", "--bypass", "x"]),
             (["curl", "-E", "cert:Sec", "-Ec:S", "--cert=c.pem:S", "--cert", "C:\\c.pem", "-E", "c.pem"],
              ["curl", "-E", "[redacted]", "-E[redacted]", "--cert=[redacted]", "--cert", "C:\\c.pem", "-E", "c.pem"]),
+            (["curl", "--cert=C:\\c.pem", "-EC:\\c.pem", "--cert", '"C:\\c.pem"', "-Ec.pem:S"],
+             ["curl", "--cert=C:\\c.pem", "-EC:\\c.pem", "--cert", '"C:\\c.pem"', "-E[redacted]"]),
             # An option name that keeps literal quotes.
             (["wget", '"--user"', "a:Sec"], ["wget", '"--user"', "[redacted]"]),
             (["curl", "'-u'", "a:S", "'--api-key=x'"], ["curl", "'-u'", "[redacted]", "'--api-key=[redacted]'"]),
@@ -395,7 +421,8 @@ class SharedRulesTests(unittest.TestCase):
                  " '", "a' ", "x='", "\"'", "Bearer a'", "-u a:' ", "\" -u ", "'-u' ", "it's ", "=\"", "CURL -u ",
                  "--oauth2-bearer ", '"\\', "\\'", ": '", "=' x'", '\\"', 'key=\\"', '{\\"key\\": \\"',
                  "Token 'Bearer ", "x_secret ", "hf_secret ", "ghp_", "sshpass -vp ", '"--user" ', "\\\\\\\"",
-                 '\\\\\\"k\\\\\\":\\\\\\"', "a_secret (", "a_key (x a_key ", "curl -E ", "\\\\")
+                 '\\\\\\"k\\\\\\":\\\\\\"', "a_secret (", "a_key (x a_key ", "curl -E ", "\\\\",
+                 '\\\\\\\\\\"', 'k=\\"x\\\\\\\\\\" ', "k=\\'", "k=\\'x ", "a_key a_key (")
         for name, implementation in (("shared", redaction.redact_text), ("node", node.redact)):
             for unit in units:
                 self.assert_linear(name, unit, lambda size: implementation((unit * (size // len(unit) + 1))[:size]))
