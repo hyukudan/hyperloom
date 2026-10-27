@@ -272,7 +272,7 @@ class PreflightTests(unittest.TestCase):
             pin.assert_not_called()
 
     def test_portal_refusal_is_before_hold_job_and_child(self):
-        api = API(self.root / "config.json")
+        api = API(self.root / "config.json", audit_path=self.root / "audit.jsonl")
         for action in ("up", "recipes/deploy"):
             args = {"profile": "test", "recipe": "test"} if action == "up" else {"inputs": "a" * 64}
             argv = ["up", "test", "--recipe", "test"] if action == "up" else ["recipe", "deploy", "a" * 64]
@@ -287,7 +287,9 @@ class PreflightTests(unittest.TestCase):
                 child.assert_not_called()
                 self.assertEqual(api._jobs, {})
                 self.assertIsNone(api._active)
-        self.assertEqual(list(self.root.iterdir()), [])
+        self.assertEqual([p.name for p in self.root.iterdir()], ["audit.jsonl"])
+        entries = [json.loads(line) for line in api.audit_path.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([entry["action"] for entry in entries], ["up", "recipes/deploy"])
 
 
 if __name__ == "__main__":

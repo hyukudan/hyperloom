@@ -9,6 +9,7 @@ import re
 import subprocess
 import tomllib
 import unittest
+import unicodedata
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,11 +21,15 @@ _PLACEHOLDER_PATH = PLACEHOLDER.pattern + r"(?:[\\/]" + PLACEHOLDER.pattern + r"
 # Only complete paths with generic roots and placeholder-only suffixes are portable.
 _PORTABLE_PATH = re.compile(r"(?:/(?:home|root|tmp)(?:/" + _PLACEHOLDER_PATH + r")?|/(?:" + _PLACEHOLDER_PATH + r")?|"
                   r"(?:[Cc]:[\\/](?:(?i:users)(?:[\\/]" + _PLACEHOLDER_PATH + r")?|" + _PLACEHOLDER_PATH + r")?)|"
-                  r"(?:(?i:%USERPROFILE%)|~)(?:[\\/]" + _PLACEHOLDER_PATH + r")?)[\\/]?")
+                  r"(?:(?i:%USERPROFILE%)|\$(?:HOME|\{HOME\}|env:USERPROFILE)|~)(?:[\\/]" + _PLACEHOLDER_PATH + r")?)[\\/]?")
 # A URI's :// introduces its authority, while the third slash in file:/// starts a path.
 # Consume placeholder segments as units so their angle brackets do not become shell delimiters.
-ABSOLUTE = re.compile(r"(?<!\w)(?:[A-Za-z]:[\\/]|(?<!:/)/(?!/)|(?i:%USERPROFILE%)|~(?=[\\/\s`\"'(),;\[\]{}<>|]|$))"
+ABSOLUTE = re.compile(r"(?<!\w)(?:[A-Za-z]:(?=[\\/\w])|\\\\[^\\\s]+\\|(?<!:/)/(?!/)|(?i:%\w+%)|"
+                      r"\$(?:HOME|\{HOME\}|env:\w+)|~(?=[A-Za-z_\\/\s`\"'(),;\[\]{}<>|]|$))"
                       r"(?:<[^<>\s]*>|[^\s`\"'(),;\[\]{}<>|])*")
+# Public HTTP resource URLs are portable references, rather than filesystem paths.
+URI_PATH = re.compile(r"\b(?!(?i:https?)://)[a-zA-Z][a-zA-Z0-9+.-]*://[^/\s`\"'<>;|]+(?P<path>/"
+                      r"(?:<[^<>\s]*>|[^\s`\"'(),;\[\]{}<>|])*)")
 ADDRESS = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?!\w|\.\d)|"
                      r"(?<![\w:])(?:[0-9a-fA-F]*:){2,}[0-9a-fA-F:.]*(?:%[\w.~-]+)?(?![\w:])")
 LOCAL_IDENTITY = re.compile(r"(?!" + _PORTABLE_PATH.pattern + r"(?=$|[\s`\"'(),;\]}]))(?i:[a-z]:[\\/](?:users[\\/]|tmp[\\/]|python\d+\b)|"
@@ -33,6 +38,10 @@ LOCAL_IDENTITY = re.compile(r"(?!" + _PORTABLE_PATH.pattern + r"(?=$|[\s`\"'(),;
 
 
 def private_paths(value):
+    value = unicodedata.normalize("NFKC", value).translate(str.maketrans({"\u2215": "/", "\u2044": "/"}))
+    for match in URI_PATH.finditer(value):
+        if not _PORTABLE_PATH.fullmatch(match["path"]):
+            yield match["path"]
     for match in ABSOLUTE.finditer(value):
         # A slash following a placeholder continues a relative portable fixture path.
         if match[0].startswith("/") and re.search(PLACEHOLDER.pattern + r"$", value[:match.start()]):
@@ -63,7 +72,8 @@ def private(value, key=""):
     if isinstance(value, str):
         if key == "host" and value and not PLACEHOLDER.fullmatch(value):
             return True
-        if PHYSICAL.search(value) or next(private_paths(value), None) or next(addresses(value), None):
+        if (PHYSICAL.search(value) or LOCAL_IDENTITY.search(value) or
+                next(private_paths(value), None) or next(addresses(value), None)):
             return True
         for variable in ("USERNAME", "COMPUTERNAME"):
             local = os.environ.get(variable, "")
@@ -111,7 +121,8 @@ class PrivacyTests(unittest.TestCase):
         for value in ("/", "/home", "/home/<user>", "/root", "/tmp", "/tmp/<runtime>",
                       "/<root>/<model>", "/home/<user>/<model>/", "C:\\", "C:\\Users",
                       "C:\\Users\\<user>", "C:/Users/<user>/<model>", "c:/users/<user>",
-                      "%USERPROFILE%", "%USERPROFILE%/<model>", "~", "~/<model>"):
+                      "%USERPROFILE%", "%USERPROFILE%/<model>", "~", "~/<model>",
+                      "$HOME/<model>", "${HOME}/<model>", "$env:USERPROFILE\\<model>"):
             for text in (value, f"path '{value}',", f"``{value}``"):
                 with self.subTest(text=text):
                     self.assertEqual(list(private_paths(text)), [])
@@ -151,7 +162,8 @@ class PrivacyTests(unittest.TestCase):
                 self.assertTrue(private(prefix + "/srv/lab/alice/model"))
                 self.assertTrue(private(prefix + "D:/lab/model"))
         for value in ("file:///home/<user>", "cat</home/<user>", "cat>/tmp/<runtime>",
-                      "custom+scheme:///<root>/<model>", "<runtime>/placement.json"):
+                      "custom+scheme:///<root>/<model>", "<runtime>/placement.json",
+                      "https://example.invalid/project", "http://example.invalid/project", "~117 GiB"):
             with self.subTest(value=value):
                 self.assertFalse(private(value))
 
@@ -159,14 +171,23 @@ class PrivacyTests(unittest.TestCase):
         fixture = ROOT / "tests/fixtures/render/placement.json"
         original = Path.read_bytes
         for value in ("C:/Users/<user>;file:///srv/lab/alice/model",
-                      "echo /home/<user>;cat</srv/lab/alice/model"):
+                      "echo /home/<user>;cat</srv/lab/alice/model",
+                      "C:/Users/<user>;file://localhost/srv/lab/alice/model",
+                      "smb://host/share/model", "custom+scheme://host/srv/lab/model",
+                      "\\\\server\\share\\model", "\\\\.\\pipe\\name", "~alice", "~alice/model",
+                      "$HOME/alice/model", "${HOME}/alice/model", "$env:USERPROFILE\\alice",
+                      "%APPDATA%\\model", "D:lab\\model", "C:\uff3clab", "\uff0fsrv", "\u2215srv",
+                      *("C:/Users/<user>;" + prefix + "-worker" for prefix in (
+                          "clau" + "de", "co" + "dex", "s" + "ol", "op" + "us"))):
             def injected(path):
                 if path == fixture:
                     document = json.loads(original(path))
-                    document["privacy_probe"] = value
+                    document["privacy_probe"] = {"nested": [value]}
                     return json.dumps(document).encode("utf-8")
                 return original(path)
-            with self.subTest(value=value), mock.patch.object(Path, "read_bytes", injected):
+            with self.subTest(value=value), mock.patch.object(Path, "read_bytes", injected), \
+                    mock.patch(__name__ + ".artifacts", return_value=[(fixture.relative_to(ROOT).as_posix(), fixture)]), \
+                    mock.patch.object(Path, "glob", return_value=[]):
                 self.assertIn(fixture.relative_to(ROOT).as_posix(), findings())
 
     def test_strict_rule_catches_identity_paths_and_host_user_fields(self):
