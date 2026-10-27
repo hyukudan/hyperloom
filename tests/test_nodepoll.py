@@ -147,6 +147,29 @@ class PollTests(unittest.TestCase):
         self.assertIn("logs:49", keys)                          # the most recently asked are kept
         self.assertNotIn("logs:0", keys)
 
+    def test_a_long_payload_keeps_a_short_key(self):
+        read = nodepoll.reader(self.api)
+        self.poll.page_seen()
+        with self.assertRaises(nodepoll.NotRead):
+            read("halo-2", "logs", {"root": "/opt/" + "r" * 300, "lease": "abc", "name": "n", "tail": 100})
+        key = next(k for k in self.poll._wants["halo-2"] if k.startswith("logs:"))
+        self.assertLessEqual(len(key), 64)
+        for worker in self.poll.tick():
+            worker.join(5)
+        self.assertEqual(read("halo-2", "logs", {"root": "/opt/" + "r" * 300, "lease": "abc", "name": "n",
+                                                 "tail": 100})["payload"]["tail"], 100)
+
+    def test_a_local_lab_machine_gets_its_turn_check_too(self):
+        cluster = self.api.cluster()
+        cluster.machines["bench"] = dataclasses.replace(cluster.machines["halo-1"], id="bench", access="local",
+                                                        ssh_target=None)
+        fetched = []
+        with mock.patch.object(turns, "fetch", side_effect=lambda api, machines=None, **kw: fetched.append(machines)):
+            self.run_for(120)
+        self.assertEqual(fetched, [["bench"]] * 4)               # every 30 s, without a page or a store
+        self.assertEqual(turns.sample(self.api, 0), [])          # the collector adds no second check
+        self.assertEqual(len(fetched), 4)
+
     def test_a_failed_poll_is_each_part_s_error_and_a_busy_node_waits(self):
         self.poll._call = mock.Mock(side_effect=OSError("ssh refused"))
         self.poll.page_seen()
@@ -277,6 +300,20 @@ class NodeVerbTests(unittest.TestCase):
             client.call("host", {})
         self.assertEqual(limits, [remote.POLL_REPLY, remote.MAX_JSON])
         self.assertGreater(remote.POLL_REPLY, node_tool().POLL_REPLY)
+
+    def test_status_and_logs_parts_create_nothing_on_the_node(self):
+        """The lease verbs make run/, log/ and etc/ in an install root; as poll parts they only read."""
+        tool = node_tool()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "install"
+            root.mkdir()
+            (root / ".hyperloom-root").write_text("marked\n", encoding="utf-8")
+            reply = tool.poll({"parts": [
+                {"key": "s", "verb": "status", "payload": {"root": root.as_posix()}},
+                {"key": "l", "verb": "logs", "payload": {"root": root.as_posix(), "lease": "abc", "name": "n",
+                                                       "tail": 5}}]})
+            self.assertEqual(sorted(p.name for p in root.iterdir()), [".hyperloom-root"])
+            self.assertEqual(reply["parts"]["s"].get("leases"), [], reply["parts"]["s"])
 
     def test_a_dead_waiter_is_reported_not_settled_by_the_poll(self):
         import importlib

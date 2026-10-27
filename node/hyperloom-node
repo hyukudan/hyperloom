@@ -432,8 +432,8 @@ def poll(payload, clock=None):
                 answer = Inspector(*core_inputs(part["payload"])).inspect(verb)
             else:
                 body = dict(part["payload"])
-                if verb == "status":
-                    body["observe"] = True      # report a queued lease whose waiter is gone; never settle it here
+                if verb in ("status", "logs"):
+                    body["observe"] = True      # read only: no missing run/log/etc made, no dead waiter settled
                 answer = extension_for(verb).run(verb, body)
         except (ValueError, OSError, UnicodeError, RecursionError, AttributeError) as exc:
             answer = {"schema": "hyperloom/node-v1", "verb": verb, "error": str(exc)[:300]}

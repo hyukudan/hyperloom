@@ -121,7 +121,7 @@ def inside(root, *parts):
     return result
 
 
-def marked_root(value, lab=None):
+def marked_root(value, lab=None, create=True):
     requested = path(value)
     if requested.is_symlink():
         raise ValueError("root must not be a symlink")
@@ -148,8 +148,9 @@ def marked_root(value, lab=None):
     marker = inside(root, ".hyperloom-root")
     if marker.is_symlink() or not marker.is_file() or not marker.read_text(encoding="utf-8").strip():
         raise ValueError("marked install root required")
-    for name in ("run", "log", "etc"):
-        inside(root, name).mkdir(exist_ok=True)
+    if create:          # the portal's read-only poll (``observe``) never creates them
+        for name in ("run", "log", "etc"):
+            inside(root, name).mkdir(exist_ok=True)
     return root
 
 
@@ -932,7 +933,7 @@ def run(verb, payload):
         elif verb == "peer-run":
             result.update(peer_run(payload))
         else:
-            root = marked_root(payload.get("root"))
+            root = marked_root(payload.get("root"), create=not (verb in ("status", "logs") and payload.get("observe")))
             if verb == "status":
                 leases = []
                 for filename in sorted(inside(root, "run").glob("lease-*.json")):

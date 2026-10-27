@@ -136,7 +136,7 @@ def record(api, machine, reply, error, sent, received):
 
 def sample(api, now):
     from hyperloom import nodepoll
-    if nodepoll.of(api) is None:        # the portal's node poll already runs the turn check (no second session)
+    if nodepoll.of(api) is None:        # the portal's node poll already runs every turn check (no second session)
         fetch(api, skip_busy=True)
     return []
 

@@ -18,6 +18,7 @@ poll takes the node gate now or not at all (a node busy with another call is tri
 person starts (doctor, up, down, a job, a logs search) is not a poll and does not come here.
 """
 
+import hashlib
 import json
 import threading
 import time
@@ -32,6 +33,7 @@ WANT_S = 2 * CYCLE_S + 15   # a want not renewed for this long is dropped (its r
 TICK_S = 1.0
 CALL_TIMEOUT_S = 40.0       # the node's poll stops starting parts after 20 s; ssh start and transfer on top
 TURNS_KEY = "turns"
+LOCAL = "@local"            # the bookkeeping slot of the local lab machines' turn check
 MAX_PARTS = 32              # the node tool's POLL_MAX_PARTS
 NOT_YET = "not read yet: a node is read once per 30 s while a portal page is open"
 
@@ -95,8 +97,9 @@ class NodePoll:
             cluster = self.api.cluster()
         except Exception:  # noqa: BLE001 - an unreadable configuration: nothing to read
             return [], set()
-        lab = {machine.id for machine in turns.eligible(cluster)[0]}
-        return [m for m in cluster.machines.values() if m.access == "ssh"], lab
+        eligible = turns.eligible(cluster)[0]
+        self._local_lab = [m.id for m in eligible if m.access == "local"]
+        return [m for m in cluster.machines.values() if m.access == "ssh"], {m.id for m in eligible}
 
     def plan(self, machine, lab, now):
         """The parts of this node's poll now ([{key, verb, payload}]), or None when none is due."""
@@ -126,6 +129,19 @@ class NodePoll:
         now = self.clock() if now is None else now
         machines, lab = self._machines()
         started = []
+        local = getattr(self, "_local_lab", [])
+        with self._lock:
+            last = self._last.get(LOCAL)
+            due = local and LOCAL not in self._busy and (last is None or not 0 <= now - last < CYCLE_S)
+            if due:
+                self._busy.add(LOCAL)
+                self._last[LOCAL] = now
+        if due:
+            # A local lab machine's turn check (no ssh): the turns reader itself, on this thread's cadence.
+            worker = threading.Thread(target=self._local_turns, args=(local,), daemon=True,
+                                      name="hyperloom-node-poll-local")
+            worker.start()
+            started.append(worker)
         for machine in machines:
             with self._lock:
                 if machine.id in self._busy:
@@ -151,6 +167,16 @@ class NodePoll:
                 continue
             started.append(worker)
         return started
+
+    def _local_turns(self, machine_ids):
+        from hyperloom.web.features import turns
+        try:
+            turns.fetch(self.api, machines=machine_ids, clock=self.clock, skip_busy=True)
+        except Exception:  # noqa: BLE001 - a failed local read is that machine's reading (kept by turns)
+            pass
+        finally:
+            with self._lock:
+                self._busy.discard(LOCAL)
 
     def _remote_call(self, machine, payload):
         client = self.api.remote.Remote(machine, self.api.orchestrate._known_hosts())
@@ -214,7 +240,8 @@ def reader(api, now=None):
         return None
 
     def read(machine_id, verb, payload):
-        key = verb + ":" + json.dumps(payload, sort_keys=True)
+        # A fixed-size key whatever the payload (a long install root must not exceed the node's key limit).
+        key = verb + ":" + hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:32]
         answer, error, _ = poll.read(machine_id, key, verb, payload, now=now)
         if answer is None:
             raise NotRead(error)
