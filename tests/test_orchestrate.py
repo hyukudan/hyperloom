@@ -451,11 +451,12 @@ class OrchestrationTests(unittest.TestCase):
             if verb == "lease":
                 self.assertEqual(payload["approval"], approval)
 
-    def test_install_bootstraps_builds_polls_copies_then_activates(self):
+    def test_install_checks_the_tool_builds_polls_copies_then_activates(self):
         release = orch.install(self.cluster, "halo-1", ["strix-hip-decode-token"], profile="qwen-replicas")
         self.assertEqual(release, RELEASE)
         verbs = [verb for _, verb, _ in self.calls]
-        self.assertEqual(verbs[:2], ["bootstrap", "bootstrap"])
+        self.assertEqual(verbs[:2], ["version", "version"])        # checked, never deployed (only nodes update)
+        self.assertNotIn("bootstrap", verbs)
         self.assertLess(verbs.index("install"), verbs.index("job"))
         self.assertLess(verbs.index("push-release"), verbs.index("activate"))
         recipe = next(payload["recipe"] for _, verb, payload in self.calls if verb == "install")
@@ -464,6 +465,12 @@ class OrchestrationTests(unittest.TestCase):
         components = next(payload["components"] for _, verb, payload in self.calls if verb == "install")
         self.assertEqual(components["tensormeld"], {key: orch._versions()["components"]["tensormeld"][key]
                                                   for key in ("repo", "commit")})
+
+    def test_install_never_deploys_the_node_tool(self):
+        with patch.object(FakeRemote, "tool", "0" * 64, create=True):
+            with self.assertRaisesRegex(orch.OrchestrationError, "hyperloom nodes update qwen-replicas"):
+                orch.install(self.cluster, "halo-1", ["strix-hip-decode-token"], profile="qwen-replicas")
+        self.assertEqual({verb for _, verb, _ in self.calls}, {"version"})
 
     def test_build_failure_and_copy_failure_never_activate(self):
         self.fail.add(("halo-1", "push-release"))

@@ -430,7 +430,8 @@ def install(cluster, build_machine, targets=None, *, profile=None, sources=None)
     clients = {mid: _client(cluster.machines[mid]) for mid in mids}
     for mid in mids:
         _lab(cluster, mid)
-        clients[mid].bootstrap()
+    # The node tool reaches the nodes only through `hyperloom nodes update`: an absent or different one is refused.
+    _check_tools(clients, mids, profile)
     # Resolve all peer routes before starting any build.
     peers = {mid: _peer(cluster, build_machine, mid) for mid in mids if mid != build_machine}
     versions = _versions()
@@ -589,7 +590,7 @@ def _check_tools(clients, mids, profile):
         deployed = _tool(clients[mid])
         if deployed != expected:
             raise OrchestrationError(f"{mid}: node tool differs from this checkout (deployed {str(deployed)[:12]}, "
-                                     f"expected {expected[:12]}); run 'hyperloom nodes update {profile}'")
+                                     f"expected {expected[:12]}); run 'hyperloom nodes update {profile or '<profile>'}'")
 
 
 def nodes_update(cluster, profile, machine=None, force=False):

@@ -113,16 +113,24 @@ class CLITests(unittest.TestCase):
         client = remote.Remote.return_value
         version = {"checks": {"tool": {"status": "ok", "value": "d" * 64}}}
         self.modules["hyperloom.remote"] = remote
-        # Fresh machine: no node tool yet, so doctor bootstraps it once, then runs the read-only checks.
+        # Fresh machine: no node tool yet. The tool reaches a node only through `nodes update`: doctor says so
+        # and changes nothing (no bootstrap, no verb call).
         client.has_tool.return_value = False
-        client.call.side_effect = [version, {"commands": []}]
         status, out, err = self.invoke("doctor", "halo-1")
         self.assertEqual(status, 0, err)
+        tool = json.loads(out)["node_tool"]
+        self.assertEqual((tool["status"], tool["deployed"]), ("absent", None))
+        self.assertIn("hyperloom nodes update", tool["hint"])
+        client.bootstrap.assert_not_called()
+        client.call.assert_not_called()
+        client.has_tool.return_value = True
+        client.call.side_effect = [version, {"commands": []}]
+        status, out, err = self.invoke("doctor", "halo-1")
         self.assertEqual(json.loads(out), {"commands": [], "node_tool": {
-            "expected": "d" * 64, "deployed": "d" * 64, "bootstrapped": True, "status": "current"}})
-        client.bootstrap.assert_called_once_with(timeout=60)
+            "expected": "d" * 64, "deployed": "d" * 64, "status": "current"}})
         self.assertEqual(client.call.call_args_list[0].args[0], "version")
         client.call.assert_called_with("doctor", {}, timeout=60)
+        client.bootstrap.assert_not_called()
 
     def test_remote_doctor_reports_stale_tool_without_replacing_it(self):
         self.cluster.machines["halo-1"] = SimpleNamespace(access="ssh")
@@ -134,7 +142,7 @@ class CLITests(unittest.TestCase):
         status, out, err = self.invoke("doctor", "halo-1")
         self.assertEqual(status, 0, err)
         tool = json.loads(out)["node_tool"]
-        self.assertEqual((tool["status"], tool["bootstrapped"], tool["deployed"]), ("stale", False, "e" * 64))
+        self.assertEqual((tool["status"], tool["deployed"]), ("stale", "e" * 64))
         self.assertIn("hyperloom nodes update", tool["hint"])
         # The live-lease guard of `nodes update` is never bypassed: doctor does not redeploy.
         client.bootstrap.assert_not_called()

@@ -266,12 +266,13 @@ def _doctor(args):
                 raise ValueError("agent access is a later phase")
             remote = _module("hyperloom.remote")
             client = remote.Remote(machine, config_path().parent / "known_hosts")
-            # Read-only: bootstrap only a machine that has no node tool yet (nothing to replace, no lease can
-            # be live). A stale tool is reported, never replaced here: `nodes update` owns the live-lease guard.
-            tool = {"expected": remote.tool_digest(), "bootstrapped": False}
+            # Read-only: the node tool reaches a node only through `hyperloom nodes update` (which owns the
+            # live-lease guard); a machine without it, or with a stale one, is reported here, never changed.
+            tool = {"expected": remote.tool_digest()}
             if not client.has_tool(timeout=60):
-                client.bootstrap(timeout=60)
-                tool["bootstrapped"] = True
+                _json({"node_tool": {**tool, "deployed": None, "status": "absent",
+                                     "hint": f"run 'hyperloom nodes update <profile> --machine {args.machine}'"}})
+                return
             version = client.call("version", {}, timeout=60)
             tool["deployed"] = ((version.get("checks") or {}).get("tool") or {}).get("value")
             tool["status"] = "current" if tool["deployed"] == tool["expected"] else "stale"
