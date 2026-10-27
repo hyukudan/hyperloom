@@ -107,13 +107,15 @@ SECRET_PATTERNS = (
 )
 # Clients that take a password after -p: mysql and mariadb tools glued (`mysql -pX`, `mariadb-dump -p'x y'`; -P is
 # the port), anywhere later on the line; sshpass among its own options (`sshpass -p X`, `sshpass -f file` has none,
-# so the wrapped command's -p, ssh's port, stays). (client, password option, whether a miss holds for the line)
+# so the wrapped command's -p, ssh's port, stays). (client, password option, what a miss skips: the rest of the
+# line, or sshpass's options, taken once and never re-read from each client word inside them)
+_SSHPASS_OPTIONS = r"(?:\s+(?:-[fdP](?:\s+|(?=\S))" + _VALUE + r"|-[ehvV]+))*"
 GLUED_PASSWORD = (
     (re.compile(r"(?i)\b(?:mysql\w*|mariadb[\w-]*)\b"),
-     re.compile(r"""([^\n]*?\s-p)(?!\[redacted\])(?=\S)""" + _VALUE), True),
+     re.compile(r"([^\n]*?\s-p)(?!\[redacted\])(?=\S)" + _VALUE), re.compile(r"[^\n]*")),
     (re.compile(r"(?i)\bsshpass\b"),
-     re.compile(r"""((?:\s+(?:-[fdP](?:\s+|(?=\S))""" + _VALUE + r"""|-[ehvV]+))*\s+-p\s*)(?!\[redacted\])"""
-                + _VALUE), False),
+     re.compile(r"((?=(" + _SSHPASS_OPTIONS + r"))\2\s+-p\s*)(?!\[redacted\])" + _VALUE),
+     re.compile(r"(?=(" + _SSHPASS_OPTIONS + r"))\1")),
 )
 # curl's user and password options (-u user:pw, -su user:pw, -uuser:pw, --user, --user=, the proxy's -U and
 # --proxy-user), every one of them (also after --next), within the same command: up to a newline (a backslash
@@ -121,7 +123,7 @@ GLUED_PASSWORD = (
 # whole: `-u a:b;c` hides `a:b;c`). An unpaired quote is an ordinary character. Only option letters that take no
 # argument can come before u/U in one word (-sSu; -XPUT is -X PUT).
 CURL_COMMAND = re.compile(r"""\bcurl\b(?:'[^'\n]*'|"[^"\n]*"|\\\n|&(?![&\s]|$)|[^\n|;&'"]|['"])*""")
-CURL_FLAGS = r"[sSfLkvqiIOJRgGnNpBMlja0-9]"
+CURL_FLAGS = r"[sSfLkvqiIOJRgGnNpBMljaZV#:0-9]"
 CURL_OPTION = re.compile(r"""'[^'\n]*'|"[^"\n]*"|(?<=\s)(-""" + CURL_FLAGS + r"""*[uU]\s*|--(?:proxy-)?user(?:\s+|=))"""
                          r"""(?!\[redacted\])(?:"[^"]*"|'[^']*'|\S+)""")
 # Any other tool's `--user name:password` (a numeric uid:gid, as in `docker run --user 1000:1000`, stays). The
@@ -134,7 +136,7 @@ HF_TOKEN = re.compile(r"\bhf_[A-Za-z0-9]{30,}\b")
 
 
 def _glued_password(text):
-    for client, option, line_wide in GLUED_PASSWORD:
+    for client, option, miss in GLUED_PASSWORD:
         parts, last, pos = [], 0, 0
         while True:
             found = client.search(text, pos)
@@ -142,12 +144,7 @@ def _glued_password(text):
                 break
             value = option.match(text, found.end())
             if value is None:
-                if not line_wide:
-                    pos = found.end()
-                    continue
-                pos = text.find("\n", found.end())       # none later on this line either: go to the next line
-                if pos < 0:
-                    break
+                pos = max(miss.match(text, found.end()).end(), found.end())
                 continue
             parts += [text[last:value.end(1)], REDACTED]
             last = pos = value.end()

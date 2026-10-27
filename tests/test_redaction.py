@@ -81,6 +81,7 @@ SECRETS = {
     "curl -u olga:Semi;colon https://example.invalid": ("Semi", "colon"),
     "curl https://example.invalid \\\n  -u pat:C0ntinued": "C0ntinued",
     "curl's -u quinn:Ap0strophe": "Ap0strophe",
+    "curl -#u wes:H4sh https://example.invalid": "H4sh",
     "command -v curl >/dev/null&&curl -u rae:Gl0edAnd https://example.invalid": "Gl0edAnd",
     "type curl;curl -u sam:Gl0edSemi https://example.invalid": "Gl0edSemi",
     "curl -sS https://a.invalid|curl -u tim:Gl0edPipe -T - https://b.invalid": "Gl0edPipe",
@@ -194,6 +195,9 @@ class SharedRulesTests(unittest.TestCase):
              ["sshpass", "-P", "assword:", "-p", "[redacted]", "ssh", "-p", "22"]),
             (["curl", "-XPUT", "-u", "a:b", "https://x"], ["curl", "-XPUT", "-u", "[redacted]", "https://x"]),
             (["mysql", "-P3306", "-pXyz", "db"], ["mysql", "-P3306", "-p[redacted]", "db"]),
+            (["C:\\tools\\curl.exe", "-#u", "a:b", "-Zuc:d"],
+             ["C:\\tools\\curl.exe", "-#u", "[redacted]", "-Zu[redacted]"]),
+            (["C:\\mysql\\bin\\mysql.exe", "-pS3"], ["C:\\mysql\\bin\\mysql.exe", "-p[redacted]"]),
             (["vllm", "--hf-token", "123456789012", "--max-tokens", "<|endoftext|>"],
              ["vllm", "--hf-token", "123456789012", "--max-tokens", "<|endoftext|>"]),
             (["env", "HF_HUB_ENABLE_HF_TRANSFER=1", "HF_TOKEN=" + HF, HF],
@@ -212,7 +216,8 @@ class SharedRulesTests(unittest.TestCase):
         # credential word, repeated separators, options, clients, quotes and URL schemes.
         units = ("a", "=", "token", "keyw", "TOKEN_", "pass_", "--key", "--", "a.", "a://", "curl ", "curl -",
                  "curl '", "curl -u ", "'x", '"', "mysql ", "sshpass ", "--user=", "--user=x", " -p", "Token ",
-                 "Bearer ", "hf_", "\\\n", "x--key", "key=", "A_", "_")
+                 "Bearer ", "hf_", "\\\n", "x--key", "key=", "A_", "_", "sshpass -f '", "sshpass -d ",
+                 "sshpass\n -f ", 'sshpass -P "', "sshpass -e ", "mysql -P3 ", "a_b_", "pad_token: <", "redis://:")
         for name, implementation in (("shared", redaction.redact_text), ("node", node.redact)):
             for unit in units:
                 timings = []
