@@ -13,6 +13,7 @@ from tests.test_recipes_service import DS, MM, QWEN, run_cli, user_ds
 from tests.test_web_recipes import pinned_memory
 
 ROUTES = ("nodes", "routes")
+OLD_PIN = ("nodes",)                    # a TensorMeld pin without the routes policy
 
 
 def states(result):
@@ -51,7 +52,7 @@ class ReadyTests(unittest.TestCase):
             self.assertTrue(result["ready"])
 
     def test_the_router_pin_blocks_with_ups_own_text(self):
-        with isolated() as env:
+        with isolated() as env, mock.patch.object(render, "router_policies", return_value=OLD_PIN):
             cluster = orchestrate.load_cluster(env.config)
             env.save_facts("ds", "deepseek-v4.1-flash", "ds41-rtx")
             user_ds()
@@ -164,7 +165,7 @@ class ReadyTests(unittest.TestCase):
             self.assertIn("cluster.example.json", result["steps"][-2]["fix"] or result["steps"][-1]["fix"])
 
     def test_cli_text_and_exit_codes(self):
-        with isolated() as env:
+        with isolated() as env, mock.patch.object(render, "router_policies", return_value=OLD_PIN):
             env.save_facts("ds", "deepseek-v4.1-flash", "ds41-rtx")
             user_ds()
             code, result, _ = run_cli("recipe", "ready", "ds-user", "ds41-rtx")

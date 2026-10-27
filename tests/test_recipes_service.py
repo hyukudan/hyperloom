@@ -587,8 +587,9 @@ class PlanDeployTests(unittest.TestCase):
             cluster = orchestrate.load_cluster(env.config)
             source = self.facts_source(env, "deepseek-v4.1-flash", "ds41-rtx")
             user_ds()
-            result = service.plan(cluster, "ds-user", "ds41-rtx", source=source)
-            self.assertFalse(result["up"]["ok"])                         # the pinned router has no routes policy
+            with mock.patch.object(render, "router_policies", return_value=("nodes",)):
+                result = service.plan(cluster, "ds-user", "ds41-rtx", source=source)
+            self.assertFalse(result["up"]["ok"])                         # a pinned router without the routes policy
             self.assertIn("prefill policy", result["up"]["refused"])
             self.assertIn("conditional preflight", result["up"]["conditions"])
             self.assertIn("prelaunch", " ".join(result["checked_at_start"]))
