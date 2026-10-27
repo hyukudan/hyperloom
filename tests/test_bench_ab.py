@@ -163,7 +163,7 @@ class PortalRoundTripTests(unittest.TestCase):
             record, run = bench.run("bench/ab", {"arms": {"a": {"profile": "qwen"}, "b": {"target": "other"}}, "cases": 8,
                                                  "max_tokens": 8, "tokenizers": {"a": "tok-1", "b": "tok-1"}}, 60)
         self.assertEqual(record["state"], "succeeded", record["error"])
-        self.assertEqual(record["resources"], ["halo-1", "halo-2", "router"])
+        self.assertEqual(record["resources"], ["halo-1", "halo-2", "router", "workstation"])   # loopback: control
         document = bench.api.read("bench/receipt/" + run["id"])
         receipt_doc = document["receipt"]
         self.assertEqual(receipt_doc["arms"]["a"]["tokenizer_source"], "declared")

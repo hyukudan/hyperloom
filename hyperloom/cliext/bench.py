@@ -77,7 +77,7 @@ def _targets(args):
             _print({"targets": rows, "why": why})
         elif args.action == "add":
             entry = {"id": args.id, "scheme": args.scheme, "host": args.host, "port": args.port}
-            for key in ("label", "key", "context_tokens"):
+            for key in ("label", "context_tokens"):
                 if getattr(args, key) is not None:
                     entry[key] = getattr(args, key)
             if args.machines:
@@ -174,11 +174,11 @@ def add(commands):
     added = actions.add_parser("add")
     added.add_argument("id")
     added.add_argument("--scheme", choices=("http", "https"), required=True)
-    added.add_argument("--host", required=True)
+    added.add_argument("--host", required=True, help="a configured machine id or a private or loopback IP")
     added.add_argument("--port", type=int, required=True)
     added.add_argument("--label")
-    added.add_argument("--key", help="name of a secret in the hyperloom secret store")
-    added.add_argument("--machines", help='comma-separated configured machine ids, or "external"')
+    added.add_argument("--machines", help='machines it forwards to (configured ids, comma-separated), or "external" '
+                                          "for an address that is no configured machine")
     added.add_argument("--context-tokens", dest="context_tokens", type=int)
     added.add_argument("--sampling", action="store_true", help="the endpoint honours sampling parameters")
     added.add_argument("--thinking", action="store_true", help="the endpoint honours a thinking switch")

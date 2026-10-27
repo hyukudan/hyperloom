@@ -1,4 +1,4 @@
-"""Benchmark targets: a running profile's router, or an allow-listed ad-hoc endpoint (F32).
+"""Benchmark targets: a running profile's router, or an allow-listed ad-hoc lab endpoint (F32).
 
 A target argument is ``{"profile": "<name>"}`` or ``{"target": "<allow-list id>"}``. Listing and validation never
 touch the network; the endpoint is resolved (router address, key from the secret store) only when a run starts,
@@ -6,12 +6,22 @@ inside its job. The allow-list lives in the telemetry store document ``prefs`` /
 only through ``save``/``remove`` (portal POSTs, audited, and the CLI); what a profile's engine honours beyond
 greedy decoding (a thinking switch) is declared in ``prefs`` / ``bench/profile-capabilities``.
 
+Hosts: an ad-hoc target is a lab endpoint only: a configured machine id, or a numeric private or loopback IP (the
+same rule as the endpoint targets); names are never resolved and public addresses are refused.
+
+Keys: an ad-hoc target carries no key. The only key a benchmark ever sends is the one the server binds to a profile
+target (its router's own client key, sent only to the router address of this configuration's launch); a client
+never names a secret, so no stored key can be sent to a host a client chose. A stored entry of an earlier release
+that names a key no longer validates and is not offered.
+
 Resources (contract C11): a profile occupies its machines and the router (the same rule the portal core applies to
-deploys and stops). An ad-hoc target occupies the machines its entry declares (``machines``: configured ids, every
-machine an endpoint forwards to; or ``"external"`` for an endpoint outside the lab, resource ``host:<host>``);
-without a declaration it occupies everything (``*``), so an unknown placement never runs beside another benchmark
-and any stop cancels it. A validated run freezes its target and resources (``digest``); the job refuses to start
-when either changed.
+deploys and stops). An ad-hoc target occupies, as ``up`` would, every configured machine its address is (a machine
+id, its configured address, or loopback for the control machine; the router too on the router's port), plus the
+machines its entry declares (``machines``: configured ids, every machine an endpoint forwards to). ``"external"``
+(resource ``host:<address>``) is accepted only for an address that is no configured machine. Without a machine of
+its own and without a declaration it occupies everything (``*``), so an unknown placement never runs beside another
+benchmark and any stop cancels it. A validated run freezes its target and resources (``digest``); the job refuses
+to start when either changed.
 """
 
 from dataclasses import dataclass, field
@@ -20,7 +30,7 @@ import ipaddress
 import json
 import re
 
-from hyperloom import secrets, telemetry
+from hyperloom import config, secrets, telemetry
 
 from . import client
 
@@ -29,7 +39,11 @@ PREFS_NAMESPACE, PREFS_KEY, CAPS_KEY = "prefs", "bench/targets", "bench/profile-
 TARGET_ID = re.compile(r"[a-z][a-z0-9-]{0,39}")
 PROFILE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 MACHINE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
-HOSTNAME = re.compile(r"(?=.{1,253}\Z)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*")
+ROUTER_DEFAULT_PORT = 18600
+HOST_WHY = "host must be a configured machine id or a numeric private or loopback IP (names are not resolved; " \
+           "public addresses are not lab endpoints)"
+KEY_WHY = "an ad-hoc target carries no key: a keyed endpoint is benchmarked as its profile (the server binds " \
+          "the router's own key)"
 MAX_TARGETS = 64
 GREEDY_WHY = "our engines decode greedily; sampling parameters are not honoured"
 THINKING_WHY = "the endpoint does not declare a thinking switch"
@@ -39,20 +53,64 @@ IDS_WHY = "requested on every request; checked per response"
 
 
 def _host(value):
-    if not isinstance(value, str) or not value:
-        raise ValueError("host is required")
+    """A machine id (kept as written) or the canonical spelling of a private or loopback IP literal."""
+    if not isinstance(value, str) or not value or len(value) > 64:
+        raise ValueError(HOST_WHY)
+    literal = value[1:-1] if value.startswith("[") and value.endswith("]") else value
     try:
-        return str(ipaddress.ip_address(value))
+        return config.address(literal, "host")
     except ValueError:
         pass
-    if not HOSTNAME.fullmatch(value) or value.replace(".", "").isdigit():
-        raise ValueError("host must be a DNS name or an IP address (no scheme, user, port or path)")
-    return value.lower()
+    try:
+        ipaddress.ip_address(literal)
+    except ValueError:
+        if MACHINE_ID.fullmatch(value) and not value.replace(".", "").isdigit():
+            return value                              # a machine id: checked against the configuration on use
+    raise ValueError(HOST_WHY)
+
+
+def address_of(cluster, host):
+    """The IP literal a target host stands for (raises ValueError for an unknown machine id)."""
+    if host in cluster.machines:
+        return config.address(cluster.machines[host].http_address, "host")
+    try:
+        return config.address(host, "host")
+    except ValueError:
+        raise ValueError(HOST_WHY + ": " + host + " is not a configured machine") from None
+
+
+def own_machines(cluster, host, port):
+    """The configured machines a target's address is, as ``up`` holds them: the machine named, every machine whose
+    configured address it is, the control machine (local access) for loopback; and the router on its own port."""
+    address = address_of(cluster, host)
+    loopback = ipaddress.ip_address(address).is_loopback
+    found = set()
+    for mid, machine in cluster.machines.items():
+        try:
+            same = config.address(machine.http_address, "host") == address
+        except ValueError:
+            same = False
+        if mid == host or same or (loopback and machine.access == "local"):
+            found.add(mid)
+    router = cluster.router or {}
+    router_machine = router.get("machine", "local")
+    try:
+        router_port = config.listen(router["listen"], "router.listen")["port"] if router.get("listen") \
+            else ROUTER_DEFAULT_PORT
+    except (ValueError, KeyError):
+        router_port = ROUTER_DEFAULT_PORT
+    at_router = router_machine in found or (router_machine == "local" and any(
+        cluster.machines[m].access == "local" for m in found))
+    if found and at_router and port == router_port:
+        found.add("router")
+    return found
 
 
 def check_entry(entry):
     """A validated allow-list entry (raises ValueError)."""
-    allowed = {"id", "label", "scheme", "host", "port", "key", "machines", "sampling", "thinking", "context_tokens"}
+    allowed = {"id", "label", "scheme", "host", "port", "machines", "sampling", "thinking", "context_tokens"}
+    if isinstance(entry, dict) and "key" in entry:
+        raise ValueError(KEY_WHY)
     if not isinstance(entry, dict) or set(entry) - allowed:
         raise ValueError("target fields: " + ", ".join(sorted(allowed)))
     if not isinstance(entry.get("id"), str) or not TARGET_ID.fullmatch(entry["id"]):
@@ -65,12 +123,6 @@ def check_entry(entry):
     label = entry.get("label", entry["id"])
     if not isinstance(label, str) or not 1 <= len(label) <= 60 or re.search(r"[\x00-\x1f<>]", label):
         raise ValueError("label: 1..60 printable characters")
-    key = entry.get("key")
-    if key is not None:
-        try:
-            secrets._name(key)
-        except ValueError:
-            raise ValueError("key must name a secret in the hyperloom secret store") from None
     context = entry.get("context_tokens")
     if context is not None and (type(context) is not int or not 1024 <= context <= 4_194_304):
         raise ValueError("context_tokens must be an integer in 1024..4194304")
@@ -85,7 +137,7 @@ def check_entry(entry):
     if isinstance(machines, list):
         machines = sorted(set(machines))
     return {"id": entry["id"], "label": label, "scheme": entry["scheme"], "host": _host(entry.get("host")), "port": port,
-            "key": key, "machines": machines, "sampling": entry.get("sampling", False),
+            "machines": machines, "sampling": entry.get("sampling", False),
             "thinking": entry.get("thinking", False), "context_tokens": context}
 
 
@@ -103,12 +155,18 @@ def allow_list(store):
 
 
 def save(api, arguments):
-    """POST bench/targets/save: add or replace an allow-list entry."""
+    """POST bench/targets/save: add or replace an allow-list entry (a lab host; "external" only for an address that
+    is no configured machine)."""
     entry = check_entry(arguments)
+    cluster = api.cluster()
+    own = own_machines(cluster, entry["host"], entry["port"])
     if isinstance(entry["machines"], list):
-        unknown = [m for m in entry["machines"] if m not in api.cluster().machines]
+        unknown = [m for m in entry["machines"] if m not in cluster.machines]
         if unknown:
             raise ValueError("not configured: " + ", ".join(unknown) + " (name configured machines, or external)")
+    elif entry["machines"] == "external" and own:
+        raise ValueError(f"{entry['host']} is the configured machine " + ", ".join(sorted(own - {"router"}))
+                         + ": a benchmark there holds it like up (declare it, or leave machines out)")
     store = telemetry.open_store(api)
     entries = [e for e in allow_list(store) if e["id"] != entry["id"]]
     if len(entries) >= MAX_TARGETS:
@@ -187,7 +245,7 @@ def listing(api):
         rows.append({"key": "target:" + entry["id"], "kind": "adhoc", "id": entry["id"], "label": entry["label"],
                      "family": None, "state": "allow-listed", "blocker": None,
                      "address": f"{entry['scheme']}://{entry['host']}:{entry['port']}",
-                     "key_ref": entry["key"], "machines": entry["machines"], "context_tokens": entry["context_tokens"],
+                     "key_ref": None, "machines": entry["machines"], "context_tokens": entry["context_tokens"],
                      "sampling": entry["sampling"], "sampling_why": None if entry["sampling"] else "not declared for this target",
                      "thinking": entry["thinking"], "thinking_why": None if entry["thinking"] else THINKING_WHY,
                      "ids": True, "ids_why": IDS_WHY})
@@ -242,15 +300,19 @@ def resources(api, parsed, readonly=False, entry=None):
     if parsed[0] == "profile":
         return set(api._resources_of_profile(parsed[1]))
     entry = entry or _entry(api, parsed[1], readonly)
-    if entry["machines"] == "external":
-        return {"host:" + entry["host"]}
-    if not entry["machines"]:
-        return {"*"}
     try:
-        configured = api.cluster().machines
+        cluster = api.cluster()
+        own = own_machines(cluster, entry["host"], entry["port"])
     except Exception:
         return {"*"}
-    return set(entry["machines"]) if all(m in configured for m in entry["machines"]) else {"*"}
+    if entry["machines"] == "external":
+        # Only an address that is no configured machine; one that became a machine holds it, like up.
+        return {"host:" + address_of(cluster, entry["host"])} if not own else own
+    if isinstance(entry["machines"], list):
+        if not all(m in cluster.machines for m in entry["machines"]):
+            return {"*"}
+        return own | set(entry["machines"])
+    return own or {"*"}
 
 
 def snapshot(api, parsed):
@@ -326,12 +388,8 @@ def resolve(api, parsed, frozen=None):
                     "router_policy": policy, "router_policy_source": _source(policy, "router-status")}
         return Resolved(key_of(parsed), row["label"], "profile", endpoint, row.get("family"), row, None, identity)
     entry = material["entry"]
-    key = None
-    if entry["key"]:
-        key = secrets.get(entry["key"])
-        if key is None:
-            raise PermissionError(f"secret {entry['key']} named by target {entry['id']} is not in the secret store")
-    endpoint = client.Endpoint(entry["scheme"], entry["host"], entry["port"], key)
+    # Keyless, at the configured address of the machine named or the IP literal saved (never a resolved name).
+    endpoint = client.Endpoint(entry["scheme"], address_of(api.cluster(), entry["host"]), entry["port"], None)
     identity = {"family": None, "release": None, "binary_sha256": None, "build_source": "unavailable",
                 "recipe_digest": None, "recipe_source": "unavailable", "router_policy": None,
                 "router_policy_source": "unavailable"}

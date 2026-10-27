@@ -136,16 +136,17 @@ class AllowListTests(Base):
     def test_hosts_ports_ids_and_keys_are_validated(self):
         for bad in ({"host": "name-not-resolved"}, {"host": PUBLIC}, {"host": LINK_LOCAL}, {"host": UNSPECIFIED},
                     {"host": "192.0.2.10%eth0"}, {"port": 0}, {"port": "80"}, {"port": True}, {"scheme": "ftp"},
-                    {"label": ""}, {"label": "x" * 65}, {"label": "a\nb"}, {"key_name": "Bad Name"}, {"id": "-x"},
+                    {"label": ""}, {"label": "x" * 65}, {"label": "a\nb"}, {"key_name": "Bad Name"}, {"key_name": "box-key"},
+                    {"key_name": "key-" + "a" * 32}, {"id": "-x"},
                     {"extra": 1}, {"host": "127.0.0.1", "port": 18700}):
             arguments = {"label": "box", "host": "192.0.2.10", "port": 8080, **bad}
             with self.subTest(bad=bad):
                 with self.assertRaises(Exception) as caught:
                     self.api.feature_post("endpoints/save", arguments)
                 self.assertEqual(getattr(caught.exception, "status", None), 400)
-        saved = self.save(label="RTX box", host="halo-1", port=8080, key_name="box-key")["target"]
+        saved = self.save(label="RTX box", host="halo-1", port=8080)["target"]
         self.assertEqual((saved["id"], saved["host"], saved["address"], saved["key_name"]),
-                         ("rtx-box", "halo-1", "192.0.2.10", "box-key"))
+                         ("rtx-box", "halo-1", "192.0.2.10", None))
         again = self.save(label="RTX box", host="203.0.113.5", port=8080)["target"]
         self.assertEqual(again["id"], "rtx-box-2")
         with self.assertRaises(Exception) as caught:            # same destination through the machine alias
@@ -337,20 +338,24 @@ class IdentificationTests(Base):
         self.clock.now += endpoints.IDENTIFY_EVERY_S
         self.assertEqual(len(self.probe(server, previous=first)["requests"]), 5)
 
-    def test_keys_come_from_the_store_and_echoes_are_scrubbed(self):
-        echo = self.serve({"/v1/models": json_route({"object": "list", "data": [{"id": KEY}, {"id": "x-" + KEY}]}),
-                           "/api/status": json_route({"schema": "strix-serve-status-v1", "model": KEY,
+    def test_no_stored_key_ever_reaches_a_target(self):
+        """The leak scenario: a target naming a stored key (an engine's) would send it to an address a client
+        chose. Saving one is refused; one saved by an earlier release is never loaded or sent."""
+        with self.assertRaises(Exception) as caught:
+            self.api.feature_post("endpoints/save", {"label": "box", "host": "127.0.0.1", "port": 8080,
+                                                     "key_name": "key-" + "a" * 32})
+        self.assertIn("carry no key", str(caught.exception))
+        echo = self.serve({"/v1/models": json_route({"object": "list", "data": [{"id": "m"}]}),
+                           "/api/status": json_route({"schema": "strix-serve-status-v1", "model": "m",
                                                       "uptime_seconds": 10.0, "state": "ready"})})
-        result = self.probe(echo, key_name="box-key")
-        self.assertEqual(echo.seen[0][1]["Authorization"], "Bearer " + KEY)
-        text = json.dumps(redact(result))
-        self.assertNotIn(KEY, text)
-        self.assertEqual(result["models"][0]["id"], "[redacted]")
-        self.assertEqual(result["panel"]["model"], "[redacted]")
-        missing = endpoints.probe(target(echo.port, key_name="absent"), self.cluster, None, now=self.clock(),
-                                  key_lookup=lambda name: None)
-        self.assertIn("not in the secret store", missing["why"]["key"])
-        self.assertNotIn("Authorization", echo.seen[-1][1])
+        looked = []
+        legacy = endpoints.probe(target(echo.port, key_name="key-" + "a" * 32), self.cluster, None, now=self.clock(),
+                                 key_lookup=lambda name: looked.append(name) or KEY)
+        self.assertEqual(looked, [])
+        self.assertTrue(echo.seen)
+        self.assertTrue(all("Authorization" not in headers for _, headers in echo.seen))
+        self.assertIn("not used", legacy["why"]["key"])
+        self.assertNotIn(KEY, json.dumps(legacy))
 
 
 class CollectorTests(Base):

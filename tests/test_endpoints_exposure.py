@@ -182,7 +182,7 @@ class RoundTests(Base):
     def test_round_publishes_verdicts_and_never_sends_credentials(self):
         open_server = self.serve({"/v1/models": MODELS})
         guarded = self.serve({"/v1/models": json_route({"error": "key"}, 401)})
-        self.add(open_server.port, id="open", key_name="box-key")
+        self.add(open_server.port, id="open")
         self.add(guarded.port, id="guarded")
         self.api.telemetry.put("fleet/host", "workstation", host_doc(self.clock(), [
             {"port": open_server.port, "family": "ipv4", "scope": "loopback"}]))

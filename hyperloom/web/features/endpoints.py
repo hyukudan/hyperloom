@@ -1,8 +1,10 @@
 """Other chat-completions-compatible endpoints (F17) and the endpoint exposure check (F40).
 
 Targets are an allow-list kept in the telemetry store (document namespace ``prefs``, key ``endpoints/targets``):
-scheme, host (a numeric private or loopback IP, or a configured machine id), port, an optional key name in the
-hyperloom secret store and a label. Nothing else is ever contacted, and only with GETs on a fixed set of paths.
+scheme, host (a numeric private or loopback IP, or a configured machine id), port and a label. A target carries no
+key: a client never names a stored secret, so no key of this machine (an engine's, a router's) is ever sent to an
+address a client chose; a key name saved by an earlier release is not used. Nothing else is ever contacted, and only
+with GETs on a fixed set of paths.
 
 Identification uses positive signatures of a server's own endpoints, strongest first:
     strix           our engines: /api/status with schema strix-serve-status-v1, or /metrics with strix_* / mm_* samples
@@ -70,9 +72,11 @@ LOCK_WAIT_S = 30
 NO_STORE = "endpoint store not open in this portal process (samplers disabled)"
 ID = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
 REV = re.compile(r"[0-9a-f]{16}")
-KEY_NAME = re.compile(r"[a-z0-9-]{1,40}")
 LABEL = re.compile(r"[^\x00-\x1f\x7f]{1,64}")
 FIELDS = frozenset(("id", "label", "scheme", "host", "port", "key_name"))
+KEY_WHY = ("key_name: endpoint targets carry no key (a client never names a stored secret; the server sends keys only "
+           "to its own launches)")
+LEGACY_KEY_WHY = "a key name saved by an earlier release is not used: endpoint targets carry no key"
 KIND_TEXT = {
     "strix": "our engine (strix-serve-status-v1 status or strix_* / mm_* metrics)",
     "props-server": "server exposing /props with default_generation_settings",
@@ -156,10 +160,9 @@ def validate(arguments, cluster, targets):
     if ipaddress.ip_address(address).is_loopback and port == _ui_port(cluster):
         raise ValueError("port: that is this portal's own port")
     key_name = arguments.get("key_name")
-    if key_name in ("", None):
-        key_name = None
-    elif not isinstance(key_name, str) or not KEY_NAME.fullmatch(key_name):
-        raise ValueError("key_name: a secret name ([a-z0-9-], at most 40 characters)")
+    if key_name not in ("", None):
+        raise ValueError(KEY_WHY)
+    key_name = None
     ids = {t["id"] for t in targets}
     tid = arguments.get("id")
     if tid is not None:
@@ -466,17 +469,11 @@ def _panel(status_obj, metrics_text):
 
 
 def _key(target, lookup=None):
-    """(key or None, problem or None) for a target, from the secret store only."""
+    """(None, why) for a target: endpoint targets carry no key (a stored key name is never loaded)."""
     name = target.get("key_name")
     if not name:
         return None, None
-    try:
-        value = (lookup or secrets.get)(name)
-    except (OSError, ValueError):
-        return None, f"secret {name} unreadable or not a usable key"
-    if value is None:
-        return None, f"secret {name} is not in the secret store"
-    return value, None
+    return None, LEGACY_KEY_WHY
 
 
 def _scrub(value, key):
@@ -878,7 +875,7 @@ def configured(cluster, targets):
             machine = local.id if local else None
         rows.append({"id": "target/" + target["id"], "kind": "target", "label": target.get("label"), "profile": None,
                      "family": None, "machine": machine, "port": target["port"], "scheme": target["scheme"],
-                     "configured_scope": _scope(address), "key_configured": bool(target.get("key_name")),
+                     "configured_scope": _scope(address), "key_configured": False,
                      "key_supported": True, "probe_address": address, "rev": target["rev"]})
     for row in rows:
         row["basis"] = _basis(row)

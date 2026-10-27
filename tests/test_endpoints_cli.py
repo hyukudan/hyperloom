@@ -43,17 +43,18 @@ class CLITests(unittest.TestCase):
             store.close()
 
     def test_add_list_check_exposure_remove(self):
-        server = FakeServer({"/v1/models": json_route({"object": "list", "data": [{"id": KEY}]})})
+        server = FakeServer({"/v1/models": json_route({"object": "list", "data": [{"id": "fixture-model"}]})})
         self.addCleanup(server.close)
-        code, out, _ = self.run_cli("add", "--label", "Box", "--host", "127.0.0.1", "--port", str(server.port), "--key-name", "box-key")
+        code, out, _ = self.run_cli("add", "--label", "Box", "--host", "127.0.0.1", "--port", str(server.port))   # no --key-name: targets carry no key
         self.assertEqual((code, out.strip()), (0, f"saved box: http://127.0.0.1:{server.port}"))
         code, _, err = self.run_cli("add", "--label", "Public", "--host", PUBLIC, "--port", "80")
         self.assertEqual(code, 2)
         self.assertIn("private or loopback", err)
-        with mock.patch("hyperloom.secrets.get", return_value=KEY):
+        with mock.patch("hyperloom.secrets.get", return_value=KEY) as lookup:
             code, out, _ = self.run_cli("check", "--json")
         self.assertEqual(code, 0)
-        self.assertNotIn(KEY, out)                                     # an echoed key never reaches the output
+        lookup.assert_not_called()                                     # no stored key is loaded for a target
+        self.assertTrue(all("Authorization" not in headers for _, headers in server.seen))
         self.assertEqual(json.loads(out)["box"]["kind"], "generic")
         code, out, _ = self.run_cli("list")
         self.assertIn("box\thttp://127.0.0.1", out)

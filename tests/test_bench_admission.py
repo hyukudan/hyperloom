@@ -37,6 +37,11 @@ class AdmissionTests(unittest.TestCase):
         guard = self.bench.api.read("bench/guard", {"target": "profile:qwen"})
         self.assertFalse(guard["preview"]["admitted"])
         self.assertEqual(guard["running"][0]["run_id"], first["arguments"]["run_id"])
+        # A configuration without a local control machine: loopback is no configured machine, so "external" holds
+        # only the address and the three runs are disjoint.
+        self.bench.cluster.machines["workstation"].access = "ssh"
+        targets.save(self.bench.api, {"id": "fake", "scheme": "http", "host": "127.0.0.1",
+                                      "port": self.bench.server.port, "machines": "external"})
         other = self.bench.start("bench/decode", {"target": {"target": "fake"}, **SLOW})       # disjoint: admitted
         with FakeServer() as third:
             targets.save(self.bench.api, {"id": "third", "scheme": "http", "host": "127.0.0.1", "port": third.port, "machines": ["halo-2"]})
@@ -47,6 +52,7 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(self.finish(other)["state"], "cancelled")
 
     def test_undeclared_target_holds_everything(self):
+        self.bench.cluster.machines["workstation"].access = "ssh"         # loopback: no configured machine
         targets.save(self.bench.api, {"id": "loose", "scheme": "http", "host": "127.0.0.1", "port": self.bench.server.port})
         job = self.bench.start("bench/decode", {"target": {"target": "loose"}, **SLOW})
         self.assertEqual(job["resources"], ["*"])

@@ -65,8 +65,6 @@ def _add(args):
     arguments = {"label": args.label, "scheme": args.scheme, "host": args.host, "port": args.port}
     if args.id:
         arguments["id"] = args.id
-    if args.key_name:
-        arguments["key_name"] = args.key_name
     result = _audited("endpoints/save", arguments, endpoints.save)
     if isinstance(result, int):
         return result
@@ -134,7 +132,6 @@ def add(commands):
     adding.add_argument("--port", required=True, type=int)
     adding.add_argument("--scheme", choices=("http", "https"), default="http")
     adding.add_argument("--id", help="update this target (default: a new id from the label)")
-    adding.add_argument("--key-name", help="name of a hyperloom secret sent as the bearer credential")
     adding.set_defaults(ext_run=_add)
     removing = sub.add_parser("remove", help="remove an endpoint target")
     removing.add_argument("id")

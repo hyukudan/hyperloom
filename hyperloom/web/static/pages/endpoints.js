@@ -63,7 +63,7 @@
       const models = p?.models_total != null ? esc(p.models_total) : unavailable(p?.why?.models || t.why?.probe);
       const latency = p?.latency_ms != null ? `${esc(p.latency_ms)} ms` : unavailable(p ? "no models list" : t.why?.probe);
       const actions = `<div class="row">${button("Details", "", {extra: `data-page-action="endpoints-select" data-id="${esc(t.id)}" aria-pressed="${t.id === view.selected}"`})}${button("Remove", "", {style: "dan", extra: `data-page-action="endpoints-remove" data-id="${esc(t.id)}" aria-label="Remove ${esc(t.label)}"`, disabled})}</div>`;
-      return stacked(TARGET_HEADERS, [`<b>${esc(t.label)}</b><div class="hint mono">${esc(t.id)}</div>`, `<span class="mono">${esc(t.scheme)}://${esc(t.host)}:${esc(t.port)}</span>${t.host !== t.address && t.address ? `<div class="hint">${esc(t.address)}</div>` : ""}<div class="hint">${t.key_name ? `key: ${esc(t.key_name)}` : "no key"}</div>`,
+      return stacked(TARGET_HEADERS, [`<b>${esc(t.label)}</b><div class="hint mono">${esc(t.id)}</div>`, `<span class="mono">${esc(t.scheme)}://${esc(t.host)}:${esc(t.port)}</span>${t.host !== t.address && t.address ? `<div class="hint">${esc(t.address)}</div>` : ""}<div class="hint">no key</div>`,
         kind, up, models, latency, p ? esc(age(p.checked_at) || "") : unavailable(t.why?.probe), actions]);
     }).join("");
     const f = view.form;
@@ -73,7 +73,6 @@
 <label class="field" for="ep-scheme">Scheme<select class="inp" id="ep-scheme" name="scheme">${["http", "https"].map(s => `<option value="${s}" ${f.scheme === s ? "selected" : ""}>${s}</option>`).join("")}</select></label>
 <label class="field" for="ep-host">Host<input class="inp" id="ep-host" name="host" maxlength="64" required value="${esc(f.host)}" placeholder="private IP or machine id" autocomplete="off"></label>
 <label class="field" for="ep-port">Port<input class="inp" id="ep-port" name="port" inputmode="numeric" required value="${esc(f.port)}" placeholder="8080"></label>
-<label class="field" for="ep-key">Key name (optional)<input class="inp" id="ep-key" name="key_name" maxlength="40" value="${esc(f.key_name)}" placeholder="secret name" autocomplete="off"></label>
 </div><div class="row">${button("Add endpoint", "", {style: "pri", extra: 'data-page-action="endpoints-save"', disabled})}<span class="hint">Only private or loopback addresses and configured machines; names are not resolved. The key itself stays in the secret store.</span></div>
 <p class="field-error" id="ep-error" role="alert">${esc(view.error)}</p></form>`;
     const limit = doc.limits?.max_targets ? `${targets().length} of ${doc.limits.max_targets} targets` : "";
@@ -130,7 +129,6 @@
     const f = view.form, port = Number(f.port);
     if (!f.label.trim() || !f.host.trim() || !Number.isInteger(port)) { view.error = "Label, host and an integer port are required"; H().render(); return; }
     const body = {label: f.label.trim(), scheme: f.scheme, host: f.host.trim(), port};
-    if (f.key_name.trim()) body.key_name = f.key_name.trim();
     post("endpoints/save", body, "Save").then(result => {
       if (result?.target) { view.form = {label: "", scheme: "http", host: "", port: "", key_name: ""}; view.selected = result.target.id; remember(); }
     });

@@ -39,10 +39,11 @@ class Bench:
         test.addCleanup(self.api.telemetry.close)
         self.api.admission_db = admission.Admission(":memory:")
         test.addCleanup(self.api.admission_db.close)
-        machines = {mid: SimpleNamespace(id=mid, http_address=address, ssh_target=mid)
-                    for mid, address in (("workstation", "workstation"), ("halo-1", "halo-1"), ("halo-2", "halo-2"))}
+        machines = {mid: SimpleNamespace(id=mid, http_address=address, ssh_target=mid, access=access)
+                    for mid, address, access in (("workstation", "192.168.50.10", "local"),
+                                                 ("halo-1", "192.168.50.11", "ssh"), ("halo-2", "192.168.50.12", "ssh"))}
         self.cluster = SimpleNamespace(machines=machines, profiles={"qwen": {"nodes": ["halo-1"]}, "other": {"nodes": ["halo-2"]}},
-                                       raw={})
+                                       router={}, raw={})
         self.api.cluster = lambda: self.cluster
         self.profiles = [{"id": "qwen", "state": "running", "family": "qwen-replicas", "release": "r" * 12,
                           "processes": [{"binary_sha256": "b" * 64}], "status": {"router": {"prefill": {"policy": "nodes"}}}},
@@ -53,8 +54,9 @@ class Bench:
         patcher.start()
         test.addCleanup(patcher.stop)
         from hyperloom.bench import targets
+        # The fake server listens on loopback: the control machine's address, so the target holds it like up.
         targets.save(self.api, {"id": "fake", "scheme": "http", "host": "127.0.0.1", "port": self.server.port,
-                                "machines": "external", "context_tokens": 65536})
+                                "context_tokens": 65536})
 
     def start(self, action, arguments):
         return self.api.mutate(action, arguments)

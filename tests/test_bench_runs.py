@@ -248,6 +248,31 @@ class DocumentsTests(unittest.TestCase):
         self.assertIsNone(getattr(self.bench.api, "telemetry"))
         self.assertFalse((Path(self.bench.dir.name) / "telemetry.sqlite3").exists())
 
+    def test_no_client_named_key_ever_reaches_a_client_chosen_host(self):
+        """The leak scenario: bench/targets/save {host, key: "<the router's key name>"} then a decode run would send
+        the engine key to that host over plain http. A key is refused on save, a stored entry of an earlier release
+        that names one is not offered and cannot run, and an ad-hoc run sends no Authorization header at all."""
+        with self.assertRaises(APIError) as caught:
+            self.bench.api.feature_post("bench/targets/save", {"id": "leak", "scheme": "http", "host": "127.0.0.1",
+                                                               "port": self.bench.server.port,
+                                                               "key": "key-router-fixture"})
+        self.assertIn("carries no key", str(caught.exception))
+        store = self.bench.api.telemetry
+        legacy = {"id": "leak", "label": "leak", "scheme": "http", "host": "127.0.0.1", "port": self.bench.server.port,
+                  "key": "key-router-fixture", "machines": "external", "sampling": False, "thinking": False,
+                  "context_tokens": None}
+        current = store.get(targets.PREFS_NAMESPACE, targets.PREFS_KEY)
+        store.put(targets.PREFS_NAMESPACE, targets.PREFS_KEY, {"targets": current["targets"] + [legacy]})
+        self.assertNotIn("target:leak", {t["key"] for t in self.bench.api.read("bench/targets")["targets"]})
+        with self.assertRaises(APIError):
+            self.bench.start("bench/decode", {"target": {"target": "leak"}, "levels": [1], "max_tokens": 16})
+        self.bench.server.requests.clear()
+        record, _ = self.bench.run("bench/decode", {"target": {"target": "fake"}, "levels": [1], "max_tokens": 16})
+        self.assertEqual(record["state"], "succeeded", record["error"])
+        self.assertTrue(self.bench.server.requests)
+        self.assertFalse(any("Authorization" in r["headers"] or "authorization" in r["headers"]
+                             for r in self.bench.server.requests))
+
     def test_targets_document_and_allow_list_rules(self):
         document = self.bench.api.read("bench/targets")
         stable(self, document)
@@ -257,17 +282,35 @@ class DocumentsTests(unittest.TestCase):
         self.assertFalse(keys["profile:qwen"]["sampling"])
         self.assertNotIn(support.KEY, json.dumps(document))
         self.assertIsNone(keys["target:fake"]["key_ref"])
-        for bad in ({"id": "x", "scheme": "ftp", "host": "a", "port": 1}, {"id": "x", "scheme": "http", "host": "a/b", "port": 1},
-                    {"id": "x", "scheme": "http", "host": "user@a", "port": 1}, {"id": "x", "scheme": "http", "host": "a", "port": 0},
-                    {"id": "x", "scheme": "http", "host": "a", "port": 1, "machines": ["nowhere"]},
-                    {"id": "x", "scheme": "http", "host": "a", "port": 1, "key": "Not A Secret"}):
+        for bad in ({"id": "x", "scheme": "ftp", "host": "halo-1", "port": 1},
+                    {"id": "x", "scheme": "http", "host": "a/b", "port": 1},
+                    {"id": "x", "scheme": "http", "host": "user@halo-1", "port": 1},
+                    {"id": "x", "scheme": "http", "host": "halo-1", "port": 0},
+                    {"id": "x", "scheme": "http", "host": "halo-1", "port": 1, "machines": ["nowhere"]},
+                    {"id": "x", "scheme": "http", "host": "evil.example", "port": 80},          # a name: never resolved
+                    {"id": "x", "scheme": "http", "host": "nowhere", "port": 80},               # no such machine
+                    {"id": "x", "scheme": "https", "host": "8.8.8.8", "port": 443},             # public: not the lab
+                    {"id": "x", "scheme": "http", "host": "169.254.1.1", "port": 80},           # link-local
+                    {"id": "x", "scheme": "http", "host": "halo-1", "port": 1, "key": "key-router-fixture"},
+                    {"id": "x", "scheme": "http", "host": "halo-1", "port": 1, "machines": "external"},
+                    {"id": "x", "scheme": "http", "host": "192.168.50.11", "port": 1, "machines": "external"}):
             with self.subTest(entry=bad), self.assertRaises(APIError):
                 self.bench.api.feature_post("bench/targets/save", bad)
-        self.assertEqual(targets.resources(self.bench.api, ("target", "fake")), {"host:127.0.0.1"})
+        # Holds like up: the machine an address is, the declared ones on top; loopback is the control machine.
+        self.assertEqual(targets.resources(self.bench.api, ("target", "fake")), {"workstation"})
         targets.save(self.bench.api, {"id": "undeclared", "scheme": "http", "host": "halo-1", "port": 18080})
-        self.assertEqual(targets.resources(self.bench.api, ("target", "undeclared")), {"*"})
-        targets.save(self.bench.api, {"id": "forwarder", "scheme": "http", "host": "halo-1", "port": 18080, "machines": ["halo-1", "halo-2"]})
+        self.assertEqual(targets.resources(self.bench.api, ("target", "undeclared")), {"halo-1"})
+        targets.save(self.bench.api, {"id": "by-address", "scheme": "http", "host": "192.168.50.12", "port": 18080})
+        self.assertEqual(targets.resources(self.bench.api, ("target", "by-address")), {"halo-2"})
+        targets.save(self.bench.api, {"id": "forwarder", "scheme": "http", "host": "halo-1", "port": 18080, "machines": ["halo-2"]})
         self.assertEqual(targets.resources(self.bench.api, ("target", "forwarder")), {"halo-1", "halo-2"})
+        targets.save(self.bench.api, {"id": "router-port", "scheme": "http", "host": "127.0.0.1", "port": 18600})
+        self.assertEqual(targets.resources(self.bench.api, ("target", "router-port")), {"workstation", "router"})
+        targets.save(self.bench.api, {"id": "outside", "scheme": "http", "host": "10.9.8.7", "port": 80,
+                                      "machines": "external"})
+        self.assertEqual(targets.resources(self.bench.api, ("target", "outside")), {"host:10.9.8.7"})
+        targets.save(self.bench.api, {"id": "unknown", "scheme": "http", "host": "10.9.8.7", "port": 81})
+        self.assertEqual(targets.resources(self.bench.api, ("target", "unknown")), {"*"})
         self.bench.api.feature_post("bench/targets/capabilities", {"profile": "qwen", "thinking": True})
         self.assertTrue({t["key"]: t for t in self.bench.api.read("bench/targets")["targets"]}["profile:qwen"]["thinking"])
         audit = Path(self.bench.dir.name, "audit.jsonl").read_text(encoding="utf-8")
