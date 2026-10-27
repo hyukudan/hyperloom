@@ -70,10 +70,11 @@ SECRET_PATTERNS = (
     (re.compile(r"(?i)\b((?:mysql\w*|mariadb[\w-]*)\b[^\n]*?\s-p)(?!\[redacted\])(?=\S)\S+"), r"\1[redacted]"),
     (re.compile(r"(?i)\b(sshpass\b[^\n]*?\s-p\s*)(?!\[redacted\])\S+"), r"\1[redacted]"),
     # curl's user and password options (`curl -u user:pw`, `curl -su user:pw`, `--user user:pw`, `--user=user:pw`,
-    # the proxy's -U / --proxy-user) within the same command (bounded, up to a pipe or `;` outside quotes), and any other tool's
-    # `--user name:password` (a numeric uid:gid, as in `docker run --user 1000:1000`, stays).
-    (re.compile(r"""\b(curl\b(?:'[^'\n]*'|"[^"\n]*"|[^\n|;'"]){0,2048}?\s(?:-[A-Za-z]*[uU]\s*|--(?:proxy-)?user(?:\s+|=)))(?!\[redacted\])"""
-                r"""(?:"[^"]*"|'[^']*'|\S+)"""), r"\1[redacted]"),
+    # the proxy's -U / --proxy-user) within the same command (bounded, up to a pipe or `;` outside quotes), and any
+    # other tool's `--user name:password` (a numeric uid:gid, as in `docker run --user 1000:1000`, stays).
+    (re.compile(r"""\b(curl\b(?:'[^'\n]*'|"[^"\n]*"|[^\n|;'"]){0,2048}?\s"""
+                r"""(?:-[A-Za-z]*[uU]\s*|--(?:proxy-)?user(?:\s+|=)))(?!\[redacted\])(?:"[^"]*"|'[^']*'|\S+)"""),
+     r"\1[redacted]"),
     (re.compile(r"(--(?:proxy-)?user(?:\s+|=))(?!\[redacted\])(?![0-9]+:[0-9]+(?:\s|$))[^\s:]*:\S+"), r"\1[redacted]"),
     # A bare Hugging Face access token (no name before it): hf_ and 30 or more token characters (library and model
     # names such as hf_transfer or hf_hub_download stay readable).

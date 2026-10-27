@@ -702,7 +702,8 @@ class APITests(unittest.TestCase):
                  "curl --user=dave:Sw0rdfish https://example.invalid": "Sw0rdfish",
                  "curl -U frank:Pr0xyPw -x http://proxy.invalid https://example.invalid": "Pr0xyPw",
                  "wget --user hank:C0mbined https://example.invalid": "C0mbined",
-                 "curl -H 'Cookie: a=1; b=2' -u ivy:C00kieJar https://example.invalid": "C00kieJar"}
+                 "curl -H 'Cookie: a=1; b=2' -u ivy:C00kieJar https://example.invalid": "C00kieJar",
+                 'curl -H "Accept: a|b" -u jo:P1peLine https://example.invalid': "P1peLine"}
         for line, secret in lines.items():
             with self.subTest(line=line):
                 self.assertNotIn(secret, json.dumps(redact({"stderr": line, "lines": [line]})))
