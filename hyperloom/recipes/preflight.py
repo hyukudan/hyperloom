@@ -135,16 +135,9 @@ def _reviewed_resources(reviewed, cluster):
             live = rtx._read(directory / "state.json")
             if live.get("state") != "ready" or live.get("pid") != record["pid"]:
                 continue
-            helper = procs.InstanceLock(directory / "helper.lock")
-            try:
-                helper.acquire(create=False)
-            except procs.ProcessError:
-                pass  # A ready helper holds every device lock until its child has stopped.
-            else:
+            if not procs.lock_held(directory / "helper.lock"):
                 continue  # A stale ready.json / controller record proves no ownership.
-            finally:
-                helper.close()
-        except (OSError, ValueError):
+        except (procs.ProcessError, OSError, ValueError):
             continue
         devices = live.get("device", [])
         devices = devices if isinstance(devices, list) else [devices]

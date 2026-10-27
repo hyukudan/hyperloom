@@ -107,7 +107,8 @@ class Core:
         label = "ts-recipe" if placing else "ss-recipe"
         with tempfile.TemporaryDirectory(prefix="hl-recipe-") as directory:
             for name, value in inputs.items():
-                (Path(directory) / name).write_bytes((value if isinstance(value, str) else json.dumps(value)).encode("utf-8"))
+                (Path(directory) / name).write_text(value if isinstance(value, str) else json.dumps(value),
+                                                    encoding="utf-8")
             # Input names in args stand for the temporary files written above.
             argv = [str(self.executable), *[str(Path(directory) / a) if a in inputs else str(a) for a in args]]
             overrides_path = None

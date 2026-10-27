@@ -17,7 +17,7 @@ except ImportError:
     raise SkipTest("requires the test extra (pytest)") from None
 
 from hyperloom import cli, device_policy, orchestrate, rtx
-from hyperloom.recipes import apply, commands, facts, probe, reader, service, launch, session
+from hyperloom.recipes import apply, commands, core, facts, probe, reader, service, launch, session
 from hyperloom.web import api, recipes as recipe_web
 
 from tests import test_web_summaries, test_recipes
@@ -44,6 +44,19 @@ def outcome(operation):
         return operation()
     except Exception as exc:
         return type(exc), str(exc)
+
+
+def test_core_input_text_matches_a8d112c():
+    captured = []
+    def run(argv, **kwargs):
+        captured.append([Path(p).read_bytes() for p in argv[2:]])
+        kwargs["stdout"].write(b"{}")
+        return SimpleNamespace(returncode=0)
+    instance = core.Core("ss-recipe", run=run)
+    inputs = {"recipe.toml": 'name = "caf\u00e9"\n\n', "probe.json": {"devices": []}}
+    args = ["validate", *inputs]
+    assert instance.call(args, inputs) == baseline(core, "call")(instance, args, inputs) == {}
+    assert captured[0] == captured[1]
 
 
 def test_legacy_probe_report_ignores_cuda_driver_and_h2d():

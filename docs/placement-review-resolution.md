@@ -454,3 +454,19 @@ all **21 G6 renders byte-identical**, and privacy checks. Full Python 3.13.7 / p
 Unittest discovery has zero import errors: **1858 tests** with the test extra, **1876** with stdlib only.
 Evidence logs remain outside git: `hl-placement-minors-focused-final.log`, `hl-placement-minors-pytest313-final.log`,
 `hl-placement-minors-failure-comparison.log` and `hl-placement-minors-checks.log`. TEMP/TMP are unchanged.
+
+## Delta review follow-ups after d053db7
+
+Foreign-owner and foreign-compute admission cases now use the PID of a reaped trivial child instead of PID
+arithmetic; no other placement tests use that pattern. Reviewed helper ownership probes `helper.lock` passively
+with `procs.lock_held`, without taking or creating a lock. Regression coverage checks held, stale, missing and
+unreadable helper locks. Legacy launch locking is unchanged.
+
+Core temporary inputs again use UTF-8 `write_text`, matching a8d112c's platform newline behavior; placement does
+not require exact input bytes. A regression compares actual temporary input bytes with the base core call.
+
+Focused validation: **100 passed, 3 skipped**, including legacy comparisons against a8d112c and all **21 G6 cases
+byte-identical** to the unchanged oracle. Unittest discovery has zero import errors: **1859 tests** with the
+test extra and **1877** with stdlib only. Full Python 3.13.7 / pytest 8.4.2: **47 failed, 3849 passed, 69 skipped**
+in 537.32 s; failing IDs exactly match the base reference's 47, with none added or missing. Evidence logs remain
+outside git; TEMP/TMP are unchanged. UTF-8/LF and `git diff --check` pass.

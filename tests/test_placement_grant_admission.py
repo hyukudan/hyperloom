@@ -6,6 +6,8 @@ from unittest import mock
 import json
 import os
 import socket
+import subprocess
+import sys
 import uuid
 
 try:
@@ -77,10 +79,17 @@ def test_5_reviewed_handover_admits_owned_resources_and_rechecks_after_stop(tmp_
         monkeypatch.setattr(preflight.gpu_counters, "Observer", lambda: fixture.observer)
         fixture.observer.sample.return_value = {fixture.uuid.lower(): 4 * rtx.GIB}
         monkeypatch.setattr(rtx, "pro_busy", lambda _: None)
-        pid = os.getpid() + 1000 if case == "foreign-owner" else os.getpid()
+        pid = os.getpid()
+        if case in ("foreign-owner", "foreign-compute"):
+            # Reap a real child rather than guessing a PID that could belong to a live process.
+            with subprocess.Popen([sys.executable, "-c", "pass"]) as child:
+                child.wait(timeout=10)
+            foreign_pid = child.pid
+            if case == "foreign-owner":
+                pid = foreign_pid
         apps = [(fixture.uuid, pid, 4096)]
         if case == "foreign-compute":
-            apps.append((fixture.uuid, os.getpid() + 1, 4096))
+            apps.append((fixture.uuid, foreign_pid, 4096))
         monkeypatch.setattr(rtx, "compute_apps", lambda: apps)
         monkeypatch.setattr(rtx, "device_used_mib", lambda _: 8192 if case == "unattributed-memory" else 4096)
         # Adapter qualification/rendering is faked; admission, ownership and OS resource checks run normally.

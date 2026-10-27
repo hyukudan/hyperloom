@@ -209,6 +209,32 @@ class LeadReviewTests(unittest.TestCase):
                 lock.close()
             helper.check()  # An existing, unlocked file is free too.
 
+    def test_reviewed_helper_lock_probe_never_acquires(self):
+        directory = self.root / "helper"
+        directory.mkdir()
+        path = directory / "helper.lock"
+        record = dict(directory=str(directory), pid=os.getpid(), device=self.uuid, port=8096)
+        reviewed = {"old": dict(token="reviewed-controller", prefill_service=record)}
+        (directory / "state.json").write_text(json.dumps(dict(
+            state="ready", pid=os.getpid(), device=[dict(uuid=self.uuid)])), encoding="utf-8")
+        lock = procs.InstanceLock(path).acquire()
+        self.addCleanup(lock.close)
+        with mock.patch.object(procs.InstanceLock, "acquire", side_effect=AssertionError("preflight took a lock")):
+            owners, ports, credit = preflight._reviewed_resources(reviewed, self.cluster)
+            self.assertEqual(owners, {self.uuid.lower(): {os.getpid()}})
+            self.assertEqual(ports, {8096: {os.getpid()}})
+            self.assertEqual(credit, {})
+            lock.close()
+            before = path.stat()
+            self.assertEqual(preflight._reviewed_resources(reviewed, self.cluster), ({}, {}, {}))
+            self.assertEqual((path.stat().st_size, path.stat().st_mtime_ns), (before.st_size, before.st_mtime_ns))
+            path.unlink()
+            self.assertEqual(preflight._reviewed_resources(reviewed, self.cluster), ({}, {}, {}))
+            self.assertFalse(path.exists())
+            for error in (procs.ProcessError("unreadable"), OSError("unreadable")):
+                with self.subTest(error=error), mock.patch.object(procs, "lock_held", side_effect=error):
+                    self.assertEqual(preflight._reviewed_resources(reviewed, self.cluster), ({}, {}, {}))
+
     def test_portal_busy_precedes_preflight(self):
         api = API(self.root / "config.json")
         api._active = "existing"
