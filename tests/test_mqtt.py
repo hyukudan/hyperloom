@@ -324,6 +324,46 @@ class PublisherTests(unittest.TestCase):
         for broker in brokers:
             broker.close()
 
+    def test_a_session_the_broker_drops_at_once_backs_off_too(self):
+        attempts, brokers = [], []
+
+        def connect(address, timeout):
+            attempts.append(time.monotonic())
+            broker = Broker()
+            brokers.append(broker)
+
+            def drop():                   # the session starts (online status acknowledged), then the broker drops it
+                deadline = time.monotonic() + 2
+                while not broker.publishes() and time.monotonic() < deadline:
+                    time.sleep(0.005)
+                try:
+                    broker.sock.shutdown(socket.SHUT_RDWR)      # the client sees the end at once (Linux too)
+                except OSError:
+                    pass
+                broker.sock.close()
+            threading.Thread(target=drop, daemon=True).start()
+            return broker.connect(address, timeout)
+        publisher = mqtt.Publisher(self.settings, connect=connect, backoff=(0.2, 0.4))
+        stop = threading.Event()
+
+        def feed():                       # a steady stream of messages, so every session has something to send
+            index = 0
+            while not stop.wait(0.01):
+                publisher.put("lab/events", str(index), 1)
+                index += 1
+        feeder = threading.Thread(target=feed, daemon=True)
+        feeder.start()
+        publisher.start()
+        time.sleep(1.2)
+        stop.set()
+        feeder.join(2)
+        publisher.stop()
+        for broker in brokers:
+            broker.close()
+        self.assertGreaterEqual(len(attempts), 2)
+        self.assertLessEqual(len(attempts), 5)                       # 0, 0.2, 0.6, 1.0 s: never a tight loop
+        self.assertTrue(all(b - a >= 0.18 for a, b in zip(attempts, attempts[1:])))
+
 
 class PasswordTests(unittest.TestCase):
     def test_password_round_trip_in_the_secret_directory(self):
@@ -405,6 +445,27 @@ class StrictnessTests(unittest.TestCase):
                 mqtt.open_connection(("workstation", 1883), 0.3)
         self.assertLess(time.monotonic() - started, 1.0)
         self.assertIn("resolving", str(caught.exception))
+
+
+class ResolverTests(unittest.TestCase):
+    def test_a_hung_resolution_is_never_started_twice(self):
+        calls, release = [], threading.Event()
+
+        def hung(*args, **kw):
+            calls.append(args)
+            release.wait(5)
+            raise OSError("no answer")
+        self.addCleanup(release.set)
+        with mock.patch.object(mqtt.socket, "getaddrinfo", side_effect=hung):
+            for _ in range(4):
+                with self.assertRaises(mqtt.MQTTError):
+                    mqtt.open_connection(("resolver-test.invalid", 1883), 0.05)
+            self.assertEqual(len(calls), 1)                          # one resolver thread, not one per attempt
+            release.set()
+            time.sleep(0.1)
+            with self.assertRaises(mqtt.MQTTError):
+                mqtt.open_connection(("resolver-test.invalid", 1883), 0.5)
+        self.assertEqual(len(calls), 2)                              # once it ended, a new attempt resolves again
 
 
 class LifecycleTests(unittest.TestCase):

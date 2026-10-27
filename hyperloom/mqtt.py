@@ -128,19 +128,32 @@ def _bytes(payload):
     return payload.encode("utf-8") if isinstance(payload, str) else bytes(payload)
 
 
+_resolving = {}                    # (host, port) -> the one resolver thread still running for it
+_resolving_lock = threading.Lock()
+
+
 def open_connection(address, timeout):
-    """TCP connection whose name resolution also respects ``timeout`` (resolved on a helper thread)."""
+    """TCP connection whose name resolution also respects ``timeout`` (resolved on a helper thread). A resolution
+    that outlives its attempt is not started again: later attempts wait for that one thread, so a hung resolver
+    never piles up a thread per attempt."""
     host, port = address
     deadline = time.monotonic() + timeout
-    found = {}
+    key = (host, port)
+    with _resolving_lock:
+        worker = _resolving.get(key)
+        if worker is None or not worker.is_alive():
+            found = {}
 
-    def resolve():
-        try:
-            found["infos"] = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-        except OSError as exc:
-            found["error"] = exc
-    worker = threading.Thread(target=resolve, name="hyperloom-mqtt-resolve", daemon=True)
-    worker.start()
+            def resolve():
+                try:
+                    found["infos"] = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+                except OSError as exc:
+                    found["error"] = exc
+            worker = threading.Thread(target=resolve, name="hyperloom-mqtt-resolve", daemon=True)
+            worker.found = found
+            _resolving[key] = worker
+            worker.start()
+    found = worker.found
     worker.join(max(0.0, deadline - time.monotonic()))
     if worker.is_alive():
         raise MQTTError("timed out resolving the broker name")
@@ -531,9 +544,20 @@ class Publisher:
 
     def _run(self):
         delay = self._backoff[0]
+        session_started = None
         try:
             while self._running():
                 if self._client is None:
+                    if session_started is not None:
+                        # A session ended: a short one (the broker drops us at once) backs off like a failed connect,
+                        # doubling up to the cap; only a session that lasted resets the delay.
+                        if time.monotonic() - session_started >= self._backoff[1]:
+                            delay = self._backoff[0]
+                        session_started = None
+                        self._wait(delay)
+                        delay = min(self._backoff[1], delay * 2)
+                        if not self._running():
+                            break
                     connected = self._connect_session()
                     if connected is None:
                         self._wait(delay)
@@ -541,7 +565,7 @@ class Publisher:
                         continue
                     if not connected:
                         break
-                    delay = self._backoff[0]
+                    session_started = time.monotonic()
                 message = self._next()
                 if not self._running():
                     if message is not None:
