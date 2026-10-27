@@ -191,9 +191,9 @@ note = "plan.json lines 20-42: context 0.6 + weights 77.232 + mtp 0.033 + state 
 [x-evidence.qw-prod-context]
 ref = "../hyperloom/hyperloom/presets/qwen-replicas-w5.json:225"
 quote = "\"min\": 12288,"
-note = "production replica line: --context 12288 (line 27), 8 slots (one replica, 8 slots: qsplit/claudeinfo-qbatch.md:3)"
+note = "production replica line: --context 12288 (line 27), 8 slots (one replica, 8 slots: qsplit/qbatch.md:3)"
 [x-evidence.qw-batch]
-ref = "wave4/qsplit/claudeinfo-qbatch.md:3"
+ref = "wave4/qsplit/qbatch.md:3"
 quote = "measured with the production server (one replica, 8 slots)"
 [x-evidence.qw-adapter-fixed]
 ref = "../hyperloom/hyperloom/placement/qwen.py:98"
