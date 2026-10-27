@@ -271,7 +271,9 @@ def fixture_server(args):
 
     def read_state(path):
         if path.name == "up-qwen-replicas.json" and running["value"]:
+            # Launched from this portal's configuration: a state without the record belongs to no portal.
             return {"release_id": "a" * 12, "nodes": ["halo-1"], "machines": {"halo-1": {}},
+                    "config": {"path": str(config_file.resolve()), "sha256": None},
                     "started_at": time.time() - 60, "router": {"machine": "local", "directory": str(directory / "router")},
                     "devices": ["halo-1:gpu"],
                     "process_specs": [{"machine_id": "halo-1", "role": "replica", "argv": ["/opt/hyperloom/halo-1/releases/" + "a" * 12 + "/bin/strix-hip-decode-token", "--http-port", "18501"], "env": {"STRIX_COHORT_ROWS": "32"}}]}
