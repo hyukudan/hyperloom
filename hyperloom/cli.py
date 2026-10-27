@@ -29,6 +29,11 @@ def config_path():
     return Path.home() / ".config" / "hyperloom" / "cluster.json"
 
 
+def _scope(args):
+    """The configuration whose launches a status, logs or metrics command shows (None: every configuration's)."""
+    return None if args.all_configs else args.config
+
+
 def _module(name):
     try:
         return importlib.import_module(name)
@@ -548,6 +553,12 @@ def build_parser(parser_class=argparse.ArgumentParser):
     metrics.add_argument("operation", choices=("dump", "serve"))
     metrics.add_argument("profile", nargs="?")
     metrics.add_argument("--listen", default="127.0.0.1:18701", help="loopback IP:port (serve only)")
+    # Launch states of every configuration share one runtime directory: these commands show the --config one's.
+    for command in (status, logs, metrics):
+        command.add_argument("--config", type=Path, default=config_path(),
+                             help="show only the launches of this configuration (default: the default one)")
+        command.add_argument("--all-configs", action="store_true",
+                             help="show every configuration's launches (and those that record none)")
     service = commands.add_parser("service", help="non-lab systemd --user units (lab_mode: false only)")
     service.add_argument("operation", choices=("install", "start", "stop", "status", "remove"))
     service.add_argument("profile")
@@ -847,15 +858,16 @@ def main(argv=None):
         elif args.command == "endpoint":
             _json(_module("hyperloom.orchestrate").endpoint(args.profile))
         elif args.command == "status":
-            _json(_module("hyperloom.orchestrate").status(args.profile))
+            _json(_module("hyperloom.orchestrate").status(args.profile, config_path=_scope(args)))
         elif args.command == "logs":
-            _json(_module("hyperloom.orchestrate").logs(args.profile, args.process, args.tail))
+            _json(_module("hyperloom.orchestrate").logs(args.profile, args.process, args.tail,
+                                                        config_path=_scope(args)))
         elif args.command == "metrics":
             exporter = _module("hyperloom.metrics_export")
             if args.operation == "dump":
-                sys.stdout.write(exporter.collect(profile=args.profile))
+                sys.stdout.write(exporter.collect(profile=args.profile, config_path=_scope(args)))
             else:
-                exporter.serve(args.listen, args.profile)
+                exporter.serve(args.listen, args.profile, config_path=_scope(args))
         elif args.command == "hosts":
             _json(_hosts(args))
         elif args.command == "service":

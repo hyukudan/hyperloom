@@ -385,7 +385,7 @@ class CliTests(unittest.TestCase):
         with mock.patch.object(metrics_export, "collect", return_value="hyperloom_up 1\n") as collect, \
                 contextlib.redirect_stdout(stream):
             self.assertEqual(cli.main(["metrics", "dump", "qwen"]), 0)
-        collect.assert_called_once_with(profile="qwen")
+        collect.assert_called_once_with(profile="qwen", config_path=cli.config_path())   # this configuration's
         self.assertEqual(stream.getvalue(), "hyperloom_up 1\n")
 
     def test_serve_refuses_lan_listen(self):
