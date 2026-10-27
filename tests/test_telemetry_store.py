@@ -331,6 +331,42 @@ class SamplerTests(unittest.TestCase):
             self.assertFalse(any(Path(directory).iterdir()))
 
 
+class ConcurrencyAndPruningTests(unittest.TestCase):
+    def test_writes_take_the_lock_up_front_and_wait_for_a_busy_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(str(Path(tmp) / "telemetry.sqlite3"))
+            try:
+                self.assertEqual(store._db.execute("PRAGMA busy_timeout").fetchone()[0], 10000)
+                seen = []
+                store._db.set_trace_callback(seen.append)
+                store.record([("node_up", {"machine": "a"}, 1, "state")], ts=1_800_000_000.0)
+                self.assertIn("BEGIN IMMEDIATE", seen)
+                # Another process holds the write lock briefly: the write waits for it instead of failing.
+                import sqlite3
+                other = sqlite3.connect(str(Path(tmp) / "telemetry.sqlite3"), isolation_level=None, check_same_thread=False)
+                other.execute("BEGIN IMMEDIATE")
+                timer = threading.Timer(0.5, lambda: other.execute("COMMIT"))
+                timer.start()
+                store.record([("node_up", {"machine": "a"}, 0, "state")], ts=1_800_000_002.0)
+                timer.join()
+                other.close()
+            finally:
+                store.close()
+
+    def test_prune_bounds_every_document_namespace(self):
+        clock = Clock()
+        store = Store(":memory:", clock=clock)
+        self.addCleanup(store.close)
+        with mock.patch("hyperloom.telemetry.store.MAX_DOCS", 5):
+            for index in range(12):
+                clock.now += 1
+                store.put("library/jobs", f"job-{index:02d}", {"i": index})
+            store.put("prefs", "library/roots", {"halo-1": []})
+            store.prune()
+        self.assertEqual([key for key, _, _ in store.items("library/jobs")], [f"job-{i:02d}" for i in range(11, 6, -1)])
+        self.assertIsNotNone(store.get("prefs", "library/roots"))
+
+
 class CorruptStoreTests(unittest.TestCase):
     def test_the_portal_starts_without_history_when_the_store_is_corrupt(self):
         """``hyperloom ui`` with a corrupt telemetry.sqlite3: the portal still serves; the pages say why there is no

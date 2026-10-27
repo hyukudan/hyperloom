@@ -28,6 +28,8 @@ import time
 TIERS = (("raw", 2, 8 * 3600), ("m1", 60, 48 * 3600), ("m15", 900, 30 * 86400))
 MAX_POINTS = 3000          # >= 30 days of 15 min buckets (2,880): a supported range is never truncated
 MAX_EVENTS = 2000
+MAX_DOCS = 10000           # documents kept per namespace by prune (the most recently written)
+BUSY_TIMEOUT_MS = 10000
 SEVERITIES = ("info", "warning", "critical")
 KINDS = ("gauge", "delta", "state")
 BASELINES = "telemetry/baseline"
@@ -75,6 +77,7 @@ class Store:
             if self.path != ":memory:":
                 self._db.execute("PRAGMA journal_mode=WAL")
             self._db.execute("PRAGMA synchronous=NORMAL")
+            self._db.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
             self._db.executescript(_SCHEMA)
             self._migrate()
         except BaseException:
@@ -112,7 +115,9 @@ class Store:
         """Run work(pending) in one transaction; caches learn new ids/descriptors only after COMMIT."""
         with self._lock:
             pending = {"series": {}, "metrics": {}}
-            self._db.execute("BEGIN")
+            # IMMEDIATE: the write lock is taken at the start (another portal process or the CLI waits for it, up
+            # to the busy timeout), never upgraded halfway through a transaction (which fails at once when busy).
+            self._db.execute("BEGIN IMMEDIATE")
             try:
                 result = work(pending)
                 self._db.execute("COMMIT")
@@ -284,6 +289,10 @@ class Store:
             for tier, _, keep in TIERS[1:]:
                 self._db.execute("DELETE FROM agg WHERE tier=? AND bucket < ?", (tier, now - keep))
             self._db.execute("DELETE FROM events WHERE id <= (SELECT MAX(id) FROM events) - ?", (MAX_EVENTS,))
+            # Documents keyed by run, job or engine ids grow without bound otherwise: each namespace keeps its newest.
+            self._db.execute("DELETE FROM docs WHERE rowid IN (SELECT rowid FROM (SELECT rowid, ROW_NUMBER() OVER "
+                             "(PARTITION BY namespace ORDER BY ts DESC, key) AS rank FROM docs) WHERE rank > ?)",
+                             (MAX_DOCS,))
 
     def names(self):
         with self._lock:
