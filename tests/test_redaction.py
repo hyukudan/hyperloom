@@ -9,6 +9,7 @@ import time
 import unittest
 
 from hyperloom import redaction
+from hyperloom.web import recipes as recipe_web
 from hyperloom.web.api import redact
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -121,6 +122,26 @@ SECRETS = {
     'app --password "correct horse battery staple"': "horse battery staple",
     "PASSWORD 'two words'": "two words",
     "redis://:s3cretpw@cache:6379/0": "s3cretpw",
+    # one shell-word reader for every value: a quoted part that starts with a blank, scheme values, escaped blanks
+    "curl -u alice:' SecretSuffix' https://example.invalid": "SecretSuffix",
+    "api_key=a' SecretSuffix'": "SecretSuffix",
+    "Bearer 'foo'bar": ("foo", "bar"),
+    'Bearer "in\\"side"': "side",
+    "Bearer ab,Zq7Xw9Kp": "Zq7Xw9Kp",
+    "Authorization: Bearer ab;Zq7Xw9Kp": "Zq7Xw9Kp",
+    "Bearer a'Zq7Xw9Kp": "Zq7Xw9Kp",
+    "Bearer 'two words'": ("two", "words"),
+    'Bearer "abc def"': ("abc", "def"),
+    "wget --user a\\ b:pass\\ word https://example.invalid": ("pass", "word"),
+    'bash -c "curl -u alice:\' Nested\'"': "Nested",
+    "it's api_key=a' Apostr0phe'": "Apostr0phe",
+    # curl in any case, its quoted option names and its bearer option
+    "CURL.EXE -u abe:UpperExe https://example.invalid": "UpperExe",
+    "Curl -u abe:M1xedCase https://example.invalid": "M1xedCase",
+    'curl "-u" "abe:Qu0tedOpt" https://example.invalid': "Qu0tedOpt",
+    '"/usr/bin/curl" "-u" "abe:Qu0tedBoth" https://example.invalid': "Qu0tedBoth",
+    'curl "--user=abe:Qu0tedGlued" https://example.invalid': "Qu0tedGlued",
+    "curl --oauth2-bearer Oauth2Tok https://example.invalid": "Oauth2Tok",
 }
 # Text that must stay exactly as it is.
 READABLE = (
@@ -147,6 +168,9 @@ READABLE = (
     "--hf-token 123456789012",
     "systemd-run --user --setenv=PYTHONPATH=/foo:/bar python3 -u app.py",
     "systemd-run --user --property=MemoryMax=16G --setenv=A=b:c true",
+    'docker run --user "1000:1000" img', "docker run --user '1000:1000' img",
+    'curl -H "Authorization: Bearer [redacted]" -d "x y" https://example.invalid',
+    "curl's manual page",
 )
 IMPLEMENTATIONS = {
     "shared": redaction.redact_text,
@@ -165,14 +189,18 @@ class SharedRulesTests(unittest.TestCase):
             self.assertEqual(text.count(marker), 1, path)
             return text[text.index(marker):text.index(end) + len(end)]
         self.assertEqual(block(NODE_FILE), block(ROOT / "hyperloom" / "redaction.py"))
-        # The compiled rules too: pattern source and flags (each names the value it hides: group v), and the code.
+        # The compiled rules too: pattern source, flags and groups, what ends each value and which values stay,
+        # and the code of every function of the block.
         compiled = lambda p: (p.pattern, p.flags, tuple(p.groupindex))
-        self.assertEqual([compiled(p) for p in node.SECRET_PATTERNS], [compiled(p) for p in redaction.SECRET_PATTERNS])
+        rule = lambda r: (compiled(r[0]), r[1], r[2].__code__.co_code)
+        self.assertEqual([rule(r) for r in node.SECRET_PATTERNS], [rule(r) for r in redaction.SECRET_PATTERNS])
         self.assertEqual([tuple(map(compiled, rule)) for rule in node.GLUED_PASSWORD],
                          [tuple(map(compiled, rule)) for rule in redaction.GLUED_PASSWORD])
-        for name in ("CURL_COMMAND", "CURL_OPTION"):
+        for name in ("CURL_COMMAND", "CURL_OPTION", "_LEXEME", "_DOUBLE_STRING", "_KEPT_PLAIN", "_KEPT_COUNT"):
             self.assertEqual(compiled(getattr(node, name)), compiled(getattr(redaction, name)), name)
-        for name in ("_word", "_glued_password", "_curl_users", "redact_text"):
+        functions = re.findall(r"^def (\w+)", block(NODE_FILE), re.M)
+        self.assertIn("_shell_word", functions)
+        for name in functions:
             self.assertEqual(getattr(node, name).__code__.co_code, getattr(redaction, name).__code__.co_code, name)
         # The node tool stays self-contained: it never imports the hyperloom package.
         self.assertIsNone(re.search(r"^\s*(?:from|import)\s+hyperloom\b", NODE_FILE.read_text(encoding="utf-8"), re.M))
@@ -235,7 +263,36 @@ class SharedRulesTests(unittest.TestCase):
              ["systemd-run", "--user", "--scope", "-p", "MemoryMax=16G", "curl", "-u", "[redacted]"]),
             (["sshpass", "-p", "pw", "curl", "-u", "a:b"], ["sshpass", "-p", "[redacted]", "curl", "-u", "[redacted]"]),
             (["make", "&&", "mysql", "-pS3"], ["make", "&&", "mysql", "-p[redacted]"]),
-            (["echo", "mysql", "-pretty"], ["echo", "mysql", "-pretty"]),
+            # Any argument that names a client turns it on until the next separator (an argument list that only
+            # mentions mysql loses a glued -p value: hiding too much, never too little).
+            (["echo", "mysql", "-pretty"], ["echo", "mysql", "-p[redacted]"]),
+            (["sudo", "-n", "curl", "-u", "alice:Secret"], ["sudo", "-n", "curl", "-u", "[redacted]"]),
+            (["sudo", "--user", "root", "curl", "-u", "a:S"], ["sudo", "--user", "root", "curl", "-u", "[redacted]"]),
+            (["env", "--unset", "X", "curl", "-u", "a:S"], ["env", "--unset", "X", "curl", "-u", "[redacted]"]),
+            (["sudo", "-iu", "root", "curl", "-u", "a:S"], ["sudo", "-iu", "root", "curl", "-u", "[redacted]"]),
+            (["ssh", "host", "curl", "-u", "a:S"], ["ssh", "host", "curl", "-u", "[redacted]"]),
+            (["sshpass", "-p", "pw", "ssh", "h", "curl", "-u", "a:S"],
+             ["sshpass", "-p", "[redacted]", "ssh", "h", "curl", "-u", "[redacted]"]),
+            (["docker", "exec", "c", "curl", "-u", "a:S"], ["docker", "exec", "c", "curl", "-u", "[redacted]"]),
+            (["kubectl", "exec", "p", "--", "curl", "-u", "a:S"],
+             ["kubectl", "exec", "p", "--", "curl", "-u", "[redacted]"]),
+            (["A=1", "curl", "-u", "a:S"], ["A=1", "curl", "-u", "[redacted]"]),
+            (["timeout", "--signal", "KILL", "10", "curl", "-u", "a:S"],
+             ["timeout", "--signal", "KILL", "10", "curl", "-u", "[redacted]"]),
+            (["xargs", "-I", "{}", "curl", "-u", "a:S", "{}"], ["xargs", "-I", "{}", "curl", "-u", "[redacted]", "{}"]),
+            (["echo", "x;", "curl", "-u", "a:S"], ["echo", "x;", "curl", "-u", "[redacted]"]),
+            (["CURL.EXE", "-u", "a:S"], ["CURL.EXE", "-u", "[redacted]"]),
+            # A separator that is an option's value does not end the command.
+            (["curl", "-o", ";", "-u", "a:S"], ["curl", "-o", ";", "-u", "[redacted]"]),
+            (["curl", "-d", "&&", "-u", "a:S"], ["curl", "-d", "&&", "-u", "[redacted]"]),
+            # Glued long options and their values read as the text rules read them.
+            (["curl", "--user=alice:Secret", "--proxy-user=bob:ProxySecret"],
+             ["curl", "--user=[redacted]", "--proxy-user=[redacted]"]),
+            (["app", "--api-key=k1", "--max-tokens=512", "--hf-token=tk_x", "--user=1000:1000"],
+             ["app", "--api-key=[redacted]", "--max-tokens=512", "--hf-token=[redacted]", "--user=1000:1000"]),
+            (["curl", "--oauth2-bearer", "S"], ["curl", "--oauth2-bearer", "[redacted]"]),
+            (["docker", "run", "--user", '"1000:1000"', "--user", "'kim:pw'", "img"],
+             ["docker", "run", "--user", '"1000:1000"', "--user", "[redacted]", "img"]),
             (["systemd-run", "--user", "--setenv=PYTHONPATH=/foo:/bar", "python3", "-u", "app.py"],
              ["systemd-run", "--user", "--setenv=PYTHONPATH=/foo:/bar", "python3", "-u", "app.py"]),
             (["C:\\tools\\curl.exe", "-#u", "a:b", "-Zuc:d"],
@@ -251,6 +308,11 @@ class SharedRulesTests(unittest.TestCase):
                 self.assertEqual(redaction.redact_argv(argv), expected)
                 self.assertEqual(redact(argv), expected)
                 self.assertEqual(redact({"argv": argv})["argv"], expected)
+                # Recipe results: keys and argv only (text=False), so the argv rules alone must hide them (all but a
+                # bare token after an environment name, which only the text rules know).
+                if "HF_TOKEN=" + HF not in argv:
+                    self.assertEqual(recipe_web.redacted({"result": {"argv": argv}}, redact)["result"]["argv"],
+                                     expected)
         self.assertEqual(redaction.redact_argv([1, None, "x"]), [1, None, "x"])       # non-text items kept
         self.assertEqual(redact("curl -u x:y " + HF, text=False), "curl -u x:y " + HF)     # documents' prose
 
@@ -262,13 +324,16 @@ class SharedRulesTests(unittest.TestCase):
                  "Bearer ", "hf_", "\\\n", "x--key", "key=", "A_", "_", "sshpass -f '", "sshpass -d ",
                  "sshpass\n -f ", 'sshpass -P "', "sshpass -e ", "mysql -P3 ", "a_b_", "pad_token: <", "redis://:",
                  '"\\"', "'\\'\"", '\\"', 'curl "\\', "x\\ ", "curl -u'a'", "password -U ", 'key="', "key='x",
-                 'key="\\', "key=a'", 'key=a"b ', "--user '", "--user a'", '"/curl', "'curl\"", '"C:\\x\\', "Bearer '")
+                 'key="\\', "key=a'", 'key=a"b ', "--user '", "--user a'", '"/curl', "'curl\"", '"C:\\x\\', "Bearer '",
+                 " '", "a' ", "x='", "\"'", "Bearer a'", "-u a:' ", "\" -u ", "'-u' ", "it's ", "=\"", "CURL -u ",
+                 "--oauth2-bearer ", '"\\', "\\'", ": '", "=' x'")
         for name, implementation in (("shared", redaction.redact_text), ("node", node.redact)):
             for unit in units:
                 self.assert_linear(name, unit, lambda size: implementation((unit * (size // len(unit) + 1))[:size]))
         # Argument lists: every item of a portal list goes through them; long items whose suffix fails a pattern.
         for name, implementation in (("shared", redaction.redact_argv), ("portal", redact)):
-            for unit in ("--key", "--token", "-u", "-s", "/mysql", "mariadb-", "--", "a:", "-p"):
+            for unit in ("--key", "--token", "-u", "-s", "/mysql", "mariadb-", "--", "a:", "-p", "--user=a:",
+                         "--api-key=", "--max-tokens=1", "'", '"', "://curl", "curl.exe"):
                 def run(size, unit=unit):
                     item = (unit * (size // len(unit) + 1))[:size] + "!"
                     implementation(["curl", item, "-u", item, "--user", item, "sshpass", "-p", item, "mysql", item])
