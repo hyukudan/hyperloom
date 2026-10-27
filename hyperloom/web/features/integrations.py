@@ -704,12 +704,24 @@ def stream_content(api):
 
 
 _stream_lock = threading.Lock()
-_stream_clients = {}        # (id(server), id(api)) -> clients now
+_stream_clients = {}        # (id(server), id(api)) -> [threading.Event: set when that connection must end], oldest first
 
 
 def stream_clients(api):
     with _stream_lock:
-        return sum(count for (_, owner), count in _stream_clients.items() if owner == id(api))
+        return sum(len(clients) for (_, owner), clients in _stream_clients.items() if owner == id(api))
+
+
+def _cross_origin(handler):
+    """Why a stream request is not the portal's own page: an Origin other than the portal's, or a browser that
+    says the request comes from another site. A same-origin EventSource sends no Origin; tools send neither."""
+    origins = handler.headers.get_all("Origin", [])
+    if origins and origins != ["http://" + handler.headers["Host"]]:
+        return "Origin must equal the UI origin"
+    site = handler.headers.get_all("Sec-Fetch-Site", [])
+    if site and site != ["same-origin"] and site != ["none"]:
+        return "the stream is for the portal's own pages"
+    return None
 
 
 def _refuse(handler, status, message, extra=(), head=False):
@@ -730,7 +742,8 @@ def _refuse(handler, status, message, extra=(), head=False):
 
 def serve_stream(handler, head=False, *, interval=None, max_s=None, heartbeat=None, sleep=time.sleep):
     """GET /hyperloom/api/stream on the portal handler (Host and request target already checked by the server).
-    At most STREAM_MAX_CLIENTS per portal; each connection ends after STREAM_MAX_S with an ``end`` event; an event
+    At most STREAM_MAX_CLIENTS per portal (a new page ends the oldest); a request from another origin is refused;
+    each connection ends after STREAM_MAX_S with an ``end`` event; an event
     is sent when the projection changes, a comment heartbeat otherwise; nothing is written anywhere."""
     interval = STREAM_INTERVAL_S if interval is None else interval
     max_s = STREAM_MAX_S if max_s is None else max_s
@@ -741,15 +754,20 @@ def serve_stream(handler, head=False, *, interval=None, max_s=None, heartbeat=No
     if urlsplit(handler.path).query:
         _refuse(handler, 400, "the stream takes no query arguments")
         return
+    refused = _cross_origin(handler)
+    if refused:
+        _refuse(handler, 403, refused)
+        return
     api = handler.server.api
     key = (id(handler.server), id(api))
+    ended = threading.Event()
     with _stream_lock:
-        busy = _stream_clients.get(key, 0) >= STREAM_MAX_CLIENTS
-        if not busy:
-            _stream_clients[key] = _stream_clients.get(key, 0) + 1
-    if busy:
-        _refuse(handler, 503, f"at most {STREAM_MAX_CLIENTS} stream clients", (("Retry-After", "5"),))
-        return
+        clients = _stream_clients.setdefault(key, [])
+        # At most STREAM_MAX_CLIENTS: a new page wins over the oldest connection (which ends with an ``end`` event at
+        # its next step), so connections left open by closed or stuck tabs never lock the portal's pages out.
+        while len(clients) >= STREAM_MAX_CLIENTS:
+            clients.pop(0).set()
+        clients.append(ended)
     try:
         handler.send_response(200)
         handler.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -770,6 +788,9 @@ def serve_stream(handler, head=False, *, interval=None, max_s=None, heartbeat=No
         last, seq = None, 0
         while True:
             now = time.monotonic()
+            if ended.is_set():
+                write('event: end\ndata: {"why": "a newer page took this stream slot; reconnect"}\n\n')
+                return
             if now - started >= max_s:
                 write('event: end\ndata: {"why": "maximum connection time reached; reconnect"}\n\n')
                 return
@@ -797,9 +818,11 @@ def serve_stream(handler, head=False, *, interval=None, max_s=None, heartbeat=No
         return          # the client went away (reset, broken pipe or a write timeout)
     finally:
         with _stream_lock:
-            _stream_clients[key] -= 1
-            if not _stream_clients[key]:
-                del _stream_clients[key]
+            clients = _stream_clients.get(key, [])
+            if ended in clients:
+                clients.remove(ended)
+            if not clients:
+                _stream_clients.pop(key, None)
 
 
 # -- CSV export (F46) -----------------------------------------------------------------------------------------------

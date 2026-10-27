@@ -66,9 +66,9 @@ class StreamTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def open(self, path="/hyperloom/api/stream", method="GET", host=None):
+    def open(self, path="/hyperloom/api/stream", method="GET", host=None, headers=None):
         connection = http.client.HTTPConnection(self.server.server_address[0], self.port, timeout=5)
-        connection.request(method, path, headers={"Host": host or self.host})
+        connection.request(method, path, headers={"Host": host or self.host, **(headers or {})})
         self.addCleanup(connection.close)
         return connection, connection.getresponse()
 
@@ -163,8 +163,14 @@ class StreamTests(unittest.TestCase):
             self.events(response, 1)
             open_streams.append((connection, response))
         self.assertEqual(integrations.stream_clients(self.api), integrations.STREAM_MAX_CLIENTS)
-        _, response = self.open()
-        self.assertEqual((response.status, response.getheader("Retry-After")), (503, "5"))
+        # Streams left open (closed or stuck tabs) never lock a page out: a new one ends the oldest.
+        _, newest = self.open()
+        self.assertEqual(newest.status, 200)
+        oldest = open_streams[0][1]
+        ending = [e for e in self.events(oldest, 50) if e.get("event") == "end"]
+        self.assertIn("newer page", json.loads(ending[0]["data"])["why"])
+        self.assertEqual(integrations.stream_clients(self.api), integrations.STREAM_MAX_CLIENTS)
+        newest.close()
         for connection, response in open_streams:
             response.close()
             connection.close()
@@ -173,6 +179,15 @@ class StreamTests(unittest.TestCase):
             time.sleep(0.05)
         self.assertEqual(integrations.stream_clients(self.api), 0)      # slots freed when clients go away
         _, response = self.open()
+        self.assertEqual(response.status, 200)
+
+    def test_another_origin_is_refused(self):
+        for headers in ({"Origin": "http://elsewhere.example"}, {"Origin": "null"},
+                        {"Sec-Fetch-Site": "cross-site"}, {"Sec-Fetch-Site": "same-site"}):
+            with self.subTest(headers=headers):
+                _, response = self.open(headers=headers)
+                self.assertEqual(response.status, 403)
+        _, response = self.open(headers={"Origin": self.server.origin, "Sec-Fetch-Site": "same-origin"})
         self.assertEqual(response.status, 200)
 
     def test_connection_ends_after_its_maximum_time(self):
