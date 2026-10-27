@@ -7,8 +7,9 @@ hyperloom metrics dump [profile]                          # print the exposition
 hyperloom metrics serve [profile] [--listen 127.0.0.1:18701]   # serve GET /metrics
 ```
 
-Both read the launches of one configuration: `--config FILE` (default: the default configuration) and its telemetry
-store. `--all-configs` exports every configuration's launches, including states that record no configuration.
+Both read the launches of one configuration, `--config FILE` (default: the default configuration), plus launch states
+that record no configuration, and that configuration's telemetry store. `--all-configs` exports every configuration's
+launches.
 
 ## Sources
 

@@ -1381,15 +1381,17 @@ def log_machine(profile, process, read=None):
     return lease.get("process_machines", {}).get(name, lease["machine"])
 
 
-def logs(profile, process, tail=100, config_path=None, read=None):
+def logs(profile, process, tail=100, config_path=None, read=None, unknown=False):
     """A process's recent output; with ``config_path``, only of a launch of that configuration (`owns`): another
-    configuration's launch (or one without the record) is refused before any read or call. ``read``: as in
-    ``status``."""
+    configuration's launch (or one without the record, unless ``unknown``: the command line, which lists those as
+    `status` does) is refused before any read or call. ``read``: as in ``status``."""
     if type(tail) is not int or not 1 <= tail <= 65536:
         raise ValueError("tail must be in 1..65536")
     state = _read(_state_path(profile))
-    if config_path is not None and not owns(state, config_path):
-        raise OrchestrationError(f"{profile}: launched from another configuration")
+    kind = ownership(state, config_path) if config_path is not None else "own"
+    if kind == "other" or (kind == "unknown" and not unknown):
+        raise OrchestrationError(f"{profile}: launched from another configuration" if kind == "other" else
+                                 f"{profile}: {UNKNOWN_CONFIG}")
     local = {"router": state.get("router") or {}, "prefill": state.get("prefill_service") or {}}.get(process, {})
     if local.get("directory") and (process == "prefill" or local.get("machine") == "local"):
         directory = Path(local["directory"])

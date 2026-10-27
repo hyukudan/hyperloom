@@ -555,10 +555,11 @@ def build_parser(parser_class=argparse.ArgumentParser):
     metrics.add_argument("--listen", default="127.0.0.1:18701", help="loopback IP:port (serve only)")
     # Launch states of every configuration share one runtime directory: these commands show the --config one's.
     for command in (status, logs, metrics):
-        command.add_argument("--config", type=Path, default=config_path(),
-                             help="show only the launches of this configuration (default: the default one)")
-        command.add_argument("--all-configs", action="store_true",
-                             help="show every configuration's launches (and those that record none)")
+        scope = command.add_mutually_exclusive_group()
+        scope.add_argument("--config", type=Path, default=config_path(),
+                           help="show only the launches of this configuration (default: the default one) and "
+                                "those that record none")
+        scope.add_argument("--all-configs", action="store_true", help="show every configuration's launches")
     service = commands.add_parser("service", help="non-lab systemd --user units (lab_mode: false only)")
     service.add_argument("operation", choices=("install", "start", "stop", "status", "remove"))
     service.add_argument("profile")
@@ -861,7 +862,7 @@ def main(argv=None):
             _json(_module("hyperloom.orchestrate").status(args.profile, config_path=_scope(args)))
         elif args.command == "logs":
             _json(_module("hyperloom.orchestrate").logs(args.profile, args.process, args.tail,
-                                                        config_path=_scope(args)))
+                                                        config_path=_scope(args), unknown=True))
         elif args.command == "metrics":
             exporter = _module("hyperloom.metrics_export")
             if args.operation == "dump":

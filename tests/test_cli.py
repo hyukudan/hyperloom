@@ -364,14 +364,17 @@ class ConfigScopeTests(unittest.TestCase):
         status, _, err = self.invoke("logs", "pb", "router")
         self.assertEqual(status, 1)
         self.assertIn("launched from another configuration", err)
-        status, _, err = self.invoke("logs", "pb", "router", "--all-configs")
-        self.assertEqual(status, 1)
-        self.assertNotIn("another configuration", err)                # read: this launch has no router lease
-        self.assertIn("choose a machine id", err)
+        for args in (("logs", "pb", "router", "--all-configs"), ("logs", "legacy", "router")):
+            status, _, err = self.invoke(*args)                       # read: these launches have no router lease
+            self.assertEqual(status, 1)
+            self.assertNotIn("configuration", err)
+            self.assertIn("choose a machine id", err)
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            cli.main(["status", "--config", str(self.theirs), "--all-configs"])     # one or the other
 
     def test_metrics_dump_exports_only_the_current_configuration_unless_all_configs(self):
         # The routers' saved endpoint is a closed loopback port: every source is down, labelled by its profile.
-        for args, expected in ((("metrics", "dump"), {"pa"}), (("metrics", "dump", "--all-configs"), {"pa", "pb", "legacy"})):
+        for args, expected in ((("metrics", "dump"), {"pa", "legacy"}), (("metrics", "dump", "--all-configs"), {"pa", "pb", "legacy"})):
             _, out, _ = self.invoke(*args)
             profiles = {line.split('profile="')[1].split('"')[0] for line in out.splitlines()
                         if line.startswith("hyperloom_source_up") and 'profile="' in line}

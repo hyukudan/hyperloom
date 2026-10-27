@@ -140,7 +140,7 @@ POSIX-only parts are skipped on Windows, and the pure logic is tested everywhere
 - `hyperloom up PROFILE [--router local|MACHINE] [--node ID ...] [--device MACHINE:DEVICE ...] [--deadline S] [--approval-ref TEXT --approval-lease S --approval-end ISO]`
 - `hyperloom down PROFILE`
 - `hyperloom down --force PROFILE` recovers saved leases after a controller crash, including when an old lock file remains. Both forms can stop a still-waiting `up`: they write a stop marker, cancel queued leases and stop running ones without waiting for the `up` lock.
-- `hyperloom status [PROFILE] [--config FILE | --all-configs]` lists the launches of `--config` (default: the default configuration) and, marked, states that record no configuration; another configuration's profile answers stopped with the reason. `--all-configs` reads every configuration's. `logs` and `metrics` take the same two options (`logs` reads only a launch of `--config` unless `--all-configs`).
+- `hyperloom status [PROFILE] [--config FILE | --all-configs]` lists the launches of `--config` (default: the default configuration) and, marked, states that record no configuration; another configuration's profile answers stopped with the reason. `--all-configs` reads every configuration's. `logs` and `metrics` take the same two options (another configuration's launch only with `--all-configs`).
 - `hyperloom endpoint PROFILE` prints the saved router URL and its client key name (never the key).
 - `hyperloom logs PROFILE PROCESS [--tail N] [--config FILE | --all-configs]`
 - `hyperloom keys rotate NAME`

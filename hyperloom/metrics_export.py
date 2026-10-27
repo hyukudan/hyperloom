@@ -107,12 +107,12 @@ def _get(endpoint, suffix, text=False):
 
 
 def saved_states(config_path=None):
-    """{profile: saved launch state} from orchestrate's state files: with ``config_path``, only the launches of that
-    configuration (`orchestrate.launch_states`: another configuration's, or one without the record, is left out);
-    None reads every configuration's. An unreadable state is skipped."""
+    """{profile: saved launch state} from orchestrate's state files: with ``config_path``, the launches of that
+    configuration and those without the record (`orchestrate.launch_states`, as `status` lists them; another
+    configuration's is left out); None reads every configuration's. An unreadable state is skipped."""
     if config_path is not None:
         from . import orchestrate
-        return orchestrate.launch_states(config_path)
+        return orchestrate.launch_states(config_path, unknown=True)
     result = {}
     for path in sorted(secrets.runtime_dir().glob("up-*.json")):
         try:
