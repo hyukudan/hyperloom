@@ -376,7 +376,7 @@
     rerender();
     const current = () => generation === R.start.generation;
     try {
-      const doc = await post("recipes/ready", {recipe: id, ...(R.start.profile ? {profile: R.start.profile} : {})});
+      const doc = await post("recipes/ready", {recipe: id, ...(R.start.profile ? {profile: R.start.profile} : {})}, HARDWARE_S);
       if (current()) R.start.ready = doc;
     } catch (error) {
       if (current()) R.start.error = error.message;

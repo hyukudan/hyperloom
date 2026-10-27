@@ -7,7 +7,6 @@ so it is as old as that probe. What only `up` itself can check is listed under `
 from __future__ import annotations
 
 from pathlib import Path
-import tempfile
 import time
 
 from .reader import RecipeError
@@ -127,13 +126,14 @@ def check(cluster, ref, profile=None, *, config=None, facts=None, now=None):
                                    f"preview ({core.backend(cluster).label}): {why or 'matches'}; up's decision "
                                    f"needs step {gate['step']} (probe {name}, {when})", probe_fix if why else None))
             else:
-                with tempfile.TemporaryDirectory(prefix="hl-recipe-ready-") as directory:
-                    try:
-                        prepared = launch.prepare(cluster, profile, launch.Options(recipe=str(path)), router="local",
-                                                  vram_cap_gib=None, state_dir=directory, source=source)
-                    except RecipeError as exc:
-                        steps.append(_step("hardware", "hardware and up's decision (saved probe)", BLOCKED,
-                                           f"{exc} (probe {name}, {when})", probe_fix))
+                # The dry run writes nothing: its route table only names a state file, which is never created.
+                state_dir = service.runtime_dir() / "recipe-ready-dry-run"
+                try:
+                    prepared = launch.prepare(cluster, profile, launch.Options(recipe=str(path)), router="local",
+                                              vram_cap_gib=None, state_dir=state_dir, source=source)
+                except RecipeError as exc:
+                    steps.append(_step("hardware", "hardware and up's decision (saved probe)", BLOCKED,
+                                       f"{exc} (probe {name}, {when})", probe_fix))
                 if prepared is not None:
                     steps.append(_step("hardware", "hardware and up's decision (saved probe)", WARN if stale else OK,
                                        f"probe {name}, {when}" + (": probe again before up" if stale else ""),
@@ -200,12 +200,16 @@ def _with_source(key, figure, rows):
     prompt = int(key[5:-3]) * 1024 if key.startswith("ttft_") and key.endswith("k_s") else None
     same = [r for r in rows if all(r.get(k) == figure.get(k) for k in ("route", "value", "unit", "basis", "label"))
             and (prompt is None or r.get("at_prompt_tokens") == prompt)]
-    evidence = []
+    evidence, unsourced = [], not same
     for row in same:
         ids = row.get("evidence")
-        evidence += [ids] if isinstance(ids, str) else list(ids or [])
+        ids = [ids] if isinstance(ids, str) else ids if isinstance(ids, list) else []
+        # A candidate row without evidence, or with an id that is not a string, leaves the figure unsourced.
+        if not ids or not all(isinstance(i, str) for i in ids):
+            unsourced = True
+        evidence += [i for i in ids if isinstance(i, str)]
     return dict(figure, scope=same[0].get("scope") if len(same) == 1 else None,
-                evidence=list(dict.fromkeys(evidence)) or None)
+                evidence=list(dict.fromkeys(evidence)) or None, unsourced=unsourced)
 
 
 def _figure(key, figure, evidence):
@@ -214,8 +218,8 @@ def _figure(key, figure, evidence):
     ids = figure.get("evidence")
     ids = [ids] if isinstance(ids, str) else [i for i in ids or [] if isinstance(i, str)]
     sources = [{"id": i, "ref": evidence[i].get("ref") if isinstance(evidence.get(i), dict) else None} for i in ids]
-    measured = (figure.get("basis") == "measured" and not figure.get("inherited") and bool(sources)
-                and all(s["ref"] for s in sources))
+    measured = (figure.get("basis") == "measured" and not figure.get("inherited") and not figure.get("unsourced")
+                and bool(sources) and all(s["ref"] for s in sources))
     return dict(figure, key=key, sources=sources, measured=measured)
 
 

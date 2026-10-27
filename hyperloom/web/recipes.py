@@ -379,7 +379,7 @@ class Request:
         self.argv = service.argv(operation, arguments, config=config, stdin=self.stdin is not None)
         if edits is not None:
             self._edits(service, operation, arguments, edits)
-        hardware = operation in ("pick", "select", "plan", "probe") or (
+        hardware = operation in ("pick", "select", "plan", "probe", "ready") or (
             operation in ("validate", "explain") and arguments.get("profile"))
         self.deadline_s = HARDWARE_DEADLINE_S if hardware else OFFLINE_DEADLINE_S
 

@@ -28,6 +28,7 @@ class ReadyTests(unittest.TestCase):
             with mock.patch.object(render, "router_policies", return_value=ROUTES), pinned_memory():
                 result = ready.check(cluster, "ds-user", "ds41-rtx")
             self.assertTrue(result["ready"], result["steps"])
+            self.assertFalse((service.runtime_dir() / "recipe-ready-dry-run").exists())   # the dry run writes nothing
             self.assertIn(states(result)["service"], ("ok", "warn"))         # warn: the fixture caps the host budget
             self.assertEqual(states(result)["hardware"], "ok")
             self.assertEqual(states(result)["core"], "warn")                # the stub reader: not production
@@ -204,6 +205,12 @@ class MatrixTests(unittest.TestCase):
         # Two rows the same figure can come from: measured only when both sources resolve.
         twins = [dict(rows[0]), dict(rows[0], evidence="eight")]
         self.assertFalse(ready._figure("ttft_1k_s", ready._with_source("ttft_1k_s", figure, twins), evidence)["measured"])
+        # A twin without evidence does not borrow the other's source.
+        bare = [dict(rows[0], evidence=None), dict(rows[0])]
+        self.assertFalse(ready._figure("ttft_1k_s", ready._with_source("ttft_1k_s", figure, bare), evidence)["measured"])
+        # Malformed evidence (not a string id) makes the figure unmeasured, never an error.
+        odd = [dict(rows[0], evidence=["one", {"ref": "x"}])]
+        self.assertFalse(ready._figure("ttft_1k_s", ready._with_source("ttft_1k_s", figure, odd), evidence)["measured"])
 
     def test_the_matrix_get_starts_no_process(self):
         import subprocess
@@ -239,6 +246,7 @@ class MatrixTests(unittest.TestCase):
             self.assertIn("recipes/ready", recipe_web.QUERIES)
             request = recipe_web.Request("recipes/ready", {"recipe": QWEN, "profile": "qwen-replicas"}, config=env.config)
             self.assertEqual(request.argv[:4], ["recipe", "ready", QWEN, "qwen-replicas"])
+            self.assertEqual(request.deadline_s, recipe_web.HARDWARE_DEADLINE_S)        # it runs up's dry run
             with self.assertRaises(ValueError):
                 recipe_web.Request("recipes/ready", {"recipe": "../x.toml"}, config=env.config)
             with self.assertRaises(ValueError):
