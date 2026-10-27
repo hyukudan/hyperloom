@@ -39,7 +39,7 @@ refuse. An absent `pc.turn_ledger` configures no ledger signal. PRO identities c
 prefill-service profile devices and bound placement anchors. Every derived PRO is checked. A conflicting probe
 without any reliable PRO identity refuses `PL_E_GRANT`; omitting the optional UUID never disables live checks.
 A configured ledger that disappears or becomes unreadable refuses; it cannot silently disable supervision.
-Checks never acquire the PRO lock or write the ledger or settings.
+Checks never acquire the PRO lock or write the ledger or settings. The ledger path is captured when a turn is admitted: adding `pc.turn_ledger` to the configuration during a running turn takes effect at the next admission.
 
 After acquiring all selected locks, a placement helper skips the lock check for its own PROs. A legacy PC-BIG
 helper cannot acquire the same lock until the turn releases it. PRO lock acquisition preserves the configured UUID
