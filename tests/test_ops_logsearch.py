@@ -209,6 +209,12 @@ class NodeSearchTests(unittest.TestCase):
         self.assertEqual(self.run_search(text="case")["results"], [])
         self.assertIsNotNone(node.protected(Path(os.path.realpath(self.tree.root / ".SSH"))))
 
+    def test_an_oversized_repetition_is_a_refusal_not_a_crash(self):
+        for pattern in ("a{4294967296}", "a{1,4294967296}", "(?:a{99999}){99999}"):
+            with self.subTest(pattern=pattern):
+                result = self.run_search(regex=pattern)
+                self.assertIn("error", result)
+
     def test_dot_files_and_dot_directories_are_never_searched(self):
         (self.tree.root / ".netrc").write_text("machine lab login ERROR-netrc password x\n")
         (self.tree.root / ".env").write_text("ERROR-env AWS_SECRET_ACCESS_KEY=abc\n")

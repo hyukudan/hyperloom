@@ -96,7 +96,7 @@ def check_regex(pattern):
             raise ValueError("a quantified group is not accepted (quantify single characters or classes)")
     try:
         return re.compile(pattern)
-    except re.error as exc:
+    except (re.error, OverflowError, RecursionError) as exc:      # a{4294967296}: OverflowError, not re.error
         raise ValueError("invalid regex: " + str(exc)) from None
 
 
