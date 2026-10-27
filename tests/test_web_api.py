@@ -701,7 +701,8 @@ class APITests(unittest.TestCase):
                  "curl -sSu bob:Pa55-w0rd https://example.invalid": "Pa55-w0rd",
                  "curl --user=dave:Sw0rdfish https://example.invalid": "Sw0rdfish",
                  "curl -U frank:Pr0xyPw -x http://proxy.invalid https://example.invalid": "Pr0xyPw",
-                 "wget --user hank:C0mbined https://example.invalid": "C0mbined"}
+                 "wget --user hank:C0mbined https://example.invalid": "C0mbined",
+                 "curl -H 'Cookie: a=1; b=2' -u ivy:C00kieJar https://example.invalid": "C00kieJar"}
         for line, secret in lines.items():
             with self.subTest(line=line):
                 self.assertNotIn(secret, json.dumps(redact({"stderr": line, "lines": [line]})))
@@ -713,12 +714,12 @@ class APITests(unittest.TestCase):
         self.assertEqual(value["env"], ["HF_HUB_ENABLE_HF_TRANSFER=1", "[redacted]"])
         self.assertEqual((value["unit"], value["python"]), (["systemd-run", "--user", "--scope", "true"],
                                                             ["python3", "-u", "serve.py"]))
-        self.assertEqual(redact(["curl", "-ualice:Wonder7land", "-sSUbob:Pr0xy", "https://example.invalid"]),
+        self.assertEqual(redact(["curl", "-ubruce:Wonder7land", "-sSUbob:Pr0xy", "https://example.invalid"]),
                          ["curl", "-u[redacted]", "-sSU[redacted]", "https://example.invalid"])     # glued values
         self.assertEqual(redact(["sudo", "/usr/bin/curl", "-u", "carol:hunter4"]),
                          ["sudo", "/usr/bin/curl", "-u", "[redacted]"])                          # behind a wrapper
-        self.assertEqual(redact(["docker", "run", "--user", "1000:1000", "img"]),
-                         ["docker", "run", "--user", "[redacted]", "img"])     # argv: a --user name:value is hidden
+        self.assertEqual(redact(["docker", "run", "--user", "1000:1000", "--user", "kim:pw", "img"]),
+                         ["docker", "run", "--user", "1000:1000", "--user", "[redacted]", "img"])  # a uid:gid stays
         # Token counts and token-id data are not credentials (unchanged), nor are prose and hf_ library names.
         kept = {"prompt_tokens": 512, "token_ids": [1, 2, 3], "note": "hf_transfer on, generated 512 tokens",
                 "run": "docker run --user 1000:1000 img; curl -sS https://example.invalid | python3 -u serve.py",
