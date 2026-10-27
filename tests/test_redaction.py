@@ -82,6 +82,18 @@ SECRETS = {
     "curl https://example.invalid \\\n  -u pat:C0ntinued": "C0ntinued",
     "curl's -u quinn:Ap0strophe": "Ap0strophe",
     "curl -#u wes:H4sh https://example.invalid": "H4sh",
+    # shell words: escapes inside double quotes, concatenated quoted and unquoted parts
+    'curl -H "X: \\"a;b\\"" -u xia:SuperSecret https://example.invalid': "SuperSecret",
+    "curl -H a\\;b -u yan:Esc4ped https://example.invalid": "Esc4ped",
+    "curl -u'zoe:foo'bar https://example.invalid": ("foo", "bar"),
+    'curl -u "amy:in\\"side" https://example.invalid': "side",
+    # rules combined on one line: a command's options are read before a name rule can take one as a value
+    "curl -u alice:password -U bob:SecondSecret https://example.invalid": ("alice:password", "SecondSecret"),
+    "curl --user ben:passwd --proxy-user cat:Pr0xyThird https://example.invalid": ("ben:passwd", "Pr0xyThird"),
+    "export DB_PASSWORD=Fir5t && curl -u dan:Sec0nd -U eli:Th1rd https://example.invalid": ("Fir5t", "Sec0nd", "Th1rd"),
+    "mysql -u root -ppassword -e 'select 1' && curl --user fay:Mix3d https://example.invalid": ("-ppassword", "Mix3d"),
+    "HF_TOKEN " + HF + " curl -u gus:Aft3r https://example.invalid": (HF, "Aft3r"),
+    "sshpass -p token ssh host; curl -u hal:Tok3nPw https://example.invalid": ("-p token", "Tok3nPw"),
     "command -v curl >/dev/null&&curl -u rae:Gl0edAnd https://example.invalid": "Gl0edAnd",
     "type curl;curl -u sam:Gl0edSemi https://example.invalid": "Gl0edSemi",
     "curl -sS https://a.invalid|curl -u tim:Gl0edPipe -T - https://b.invalid": "Gl0edPipe",
@@ -119,6 +131,8 @@ READABLE = (
     "tokenizer.ggml.bos_token_id u32 = 151643", "key_cache shape [32, 8192]", "token_ids: [1, 2, 3]",
     "pad_token: <|endoftext|>", "attn_mask_key=None", "SamplingParams(token=None)", "the token 12345678 was sampled",
     "--hf-token 123456789012",
+    "systemd-run --user --setenv=PYTHONPATH=/foo:/bar python3 -u app.py",
+    "systemd-run --user --property=MemoryMax=16G --setenv=A=b:c true",
 )
 IMPLEMENTATIONS = {
     "shared": redaction.redact_text,
@@ -137,13 +151,12 @@ class SharedRulesTests(unittest.TestCase):
             self.assertEqual(text.count(marker), 1, path)
             return text[text.index(marker):text.index(end) + len(end)]
         self.assertEqual(block(NODE_FILE), block(ROOT / "hyperloom" / "redaction.py"))
-        # The compiled rules too: pattern source and flags, and each replacement.
-        compiled = lambda p: (p.pattern, p.flags)
-        self.assertEqual([(compiled(p), r) for p, r in node.SECRET_PATTERNS],
-                         [(compiled(p), r) for p, r in redaction.SECRET_PATTERNS])
-        self.assertEqual([(compiled(c), compiled(o), wide) for c, o, wide in node.GLUED_PASSWORD],
-                         [(compiled(c), compiled(o), wide) for c, o, wide in redaction.GLUED_PASSWORD])
-        for name in ("CURL_COMMAND", "CURL_OPTION", "USER_OPTION", "HF_TOKEN"):
+        # The compiled rules too: pattern source and flags (each names the value it hides: group v), and the code.
+        compiled = lambda p: (p.pattern, p.flags, tuple(p.groupindex))
+        self.assertEqual([compiled(p) for p in node.SECRET_PATTERNS], [compiled(p) for p in redaction.SECRET_PATTERNS])
+        self.assertEqual([tuple(map(compiled, rule)) for rule in node.GLUED_PASSWORD],
+                         [tuple(map(compiled, rule)) for rule in redaction.GLUED_PASSWORD])
+        for name in ("CURL_COMMAND", "CURL_OPTION"):
             self.assertEqual(compiled(getattr(node, name)), compiled(getattr(redaction, name)), name)
         for name in ("_glued_password", "_curl_users", "redact_text"):
             self.assertEqual(getattr(node, name).__code__.co_code, getattr(redaction, name).__code__.co_code, name)
@@ -195,6 +208,8 @@ class SharedRulesTests(unittest.TestCase):
              ["sshpass", "-P", "assword:", "-p", "[redacted]", "ssh", "-p", "22"]),
             (["curl", "-XPUT", "-u", "a:b", "https://x"], ["curl", "-XPUT", "-u", "[redacted]", "https://x"]),
             (["mysql", "-P3306", "-pXyz", "db"], ["mysql", "-P3306", "-p[redacted]", "db"]),
+            (["systemd-run", "--user", "--setenv=PYTHONPATH=/foo:/bar", "python3", "-u", "app.py"],
+             ["systemd-run", "--user", "--setenv=PYTHONPATH=/foo:/bar", "python3", "-u", "app.py"]),
             (["C:\\tools\\curl.exe", "-#u", "a:b", "-Zuc:d"],
              ["C:\\tools\\curl.exe", "-#u", "[redacted]", "-Zu[redacted]"]),
             (["C:\\mysql\\bin\\mysql.exe", "-pS3"], ["C:\\mysql\\bin\\mysql.exe", "-p[redacted]"]),
@@ -217,22 +232,32 @@ class SharedRulesTests(unittest.TestCase):
         units = ("a", "=", "token", "keyw", "TOKEN_", "pass_", "--key", "--", "a.", "a://", "curl ", "curl -",
                  "curl '", "curl -u ", "'x", '"', "mysql ", "sshpass ", "--user=", "--user=x", " -p", "Token ",
                  "Bearer ", "hf_", "\\\n", "x--key", "key=", "A_", "_", "sshpass -f '", "sshpass -d ",
-                 "sshpass\n -f ", 'sshpass -P "', "sshpass -e ", "mysql -P3 ", "a_b_", "pad_token: <", "redis://:")
+                 "sshpass\n -f ", 'sshpass -P "', "sshpass -e ", "mysql -P3 ", "a_b_", "pad_token: <", "redis://:",
+                 '"\\"', "'\\'\"", '\\"', 'curl "\\', "x\\ ", "curl -u'a'", "password -U ")
         for name, implementation in (("shared", redaction.redact_text), ("node", node.redact)):
             for unit in units:
-                timings = []
-                for size in (8000, 32000):
-                    line = (unit * (size // len(unit) + 1))[:size]
-                    best = float("inf")
-                    for _ in range(3):
-                        started = time.perf_counter()
-                        implementation(line)
-                        best = min(best, time.perf_counter() - started)
-                    timings.append(best)
-                with self.subTest(implementation=name, unit=unit, timings=timings):
-                    # 4x the input: well under 8x the time (a quadratic rule takes 16x), above a noise floor.
-                    self.assertLess(timings[1], max(8 * timings[0], 0.25))
-                    self.assertLess(timings[1], 2.0)
+                self.assert_linear(name, unit, lambda size: implementation((unit * (size // len(unit) + 1))[:size]))
+        # Argument lists: every item of a portal list goes through them; long items whose suffix fails a pattern.
+        for name, implementation in (("shared", redaction.redact_argv), ("portal", redact)):
+            for unit in ("--key", "--token", "-u", "-s", "/mysql", "mariadb-", "--", "a:", "-p"):
+                def run(size, unit=unit):
+                    item = (unit * (size // len(unit) + 1))[:size] + "!"
+                    implementation(["curl", item, "-u", item, "--user", item, "sshpass", "-p", item, "mysql", item])
+                self.assert_linear(name, unit, run)
+
+    def assert_linear(self, name, unit, run):
+        timings = []
+        for size in (8000, 32000):
+            best = float("inf")
+            for _ in range(3):
+                started = time.perf_counter()
+                run(size)
+                best = min(best, time.perf_counter() - started)
+            timings.append(best)
+        with self.subTest(implementation=name, unit=unit, timings=timings):
+            # 4x the input: well under 8x the time (a quadratic rule takes 16x), above a noise floor.
+            self.assertLess(timings[1], max(8 * timings[0], 0.25))
+            self.assertLess(timings[1], 2.0)
 
 
 if __name__ == "__main__":
