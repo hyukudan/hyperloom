@@ -274,6 +274,18 @@ class PortalSearchTests(APIFixture, unittest.TestCase):
         patcher = mock.patch.object(ops, "_node_call", fake)
         patcher.start()
         self.addCleanup(patcher.stop)
+        from hyperloom import downloads
+        learned = mock.patch.object(downloads, "learn_home")
+        self.learned = learned.start()
+        self.addCleanup(learned.stop)
+
+    def test_a_save_learns_the_node_home_first(self):
+        from hyperloom import downloads
+        self.learned.side_effect = ValueError("halo-1: its home could not be checked")
+        with self.assertRaisesRegex(Exception, "home could not be checked"):
+            self.api.feature_post("logsearch/roots", {"machine": "halo-1", "roots": ["/opt/lab/runs"]})
+        self.assertEqual(self.learned.call_args.args[0].id, "halo-1")
+        self.assertIs(downloads.learn_home, self.learned)
 
     def test_document_lists_root_ids_not_client_paths(self):
         doc = self.api.read("logsearch", {})

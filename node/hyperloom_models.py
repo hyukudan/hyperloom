@@ -488,7 +488,14 @@ def root_listing(tree, budget):
 
 
 def scan_root(value, budget):
-    """One model root: its units with sizes and manifest status."""
+    """One model root: its units with sizes and manifest status. Never this account's home or a directory above it
+    (an asset kept directly in the home must not make the whole home a model root)."""
+    try:
+        home = Path.home().resolve()
+        if home == Path(value).resolve() or home.is_relative_to(Path(value).resolve()):
+            raise ValueError("a home directory (or one above it) is not a model root")
+    except RuntimeError:
+        pass
     with Tree(value) as tree:
         return _scan(tree, budget)
 

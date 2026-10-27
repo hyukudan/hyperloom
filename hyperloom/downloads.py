@@ -196,6 +196,22 @@ def too_wide(machine, value):
     return False
 
 
+def learn_home(machine):
+    """Learn an ssh node's home (one read-only lookup per process, cached by hyperloom.remote) before a saved root
+    is checked against the configured ones: a home is never a base, wherever it is. ValueError when it cannot be
+    learned now (the save is refused; nothing is authorized on an unknown home)."""
+    if getattr(machine, "access", None) != "ssh":
+        return
+    from . import orchestrate, remote
+    if any(key[0] == machine.id for key in list(remote._NODE_PATHS)):
+        return
+    try:
+        orchestrate._client(machine)._tool_path(15, None)
+    except Exception as exc:  # noqa: BLE001 - unpinned, unreachable: refused with the reason
+        raise ValueError(f"{machine.id}: its home could not be checked ({str(exc)[:200]}); try again when it "
+                         "answers") from None
+
+
 def configured_bases(cluster, machine):
     """The roots the configuration gives a machine: its install root and the parents of its configured assets
     (and of the control machine's ``control_path`` assets); an extra root must lie inside one of them. A home
@@ -268,6 +284,8 @@ def check_roots(cluster, machine_id, values):
     if not isinstance(values, list) or len(values) > MAX_ROOTS:
         raise ValueError("roots must be a list of at most 16 absolute directories")
     result = []
+    if values:
+        learn_home(machine)
     bases = configured_bases(cluster, machine)
     for value in values:
         path = _absolute_for(machine, value)

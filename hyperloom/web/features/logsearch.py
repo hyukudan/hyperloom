@@ -263,6 +263,9 @@ def save_roots(api, arguments):
     roots = arguments["roots"]
     if not isinstance(roots, list) or len(roots) > MAX_ROOTS:
         raise ValueError(f"roots must be a list of at most {MAX_ROOTS} absolute directories")
+    if roots:
+        from hyperloom import downloads
+        downloads.learn_home(machine)       # the node's home is never a base, wherever it is
     bases = allowed_bases(api, machine)
     clean = []
     for path in roots:

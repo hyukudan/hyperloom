@@ -8,6 +8,7 @@ import sys
 import tempfile
 import threading
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -31,6 +32,28 @@ class RootsTests(unittest.TestCase):
         self.store = Store(":memory:")
         self.addCleanup(self.store.close)
         self.cluster = parse(example())
+        learned = patch.object(downloads, "learn_home")      # a node's home lookup (tested below)
+        learned.start()
+        self.addCleanup(learned.stop)
+
+    def test_a_save_learns_the_node_home_first_and_refuses_when_it_cannot(self):
+        """An asset kept directly in a home anywhere (here /srv/accounts/researcher, not named after the ssh
+        user) never authorizes that home: the save learns the node's home first, or is refused."""
+        from hyperloom import remote
+        patch.stopall()
+        halo = self.cluster.machines["halo-1"]
+        self.cluster.assets["halo-1"]["odd"] = {"path": "/srv/accounts/researcher/odd.gguf", "bytes": 1}
+        client = SimpleNamespace(_tool_path=lambda timeout, cancel: remote._NODE_PATHS.__setitem__(
+            ("halo-1", "halo-1", 22), "/srv/accounts/researcher/.hyperloom-boot/hyperloom-node"))
+        with patch.dict(remote._NODE_PATHS, clear=True),                 patch("hyperloom.orchestrate._client", return_value=client) as made:
+            with self.assertRaises(ValueError):
+                downloads.set_roots(self.cluster, self.store, "halo-1", ["/srv/accounts/researcher/runs"])
+            made.assert_called_once_with(halo)
+            downloads.set_roots(self.cluster, self.store, "halo-1", ["/opt/assets/x"])     # learned once
+            self.assertEqual(made.call_count, 1)
+        with patch.dict(remote._NODE_PATHS, clear=True),                 patch("hyperloom.orchestrate._client", side_effect=remote.RemoteError("unknown host key")):
+            with self.assertRaisesRegex(ValueError, "home could not be checked"):
+                downloads.set_roots(self.cluster, self.store, "halo-1", ["/opt/assets/x"])
 
     def test_config_and_prefs_roots(self):
         roots = downloads.library_roots(self.cluster)
