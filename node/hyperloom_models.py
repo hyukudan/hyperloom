@@ -4,15 +4,15 @@ Verbs (node extension contract: VERBS and run(verb, payload) -> dict):
 
 - ``models``: read-only inventory of model roots (units, sizes, file counts, newest mtime, manifest status).
   Bounded by a deadline, directory entries, depth, units, manifest bytes and the reply size; it creates nothing.
-- ``model-verify``: a background job hashing one unit against its ``*.sha256`` manifests.
-- ``copy-job`` / ``copy-cancel``: state and cancellation of the library's node jobs (in this release only
-  verification jobs exist).
+- ``model-verify`` / ``copy-job`` / ``copy-cancel``: verification is not part of this release (it has no design
+  that runs inside a lease or a GPU turn yet); the three verbs answer so before anything is read or written, and
+  no background process exists behind them.
 - ``copy-plan`` / ``copy``: copies between machines are not part of this release; both answer so, and nothing
   runs behind them.
 
-The guards (no GPU turn holder, no live lease) are checked at least once a second while a job hashes; a tripped
-guard pauses it and more than ten minutes of pause fail it. Reads never fill the page cache (direct I/O, or cache
-advice after each chunk, or unbuffered handles on Windows).
+``verify_unit`` (a bounded, cache-free hash of one unit in the calling process) stays for that later design; no
+verb runs it. Reads never fill the page cache (direct I/O, or cache advice after each chunk, or unbuffered handles
+on Windows).
 """
 
 import ctypes
@@ -25,11 +25,9 @@ from pathlib import Path, PurePosixPath
 import re
 import shutil
 import stat
-import subprocess
 import sys
 import threading
 import time
-import uuid
 
 try:
     import hyperloom_install as install
@@ -46,6 +44,7 @@ except ImportError:  # not POSIX: node jobs are refused there; inventory and ver
 
 VERBS = {"models", "model-verify", "copy-plan", "copy", "copy-job", "copy-cancel"}
 NOT_IN_RELEASE = "copies between machines are not available in this release"
+VERIFY_NOT_IN_RELEASE = "model verification is not available in this release"
 SCHEMA = "hyperloom/node-v1"
 MAX_REPLY = 200 * 1024
 DEADLINE_S = 5.0
@@ -56,17 +55,9 @@ MAX_ROOTS = 16
 MANIFEST_FILE_MAX = 1 << 20
 MANIFEST_TOTAL_MAX = 16 << 20
 MANIFEST_LINES = 20000
-LEASE_RECORDS = 4096
-LEASE_BYTES = 16 << 20
-RUN_ENTRIES = 20000
 MODEL_SUFFIXES = (".gguf", ".safetensors", ".bin", ".pt", ".pth", ".onnx")
 SYSTEM_DIRS = ("/proc", "/sys", "/dev", "/run", "/boot", "/etc")
 BLOCK = 8 * 1024 * 1024
-PAUSE_LIMIT_S = 600.0
-PAUSE_POLL_S = 5.0
-QUEUED_STALE_S = 60.0
-LOCK_WAIT_S = 10.0
-TERMINAL = {"succeeded", "failed", "cancelled"}
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+-]{0,199}")
 COMPONENT = re.compile(r"[^/\\:\x00-\x1f\x7f]{1,255}")
 LINE = re.compile(r"([0-9a-fA-F]{64})\s[\s*]?(.+)")
@@ -155,7 +146,7 @@ def keys(payload, allowed, required=()):
 
 
 # ---------------------------------------------------------------------------------------------------------------
-# Guard policy and bounded guards
+# Guard policy
 
 class Policy:
     def __init__(self, root, lab, required=False):
@@ -205,65 +196,6 @@ def effective_policy(payload):
     if required and lab is None:
         raise ValueError("turn guard has no lab directory (lab mode needs one)")
     return Policy(root, lab, required)
-
-
-def holder_reason(lab, what):
-    if lab is None:
-        return None
-    try:
-        fd = os.open(os.path.join(lab, ".gpu-turn", "holder"), os.O_RDONLY | NOFOLLOW | NONBLOCK)
-    except FileNotFoundError:
-        return None
-    except OSError as exc:
-        return "the GPU turn holder could not be checked: " + exc.strerror
-    with os.fdopen(fd, "rb") as stream:
-        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-            return "the GPU turn holder could not be checked: not a regular file"
-        content = stream.read(4096).decode("utf-8", "replace").strip()
-    if content:
-        return what + " are refused while a GPU turn is held: " + content.split()[0]
-    return None
-
-
-def lease_reason(root, what, deadline_s=1.0):
-    """Same rule as the installer's active_leases (terminal or gone services are not live), but bounded."""
-    deadline = time.monotonic() + deadline_s
-    entries = records = total = 0
-    try:
-        with os.scandir(root / "run") as listing:
-            for entry in listing:
-                entries += 1
-                if entries > RUN_ENTRIES or time.monotonic() > deadline:
-                    return "lease records could not be checked: too many entries or too slow"
-                if not (entry.name.startswith("lease-") and entry.name.endswith(".json")):
-                    continue
-                records += 1
-                if records > LEASE_RECORDS:
-                    return "lease records could not be checked: too many records"
-                fd = os.open(entry.path, os.O_RDONLY | NOFOLLOW | NONBLOCK)
-                with os.fdopen(fd, "rb") as stream:
-                    info = os.fstat(stream.fileno())             # the record actually opened
-                    limit = min(MANIFEST_FILE_MAX, LEASE_BYTES - total)
-                    if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
-                        return "lease records could not be checked: " + entry.name
-                    data = stream.read(limit + 1)
-                total += len(data)                                   # charged as read, before anything else
-                if len(data) > limit or len(data) != info.st_size:
-                    return "lease records could not be checked: " + entry.name + " changed while it was read"
-                state = json.loads(data)
-                if not isinstance(state, dict):
-                    return "lease records could not be checked: " + entry.name
-                if state.get("state") in install.TERMINAL or install.service_gone(state):
-                    continue
-                return what + " are refused while a hyperloom lease is active: " + str(state.get("lease"))
-    except (OSError, ValueError, UnicodeError) as exc:
-        return "lease records could not be checked: " + str(exc)
-    return None
-
-
-def guard_reason(policy, what="model verification"):
-    """None when no GPU turn is held and no lease of the install root is live; else the reason (bounded)."""
-    return holder_reason(policy.lab, what) or lease_reason(policy.root, what)
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -1023,159 +955,6 @@ def windows_read(handle, offset, buffer):
 
 
 # ---------------------------------------------------------------------------------------------------------------
-# Job records, locks, process identity, pauses
-
-def job_paths(root, job):
-    job = install.identifier(job)
-    run = Path(root) / "run"
-    return run / ("job-" + job + ".json"), run / ("job-" + job + ".lock"), run / ("job-" + job + ".stop")
-
-
-class Locked:
-    """An exclusive flock on a lock file (created if needed, never followed). ``blocking`` waits at most
-    LOCK_WAIT_S (holders keep these locks for short record updates only); else the lock must be free now."""
-
-    def __init__(self, path=None, dir_fd=None, name=None, blocking=True):
-        self.path, self.dir_fd, self.name, self.blocking, self.fd = path, dir_fd, name, blocking, None
-
-    def __enter__(self):
-        if fcntl is None:
-            raise ValueError("node jobs require POSIX")
-        if self.dir_fd is not None:
-            self.fd = os.open(self.name, os.O_RDWR | os.O_CREAT | NOFOLLOW, 0o600, dir_fd=self.dir_fd)
-        else:
-            self.fd = os.open(self.path, os.O_RDWR | os.O_CREAT | NOFOLLOW, 0o600)
-        wait = LOCK_WAIT_S if self.blocking else 0
-        left = request_left()
-        if left is not None:
-            wait = max(0.0, min(wait, left))
-        deadline = time.monotonic() + wait
-        while True:
-            try:
-                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                return self
-            except OSError:
-                if time.monotonic() >= deadline:
-                    os.close(self.fd)
-                    raise BlockingIOError("lock is held") from None
-                time.sleep(0.02)
-
-    def __exit__(self, *exc):
-        os.close(self.fd)
-
-
-def transition(root, job, update):
-    """Apply update(record) -> new record or None under the job's lock; terminal records never change."""
-    path, lock, _ = job_paths(root, job)
-    with Locked(lock):
-        record = install.read_json(path)
-        if record.get("state") in TERMINAL:
-            return record
-        changed = update(dict(record))
-        if changed is None:
-            return record
-        install.atomic_json(path, changed)
-        return changed
-
-
-def start_time(pid):
-    """The process start time from /proc (no signal is sent), or None when the process does not exist."""
-    try:
-        raw = Path(f"/proc/{int(pid)}/stat").read_bytes()
-    except (OSError, ValueError):
-        return None
-    try:
-        return int(raw[raw.rindex(b")") + 2:].split()[19])
-    except (ValueError, IndexError):
-        return None
-
-
-def alive(record):
-    pid = record.get("pid")
-    if type(pid) is not int or pid <= 0:
-        return False
-    started = start_time(pid)
-    if started is None:
-        return False
-    return record.get("start_time") is None or record["start_time"] == started
-
-
-def settle(root, job, now=None):
-    """Record a job that can never finish (rebooted node, dead process) as failed."""
-    now = time.time() if now is None else now
-    path, _, _ = job_paths(root, job)
-    if not path.exists():
-        raise LookupError("no such job")
-
-    def update(record):
-        reason = None
-        if record.get("boot_id") is not None and record["boot_id"] != install.boot_id():
-            reason = "the node rebooted while the job ran"
-        elif record.get("pid") is not None:
-            if not alive(record):
-                reason = "the job process ended without recording a result"
-            elif record.get("start_time") is None and now - float(record.get("created", now)) > QUEUED_STALE_S:
-                reason = "the job process never started"
-        elif now - float(record.get("created", now)) > QUEUED_STALE_S:
-            reason = "the job process never started"
-        if reason is None:
-            return None
-        return {**record, "state": "failed", "reason": reason, "finished": now}
-
-    return transition(root, job, update)
-
-
-class Pauser:
-    """Pause accounting: a tripped guard waits; more than PAUSE_LIMIT_S of pause in total stops the job."""
-
-    def __init__(self, root, job, stop_path, clock=time.monotonic, sleep=time.sleep):
-        self.root, self.job, self.stop_path, self.clock, self.sleep = root, job, stop_path, clock, sleep
-        self.total = 0.0
-
-    def stopped(self):
-        if self.stop_path.exists():
-            raise Stopped("cancelled")
-
-    def wait(self, reason, check, poll=PAUSE_POLL_S):
-        """Wait until check() returns None; records the pause in the job record."""
-        started = self.clock()
-        next_check = started + poll
-        transition(self.root, self.job, lambda r: {**r, "state": "paused", "paused": {
-            "reason": reason, "since": time.time(), "total_s": round(self.total, 1)}})
-        while True:
-            self.stopped()
-            now = self.clock()
-            if self.total + now - started > PAUSE_LIMIT_S:
-                self.total += now - started
-                raise Stopped("paused for more than 10 minutes (" + reason + ")")
-            if now >= next_check:
-                again = check()
-                if again is None:
-                    break
-                reason, next_check = again, now + poll
-            self.sleep(min(1.0, max(0.01, next_check - now)))
-        self.total += self.clock() - started
-        transition(self.root, self.job, lambda r: {**r, "state": "running", "paused": {
-            "reason": None, "since": None, "total_s": round(self.total, 1)}})
-
-
-def guard_check(policy, pauser, what="model verification"):
-    """A check() for hashing: the stop file, then the guards once a second (a trip pauses inside the hash)."""
-    last = [0.0]
-
-    def check():
-        now = time.monotonic()
-        if now - last[0] < 1:
-            return
-        last[0] = now
-        pauser.stopped()
-        reason = guard_reason(policy, what)
-        if reason:
-            pauser.wait(reason, lambda: guard_reason(policy, what))
-    return check
-
-
-# ---------------------------------------------------------------------------------------------------------------
 # Verification
 
 def verify_unit(model_root, name, check=None, progress=None, budget_s=30.0):
@@ -1244,141 +1023,6 @@ def verify_unit(model_root, name, check=None, progress=None, budget_s=30.0):
                 "ok": counts["ok"] == len(entries)}
 
 
-def verify_job(spec, job, pauser, root):
-    policy = Policy(root, spec["policy"]["lab_dir"], spec["policy"]["lab_required"])
-    check = guard_check(policy, pauser, "model verification")
-    last = [0.0]
-
-    def progress(done):
-        if time.monotonic() - last[0] >= 2:
-            last[0] = time.monotonic()
-            transition(root, job, lambda r: {**r, "progress": {"bytes_done": done, "phase": "hashing"}})
-    return verify_unit(spec["model_root"], spec["name"], check, progress)
-
-
-# ---------------------------------------------------------------------------------------------------------------
-# Jobs
-
-def spawn(root, job, kind, spec, record=None):
-    """Start the background process of a job; ``record`` creates its queued record."""
-    if os.name != "posix":
-        raise ValueError("node background jobs require POSIX")
-    path, _, _ = job_paths(root, job)
-    spec_path = Path(root) / "run" / ("job-" + job + ".spec.json")
-    log = Path(root) / "log" / ("job-" + job + ".log")
-    install.atomic_json(spec_path, {"root": str(root), "job": job, "kind": kind, "spec": spec})
-    if record is not None:
-        install.atomic_json(path, {"job": job, "kind": kind, "state": "queued", "created": time.time(),
-                                   "boot_id": install.boot_id(), **record})
-    prefix = ["nice", "-n", "19"] + (["ionice", "-c3"] if shutil.which("ionice") else [])
-    try:
-        request_check()                       # writing the records took time: the last check before dispatch
-    except ValueError as exc:
-        transition(root, job, lambda r: {**r, "state": "failed", "reason": str(exc), "finished": time.time()})
-        spec_path.unlink(missing_ok=True)
-        raise
-    try:
-        with log.open("ab") as output:
-            child = subprocess.Popen(["nohup", *prefix, sys.executable, str(Path(__file__).resolve()), "--job",
-                                      str(spec_path)], stdin=subprocess.DEVNULL, stdout=output, stderr=output,
-                                     start_new_session=True, close_fds=True)
-    except OSError as exc:
-        transition(root, job, lambda r: {**r, "state": "failed", "reason": str(exc), "finished": time.time()})
-        raise
-    # The worker exists from here on: whatever happens next, the caller gets its handle (the worker records its own
-    # pid when it starts, so the update below is only a head start and may be skipped).
-    try:
-        threading.Thread(target=child.wait, daemon=True).start()
-        transition(root, job, lambda r: {**r, "pid": r.get("pid") or child.pid, "log": str(log)})
-    except Exception:                                 # e.g. the job lock is held past the request deadline
-        pass
-    return {"job": job, "pid": child.pid, "log": str(log)}
-
-
-def job_main(spec_path, clock=time.monotonic, sleep=time.sleep):
-    spec_file = install.absolute(spec_path)
-    document = install.read_json(spec_file)
-    root, _ = marked_root(document["root"])
-    job, kind, spec = install.identifier(document["job"]), document["kind"], document["spec"]
-    _, _, stop = job_paths(root, job)
-    pauser = Pauser(root, job, stop, clock, sleep)
-    started = transition(root, job, lambda r: {**r, "state": "running", "pid": os.getpid(),
-                                               "start_time": start_time(os.getpid()), "started": time.time()})
-    if started.get("state") in TERMINAL:
-        # Settled (failed or cancelled) before this worker started: it does nothing at all.
-        spec_file.unlink(missing_ok=True)
-        return 1
-    try:
-        if kind == "model-verify":
-            update = {"state": "succeeded", "result": verify_job(spec, job, pauser, root)}
-        else:
-            raise ValueError("unknown job kind")
-    except Stopped as exc:
-        update = {"state": "cancelled" if str(exc) == "cancelled" else "failed", "reason": str(exc)}
-    except Exception as exc:
-        update = {"state": "failed", "reason": str(exc)}
-    finally:
-        spec_file.unlink(missing_ok=True)
-    final = transition(root, job, lambda r: {**r, **update, "finished": time.time()})
-    stop.unlink(missing_ok=True)
-    return 0 if final.get("state") == "succeeded" else 1
-
-
-def start_verify(payload):
-    keys(payload, ("root", "lab_dir", "lab_required", "model_root", "name"), ("root", "model_root", "name"))
-    policy = effective_policy(payload)
-    model_root = str(read_root(payload["model_root"]))
-    name = unit_name(payload["name"])
-    if cache_control() is None:
-        raise ValueError("this node cannot read without filling the page cache; refused")
-    reason = guard_reason(policy, "model verification")
-    if reason:
-        raise ValueError(reason)
-    request_check()                                   # the last deadline check: nothing runs after a late reply
-    return spawn(policy.root, uuid.uuid4().hex, "model-verify",
-                 {"policy": policy.payload(), "model_root": model_root, "name": name},
-                 {"model_root": model_root, "name": name})
-
-
-def job_state(payload):
-    keys(payload, ("root", "job"), ("root", "job"))
-    root, _ = marked_root(payload["root"])
-    job = install.identifier(payload["job"])
-    path, _, _ = job_paths(root, job)
-    if not path.exists():
-        raise LookupError("no such job")
-    if install.read_json(path).get("kind") != "model-verify":      # before anything may change it
-        raise ValueError("not a model library job")
-    record = settle(root, job)
-    shown = {key: value for key, value in record.items() if key not in ("boot_id", "start_time")}
-    if "error" in shown:
-        shown["reason"] = shown.pop("error")
-    shown["tail"] = ""
-    log = root / "log" / ("job-" + job + ".log")
-    if log.is_file() and not log.is_symlink():
-        with log.open("rb") as stream:
-            stream.seek(0, os.SEEK_END)
-            stream.seek(max(0, stream.tell() - 16384))
-            shown["tail"] = stream.read(16384).decode("utf-8", "ignore")
-    return shown
-
-
-def cancel(payload):
-    keys(payload, ("root", "job"), ("root", "job"))
-    root, _ = marked_root(payload["root"])
-    job = install.identifier(payload["job"])
-    path, _, stop = job_paths(root, job)
-    if not path.exists():
-        raise LookupError("no such job")
-    if install.read_json(path).get("kind") != "model-verify":      # before anything may change it
-        raise ValueError("not a model library job")
-    record = settle(root, job)
-    if record["state"] in TERMINAL:
-        return {"job": job, "state": record["state"]}
-    stop.touch()
-    return {"job": job, "state": record["state"]}
-
-
 # ---------------------------------------------------------------------------------------------------------------
 # Envelope
 
@@ -1419,18 +1063,13 @@ def run(verb, payload):
             raise ValueError("unsupported model library request")
         if verb == "models":
             result.update(models(payload))
-        elif verb == "model-verify":
-            result.update(start_verify(payload))
         elif verb in ("copy-plan", "copy"):
             raise ValueError(NOT_IN_RELEASE)
-        elif verb == "copy-job":
-            result.update(job_state(payload))
-        else:
-            result.update(cancel(payload))
+        else:                                          # model-verify, copy-job, copy-cancel
+            raise ValueError(VERIFY_NOT_IN_RELEASE)
         result = bounded(result)
-        if not result.get("pid"):                     # a started worker already passed its last deadline check
-            request_check()
-    except (OSError, ValueError, LookupError, TypeError, KeyError, UnicodeError, subprocess.SubprocessError,
+        request_check()
+    except (OSError, ValueError, LookupError, TypeError, KeyError, UnicodeError,
             Stopped) as exc:
         text = str(exc).strip("'\"") if isinstance(exc, LookupError) else str(exc)
         if len(text) > ERROR_TEXT_MAX:
@@ -1444,6 +1083,4 @@ def run(verb, payload):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 3 and sys.argv[1] == "--job":
-        raise SystemExit(job_main(sys.argv[2]))
     raise SystemExit("internal entry points only")

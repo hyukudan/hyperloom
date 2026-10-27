@@ -104,7 +104,6 @@ import json as _json
 import os as _os
 from pathlib import Path as _Path, PureWindowsPath as _PureWindowsPath
 import sys as _sys
-import threading as _threading
 import time as _time
 
 from .winproc import retry_sharing
@@ -113,18 +112,8 @@ LIBRARY_PREFS = "library/roots"
 LEDGER_PREF = "turns/ledger_path"
 LEDGER_MAX = 64 * 1024 * 1024
 LEDGER_LINE = re.compile(r"- (\d{2}):(\d{2}) ([^\s:]+): PC-BIG (start|end)\b")
-PAUSE_LIMIT_S = 600.0
-WATCH_FAILURES_S = 600.0
 MAX_ROOTS = 16
 _models_module = None
-
-
-class Unresolved(RuntimeError):
-    """A node job's outcome is not known (the node could not be read); it is not a failure of the job."""
-
-
-class Cancelled(Exception):
-    """The operation was cancelled (by the caller, the portal job, Ctrl+C or on the node)."""
 
 
 def models_module():
@@ -482,129 +471,13 @@ class LedgerGuard:
                                                  "advanced_at": state.get("advanced_at"), "size": state["size"]}}
 
 
-class LedgerMonitor:
-    """Evaluates the ledger in its own thread every second; ``reason()`` is the latest result, or "overdue" when
-    the latest evaluation is older than 3 s, so a slow or contended ledger never delays the caller's loop."""
-
-    def __init__(self, guard, interval=1.0, stale_s=3.0):
-        self._init(guard, interval, stale_s)
-
-    def _init(self, guard, interval, stale_s):
-        self.guard, self.interval, self.stale_s = guard, interval, stale_s
-        self.result, self.at = "the RTX big-job ledger has not been checked yet", 0.0
-        self.stop = _threading.Event()
-        self.thread = None
-
-    def __enter__(self):
-        if self.guard is None or not self.guard.configured:
-            return self
-        self.result, self.at = self.guard.check(), _time.monotonic()
-        self.thread = _threading.Thread(target=self._run, name="hyperloom-ledger", daemon=True)
-        self.thread.start()
-        return self
-
-    def _run(self):
-        while not self.stop.wait(self.interval):
-            result = self.guard.check()
-            self.result, self.at = result, _time.monotonic()
-
-    def reason(self):
-        if self.guard is None or not self.guard.configured:
-            return None
-        if _time.monotonic() - self.at > self.stale_s:
-            return "the RTX big-job ledger check is overdue"
-        return self.result
-
-    def __exit__(self, *exc):
-        self.stop.set()
-
-
 def ledger_guard(config_path, store=None):
     return LedgerGuard(_Path(config_path).parent, _pref(store, LEDGER_PREF))
 
 
-# --- node jobs -----------------------------------------------------------------------------------------------
+# --- verification (held) --------------------------------------------------------------------------------------
 
-def watch_job(cluster, machine_id, job, *, cancelled=lambda: False, progress=lambda record: None, poll=2.0,
-              sleep=_time.sleep):
-    """Poll a node job to its end; a cancellation request cancels it on the node and waits for its record."""
-    machine = _machine(cluster, machine_id)
-    asked, failing_since = None, None
-    while True:
-        try:
-            record = _node(machine, "copy-job", {"root": machine.install_root, "job": job}, timeout=30)
-            failing_since = None
-        except (ValueError, RuntimeError, OSError) as exc:
-            # A busy gate or an unreachable node: retried (cancellation still sent); after 10 min of failures the
-            # watcher gives up and says the job is unresolved (it keeps running on the node, follow it there).
-            now = _time.monotonic()
-            failing_since = failing_since or now
-            if now - failing_since > WATCH_FAILURES_S:
-                raise Unresolved(f"the node job {job} on {machine.id} could not be read for 10 minutes ({exc}); "
-                                 "it may still be running: follow it with hyperloom models job") from None
-            record = {"state": "unknown", "job": job, "reason": str(exc)}
-        progress(record)
-        if record["state"] in ("succeeded", "failed", "cancelled"):
-            return record
-        if cancelled() and (asked is None or _time.monotonic() - asked > 30):
-            # Asked again every 30 s until the node's job sees it; its real final record is what this returns.
-            asked = _time.monotonic()
-            try:
-                _node(machine, "copy-cancel", {"root": machine.install_root, "job": job}, timeout=30)
-            except (ValueError, RuntimeError, OSError):
-                pass
-        sleep(poll)
-
-
-# --- verification --------------------------------------------------------------------------------------------
-
-def verify_start(cluster, machine_id, model_root, name, *, store=None, ledger=None, cancelled=lambda: False,
-                 progress=lambda record: None, sleep=_time.sleep, clock=_time.monotonic):
-    """Node: start the node job and return {mode: node, machine, job}. Control machine: hash here (cache-free,
-    protected opens, the ledger guard from a monitor thread) and return the result record."""
-    machine = _machine(cluster, machine_id)
-    model_root = _root_of(cluster, machine, model_root, store)
-    if not _is_local(machine):
-        reply = _node(machine, "model-verify", {**_policy(cluster, machine), "model_root": model_root, "name": name},
-                      timeout=60)
-        return {"mode": "node", "machine": machine.id, "job": reply["job"]}
-    models = models_module()
-    if models.cache_control() is None:
-        raise ValueError("this machine cannot read without filling the file cache; refused")
-    if machine.lab_mode and (ledger is None or not ledger.configured):
-        raise PermissionError("the RTX big-job ledger is not configured (prefs turns/ledger_path); lab mode requires "
-                              "it for verification on this machine")
-    paused = [0.0]
-    with LedgerMonitor(ledger) as monitor:
-        def check():
-            if cancelled():
-                raise Cancelled("cancelled")
-            reason = monitor.reason()
-            if not reason:
-                return
-            started = clock()
-            while reason:
-                progress({"state": "paused", "paused": {"reason": reason}})
-                if paused[0] + clock() - started > PAUSE_LIMIT_S:
-                    raise models.Stopped("paused for more than 10 minutes (" + reason + ")")
-                if cancelled():
-                    raise Cancelled("cancelled")
-                sleep(1.0)
-                reason = monitor.reason()
-            paused[0] += clock() - started
-
-        try:
-            result = models.verify_unit(model_root, name, check,
-                                        lambda done: progress({"state": "running", "progress": {"bytes_done": done}}))
-        except models.Stopped as exc:
-            raise ValueError(str(exc)) from None
-    return {"mode": "local", "machine": machine.id, "state": "succeeded", "result": result}
-
-
-def library_job(cluster, machine_id, job, cancel=False):
-    """A model library job on a node (a verification): its record, or a cancellation request."""
-    machine = _machine(cluster, machine_id)
-    if _is_local(machine):
-        raise ValueError(machine.id + " runs no node jobs (control-machine work runs in the portal or the CLI)")
-    payload = {"root": machine.install_root, "job": job}
-    return _node(machine, "copy-cancel" if cancel else "copy-job", payload, timeout=30)
+# Held, like copies between machines: a whole-model hash has no design that runs inside a lease or a GPU turn yet,
+# so the portal and the command line start nothing, and the node verbs (model-verify, copy-job, copy-cancel) answer
+# the same before anything is read or written.
+VERIFY_HELD = "model verification is not available in this release"

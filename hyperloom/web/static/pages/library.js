@@ -26,11 +26,13 @@
     const {esc, cells, display} = H();
     // Copies between machines are not part of this release: the control is shown disabled with the reason.
     const copyWhy = doc()?.copy?.available ? "" : doc()?.copy?.why || "copies between machines are not available";
+    // Model verification is held in this release too (nothing starts it): disabled with the reason.
+    const verifyWhy = doc()?.verify_job?.available ? "" : doc()?.verify_job?.why || "model verification is not available";
     return (root.units || []).map(unit => {
       const manifest = unit.manifest || {};
       const status = manifest.status || "unknown";
       const busy = view.busy ? "Another library request is being sent" : "";
-      const verifyBlocker = busy || (verifiable(status) ? "" : status === "none" ? "No manifest entries to verify against" : "The scan reached a bound in this unit");
+      const verifyBlocker = verifyWhy || busy || (verifiable(status) ? "" : status === "none" ? "No manifest entries to verify against" : "The scan reached a bound in this unit");
       return cells([
         `<span class="mono lib-unit">${esc(unit.name)}</span>`,
         `<span class="hide-n">${esc(unit.kind || "?")}</span>`,
@@ -70,21 +72,11 @@
       // A pause is shown only while the job is still running; a finished or unresolved job shows its own state
       // and reason (a pause reason left in its last node record is history).
       const paused = job.state === "running" ? node.paused?.reason : null;
-      const machine = job.machine;
-      // The portal job (a verification running here, or the watcher of a node job) is cancelled through
-      // the portal; a node job started elsewhere (no portal job here) through library/cancel.
-      const blocker = view.busy ? "A request is being sent" : "";
-      // An unresolved job (its watcher could not read the node) is cancelled on the node directly.
-      const cancel = job.state === "unresolved" && job.node_job ? act("Cancel on the node", "library-cancel", {machine, job: job.node_job}, {disabled: blocker})
-        : job.state !== "running" ? "" : job.portal_job
-        ? act("Cancel", "library-cancel-portal", {job: job.portal_job}, {disabled: blocker})
-        : job.node_job ? act("Cancel", "library-cancel", {machine, job: job.node_job}, {disabled: blocker})
-        : H().unavailable("cancel · no job id reported yet");
       const state = paused ? "paused" : job.state;
-      return cells([esc(job.kind), esc(what), pill(state, ({succeeded: "ok", running: "info", paused: "warn", unresolved: "warn", failed: "err"})[state] || "off"), esc(paused ? `paused: ${paused}` : job.reason || job.progress || ""), esc(when(job.started) || ""), cancel]);
+      return cells([esc(job.kind), esc(what), pill(state, ({succeeded: "ok", running: "info", paused: "warn", unresolved: "warn", failed: "err"})[state] || "off"), esc(paused ? `paused: ${paused}` : job.reason || job.progress || ""), esc(when(job.started) || "")]);
     }).join("");
-    return card("Library jobs", jobs.length ? table(["Kind", "What", "State", "Progress", "Started", ""], body, "Library jobs") : `<p class="t2">No verifications started from this portal yet.</p>`,
-      "verifications; node jobs keep running when this page closes");
+    return card("Library jobs", jobs.length ? table(["Kind", "What", "State", "Progress", "Started"], body, "Library jobs") : `<p class="t2">No library jobs recorded.</p>`,
+      "verifications recorded by earlier releases (verification is not available in this release)");
   }
 
   function rootsCard() {
@@ -158,9 +150,6 @@
     const d = control.dataset;
     switch (d.pageAction) {
       case "library-scan": post("library/scan", d.machine ? {machine: d.machine} : {}, () => H().announce("Scan started")); break;
-      case "library-verify": post("library/verify", {machine: d.machine, model_root: d.root, name: d.name}, () => H().announce(`Verification of ${d.name} started`)); break;
-      case "library-cancel": post("library/cancel", {machine: d.machine, job: d.job}, () => H().announce("Cancel requested")); break;
-      case "library-cancel-portal": post("cancel", {job: d.job}, () => H().announce("Cancel requested")); break;
       case "library-roots": {
         const text = document.getElementById(`library-roots-${d.machine}`)?.value || "";
         post("library/roots", {machine: d.machine, roots: text.split("\n").map(s => s.trim()).filter(Boolean)}, () => H().announce(`Roots of ${d.machine} saved`));

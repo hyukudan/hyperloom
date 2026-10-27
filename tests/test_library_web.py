@@ -61,6 +61,8 @@ class DocumentTests(LibraryFeatureCase):
         self.assertEqual(rows["halo-1"]["roots"], [{"path": "/opt/assets", "source": "config"}])
         self.assertEqual(document["copy"], {"available": False,
                                             "why": "copies between machines are not available in this release"})
+        self.assertEqual(document["verify_job"], {"available": False,
+                                                  "why": "model verification is not available in this release"})
         self.assertEqual(document["ledger"]["configured"], False)
         self.assertEqual(sorted(p.name for p in Path(self.dir.name).iterdir()), before)
         with self.assertRaises(APIError):
@@ -94,13 +96,22 @@ class PostTests(LibraryFeatureCase):
         self.assertEqual(states.count("succeeded"), 1)
         self.assertEqual(states.count("refused"), 4)
 
-    def test_cancel_is_audited_and_job_ids_checked(self):
-        with mock.patch.object(downloads, "library_job", return_value={"state": "cancelled"}) as call:
-            self.api.feature_post("library/cancel", {"machine": "halo-1", "job": "a" * 32})
-        call.assert_called_once_with(self.cluster, "halo-1", "a" * 32, cancel=True)
-        with self.assertRaises(APIError):
-            self.api.feature_post("library/job", {"machine": "halo-1", "job": "../x"})
-        self.assertEqual([row["action"] for row in self.audit()], ["library/cancel"])
+    def test_verification_and_its_node_jobs_are_refused(self):
+        """Held like the copies: no route starts a verification or reads or cancels a node job, so nothing reaches
+        a node (the node gate is never taken) and no job runs."""
+        self.api.telemetry = self.store
+        for action, arguments in (("library/verify", {"machine": "halo-1", "model_root": "/opt/assets", "name": "m"}),
+                                  ("library/job", {"machine": "halo-1", "job": "a" * 32}),
+                                  ("library/cancel", {"machine": "halo-1", "job": "a" * 32})):
+            with self.subTest(action):
+                with self.assertRaises(APIError) as caught:
+                    self.api.mutate(action, arguments)
+                self.assertEqual(caught.exception.status, 404)
+                with self.assertRaises(APIError):
+                    self.api.feature_post(action, arguments)
+        self.node.assert_not_called()
+        self.assertEqual(list(self.store.items("library/jobs")), [])
+        self.assertEqual(self.api.read("jobs", {}).get("jobs", []), [])
 
 
 class JobTests(LibraryFeatureCase):
@@ -135,113 +146,6 @@ class JobTests(LibraryFeatureCase):
             self.assertEqual(self.wait(self.api.mutate("library/scan", {"machine": "halo-1"})["id"])["state"],
                              "succeeded")
 
-    def run_verify(self, final):
-        with mock.patch.object(downloads, "verify_start", return_value={"mode": "node", "machine": "halo-1",
-                                                                        "job": "n1"}), \
-                mock.patch.object(downloads, "watch_job", return_value=final):
-            job = self.api.mutate("library/verify", {"machine": "halo-1", "model_root": "/opt/assets", "name": "m"})
-            return self.wait(job["id"])
-
-    def test_node_outcomes_map_to_the_portal_job(self):
-        done = self.run_verify({"state": "succeeded", "result": {"ok": True}})
-        self.assertEqual(done["state"], "succeeded")
-        self.assertEqual(self.store.get("library/verify", "halo-1|/opt/assets|m")["result"], {"ok": True})
-        failed = self.run_verify({"state": "failed", "reason": "the scan reached a bound"})
-        self.assertEqual(failed["state"], "failed")
-        self.assertIn("bound", failed["error"])
-        cancelled = self.run_verify({"state": "cancelled"})
-        self.assertEqual(cancelled["state"], "cancelled")
-        self.assertIn("node job was cancelled", cancelled["error"])
-        rows = [value for _, _, value in self.store.items("library/jobs")]
-        self.assertEqual(sorted(r["state"] for r in rows), ["cancelled", "failed", "succeeded"])
-
-    def run_watched_verify(self, node, after_cancel=lambda: None):
-        """A real verification watcher (fake node gate) driven by the portal job; the portal job is cancelled for
-        real (its JobContext) once the node job is running."""
-        running = threading.Event()
-
-        def gate(machine, verb, payload, timeout=60):
-            if verb == "copy-job" and not running.is_set():
-                running.set()
-                return {"state": "running", "job": "n1"}
-            return node(machine, verb, payload)
-        self.node.side_effect = gate
-        with mock.patch.object(downloads, "verify_start", return_value={"mode": "node", "machine": "halo-1",
-                                                                        "job": "n1"}), \
-                mock.patch.object(library, "_sleep", lambda s: time.sleep(0.01)):
-            job = self.api.mutate("library/verify", {"machine": "halo-1", "model_root": "/opt/assets", "name": "m"})
-            self.assertTrue(running.wait(10))
-            self.api.mutate("cancel", {"job": job["id"]})
-            done = self.wait(job["id"])
-        row = [value for _, _, value in self.store.items("library/jobs")][0]
-        final = [entry for entry in self.audit() if entry["action"] == "library/verify"][-1]
-        return done, row, final
-
-    def test_a_real_portal_cancel_keeps_a_node_failure_and_its_reason(self):
-        def node(machine, verb, payload):
-            if verb == "copy-cancel":
-                return {"state": "running"}
-            return {"state": "failed", "job": "n1", "reason": "the unit changed while it was hashed"}
-        done, row, final = self.run_watched_verify(node)
-        self.assertEqual((row["state"], row["node_job"]), ("failed", "n1"))            # the library's record
-        self.assertIn("changed while it was hashed", row["reason"])
-        # The core job and its audit line agree with the row although a cancel was requested.
-        self.assertEqual((done["state"], done.get("outcome")), ("failed", "failed"))
-        self.assertIn("changed while it was hashed", done["error"])
-        self.assertEqual((final["result"]["state"], final["result"].get("outcome")), ("failed", "failed"))
-
-    def test_a_real_portal_cancel_keeps_an_unresolved_outcome(self):
-        def node(machine, verb, payload):
-            raise TimeoutError("node halo-1 is busy with another call")
-        with mock.patch.object(downloads, "WATCH_FAILURES_S", 0.2):
-            done, row, final = self.run_watched_verify(node)
-        self.assertEqual((row["state"], row["node_job"]), ("unresolved", "n1"))
-        self.assertEqual((done["state"], done.get("outcome")), ("failed", "unresolved"))
-        self.assertIn("could not be read", done["error"])
-        self.assertEqual((final["result"]["state"], final["result"].get("outcome")), ("failed", "unresolved"))
-
-    def test_a_cancelled_node_job_cancels_the_portal_job(self):
-        def node(machine, verb, payload):
-            return {"state": "running" if verb == "copy-cancel" else "cancelled", "job": "n1"}
-        done, row, final = self.run_watched_verify(node)
-        self.assertEqual((row["state"], done["state"]), ("cancelled", "cancelled"))
-
-    def test_node_progress_is_recorded_on_the_row(self):
-        records = iter([{"state": "running", "job": "n2", "progress": {"bytes_done": 5}},
-                        {"state": "succeeded", "job": "n2", "result": {"ok": True}}])
-        self.node.side_effect = lambda machine, verb, payload, timeout=60: next(records)
-        seen = []
-        original = library._progress
-
-        def spy(ctx, row):
-            report = original(ctx, row)
-            return lambda record: (seen.append(record), report(record))
-        with mock.patch.object(downloads, "verify_start", return_value={"mode": "node", "machine": "halo-1",
-                                                                        "job": "n2"}), \
-                mock.patch.object(library, "_progress", spy), mock.patch.object(library, "_sleep", lambda s: None):
-            job = self.api.mutate("library/verify", {"machine": "halo-1", "model_root": "/opt/assets", "name": "m"})
-            self.assertEqual(self.wait(job["id"])["state"], "succeeded")
-        self.assertEqual([r["state"] for r in seen], ["running", "succeeded"])
-
-    def test_local_cancellation_returns_none(self):
-        with mock.patch.object(downloads, "verify_start", side_effect=downloads.Cancelled("cancelled")):
-            job = self.api.mutate("library/verify", {"machine": "workstation", "model_root": "C:\\x", "name": "m"})
-            self.assertEqual(self.wait(job["id"])["state"], "cancelled")
-
-    def test_settlement_after_cancel_keeps_its_polling_interval(self):
-        from hyperloom.web.api import JobContext
-        ctx = JobContext(60)
-        ctx.cancel("cancel requested")
-        records = iter([{"state": "running", "job": "n1"}] * 5 + [{"state": "succeeded", "job": "n1"}])
-        self.node.side_effect = lambda machine, verb, payload, timeout=60: (
-            next(records) if verb == "copy-job" else {"state": "running"})
-        pauses = []
-        with mock.patch.object(library, "_sleep", pauses.append):
-            record = downloads.watch_job(self.cluster, "halo-1", "n1", cancelled=ctx.cancelled,
-                                         sleep=library._paced(ctx))
-        self.assertEqual(record["state"], "succeeded")
-        self.assertEqual(pauses, [2.0] * 5)                       # a real pause between polls, never a busy loop
-
 def _smoke():
     import importlib.util
     path = Path(__file__).resolve().parent / "ui" / "smoke.py"
@@ -256,8 +160,8 @@ smoke = _smoke()
 
 @unittest.skipUnless(smoke.find_chrome(), "no headless browser found (see tests/ui/README.md)")
 class LibraryPageInBrowser(unittest.TestCase):
-    """The page against the fixture portal (its seed has a running verification, a failed one whose last node record
-    still names a pause, and an unresolved one)."""
+    """The page against the fixture portal (its seed keeps jobs of earlier releases: a running verification, a failed
+    one whose last node record still names a pause, and an unresolved one)."""
 
     @classmethod
     def setUpClass(cls):
@@ -322,9 +226,15 @@ class LibraryPageInBrowser(unittest.TestCase):
         self.assertIn("paused for more than 10 minutes", failed[3])
         self.assertIn("not available in this release", self.client.evaluate(
             "document.querySelector('[data-page-action=\"library-copy\"]').title"))     # copy: disabled, says why
+        self.assertIn("not available in this release", self.client.evaluate(
+            "document.querySelector('[data-page-action=\"library-verify\"]').title"))   # verify: disabled, says why
+        self.assertFalse(self.client.evaluate(
+            "document.querySelector('[data-page-action=\"library-verify\"]').disabled === false"))
         self.assertEqual(unresolved[2], "unresolved")
         self.assertIn("could not be read", unresolved[3])
-        self.assertIn("Cancel on the node", unresolved[5])
+        self.assertEqual(len(unresolved), 5)                          # history only: no cancel control
+        self.assertEqual(self.client.evaluate(
+            "document.querySelectorAll('[data-page-action^=\"library-cancel\"]').length"), 0)
         running = by_name["ds-trellis-k4"]
         self.assertEqual(running[2], "running")
 
@@ -351,41 +261,24 @@ class PageAndCLITests(unittest.TestCase):
         for argv in (["models", "copy", "halo-1", "m"], ["models", "copy-plan", "halo-1", "m"]):
             with self.subTest(argv), self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
                 parser.parse_args(argv)                                   # not part of this release
-        for argv in (["models", "list", "--refresh"], ["models", "verify", "halo-1", "/opt/assets", "m", "--wait"],
-                     ["models", "job", "halo-1", "abc"], ["models", "cancel", "halo-1", "abc"],
+        for argv in (["models", "verify", "halo-1", "/opt/assets", "m", "--wait"], ["models", "job", "halo-1", "abc"],
+                     ["models", "cancel", "halo-1", "abc"]):
+            with self.subTest(argv), self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                parser.parse_args(argv)                                   # node jobs are not part of this release
+        for argv in (["models", "list", "--refresh"],
                      ["models", "roots", "halo-1", "--set", "/srv/a"], ["models", "ledger-accept"]):
             with self.subTest(argv):
                 parser.parse_args(argv)
 
-    def test_cli_interruption_during_startup_cancels_the_new_node_job(self):
+    def test_cli_verify_is_refused_before_anything_is_read_or_called(self):
         from hyperloom import cli
-        from hyperloom.cliext import library as cli_library
-        flag_holder = {}
-        real = cli_library._Interrupt
-
-        class Interrupted(real):
-            def __init__(self):
-                super().__init__()
-                flag_holder["flag"] = self
-
-        def verify_start(*args, cancelled, **kwargs):
-            flag_holder["flag"].event.set()                 # Ctrl+C while the node job is being started
-            return {"mode": "node", "machine": "halo-1", "job": "n1"}
-        watched = []
-
-        def watch_job(cluster, machine, job, cancelled, progress=None):
-            watched.append((job, cancelled()))
-            return {"state": "cancelled", "job": job}
         err = io.StringIO()
-        with tempfile.TemporaryDirectory() as tmp, \
-                mock.patch.object(cli, "config_path", return_value=Path(tmp) / "cluster.json"), \
-                mock.patch.object(cli, "_cluster", return_value=parse(example())), \
-                mock.patch.object(cli_library, "_Interrupt", Interrupted), \
-                mock.patch.object(downloads, "verify_start", side_effect=verify_start), \
-                mock.patch.object(downloads, "watch_job", side_effect=watch_job), \
+        with mock.patch.object(cli, "_cluster", side_effect=AssertionError("configuration read")), \
+                mock.patch.object(downloads, "_node", side_effect=AssertionError("node called")), \
                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
             code = cli.main(["models", "verify", "halo-1", "/opt/assets", "m"])
-        self.assertEqual((code, watched), (2, [("n1", True)]))
+        self.assertEqual(code, 1)
+        self.assertIn("model verification is not available in this release", err.getvalue())
 
     def test_cli_list_without_a_store_says_why(self):
         from hyperloom import cli

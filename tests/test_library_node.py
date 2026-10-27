@@ -1,4 +1,4 @@
-"""Model library node module: inventory, guards, verification and its jobs (fixture trees)."""
+"""Model library node module: inventory, policy and the held verification (fixture trees)."""
 import hashlib
 import importlib.util
 import json
@@ -298,6 +298,31 @@ class InventoryTests(LibraryCase):
         self.assertFalse(any(hasattr(node, name) for name in ("plan", "start_copy", "publish", "receive_main",
                                                               "send_main", "Staging")))
 
+    def test_verification_and_its_node_jobs_are_not_part_of_this_release(self):
+        """Held like the copies: nothing is written on the node (no job records, locks, logs or stop files) and no
+        background process starts (no detached whole-model hash outside a lease or a GPU turn)."""
+        install.atomic_json(self.root / "run" / "job-j1.json", {"job": "j1", "kind": "model-verify",
+                                                                "state": "running", "created": time.time()})
+        before = tree(self.root), tree(self.models)
+        with patch.object(node.os, "open", side_effect=AssertionError("opened a file")), \
+                patch.object(subprocess, "Popen", side_effect=AssertionError("started a process")):
+            for verb, payload in (("model-verify", {"root": str(self.root), "model_root": str(self.models),
+                                                    "name": "alpha"}),
+                                  ("copy-job", {"root": str(self.root), "job": "j1"}),
+                                  ("copy-cancel", {"root": str(self.root), "job": "j1"})):
+                with self.subTest(verb):
+                    reply = node.run(verb, payload)
+                    self.assertEqual(reply["error"], "model verification is not available in this release")
+        self.assertEqual((tree(self.root), tree(self.models)), before)
+        self.assertFalse(any(hasattr(node, name) for name in ("spawn", "job_main", "start_verify", "job_state",
+                                                              "cancel", "Pauser", "Locked", "transition")))
+        script = subprocess.run([sys.executable, str(NODE / "hyperloom_models.py"), "--job",
+                                 str(self.root / "run" / "job-j1.spec.json")], capture_output=True, text=True,
+                                timeout=60)
+        self.assertNotEqual(script.returncode, 0)
+        self.assertIn("internal entry points only", script.stderr)
+        self.assertEqual((tree(self.root), tree(self.models)), before)
+
     def test_slow_empty_manifests_stop_at_the_deadline_or_a_stop(self):
         for index in range(12):
             (self.models / f"empty-{index:02d}.sha256").write_bytes(b"")
@@ -350,175 +375,12 @@ class PolicyAndGuardTests(LibraryCase):
         with self.assertRaisesRegex(ValueError, "unmarked"):
             node.effective_policy({"root": str(self.models)})
 
-    @unittest.skipUnless(POSIX, "growth is observed through /proc")
-    def test_lease_records_are_charged_as_read_and_growth_blocks(self):
-        policy = node.effective_policy({"root": str(self.root)})
-        for index in range(3):
-            install.atomic_json(self.root / "run" / f"lease-l{index}.json", {"lease": f"l{index}", "state": "stopped"})
-        size = (self.root / "run" / "lease-l0.json").stat().st_size
-        with patch.object(node, "LEASE_BYTES", size * 2 + 1):           # the third record exceeds what is left
-            self.assertIn("could not be checked", node.guard_reason(policy))
-        real = os.fstat
-
-        def grow(fd):
-            info = real(fd)
-            target = os.readlink(f"/proc/self/fd/{fd}")
-            if target.endswith("lease-l1.json"):
-                with open(target, "ab") as stream:                     # grows between fstat and the read
-                    stream.write(b" " * 64)
-            return info
-        with patch.object(node.os, "fstat", grow):
-            self.assertIn("changed while it was read", node.guard_reason(policy))
-
     def test_marked_root_creates_nothing(self):
         (self.root / "log").rmdir()
         before = tree(self.root)
         with self.assertRaisesRegex(ValueError, "no log directory"):
             node.marked_root(str(self.root))
         self.assertEqual(tree(self.root), before)
-
-    def test_holder_and_leases(self):
-        policy = node.effective_policy({"root": str(self.root)})
-        self.assertIsNone(node.guard_reason(policy))
-        (self.lab / ".gpu-turn" / "holder").write_text("PAIR halo-1 123\n", encoding="utf-8")
-        self.assertIn("GPU turn is held: PAIR", node.guard_reason(policy))
-        (self.lab / ".gpu-turn" / "holder").write_text("", encoding="utf-8")
-        self.assertIsNone(node.guard_reason(policy))
-        install.atomic_json(self.root / "run" / "lease-l1.json", {"lease": "l1", "state": "acquired"})
-        self.assertIn("lease is active: l1", node.guard_reason(policy))
-        install.atomic_json(self.root / "run" / "lease-l1.json", {"lease": "l1", "state": "stopped"})
-        self.assertIsNone(node.guard_reason(policy))
-        install.atomic_json(self.root / "run" / "lease-l2.json", {"lease": "l2", "state": "stopped"})
-        with patch.object(node, "LEASE_RECORDS", 1):
-            self.assertIn("could not be checked", node.guard_reason(policy))
-        (self.root / "run" / "lease-l3.json").write_text("{broken", encoding="utf-8")
-        self.assertIn("could not be checked", node.guard_reason(policy))
-
-
-class SettlementTests(LibraryCase):
-    def record(self, **fields):
-        install.atomic_json(self.root / "run" / "job-j1.json", {"job": "j1", "kind": "model-verify",
-                                                                "created": time.time(), **fields})
-
-    def test_every_non_terminal_state_is_settled(self):
-        if not POSIX:
-            self.skipTest("job locks need POSIX")
-        for state in ("queued", "running", "paused"):
-            with self.subTest(state):
-                self.record(state=state, pid=2 ** 22 + 12345, start_time=1, boot_id=install.boot_id())
-                self.assertEqual(node.run("copy-job", {"root": str(self.root), "job": "j1"})["state"], "failed")
-        self.record(state="running", pid=os.getpid(), start_time=node.start_time(os.getpid()) + 1,
-                    boot_id=install.boot_id())
-        self.assertIn("ended", node.run("copy-job", {"root": str(self.root), "job": "j1"})["reason"])
-        self.record(state="running", pid=os.getpid(), start_time=node.start_time(os.getpid()), boot_id="earlier")
-        self.assertIn("rebooted", node.run("copy-job", {"root": str(self.root), "job": "j1"})["reason"])
-        self.record(state="queued", created=time.time() - 120)
-        self.assertIn("never started", node.run("copy-job", {"root": str(self.root), "job": "j1"})["reason"])
-        self.record(state="running", pid=os.getpid(), start_time=node.start_time(os.getpid()),
-                    boot_id=install.boot_id())
-        self.assertEqual(node.run("copy-job", {"root": str(self.root), "job": "j1"})["state"], "running")
-        self.record(state="succeeded")
-        self.assertEqual(node.run("copy-cancel", {"root": str(self.root), "job": "j1"})["state"], "succeeded")
-        install.atomic_json(self.root / "run" / "job-j2.json", {"job": "j2", "kind": "install", "state": "running"})
-        self.assertIn("not a model library job", node.run("copy-job", {"root": str(self.root), "job": "j2"})["error"])
-
-
-class DeadlineTests(LibraryCase):
-    @unittest.skipUnless(POSIX, "job locks")
-    def test_a_held_job_lock_cannot_stretch_a_verb_past_its_deadline(self):
-        import fcntl
-        install.atomic_json(self.root / "run" / "job-j1.json", {"job": "j1", "kind": "model-verify",
-                                                                "state": "running", "pid": os.getpid(),
-                                                                "created": time.time()})
-        fd = os.open(self.root / "run" / "job-j1.lock", os.O_RDWR | os.O_CREAT, 0o600)
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        try:
-            with patch.object(node, "DEADLINE_S", 1.0):
-                started = time.monotonic()
-                reply = node.run("copy-job", {"root": str(self.root), "job": "j1"})
-                elapsed = time.monotonic() - started
-        finally:
-            os.close(fd)
-        self.assertIn("lock is held", reply["error"])
-        self.assertLess(elapsed, 3)
-
-
-class DetachedStartTests(LibraryCase):
-    def test_no_worker_starts_after_the_deadline_and_a_settled_job_does_nothing(self):
-        spawned = []
-        with patch.object(node, "spawn", lambda *a, **k: spawned.append(a) or {"job": "x", "pid": 1}), \
-                patch.object(node, "request_check", side_effect=ValueError("the request ran past its 5 s deadline")):
-            reply = node.run("model-verify", {"root": str(self.root), "model_root": str(self.models), "name": "alpha"})
-        self.assertIn("deadline", reply["error"])
-        self.assertEqual(spawned, [])
-        if not POSIX:
-            return
-        install.atomic_json(self.root / "run" / "job-j9.json", {"job": "j9", "kind": "model-verify", "state": "failed",
-                                                                "reason": "the request ran past its deadline"})
-        spec_path = self.root / "run" / "job-j9.spec.json"
-        install.atomic_json(spec_path, {"root": str(self.root), "job": "j9", "kind": "model-verify", "spec": {}})
-        with patch.object(node, "verify_job", side_effect=AssertionError("work ran for a settled job")):
-            self.assertEqual(node.job_main(str(spec_path)), 1)
-        self.assertEqual(install.read_json(self.root / "run" / "job-j9.json")["state"], "failed")
-
-
-@unittest.skipUnless(POSIX, "node jobs need POSIX")
-class StartupAfterTheWorkerExistsTests(LibraryCase):
-    def test_a_late_failure_after_creating_the_worker_still_returns_its_handle(self):
-        class Child:
-            pid = 4242
-
-            def wait(self):
-                return 0
-        real = node.transition
-
-        def transition(root, job, update):
-            if update({}).get("pid"):                                      # the post-creation pid update
-                raise ValueError("the job lock is held by another process")
-            return real(root, job, update)
-        for verb, payload in (("model-verify", {"root": str(self.root), "model_root": str(self.models),
-                                                "name": "alpha"}),):
-            with self.subTest(verb):
-                with patch.object(node.subprocess, "Popen", lambda *a, **k: Child()), \
-                        patch.object(node, "transition", transition):
-                    reply = node.run(verb, payload)
-                self.assertNotIn("error", reply, reply.get("error"))
-                self.assertEqual(reply["pid"], 4242)
-                record = install.read_json(self.root / "run" / ("job-" + reply["job"] + ".json"))
-                self.assertEqual(record["state"], "queued")                 # the worker records itself on start
-
-
-@unittest.skipUnless(POSIX, "node jobs need POSIX")
-class StartupDeadlineTests(LibraryCase):
-    def test_no_worker_is_dispatched_once_the_deadline_passed_while_records_were_written(self):
-        real = install.atomic_json
-
-        def slow(path, value):
-            real(path, value)
-            node._request.deadline = time.monotonic() - 1               # the writes took the rest of the deadline
-        with patch.object(install, "atomic_json", slow), \
-                patch.object(node.subprocess, "Popen", side_effect=AssertionError("dispatched after the deadline")):
-            reply = node.run("model-verify", {"root": str(self.root), "model_root": str(self.models), "name": "alpha"})
-        self.assertIn("deadline", reply["error"])
-        records = list((self.root / "run").glob("job-*.json"))
-        self.assertEqual([install.read_json(path)["state"] for path in records if ".spec." not in path.name],
-                         ["failed"])
-        self.assertEqual(list((self.root / "run").glob("job-*.spec.json")), [])
-
-
-class ForeignRecordTests(LibraryCase):
-    def test_a_foreign_record_is_never_settled_or_cancelled(self):
-        path = self.root / "run" / "job-j2.json"
-        install.atomic_json(path, {"job": "j2", "kind": "install", "state": "running", "pid": 2 ** 22 + 12345,
-                                   "start_time": 1, "boot_id": "another boot", "created": time.time() - 3600})
-        before = path.read_bytes()
-        for verb in ("copy-job", "copy-cancel"):
-            with self.subTest(verb):
-                reply = node.run(verb, {"root": str(self.root), "job": "j2"})
-                self.assertIn("not a model library job", reply["error"])
-                self.assertEqual(path.read_bytes(), before)              # unchanged
-        self.assertFalse((self.root / "run" / "job-j2.stop").exists())
-
 
 class VerifyTests(LibraryCase):
     def test_counts_and_failures(self):
@@ -572,35 +434,6 @@ class VerifyTests(LibraryCase):
                 time.sleep(0.4)                                         # a guard pause while the scan runs
         result = node.verify_unit(str(self.models), "alpha", check, budget_s=0.3)
         self.assertTrue(result["ok"], result)
-
-    @unittest.skipUnless(POSIX, "node jobs")
-    def test_verify_job_pauses_for_a_turn_and_aborts_after_the_limit(self):
-        with patch.object(node, "spawn", lambda root, job, kind, spec, record=None: (
-                install.atomic_json(Path(root) / "run" / f"job-{job}.spec.json",
-                                    {"root": str(root), "job": job, "kind": kind, "spec": spec}),
-                install.atomic_json(Path(root) / "run" / f"job-{job}.json",
-                                    {"job": job, "kind": kind, "state": "queued", "created": time.time(), **record}),
-                {"job": job})[-1]):
-            reply = node.run("model-verify", {"root": str(self.root), "model_root": str(self.models), "name": "alpha"})
-        job = reply["job"]
-        holder = self.lab / ".gpu-turn" / "holder"
-        holder.write_text("SINGLE y 1\n", encoding="utf-8")
-        clock = [0.0]
-
-        def sleep(seconds):
-            clock[0] += seconds
-            if clock[0] > 12:
-                holder.write_text("", encoding="utf-8")
-        spec_path = self.root / "run" / f"job-{job}.spec.json"
-        code = node.job_main(str(spec_path), clock=lambda: clock[0], sleep=sleep)
-        state = node.run("copy-job", {"root": str(self.root), "job": job})
-        self.assertEqual(state["state"], "succeeded", state)
-        self.assertTrue(state["result"]["ok"])
-        self.assertGreater(state["paused"]["total_s"], 0)
-        holder.write_text("PAIR z 1\n", encoding="utf-8")
-        self.assertIn("GPU turn", node.run("model-verify", {"root": str(self.root), "model_root": str(self.models),
-                                                            "name": "alpha"})["error"])
-
 
 class DurabilityTests(LibraryCase):
     def test_a_file_changed_after_it_was_hashed_is_reported(self):

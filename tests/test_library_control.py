@@ -1,4 +1,4 @@
-"""Model library, control side: roots, the RTX big-job ledger guard, watchers and control-machine verification."""
+"""Model library, control side: roots, the RTX big-job ledger guard and the held verification."""
 import hashlib
 import json
 import os
@@ -54,8 +54,6 @@ class RootsTests(unittest.TestCase):
         downloads.set_roots(self.cluster, self.store, "workstation", ["D:\\models"])
         downloads.set_roots(self.cluster, self.store, "halo-1", [])
         self.assertEqual(self.store.get("prefs", "library/roots"), {"workstation": ["D:\\models"]})
-        with self.assertRaisesRegex(ValueError, "not a configured model root"):
-            downloads.verify_start(self.cluster, "halo-1", "/elsewhere", "x", store=self.store)
 
 
 class RecordedReplyTests(unittest.TestCase):
@@ -215,157 +213,12 @@ class LedgerTests(unittest.TestCase):
             holder.stdout.close()
         self.assertIsNone(self.guard().check())
 
-    def test_monitor_reports_overdue_without_blocking_the_caller(self):
-        self.guard().accept()
-        gate = threading.Event()
-        guard = self.guard()
-        calls = [0]
-
-        def slow():
-            calls[0] += 1
-            if calls[0] > 1:
-                gate.wait(10)
-            return None
-        guard.check = slow
-        with downloads.LedgerMonitor(guard, interval=0.1, stale_s=0.5) as monitor:
-            self.assertIsNone(monitor.reason())
-            deadline = time.monotonic() + 5
-            while "overdue" not in (monitor.reason() or "") and time.monotonic() < deadline:
-                time.sleep(0.05)
-            started = time.monotonic()
-            self.assertIn("overdue", monitor.reason())
-            self.assertLess(time.monotonic() - started, 0.5)            # reading the result never waits
-            gate.set()
-
-
-class WatchAndVerifyTests(unittest.TestCase):
-    def test_watch_maps_cancellation_to_the_node(self):
-        states = iter(["running", "running", "cancelled"])
-        verbs = []
-
-        def node(machine, verb, payload, timeout=60):
-            verbs.append(verb)
-            return {"state": next(states) if verb == "copy-job" else "running", "job": "j"}
-        with patch.object(downloads, "_node", node):
-            record = downloads.watch_job(parse(example()), "halo-2", "j", cancelled=lambda: True,
-                                         sleep=lambda s: None)
-        self.assertEqual(record["state"], "cancelled")
-        self.assertEqual(verbs, ["copy-job", "copy-cancel", "copy-job", "copy-job"])
-
-    def test_the_watcher_returns_the_real_final_state_of_a_long_job(self):
-        cluster = parse(example())
-        states = iter(["running"] * 100 + ["succeeded"])
-        verbs = []
-
-        def node(machine, verb, payload, timeout=60):
-            verbs.append(verb)
-            return {"state": next(states) if verb == "copy-job" else "running", "job": "j"}
-        clock = [0.0]
-        with patch.object(downloads, "_node", node), patch.object(downloads._time, "monotonic", lambda: clock[0]):
-            record = downloads.watch_job(cluster, "halo-1", "j", cancelled=lambda: True,
-                                         sleep=lambda s: clock.__setitem__(0, clock[0] + s))
-        self.assertEqual(record["state"], "succeeded")
-        self.assertGreater(verbs.count("copy-cancel"), 1)           # asked again while it was not honoured yet
-
-    def test_a_watcher_rides_out_transient_status_failures(self):
-        cluster = parse(example())
-        replies = [TimeoutError("node halo-1 is busy with another call"), {"state": "running"},
-                   OSError("connection reset"), {"state": "succeeded"}]
-        verbs = []
-
-        def node(machine, verb, payload, timeout=60):
-            verbs.append(verb)
-            if verb == "copy-cancel":
-                return {"state": "running"}
-            reply = replies.pop(0)
-            if isinstance(reply, Exception):
-                raise reply
-            return {**reply, "job": "j"}
-        with patch.object(downloads, "_node", node):
-            record = downloads.watch_job(cluster, "halo-1", "j", cancelled=lambda: True, sleep=lambda s: None)
-        self.assertEqual(record["state"], "succeeded")
-        self.assertIn("copy-cancel", verbs)
-
-    def test_control_machine_verification_has_one_pause_budget(self):
-        temp = tempfile.TemporaryDirectory()
-        self.addCleanup(temp.cleanup)
-        models_dir = Path(temp.name) / "models"
-        (models_dir / "alpha").mkdir(parents=True)
-        lines = []
-        for name in ("a.bin", "b.bin"):
-            (models_dir / "alpha" / name).write_bytes(name.encode() * 100)
-            lines.append(f"{digest(name.encode() * 100)} alpha/{name}\n")
-        (models_dir / "alpha.sha256").write_text("".join(lines), encoding="utf-8")
-        obj = example()
-        if os.name != "nt":
-            obj["machines"][0].update(os="linux", install_root=str(Path(temp.name) / "control"))
-        cluster = parse(obj)
-        store = Store(":memory:")
-        self.addCleanup(store.close)
-        store.put("prefs", "library/roots", {"workstation": [str(models_dir)]})
-
-        class Guard:
-            configured = True
-
-            def check(self):
-                return "an RTX PRO big job is open in the ledger (halo-1): line"
-        clock = [0.0]
-        with patch.object(downloads.LedgerMonitor, "reason", lambda self: Guard().check()), \
-                patch.object(downloads.LedgerMonitor, "__enter__", lambda self: self), \
-                self.assertRaisesRegex(ValueError, "paused for more than 10 minutes"):
-            downloads.verify_start(cluster, "workstation", str(models_dir), "alpha", store=store, ledger=Guard(),
-                                   sleep=lambda s: clock.__setitem__(0, clock[0] + s), clock=lambda: clock[0])
-        self.assertLess(clock[0], 700)                                # one budget for the whole run
-
-
-@unittest.skipUnless(POSIX, "the fixture control machine is a Linux one")
-class ControlMachineVerificationTests(unittest.TestCase):
-    """Verification of a control-machine root (in process, the ledger guard from its monitor thread)."""
-
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        base = Path(self.temp.name).resolve()
-        self.lab = base / "lab"
-        (self.lab / ".gpu-turn").mkdir(parents=True)
-        self.root = install.checked_root({"root": str(base / "install"), "lab_dir": str(self.lab)}, create=True)
-        self.models = base / "models"
-        (self.models / "alpha" / "sub").mkdir(parents=True)
-        self.files = {"alpha/a.bin": os.urandom(3 * 1024 * 1024 + 17), "alpha/sub/b.bin": b"b" * 999}
-        for rel, data in self.files.items():
-            (self.models / rel).write_bytes(data)
-        (self.models / "alpha.sha256").write_text("".join(f"{digest(d)}  {r}\n" for r, d in self.files.items()),
-                                                  encoding="utf-8")
-        obj = example()
-        obj["machines"][0].update(os="linux", install_root=str(base / "control"))
-        obj["machines"][1].update(install_root=str(self.root), lab_dir=str(self.lab))
-        self.cluster = parse(obj)
-        self.store = Store(":memory:")
-        self.addCleanup(self.store.close)
-        self.store.put("prefs", "library/roots", {"workstation": [str(self.models)]})
-        self.ledger_file = base / "coordination.md"
-        self.ledger_file.write_text("- 01:00 someone: PC-BIG end (rc 0)\n", encoding="utf-8")
-        (base / "config").mkdir()
-        self.ledger = downloads.LedgerGuard(base / "config", self.ledger_file)
-        self.ledger.accept()
-
-        def node(machine, verb, payload, timeout=60):
-            reply = models.run(verb, payload)
-            if reply.get("error"):
-                raise ValueError(reply["error"])
-            return reply
-        patcher = patch.object(downloads, "_node", node)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
-    def test_control_machine_verification(self):
-        result = downloads.verify_start(self.cluster, "workstation", str(self.models), "alpha", store=self.store,
-                                        ledger=self.ledger)
-        self.assertEqual((result["mode"], result["result"]["ok"]), ("local", True))
-        (self.models / "alpha" / "sub" / "b.bin").write_bytes(b"c" * 999)
-        result = downloads.verify_start(self.cluster, "workstation", str(self.models), "alpha", store=self.store,
-                                        ledger=self.ledger)
-        self.assertEqual(result["result"]["counts"]["mismatch"], 1)
+class HeldVerificationTests(unittest.TestCase):
+    def test_verification_is_held_on_every_machine(self):
+        """Nothing is started, read or called: no node verb, no control-machine hash (held like the copies)."""
+        self.assertFalse(any(hasattr(downloads, name) for name in ("verify_start", "watch_job", "library_job",
+                                                                   "LedgerMonitor")))
+        self.assertEqual(downloads.VERIFY_HELD, "model verification is not available in this release")
 
 
 if __name__ == "__main__":
