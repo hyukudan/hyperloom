@@ -423,10 +423,10 @@ class ExchangeTests(unittest.TestCase):
         t0 = 1_800_000_000.0
         self.observe(self.stats(t0, 1000))
         self.observe(self.stats(t0 + 10, 1300, uptime=4010.0))
-        self.clock.now = t0 + 25
+        self.clock.now = t0 + 10 + usb4.EXCHANGE_STALE_S - 1
         view = usb4.document(self.api, {})["exchange"][0]
         self.assertFalse(view["stale"])
-        self.clock.now = t0 + 41
+        self.clock.now = t0 + 10 + usb4.EXCHANGE_STALE_S + 1
         view = usb4.document(self.api, {})["exchange"][0]
         self.assertTrue(view["stale"])
         self.assertIn("as of", view["why"]["stale"])
@@ -478,7 +478,7 @@ class DocumentTests(unittest.TestCase):
         self.assertEqual((registry.loaded, registry.failed), (["usb4"], {}))
         self.assertIn("usb4", registry.gets)
         self.assertIn("usb4/refresh", registry.posts)
-        self.assertEqual(registry.collectors["usb4"][1], 10.0)
+        self.assertEqual(registry.collectors["usb4"][1], 30.0)          # paced: one node read per 30 s
 
     def test_document_through_the_portal_api_is_redacted_and_strict(self):
         from hyperloom.web.api import API, APIError
@@ -496,6 +496,23 @@ class DocumentTests(unittest.TestCase):
         with self.assertRaises(APIError) as caught:
             api.read("usb4", {"x": "1"})
         self.assertEqual(caught.exception.status, 400)
+
+
+# These tests drive the collectors with their own clock to check accounting, not pacing: the polling budget
+# (hyperloom.pollbudget, tested in tests/test_pollbudget.py) grants every read here.
+_unpaced = None
+
+
+def setUpModule():
+    global _unpaced
+    from unittest import mock as _mock
+    from hyperloom import pollbudget as _pollbudget
+    _unpaced = _mock.patch.multiple(_pollbudget, CYCLE_S=0.0, NODE_SPACING_S=0.0, ENGINE_CYCLE_S=0.0, TURN_CHECK_S=0.0)
+    _unpaced.start()
+
+
+def tearDownModule():
+    _unpaced.stop()
 
 
 if __name__ == "__main__":

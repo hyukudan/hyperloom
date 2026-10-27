@@ -129,6 +129,57 @@ class LaunchStatesTests(unittest.TestCase):
             self.assertEqual(sorted(orchestrate.status()), ["legacy", "prof-a", "prof-b"])   # no configuration: all
             self.assertEqual(sorted(polled), ["/opt/a", "/opt/b", "/opt/legacy"])
 
+    def test_status_skips_what_the_caller_says_and_names_the_router_machine(self):
+        state = self.state("prof-b", self.config_b, machines={"node-b": {"install_root": "/opt/b"}})
+        state["router"]["machine"] = "node-b"
+        (self.run / "up-prof-b.json").write_text(json.dumps(state), encoding="utf-8")
+        asked = []
+
+        def skip(machine, kind, profile):
+            asked.append((machine, kind, profile))
+            return "paused: a GPU turn holds node-b"
+        with mock.patch.object(orchestrate, "_call", side_effect=AssertionError("node read")), \
+                mock.patch.object(orchestrate, "_http_json", side_effect=AssertionError("router read")):
+            result = orchestrate.status("prof-b", config_path=self.config_b, skip=skip)
+        self.assertEqual(asked, [("node-b", "node", "prof-b"), ("node-b", "router", "prof-b")])
+        self.assertEqual(result["router_machine"], "node-b")
+        self.assertIn("paused", result["router"]["error"])
+        self.assertIn("paused", result["nodes"]["node-b"]["error"])
+
+    def test_status_retries_never_repeat_the_router_or_prefill_reads(self):
+        """A node read the 5 s spacing refused is retried at the next snapshot; the profile's local router and prefill
+        service are still read at most once per 30 s (real orchestrator status, mocked transports)."""
+        from hyperloom import pollbudget
+        from hyperloom.web.api import API
+        self.state("prof-b", self.config_b, machines={"node-b": {"install_root": "/opt/b"}},
+                   prefill_service={"port": 18890})
+        now = [1000.0]
+        api = API(self.config_b, orchestrator=orchestrate, remote_module=mock.Mock(), clock=lambda: now[0],
+                  audit_path=self.directory / "audit.jsonl")
+        http, nodes = [], []
+
+        def fetch(endpoint, path="/api/status"):
+            http.append((path, now[0]))
+            return {"status": "ok"}
+        with mock.patch.object(orchestrate, "_client", lambda machine, known=None: machine), \
+                mock.patch.object(orchestrate, "_call", lambda client, verb, payload, timeout=60: (
+                    nodes.append(now[0]) or {"leases": []})), \
+                mock.patch.object(orchestrate, "_http_json", fetch), \
+                mock.patch.object(pollbudget, "NODE_SPACING_S", 5.0):
+            budget = pollbudget.for_api(api)
+            for step in range(60):                                        # two minutes of 2 s snapshots
+                if step % 15 == 0 and step:
+                    budget.node("node-b", "turns", now=now[0] - 1)       # the turn check, 1 s before each cycle
+                if step == 15:
+                    api._status_stale = True                              # and a portal job finishes then
+                api._statuses()
+                now[0] += 2
+        self.assertGreaterEqual(len(nodes), 4)                            # the node keeps being read
+        for path in {path for path, _ in http}:
+            times = [at for p, at in http if p == path]
+            self.assertTrue(all(b - a >= 30 for a, b in zip(times, times[1:])), (path, times))
+        self.assertEqual(len({path for path, _ in http}), 2)              # router status and prefill health
+
     def test_status_by_name_on_b_never_polls_a_launch_of_a(self):
         self.state("prof-a", self.config_a, machines={"node-a": {"install_root": "/opt/a"}})
         with mock.patch.object(orchestrate, "_call", side_effect=AssertionError("polled")), \

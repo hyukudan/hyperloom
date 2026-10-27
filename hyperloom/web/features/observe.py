@@ -30,7 +30,7 @@ import time
 import socket
 from urllib.parse import urlencode, urlsplit
 
-from hyperloom import secrets, telemetry
+from hyperloom import pollbudget, secrets, telemetry
 from hyperloom.adapters import AdapterError, engine, minimax, prom, router
 
 
@@ -588,10 +588,24 @@ def collect_router(api, now, store=None):
                                       "failing_since": dict(previous.get("failing_since") or {}),
                                       "requests": previous.get("requests")}
     tasks = [(launch, part) for launch in found for part in ROUTER_PARTS]
+    budget = pollbudget.for_api(api)
+    try:
+        cluster = api.cluster()
+    except Exception:  # noqa: BLE001 - no configuration: routers map to no machine
+        cluster = None
     for launch, part in _rotated(api, "router", tasks):
         source = sources[launch["profile"]]
         if time.monotonic() >= deadline:
             source["why"][part] = "collector time budget spent; read next run"
+            continue
+        # Each part of a router is read at most once per 30 s, and not while another holder's GPU turn holds the
+        # node the router runs on.
+        from urllib.parse import urlsplit
+        host = urlsplit(str(launch.get("router") or "")).hostname
+        machine = pollbudget.machine_of_address(cluster, host) if cluster is not None and host else None
+        why = budget.engine(machine, f"{launch.get('router')}#{part}", "observe-router", now=now)
+        if why is not None:
+            source["why"][part] = why
             continue
         attempted += 1
         try:
@@ -870,6 +884,11 @@ def collect_engines(api, now, store=None):
     store.put("observe/inventory", "engines", {"ts": now, "engines": sorted(keep), "omitted": omitted})
     tasks = [("engine", launch, replica) for launch in found for replica in launch["replicas"]]
     tasks += [("service", launch, None) for launch in found if launch["service_port"]]
+    try:
+        cluster = api.cluster()
+        machine_ids = set(cluster.machines)
+    except Exception:  # noqa: BLE001 - no configuration: engines map to no machine
+        cluster, machine_ids = None, set()
     for kind, launch, replica in _rotated(api, "engines", tasks):
         if kind == "service":
             if time.monotonic() < deadline:
@@ -883,6 +902,17 @@ def collect_engines(api, now, store=None):
                 previous.setdefault("why", {})["stale"] = "collector time budget spent; snapshot from an earlier run"
                 store.put("observe/engine", key, previous)
             continue
+        if not replica["loopback"]:
+            why = pollbudget.for_api(api).engine(
+                replica.get("node") if replica.get("node") in machine_ids else pollbudget.machine_of_address(
+                    cluster, replica.get("address")) if cluster is not None else None,
+                f"{replica.get('address')}:{replica.get('port')}", "observe-engines", now=now)
+            if why is not None:
+                previous = store.get("observe/engine", key)
+                if previous:
+                    previous.setdefault("why", {})["stale"] = why
+                    store.put("observe/engine", key, previous)
+                continue
         attempted += 1
         reading = (_read_via_fleet(store, launch["profile"], replica, now, stale_after(api, "fleet-nodes"))
                    if replica["loopback"]

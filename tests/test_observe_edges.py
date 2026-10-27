@@ -477,5 +477,22 @@ class RouterIdentityTests(unittest.TestCase):
                 router.parse_requests({**page, "instance": bad})
 
 
+# These tests drive the collectors with their own clock to check accounting, not pacing: the polling budget
+# (hyperloom.pollbudget, tested in tests/test_pollbudget.py) grants every read here.
+_unpaced = None
+
+
+def setUpModule():
+    global _unpaced
+    from unittest import mock as _mock
+    from hyperloom import pollbudget as _pollbudget
+    _unpaced = _mock.patch.multiple(_pollbudget, CYCLE_S=0.0, NODE_SPACING_S=0.0, ENGINE_CYCLE_S=0.0, TURN_CHECK_S=0.0)
+    _unpaced.start()
+
+
+def tearDownModule():
+    _unpaced.stop()
+
+
 if __name__ == "__main__":
     unittest.main()

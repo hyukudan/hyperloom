@@ -817,7 +817,7 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
         def start(mid, payload, role):
             _check_stop(path)
             result = _call(clients[mid], "lease", payload)
-            record = {"machine": mid, "lease": result["lease"], "role": role,
+            record = {"machine": mid, "lease": result["lease"], "role": role, "label": payload.get("label"),
                       "processes": [proc["name"] for proc in payload["processes"]],
                       "process_machines": {proc["name"]: mid if proc["machine"] == "local" else mids[1]
                                            for proc in payload["processes"]}}
@@ -1265,15 +1265,18 @@ def down(profile, force=False):
         lock.close()
 
 
-def status(profile=None, config_path=None):
+def status(profile=None, config_path=None, skip=None):
     """One profile's status, or every saved launch's ({profile: status}); with ``config_path``, only the launches of
     that configuration (`owns`): another configuration's launch is neither listed nor polled, and asked by name it
     answers stopped, with the reason. A launch without the record (written before launch states recorded it) is
-    listed and read, marked ``config_identity: unknown`` with the reason: shown, never hidden, and stoppable."""
+    listed and read, marked ``config_identity: unknown`` with the reason: shown, never hidden, and stoppable.
+    ``skip(machine id or "local", kind, profile)``: a reason not to read that node ("node"), the profile's router
+    ("router", on that machine or this one) or its prefill service ("prefill", this machine) now (the portal's
+    polling budget), or None."""
     if profile is None:
         names = (list(launch_states(config_path, unknown=True)) if config_path is not None
                  else [path.stem[3:] for path in secrets.runtime_dir().glob("up-*.json")])
-        return {name: status(name, config_path) for name in names}
+        return {name: status(name, config_path, skip) for name in names}
     path = _state_path(profile)
     if not path.exists():
         return {"profile": profile, "state": "stopped"}
@@ -1290,21 +1293,51 @@ def status(profile=None, config_path=None):
     if kind == "unknown":
         result["config_identity"], result["why_config"] = "unknown", UNKNOWN_CONFIG
     for mid, machine in state["machines"].items():
+        why = skip(mid, "node", profile) if skip is not None else None
+        if why:
+            result["nodes"][mid] = {"error": why}       # not read (the caller's polling budget: a GPU turn holds it)
+            continue
         try:
             result["nodes"][mid] = _call(_client(SimpleNamespace(**machine), state["known_hosts"]), "status", {"root": machine["install_root"]})
         except (remote.RemoteError, OrchestrationError) as exc:
             result["nodes"][mid] = {"error": str(exc)}
     if state.get("router"):
-        try:
-            result["router"] = _http_json(state["router"]["endpoint"])
-        except (OSError, ValueError) as exc:
-            result["router"] = {"error": str(exc)}
+        router_machine = state["router"].get("machine")
+        result["router_machine"] = router_machine
+        why = skip(router_machine or "local", "router", profile) if skip is not None else None
+        if why:
+            result["router"] = {"error": why}
+        else:
+            try:
+                result["router"] = _http_json(state["router"]["endpoint"])
+            except (OSError, ValueError) as exc:
+                result["router"] = {"error": str(exc)}
     if (state.get("prefill_service") or {}).get("port"):
-        try:
-            result["prefill_service"] = _http_json({"address": "127.0.0.1", "port": state["prefill_service"]["port"]}, "/health")
-        except (OSError, ValueError) as exc:
-            result["prefill_service"] = {"error": str(exc)}
+        why = skip("local", "prefill", profile) if skip is not None else None
+        if why:
+            result["prefill_service"] = {"error": why}
+        else:
+            try:
+                result["prefill_service"] = _http_json({"address": "127.0.0.1", "port": state["prefill_service"]["port"]}, "/health")
+            except (OSError, ValueError) as exc:
+                result["prefill_service"] = {"error": str(exc)}
     return result
+
+
+def log_machine(profile, process, read=None):
+    """Where ``logs`` reads a process's output, without reading it: "local" (the control machine's files), a machine
+    id (an ssh call to that node), or None (not a process of this launch)."""
+    state = (read or _read)(_state_path(profile))
+    local = {"router": state.get("router") or {}, "prefill": state.get("prefill_service") or {}}.get(process, {})
+    if local.get("directory") and (process == "prefill" or local.get("machine") == "local"):
+        return "local"
+    matches = [row for row in state.get("leases") or [] if row["role"] == "router" and process == "router"
+               or row["role"] == "engine" and (row["machine"] == process or process in ("rank0", "rank1"))]
+    if len(matches) != 1:
+        return None
+    lease = matches[0]
+    name = _node_name(process) if process == lease["machine"] else process
+    return lease.get("process_machines", {}).get(name, lease["machine"])
 
 
 def logs(profile, process, tail=100, config_path=None):

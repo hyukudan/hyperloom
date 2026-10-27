@@ -647,10 +647,13 @@ STREAM_SPEC = {
 def stream_content(api):
     """The streamed projection (without its event metadata)."""
     from hyperloom.web import features
-    snapshot = api.snapshot()
+    # The stream never builds a snapshot (no node or engine call): it projects the one the pages last refreshed.
+    snapshot = api.cached_snapshot()
     content = {"why": {}}
     for name in ("devices", "profiles", "stats"):
-        content[name] = project(snapshot.get(name), STREAM_SPEC[name])
+        content[name] = project((snapshot or {}).get(name), STREAM_SPEC[name])
+        if snapshot is None:
+            content["why"][name] = "unavailable"
     if "overview" in features.registry().gets:
         try:
             content["overview"] = project(api.read("overview", {}), STREAM_SPEC["overview"])

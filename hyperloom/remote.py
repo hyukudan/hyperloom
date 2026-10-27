@@ -462,8 +462,8 @@ class Remote:
             raise RemoteError("payload must be UTF-8 JSON") from exc
         if len(data) > MAX_JSON:
             raise RemoteError("payload exceeds the size limit")
-        if self.node_path is None:
-            self._path(self._ssh('printf \'%s\\n\' "$HOME/.hyperloom-boot/hyperloom-node"',
-                                 timeout=timeout, cancel_event=cancel_event))
-        raw = self._ssh(shlex.quote(self.node_path) + " " + verb, data, timeout, cancel_event)
+        # One ssh session per call: the tool's fixed location is expanded by the node's shell (no separate path
+        # lookup session first); a path learned by bootstrap is used as it is.
+        tool = shlex.quote(self.node_path) if self.node_path is not None else '"$HOME/.hyperloom-boot/hyperloom-node"'
+        raw = self._ssh(tool + " " + verb, data, timeout, cancel_event)
         return _json(raw)

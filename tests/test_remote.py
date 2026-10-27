@@ -164,8 +164,9 @@ class RemoteTests(unittest.TestCase):
         reply = self.client.call("doctor", payload, 3)
         self.assertEqual(reply, {"verb": "doctor", "payload": payload})
         command = self.calls()[-1]["argv"][-1]
-        self.assertEqual(shlex.split(command), [self.client.node_path, "doctor"])
+        self.assertEqual(shlex.split(command), ["$HOME/.hyperloom-boot/hyperloom-node", "doctor"])
         self.assertNotIn("雪", command)
+        self.assertEqual(len(self.calls()), 1)              # one ssh session per call (no path lookup first)
 
     def test_ssh_config_is_written_once_and_never_rewritten_under_readers(self):
         # Concurrent hyperloom processes (and their ssh children) read the config file; rewriting it on every call

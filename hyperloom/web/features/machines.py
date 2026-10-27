@@ -1,7 +1,8 @@
 """Fleet telemetry and the machine detail document (F2, F3; contracts C4, C5, C6).
 
 Collectors (registered here, run by the portal's samplers):
-    fleet-nodes    every 5 s: one ``host`` node verb per ssh machine and round (never two in flight for one machine);
+    fleet-nodes    every 30 s: one ``host`` node verb per ssh machine and round (paced and paused during a GPU turn
+                   by hyperloom.pollbudget) (never two in flight for one machine);
                    the payload carries the CPU baseline of the previous answer and the loopback engines of that node
                    (C4: rank 0 / router members only), so one call per machine and round covers everything.
     fleet-control  every 2 s: the control machine itself (C6): nvidia-smi for its cards, memory and commit, CPU,
@@ -33,14 +34,14 @@ import sys
 import threading
 import time
 
-from hyperloom import nodegate, procs, secrets, telemetry
+from hyperloom import nodegate, pollbudget, procs, secrets, telemetry
 from hyperloom.adapters import engine as engine_adapter
 from hyperloom.paths import repo_root
 from hyperloom.telemetry.store import BASELINES as BASELINE_NAMESPACE
 from hyperloom.winproc import no_window
 
 
-NODE_INTERVAL = 5.0
+NODE_INTERVAL = pollbudget.CYCLE_S
 CONTROL_INTERVAL = 2.0
 ROUND_S = 12.0              # the transport's own timeout is 10 s
 COUNTER_GAP_S = 30.0
@@ -568,9 +569,15 @@ def collect_nodes(api, now):
         finally:
             release()
 
+    budget = pollbudget.for_api(api)
     for machine in machines:
+        why = budget.node(machine.id, "fleet-nodes", now=now)     # paced; paused during a GPU turn
+        if why is not None:
+            skipped[machine.id] = why
+            continue
         release = _try_lock(api, state, machine.id)
         if release is None:
+            budget.refund(machine.id, "fleet-nodes")             # no call: the grant is given back
             skipped[machine.id] = "previous node call still in flight"
             continue
         try:

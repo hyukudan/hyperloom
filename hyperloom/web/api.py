@@ -30,7 +30,7 @@ import time
 import uuid
 from urllib.request import ProxyHandler, Request, build_opener
 
-from hyperloom import __version__, admission, cli, config, engines, nodegate, orchestrate, remote, render, secrets
+from hyperloom import __version__, admission, cli, config, engines, nodegate, orchestrate, pollbudget, remote, render, secrets
 from hyperloom.adapters import engine, router
 from hyperloom.paths import repo_root
 from hyperloom.stats import Window
@@ -426,6 +426,15 @@ class API:
         self._audit_lock = threading.Lock()
         self._cached = None
         self._expires = 0
+        self._inspections = {}          # (machine, verb) -> {"value", "error", "at"}: the inventory's last node reads
+        self._status_cache = None       # (read at, statuses, error): launch status, read at most once per cycle
+        self._status_stale = False      # a job finished: the next snapshot reads the launch status again
+        self._stats_cache = None        # the stats document of the last status read
+        self._last_status = {}          # (profile, machine or "router") -> its last status answer (paced reads)
+        self._last_logs = {}            # (profile, process) -> its last log entries (paced reads)
+        self._last_process_logs = {}    # (profile, process, tail) -> the Logs page's last document of it
+        self._status_retry = False      # a status read refused for spacing: the next snapshot tries it again
+        self._status_poller = "status"  # the budget bucket of the current status cycle (its retries keep it)
         self._jobs = {}
         self._active = None
         self._seen = {}
@@ -567,6 +576,119 @@ class API:
             pass
         return data
 
+    def _inspect(self, machine):
+        """The inventory's node reads of one machine, paced by the polling budget: each verb is its own poller (one
+        grant, one node call: doctor and gpu at most once per cycle each, spaced like every other poll of the node),
+        none while a GPU turn holds the node. A read not due keeps the last answer. Returns the verbs to show."""
+        verbs = ("doctor", "gpu")
+        now = self.clock()
+        paused = None
+        for verb in verbs:
+            if machine.access == "ssh":
+                why = pollbudget.for_api(self).node(machine.id, "inventory-" + verb, now=now)
+            else:
+                last = (self._inspections.get((machine.id, verb)) or {}).get("at")
+                why = "read less than a cycle ago" if last is not None and now - last < pollbudget.CYCLE_S else None
+            if why is not None:
+                if why.startswith("paused"):
+                    paused = why
+                continue
+            try:
+                value = self._node(machine, verb)
+                if not isinstance(value, dict):
+                    raise ValueError("node response must be an object")
+                if value.get("error"):
+                    raise ValueError(value["error"])
+                if value.get("schema") != "hyperloom/node-v1":
+                    raise ValueError("unknown node schema")
+                self._inspections[(machine.id, verb)] = {"value": value, "error": None, "at": now}
+                if verb == "doctor":
+                    self._note_turn(machine, value, now)
+            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+                self._inspections[(machine.id, verb)] = {"value": None, "error": str(exc), "at": now}
+        self._inspections[(machine.id, "paused")] = paused
+        return verbs
+
+    def _note_turn(self, machine, doctor, now):
+        """The doctor's lab check names the node's GPU turn holder: a turn reading for the polling budget."""
+        lab = ((doctor.get("checks") or {}).get("lab")) or {}
+        if lab.get("status") != "ok":
+            return
+        holder = (lab.get("value") or {}).get("holder") or {}
+        if holder.get("status") == "ok":
+            pollbudget.note_holder(self, machine.id, pollbudget.holder_label(holder.get("value")), now=now)
+        elif "no holder" in str(holder.get("why") or "") or "empty" in str(holder.get("why") or ""):
+            pollbudget.note_holder(self, machine.id, None, now=now)
+
+    def _statuses(self):
+        """The launch statuses of this configuration (one status node call per launched node): read at most once
+        per polling cycle, and again right after a job of this portal finished. (statuses, error, fresh)."""
+        now = self.clock()
+        cached = self._status_cache
+        within = cached is not None and not self._status_stale and 0 <= now - cached[0] < pollbudget.CYCLE_S
+        if within and not self._status_retry:
+            return cached[1], cached[2], False
+        retrying = within             # only the nodes the spacing refused are read now; the cycle keeps its start
+        after_job, self._status_stale = self._status_stale, False
+        # The budget bucket of this cycle's reads: a retry keeps the bucket of the read it completes (a read right
+        # after a job uses its own, so it is not refused by the cycle's earlier reads; its retries never repeat it).
+        if not retrying:
+            self._status_poller = "status-job" if after_job else "status"
+        poller = self._status_poller
+        budget = pollbudget.for_api(self)
+        denied = {}
+
+        def skip(machine_id, kind="node", profile=None):
+            # Every read takes a grant of the polling budget like any poller (a GPU turn pauses a node read; the
+            # node's spacing bounds it; a router or prefill service on this machine or a node is read at most once
+            # per 30 s, so a retry of a refused node read never repeats them); a refused read keeps the last answer.
+            if kind in ("router", "prefill"):
+                host = None if machine_id == "local" else machine_id
+                why = budget.engine(host, f"{kind}-status:{profile}:{machine_id}",
+                                    poller, now=now)
+            else:
+                why = budget.node(machine_id, poller, now=now)
+            if why is not None:
+                denied[(profile, machine_id, kind)] = why
+            return why
+        try:
+            # This configuration's launches, read at the polling budget's pace.
+            statuses, error = self.orchestrate.status(config_path=self.config_path, skip=skip), None
+        except (OSError, ValueError, RuntimeError) as exc:
+            statuses, error = None, str(exc)
+        if isinstance(statuses, dict):
+            self._keep_last(statuses, denied)
+        # A node only the 5 s spacing kept from being read (another poller had just read it) is tried again at the
+        # next snapshot, without advancing its cadence; one read within this cycle or held by a turn waits.
+        self._status_retry = any(not why.startswith(("paused", "polled", "read ")) for why in denied.values())
+        # The cycle starts at the last complete read: a retry that read everything restarts it there (so the node's
+        # own 30 s cadence and the cycle stay aligned), a partial one keeps the start.
+        start = cached[0] if retrying and self._status_retry else now
+        self._status_cache = (start, statuses, error)
+        return statuses, error, not retrying
+
+    def _keep_last(self, statuses, denied):
+        """A node or router read the budget refused for pacing keeps its last answer (a held turn is shown as
+        paused); every answer read now becomes the last one."""
+        for profile, status in statuses.items():
+            if not isinstance(status, dict):
+                continue
+            for mid, node in list((status.get("nodes") or {}).items()):
+                why = denied.get((profile, mid, "node"))
+                if why is None:
+                    if isinstance(node, dict) and not node.get("error"):
+                        self._last_status[(profile, mid)] = node
+                elif not why.startswith("paused") and (profile, mid) in self._last_status:
+                    status["nodes"][mid] = self._last_status[(profile, mid)]
+            for field, kind, machine in (("router", "router", status.get("router_machine") or "local"),
+                                         ("prefill_service", "prefill", "local")):
+                why = denied.get((profile, machine, kind))
+                if why is None:
+                    if isinstance(status.get(field), dict) and not status[field].get("error"):
+                        self._last_status[(profile, kind)] = status[field]
+                elif not why.startswith("paused") and (profile, kind) in self._last_status:
+                    status[field] = self._last_status[(profile, kind)]
+
     def _inventory(self, cluster, statuses):
         machines = []
         for mid, machine in cluster.machines.items():
@@ -575,18 +697,20 @@ class API:
                    "ram": None, "nics": None, "disk_free_bytes": None, "accelerators": None,
                    "doctor": None, "gpu": None, "probe": None, "roles": [], "leases": [],
                    "last_seen": self._seen.get(mid), "health": "offline", "why": {}}
-            for verb in ("doctor", "gpu"):
-                try:
-                    value = self._node(machine, verb)
-                    if not isinstance(value, dict):
-                        raise ValueError("node response must be an object")
-                    if value.get("error"):
-                        raise ValueError(value["error"])
-                    if value.get("schema") != "hyperloom/node-v1":
-                        raise ValueError("unknown node schema")
-                    row[verb] = value
-                except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
-                    row["why"][verb] = str(exc)
+            reads = {verb: self._inspections.get((mid, verb)) for verb in self._inspect(machine)}
+            latest = max((read for read in reads.values() if read), key=lambda read: read["at"], default=None)
+            for verb, inspection in reads.items():
+                if inspection is None:
+                    row["why"][verb] = "not read yet (node polls are paced: once per 30 s per node)"
+                elif latest is not None and latest["error"] is not None:
+                    row["why"][verb] = latest["error"]      # the latest read failed: no older answer is shown
+                elif inspection["error"] is not None:
+                    row["why"][verb] = inspection["error"]
+                else:
+                    row[verb] = inspection["value"]
+            row["inspected_at"] = {verb: (self._inspections.get((mid, verb)) or {}).get("at") for verb in ("doctor", "gpu")}
+            if self._inspections.get((mid, "paused")):
+                row["why"]["inspection"] = self._inspections[(mid, "paused")]
             try:
                 row["probe"] = self._probe(machine)
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
@@ -594,6 +718,10 @@ class API:
             if row["doctor"] or row["gpu"] or row["probe"]:
                 row["health"] = "online"
                 self._seen[mid] = row["last_seen"] = self.clock()
+            elif self._inspections.get((mid, "paused")) and pollbudget.for_api(self).turn(mid, now=self.clock()):
+                # Not read because a GPU turn holds it: the turn check that saw the holder is a fresh answer of the
+                # node, so it is online (busy), not offline; its details wait for the turn's end.
+                row["health"] = "online"
             elif any("unknown host key" in why for why in row["why"].values()):
                 row["health"] = "unpaired"
             doctor = (row["doctor"] or {}).get("checks", {})
@@ -823,6 +951,14 @@ class API:
                     from urllib.parse import urlsplit
                     url = urlsplit(replica["endpoint"] if "://" in replica["endpoint"] else "http://" + replica["endpoint"])
                     endpoint = {"address": url.hostname, "port": url.port}
+                    paused = pollbudget.for_api(self).engine_paused(
+                        pollbudget.machine_of_address(cluster, url.hostname) if cluster is not None else None)
+                    if paused:
+                        for key in ("status", "metrics", "throughput", "ttft_p50", "ttft_p95", "draft_acceptance",
+                                    "usb4_exchange_mean_us"):
+                            item["why"][key] = paused
+                        engines.append(item)
+                        continue
                     metrics = engine.parse_metrics(_http(endpoint, "/metrics", text=True))
                     item["metrics"] = asdict(metrics)
                     # Keep the baseline for ten seconds, even though the UI polls every two.
@@ -900,13 +1036,10 @@ class API:
                     documents[name]["why"][field] = "configuration unavailable: " + str(exc)
             documents["settings"]["capabilities"] = {**CAPABILITIES, **feature_registry.registry().capabilities}
             return documents
-        status_error = None
-        try:
-            statuses = self.orchestrate.status(config_path=self.config_path)     # this configuration's launches only
-        except (OSError, ValueError, RuntimeError) as exc:
-            status_error = str(exc)
+        statuses, status_error, fresh = self._statuses()       # this configuration's launches only, paced
+        if status_error is not None:
             statuses = {name: {"error": status_error} for name in cluster.profiles}
-            documents["profiles"]["why"]["status"] = str(exc)
+            documents["profiles"]["why"]["status"] = status_error
         machines = self._inventory(cluster, statuses)
         if status_error:
             for machine in machines:
@@ -972,7 +1105,11 @@ class API:
             _missing(asset, ("verification", "revision", "quant"), "verification or manifest field unavailable")
         documents["models"]["why"]["proposals"] = "later phase 2.5 · R17 / TM-R15"
         documents["profiles"]["profiles"] = self._profiles(cluster, statuses)
-        documents["stats"] = self._statistics(statuses, cluster)
+        if fresh or self._stats_cache is None:
+            # Engine and router reads follow the launch status: at most once per cycle (none for an engine whose
+            # node a GPU turn of another holder holds).
+            self._stats_cache = self._statistics(statuses, cluster)
+        documents["stats"] = deepcopy(self._stats_cache)
         for profile in documents["profiles"]["profiles"]:
             trellis = list(dict.fromkeys(((item.get("status") or {}).get("memory") or {}).get("trellis_identity")
                                         for item in documents["stats"]["engines"] if item["profile"] == profile["id"]
@@ -1025,11 +1162,25 @@ class API:
                      "reason": action["result"].get("error"), "bundle": action}
                     for action in actions if isinstance(action.get("result"), dict) and action["result"].get("state") == "failed"]
         reasons = {}
+        budget = pollbudget.for_api(self)
         for profile, status in statuses.items():
             processes = list((status.get("nodes") or {}).keys())
             if status.get("router"):
                 processes.append("router")
             for process in processes:
+                # A node's log (and a router hosted on a node) is one ssh session: it takes a budget grant; a paced
+                # read keeps the last entries, a held turn reads nothing.
+                host = status.get("router_machine") if process == "router" else process
+                why = None
+                if host not in (None, "local"):
+                    why = budget.node(host, f"logs-{profile}-{process}", now=self.clock())
+                if why is not None:
+                    if why.startswith("paused"):
+                        reasons[profile + "/" + process] = why + "; not read"
+                    else:
+                        entries.extend(self._last_logs.get((profile, process), []))
+                    continue
+                mark = len(entries)
                 try:
                     logs = self.orchestrate.logs(profile, process, 100, config_path=self.config_path)
                     for stream in ("stdout", "stderr"):
@@ -1039,6 +1190,7 @@ class API:
                             entries.append({"profile": profile, "process": process, "stream": stream,
                                             "message": message, "event": event, "when": None,
                                             "why": {"when": "timestamp unavailable unless present in captured output"}})
+                    self._last_logs[(profile, process)] = entries[mark:]
                 except (OSError, ValueError, RuntimeError) as exc:
                     reasons[profile + "/" + process] = str(exc)
         return self._document("logs", entries=entries[-1000:], failures=failures,
@@ -1072,10 +1224,39 @@ class API:
                     raise APIError("tail must be in 1..65536")
                 cache_key = "logs/" + repr(key)
                 if cache_key not in self._cached:
-                    self._cached[cache_key] = self._document("logs", entries=redact(self.orchestrate.logs(*key, config_path=self.config_path)), failures=None,
-                                                           why={"failures": "persistent process failure index unavailable"})
+                    self._cached[cache_key] = self._process_logs(key)
                 document = self._cached[cache_key]
             return redact(document)
+
+    def _process_logs(self, key):
+        """One process's log for the Logs page (refreshed by the page): a node's log is one ssh session, so it takes
+        the polling budget's grant of that node like every other read (once per 30 s per process and tail, spaced
+        with every other poll of the node); a paced read keeps the last answer, a held GPU turn reads nothing."""
+        profile, process, tail = key
+        try:
+            host = orchestrate.log_machine(profile, process, read=self.orchestrate._read)
+        except Exception:  # noqa: BLE001 - no readable launch state: the process names its machine, or nothing
+            host = None
+        if host is None:
+            try:
+                host = process if process in self._cluster().machines else None
+            except Exception:  # noqa: BLE001
+                host = None
+        why = None
+        if host != "local":
+            why = (pollbudget.for_api(self).node(host, f"page-logs-{profile}-{process}-{tail}", now=self.clock()) if host
+                   else "the machine of this process is not known: not read")
+        if why is None:
+            document = self._document("logs", entries=redact(self.orchestrate.logs(*key, config_path=self.config_path)),
+                                      failures=None, why={"failures": "persistent process failure index unavailable"})
+            self._last_process_logs[key] = document
+            return document
+        last = self._last_process_logs.get(key)
+        if last is not None and not why.startswith("paused"):
+            return last
+        return self._document("logs", entries=[], failures=None,
+                              why={"entries": why + ("; not read" if why.startswith("paused") else ""),
+                                   "failures": "persistent process failure index unavailable"})
 
     # Feature modules (hyperloom/web/features): helpers they use and the dispatch of their endpoints.
     def document(self, name, **fields):
@@ -1850,6 +2031,7 @@ class API:
                     self._active = None
             with self._poll_lock:
                 self._expires = 0
+                self._status_stale = True
         self._start_worker(run, "hyperloom-ui-" + jid[:8], jid, job, action, arguments)
         return response
 

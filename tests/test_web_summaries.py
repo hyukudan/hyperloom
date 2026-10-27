@@ -28,7 +28,10 @@ class SummaryTests(unittest.TestCase):
         self.api._action_log = lambda: []
 
     def inventory(self):
-        return self.api._inventory(self.cluster, {})
+        from hyperloom import pollbudget
+        self.api._inspections, self.api._poll_budget = {}, pollbudget.Budget()   # summaries, not the pacing
+        with patch.object(pollbudget, "NODE_SPACING_S", 0.0):
+            return self.api._inventory(self.cluster, {})
 
     def test_os_ram_nics_and_rocm_are_short_summaries(self):
         pc, first, second = self.inventory()
@@ -166,7 +169,9 @@ class SummaryTests(unittest.TestCase):
         self.orch.load_cluster.return_value = self.cluster
         self.orch.status.return_value = {}
         self.orch._known_hosts.return_value = FIXTURE.parent / "absent-known-hosts"
-        data = self.api._snapshot()
+        from hyperloom import pollbudget
+        with patch.object(pollbudget, "NODE_SPACING_S", 0.0):        # summaries, not the pacing: both verbs at once
+            data = self.api._snapshot()
         self.assertEqual(data["devices"]["summary"]["minimum_headroom_bytes"], 60000000000)
         self.assertEqual(data["devices"]["summary"]["memory_free_bytes"], 230673741824)
         self.assertEqual(len(data["topology"]["usb4"]), 2)

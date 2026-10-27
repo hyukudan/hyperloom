@@ -24,7 +24,8 @@ per target per round, one short-lived worker per target, late results discarded.
     POST endpoints/save         -> add or update a target (audited)
     POST endpoints/remove       -> remove a target (audited)
     POST endpoints/check        -> a forced identification round and an exposure round, now (synchronous)
-Collectors: ``endpoints`` (15 s: endpoint_up, endpoint_models, token deltas where /metrics is ours) and
+Collectors: ``endpoints`` (every 15 s, each target read at most once per 30 s and none on a node while another
+holder's GPU turn holds it: endpoint_up, endpoint_models, token deltas where /metrics is ours) and
 ``endpoints-exposure`` (60 s: listener evidence from the fleet package's stored host answers plus an
 unauthenticated models-list request, which never generates anything).
 """
@@ -707,6 +708,20 @@ def run_round(api, now, *, identify=False, session_factory=None, key_lookup=None
     try:
         cluster = _cluster(api)
         targets = load(store)
+        if account:
+            # The sampler's rounds never read an endpoint on a node while a GPU turn of another holder holds it.
+            from hyperloom import pollbudget
+            budget = pollbudget.for_api(api)
+
+            def refused(target):
+                # Once per 30 s per target, and none while another holder's GPU turn holds its machine.
+                try:
+                    machine = pollbudget.machine_of_address(cluster, resolve(target["host"], cluster))
+                except ValueError:
+                    machine = None
+                return budget.engine(machine, f"{target['scheme']}://{target['host']}:{target['port']}",
+                                     "endpoints", now=now)
+            targets = [t for t in targets if refused(t) is None]
         previous = {t["id"]: store.get(NAMESPACE, "probe/" + t["id"]) for t in targets}
         results = {}
         if targets:
@@ -1010,10 +1025,17 @@ def exposure_round(api, now, *, session_factory=None, deadline_s=None):
             return document
         rows = configured(cluster, load(store))
         pending = []
+        from hyperloom import pollbudget
+        budget = pollbudget.for_api(api)
         for row in rows:
             if row.get("error"):
                 continue
             row["listener"] = listener(store, cluster, row.get("machine"), row["port"], now)
+            paused = budget.engine_paused(row.get("machine"))
+            if paused:                      # a GPU turn of another holder holds that node: not requested
+                row["probe_scope"] = _scope(row["probe_address"])
+                row["unauthenticated"] = {"outcome": None, "status": None, "detail": paused}
+                continue
             row["probe_scope"] = _scope(row["probe_address"])
             pending.append(row)
         late = {"outcome": None, "status": None, "detail": "exposure deadline reached before this row was checked"}

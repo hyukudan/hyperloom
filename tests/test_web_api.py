@@ -57,14 +57,22 @@ class APITests(unittest.TestCase):
         self.remote = Mock()
         self.calls = []
 
+        self._inventory_times = []
+
         def node(verb, payload, timeout):
             self.calls.append(verb)
+            self._inventory_times.append(self.now)
             checks = {"os": {"status": "ok", "value": "Linux"},
                       "disk": {"status": "ok", "value": {"free_bytes": 1234}}} if verb == "doctor" else {
                           "ram": {"status": "ok", "value": {"total_bytes": 4096}},
                           "amd": {"status": "ok", "value": []}}
             return {"schema": "hyperloom/node-v1", "verb": verb, "checks": checks}
         self.remote.Remote.return_value.call.side_effect = node
+        # The inventory's doctor and gpu reads are separate pollers that the budget spaces 5 s apart; these tests
+        # read both at once (the pacing itself: test_concurrent_tabs... and tests/test_pollbudget.py).
+        spacing = patch("hyperloom.pollbudget.NODE_SPACING_S", 0.0)
+        spacing.start()
+        self.addCleanup(spacing.stop)
         self.api = API(self.directory / "cluster.json", orchestrator=self.orch,
                        remote_module=self.remote, clock=lambda: self.now,
                        audit_path=self.directory / "audit.jsonl")
@@ -91,15 +99,164 @@ class APITests(unittest.TestCase):
             documents = list(pool.map(self.api.read, list(SCREENS) * 2))
         self.assertEqual(len(documents), 14)
         self.assertEqual(self.calls, ["doctor", "gpu"])
-        self.orch.status.assert_called_once_with(config_path=self.api.config_path)
+        self.assertEqual(self.orch.status.call_count, 1)
+        self.assertEqual(self.orch.status.call_args.kwargs["config_path"], self.api.config_path)
+        # The snapshot is rebuilt every 2 s, but node reads are paced: each verb once per 30 s cycle (one ssh each),
+        # the launch status once per cycle.
+        for step in range(14):
+            self.now += 2
+            self.api.read("devices")
+        self.assertEqual(self.calls, ["doctor", "gpu"])
+        self.assertEqual(self.orch.status.call_count, 1)
+        with patch("hyperloom.pollbudget.NODE_SPACING_S", 5.0):           # the real spacing: never a burst
+            self.now += 2
+            self.api.read("devices")
+            self.assertEqual(self.calls, ["doctor", "gpu", "doctor"])
+            self.assertEqual(self.orch.status.call_count, 2)
+            self.now += 2
+            self.api.read("devices")
+            self.assertEqual(self.calls, ["doctor", "gpu", "doctor"])     # gpu waits for the 5 s spacing
+            self.now += 4
+            self.api.read("devices")
+            self.assertEqual(self.calls, ["doctor", "gpu", "doctor", "gpu"])
+
+    def test_status_and_node_logs_skip_a_node_a_gpu_turn_holds(self):
+        from hyperloom import pollbudget
+        self.orch.status.return_value = {"qwen-replicas": {"nodes": {"halo-1": {"leases": []}}}}
+        pollbudget.for_api(self.api).note_turn("halo-1", "someone-bench", now=self.now)
+        document = self.api.read("logs")
+        skip = self.orch.status.call_args.kwargs["skip"]
+        self.assertIn("paused", skip("halo-1"))
+        self.assertIsNone(skip("halo-2"))
+        self.orch.logs.assert_not_called()                                # no node log read during the turn
+        self.assertIn("paused", document["why"]["qwen-replicas/halo-1"])
+        pollbudget.for_api(self.api).note_turn("halo-1", None, now=self.now)
         self.now += 2
+        self.api.read("logs")
+        self.orch.logs.assert_called_once()                               # the GPU is free: read again
+        self.now += 2
+        self.api.read("logs")
+        self.orch.logs.assert_called_once()                               # and then once per 30 s only
+
+    def test_every_core_node_session_is_paced_by_the_budget(self):
+        """Inventory, launch status and node logs together, snapshots every 2 s for five minutes (and a job finishing
+        in between): every ssh session to the node is a budget grant, at least 5 s apart, at most 12 a minute."""
+        from hyperloom import pollbudget
+        sessions = []
+
+        def status(config_path=None, skip=None):
+            if skip("halo-1", "node") is None:
+                sessions.append(("status", self.now))
+            return {"qwen-replicas": {"nodes": {"halo-1": {"leases": []}}}}
+
+        def logs(profile, process, tail, config_path=None):
+            sessions.append(("logs", self.now))
+            return {"stdout": "READY", "stderr": ""}
+        self.orch.status.side_effect = status
+        self.orch.logs.side_effect = logs
+        start = self.now
+        with patch.object(pollbudget, "NODE_SPACING_S", 5.0):
+            for step in range(150):
+                if step == 40:
+                    self.api._status_stale = True                         # a job of this portal just finished
+                self.api.read("logs")
+                self.now += 2
+        sessions += [("inventory", at) for at in self._inventory_times]
+        times = sorted(at for _, at in sessions)
+        self.assertTrue(all(b - a >= 5 for a, b in zip(times, times[1:])), times)
+        for minute in range(5):
+            self.assertLessEqual(sum(1 for at in times if start + 60 * minute <= at < start + 60 * (minute + 1)), 12)
+        self.assertEqual({kind for kind, _ in sessions}, {"status", "logs", "inventory"})
+
+    def test_a_router_on_a_held_node_is_neither_read_nor_its_log_fetched(self):
+        from hyperloom import pollbudget
+        self.orch.status.side_effect = lambda config_path=None, skip=None: {"qwen-replicas": {
+            "nodes": {}, "router": {"error": skip("halo-1", "router")}, "router_machine": "halo-1"}}
+        pollbudget.for_api(self.api).note_turn("halo-1", "someone-bench", now=self.now)
+        document = self.api.read("logs")
+        self.orch.logs.assert_not_called()
+        self.assertIn("paused", document["why"]["qwen-replicas/router"])
+
+    def test_the_logs_page_refresh_of_one_process_is_paced_and_paused(self):
+        """The Logs page asks for one process's log every 2 s: a node's log (and a router hosted on a node) is read
+        through the budget: nothing while a turn holds the node, then at most once per 30 s (the last answer
+        between reads)."""
+        from hyperloom import orchestrate, pollbudget
+        fetched = []
+        self.orch.logs.side_effect = lambda profile, process, tail, config_path=None: (
+            fetched.append((process, self.now)) or {"stdout": f"line {len(fetched)}", "stderr": ""})
+        self.orch.status.return_value = {"qwen-replicas": {"nodes": {"halo-1": {"leases": []}}}}
+        hosts = {"halo-1": "halo-1", "router": "halo-1", "prefill": "local"}
+        with patch.object(orchestrate, "log_machine", lambda profile, process, read=None: hosts[process]), \
+                patch.object(pollbudget, "NODE_SPACING_S", 5.0):
+            pollbudget.for_api(self.api).note_turn("halo-1", "someone-bench", now=self.now)
+            for step in range(30):                                        # one minute of refreshes in a turn
+                for process in ("halo-1", "router"):
+                    document = self.api.read("logs", {"profile": "qwen-replicas", "process": process, "tail": "5"})
+                    self.assertIn("paused", document["why"]["entries"])
+                self.now += 2
+            self.assertEqual(fetched, [])
+            pollbudget.for_api(self.api).note_turn("halo-1", None, now=self.now)
+            for step in range(30):                                        # one minute with the GPU free
+                self.api.read("logs", {"profile": "qwen-replicas", "process": "halo-1", "tail": "5"})
+                self.now += 2
+            reads = [at for process, at in fetched if process == "halo-1"]     # the page's and the snapshot's
+            self.assertLessEqual(len(reads), 4)
+            self.assertTrue(all(b - a >= 5 for a, b in zip(reads, reads[1:])))
+            last = self.api.read("logs", {"profile": "qwen-replicas", "process": "halo-1", "tail": "5"})
+            self.assertTrue(last["entries"], last)                        # between reads: the last answer
+            self.api.read("logs", {"profile": "qwen-replicas", "process": "prefill", "tail": "5"})
+            self.assertEqual(fetched[-1][0], "prefill")                   # a local file: no node, no budget
+
+    def test_a_status_read_the_spacing_refused_is_tried_again(self):
+        """Another poller (the turn check) takes the node just before each status read: the read is retried at the
+        next snapshot instead of waiting a cycle, so the status keeps following the node."""
+        from hyperloom import pollbudget
+        budget = pollbudget.for_api(self.api)
+        served = {"value": 0}
+        reads = []
+
+        def status(config_path=None, skip=None):
+            if skip("halo-1", "node") is None:
+                served["value"] += 1
+                reads.append(self.now)
+            return {"qwen-replicas": {"nodes": {"halo-1": {"leases": [], "generation": served["value"]}}}}
+        self.orch.status.side_effect = status
+        with patch.object(pollbudget, "NODE_SPACING_S", 5.0):
+            for step in range(150):                                       # five minutes of 2 s snapshots
+                if step % 15 == 0 and step:
+                    budget.node("halo-1", "turns", now=self.now - 1)     # the turn check, 1 s before each cycle
+                    budget.note_turn("halo-1", None, now=self.now - 1)
+                self.api.read("profiles")
+                self.now += 2
+        self.assertGreaterEqual(len(reads), 9)                            # about once per 30 s, never stuck
+        self.assertTrue(all(b - a <= 40 for a, b in zip(reads, reads[1:])), reads)
+        status = self.api._status_cache[1]["qwen-replicas"]["nodes"]["halo-1"]
+        self.assertEqual(status["generation"], served["value"])
+
+    def test_the_inventory_pauses_while_a_gpu_turn_holds_the_node(self):
+        from hyperloom import pollbudget
         self.api.read("devices")
-        self.assertEqual(self.calls, ["doctor", "gpu"] * 2)
+        self.assertEqual(self.calls, ["doctor", "gpu"])
+        pollbudget.for_api(self.api).note_turn("halo-1", "someone-bench", now=self.now + 30)
+        self.now += 30
+        row = self.api.read("devices")["machines"][0]
+        self.assertEqual(self.calls, ["doctor", "gpu"])                  # no node call during the turn
+        self.assertIn("paused: a GPU turn holds halo-1", row["why"]["inspection"])
+        self.assertIsNotNone(row["gpu"])                                  # the last answer stays shown
+
+    def test_a_machine_first_seen_in_a_gpu_turn_is_online_not_offline(self):
+        from hyperloom import pollbudget
+        pollbudget.for_api(self.api).note_turn("halo-1", "someone-bench", now=self.now)
+        row = self.api.read("devices")["machines"][0]
+        self.assertEqual(self.calls, [])                                  # no node read during the turn
+        self.assertEqual(row["health"], "online")                         # the turn check answered: busy, not down
+        self.assertIn("paused", row["why"]["inspection"])
 
     def test_offline_keeps_last_seen_without_fake_values(self):
         first = self.api.read("devices")["machines"][0]
         self.remote.Remote.return_value.call.side_effect = RuntimeError("machine offline")
-        self.now += 3
+        self.now += 30                                  # the next paced read
         row = self.api.read("devices")["machines"][0]
         self.assertEqual(row["health"], "offline")
         self.assertEqual(row["last_seen"], first["last_seen"])
@@ -192,7 +349,8 @@ class APITests(unittest.TestCase):
         self.api._execute_action("up", {"profile": "qwen-replicas"})      # in process, without a job
         self.assertEqual(seen, [Path(self.api.config_path).absolute()] * 2)
         self.api.read("profiles")
-        self.assertEqual(self.orch.status.call_args.kwargs, {"config_path": self.api.config_path})
+        self.assertEqual(self.orch.status.call_args.kwargs["config_path"], self.api.config_path)
+        self.assertEqual(set(self.orch.status.call_args.kwargs), {"config_path", "skip"})
 
     def test_profiles_show_only_this_configurations_launch_of_a_shared_name(self):
         from hyperloom import orchestrate
@@ -464,12 +622,12 @@ class APITests(unittest.TestCase):
             self.assertEqual(first["engines"][0]["ttft_p50"]["value"], 30)
             self.assertIsNone(first["recent_requests"][0]["route"])
             count[0] = 200
-            self.now += 10
+            self.now += 30                              # engine reads follow the paced launch status
             second = self.api.read("stats")
-            self.assertEqual(second["engines"][0]["throughput"]["value"], 10)
+            self.assertAlmostEqual(second["engines"][0]["throughput"]["value"], 100 / 30)
             self.assertEqual(second["engines"][0]["ttft_p50"]["n"], 1)
             count[0] = 1
-            self.now += 2
+            self.now += 30
             reset = self.api.read("stats")["engines"][0]["throughput"]
             self.assertIsNone(reset["value"])
             self.assertTrue(reset["reset"])

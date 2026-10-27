@@ -40,6 +40,27 @@ class RouterCollectorTests(unittest.TestCase):
         self.assertEqual(document["requests"], [])
         self.assertIn(observe.NEEDS_LOG, document["why"]["requests"])
 
+    def test_router_reads_are_paced_and_pause_for_another_holders_turn(self):
+        from hyperloom import pollbudget
+        env = self.env
+        env.launch("qwen", QWEN)
+        env.router()
+        with mock.patch.object(pollbudget, "ENGINE_CYCLE_S", 30.0):        # the real cadence (this module unpaces it)
+            observe.collect_router(env.api, env.clock(), env.store)
+            first = len(env.http.calls)
+            self.assertGreater(first, 0)
+            observe.collect_router(env.api, env.clock() + 5, env.store)      # the collector's next 5 s run
+            self.assertEqual(len(env.http.calls), first)                   # every part was read 5 s ago
+            self.assertIn("once per 30 s", env.store.get("observe/source", "qwen")["why"]["requests"])
+        # A router on a node that another holder's GPU turn holds is not read at all.
+        machine = "halo-1"
+        env.api.cluster = lambda: mock.Mock(machines={machine: mock.Mock(http_address="127.0.0.1")})
+        with mock.patch.object(pollbudget, "machine_of_address", lambda cluster, host: machine):
+            pollbudget.for_api(env.api).note_turn(machine, "someone-bench", now=env.clock())
+            observe.collect_router(env.api, env.clock() + 60, env.store)
+        self.assertEqual(len(env.http.calls), first)
+        self.assertIn("paused", env.store.get("observe/source", "qwen")["why"]["requests"])
+
     def test_key_only_in_the_header_and_never_stored(self):
         env = self.env
         env.launch("qwen", QWEN)
@@ -350,6 +371,23 @@ class EngineCollectorTests(unittest.TestCase):
         env.http.routes[f"http://{LOOPBACK}:18700/api/status"] = observe.Unavailable("HTTP 404")
         env.collect()
         self.assertIn(observe.NEEDS_SERVICE, env.store.get("observe/service", "qwen")["why"])
+
+
+# These tests drive the collectors with their own clock to check accounting, not pacing: the polling budget
+# (hyperloom.pollbudget, tested in tests/test_pollbudget.py) grants every read here.
+_unpaced = None
+
+
+def setUpModule():
+    global _unpaced
+    from unittest import mock as _mock
+    from hyperloom import pollbudget as _pollbudget
+    _unpaced = _mock.patch.multiple(_pollbudget, CYCLE_S=0.0, NODE_SPACING_S=0.0, ENGINE_CYCLE_S=0.0, TURN_CHECK_S=0.0)
+    _unpaced.start()
+
+
+def tearDownModule():
+    _unpaced.stop()
 
 
 if __name__ == "__main__":

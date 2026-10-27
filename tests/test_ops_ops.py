@@ -60,8 +60,10 @@ class NodeToolTests(Base, unittest.TestCase):
         expected = ops.expected_digest()
         self.replies[("halo-1", "version")] = {"checks": {"tool": {"value": expected}}}
         self.replies[("halo-2", "version")] = RuntimeError("ssh command failed (exit 255)")
-        self.replies[("halo-1", "host")] = {"interfaces": [{"name": "eth0", "mac": "02:00:5E:10:00:01"},
-                                                           {"name": "x", "mac": "01:00:5e:00:00:01"}]}
+        # One node call per check: the MACs come from the fleet collector's stored host answer.
+        self.replies[("halo-1", "host")] = AssertionError("a second node call for the MACs")
+        self.api.telemetry.put("fleet/host", "halo-1", {"host": {"interfaces": [
+            {"name": "eth0", "mac": "02:00:5E:10:00:01"}, {"name": "x", "mac": "01:00:5e:00:00:01"}]}})
         before = self.api.read("ops/nodes", {})
         self.assertIsNone(next(m for m in before["machines"] if m["machine"] == "halo-1")["status"])
         ops.sample_nodes(self.api, 1000.0)
@@ -654,6 +656,23 @@ class CLIRenewalTests(unittest.TestCase):
         from types import SimpleNamespace
         from hyperloom import cli
         self.check(lambda: cli._admission_hold(SimpleNamespace(command="install", profile=None, config="cfg.json")))
+
+
+# These tests drive the collectors with their own clock to check accounting, not pacing: the polling budget
+# (hyperloom.pollbudget, tested in tests/test_pollbudget.py) grants every read here.
+_unpaced = None
+
+
+def setUpModule():
+    global _unpaced
+    from unittest import mock as _mock
+    from hyperloom import pollbudget as _pollbudget
+    _unpaced = _mock.patch.multiple(_pollbudget, CYCLE_S=0.0, NODE_SPACING_S=0.0, ENGINE_CYCLE_S=0.0, TURN_CHECK_S=0.0)
+    _unpaced.start()
+
+
+def tearDownModule():
+    _unpaced.stop()
 
 
 if __name__ == "__main__":

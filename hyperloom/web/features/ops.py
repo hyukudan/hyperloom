@@ -124,15 +124,20 @@ class _Skip(Exception):
     """A collector leaves this machine out of the round."""
 
 
-def sampler_gate(api, machine):
-    """For a collector: the shared node gate taken now or not at all (a machine another call holds is skipped this
-    round). Returns (ok, enter, release): the worker thread calls enter() before its node calls and release() after."""
-    from hyperloom import nodegate
+def sampler_gate(api, machine, poller=None, now=None):
+    """For a collector: the polling budget (``poller``: paced, paused during a GPU turn) and the shared node gate
+    taken now or not at all (a machine another call holds is skipped this round). Returns (ok, enter, release): the
+    worker thread calls enter() before its node calls and release() after."""
+    from hyperloom import nodegate, pollbudget
     config_path = getattr(api, "config_path", None)
     if machine.access != "ssh" or config_path is None:
         return True, (lambda: None), (lambda: None)
+    if poller is not None and pollbudget.for_api(api).node(machine.id, poller, now=now) is not None:
+        return False, None, None
     release = nodegate.try_hold(config_path, machine.id)
     if release is None:
+        if poller is not None:
+            pollbudget.for_api(api).refund(machine.id, poller)     # no call: the grant is given back
         return False, None, None
     return True, (lambda: nodegate.adopt(config_path, machine.id)), release
 
@@ -441,12 +446,8 @@ def sample_nodes(api, now):
                 row.update(deployed=_tool_of(reply), seen_at=now)
             except Exception as exc:
                 row["error"] = str(exc)[:300]
-            found = []
-            if row["error"] is None:
-                try:
-                    found = macs_in(_node_call(api, machine, "host", {}))
-                except Exception:
-                    pass
+            # One node call per check: the MACs come from the fleet collector's last host answer (no second call).
+            found = macs_in(((store.get("fleet/host", machine.id) if store is not None else None) or {}).get("host"))
             _publish_check(api, store, machine.id, row, found, now)
         finally:
             release()
@@ -464,8 +465,8 @@ def sample_nodes(api, now):
             _checks_busy.add(key)
         release = None
         try:
-            ok, enter, release = sampler_gate(api, machine)
-            if not ok:                      # another node call holds this machine: checked next round
+            ok, enter, release = sampler_gate(api, machine, "ops-nodes", now)
+            if not ok:                      # paced, paused, or another call holds this machine: next round
                 raise _Skip
             thread = threading.Thread(target=one, args=(machine, key, enter, release),
                                       name="hyperloom-node-check-" + machine.id, daemon=True)

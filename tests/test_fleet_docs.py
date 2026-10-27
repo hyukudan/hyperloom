@@ -161,8 +161,8 @@ class DocumentTests(unittest.TestCase):
             machines.machine_document(self.api, "../etc", {})
         with self.assertRaises(ValueError):
             machines.machine_document(self.api, "halo-1", {"x": "1"})
-        # Stale: no answer for more than three intervals.
-        self.api.clock.now += 60
+        # Stale: no answer for more than three intervals (the node collector runs every 30 s).
+        self.api.clock.now += 3 * machines.NODE_INTERVAL + 1
         stale = machines.machine_document(self.api, "halo-1", {})
         self.assertEqual(stale["status"], "stale")
         self.assertIsNone(stale["memory"]["limiting"])
@@ -318,6 +318,23 @@ class TextRuleTests(unittest.TestCase):
             lowered = text.lower()
             for word in self.WORDS:
                 self.assertNotIn(word, lowered, f"{name}: forbidden identity")
+
+
+# These tests drive the collectors with their own clock to check accounting, not pacing: the polling budget
+# (hyperloom.pollbudget, tested in tests/test_pollbudget.py) grants every read here.
+_unpaced = None
+
+
+def setUpModule():
+    global _unpaced
+    from unittest import mock as _mock
+    from hyperloom import pollbudget as _pollbudget
+    _unpaced = _mock.patch.multiple(_pollbudget, CYCLE_S=0.0, NODE_SPACING_S=0.0, ENGINE_CYCLE_S=0.0, TURN_CHECK_S=0.0)
+    _unpaced.start()
+
+
+def tearDownModule():
+    _unpaced.stop()
 
 
 if __name__ == "__main__":

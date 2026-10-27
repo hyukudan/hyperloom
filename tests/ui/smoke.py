@@ -227,7 +227,7 @@ def fixture_server(args):
         (directory / "release").touch()
         return {"profile": "qwen-replicas", "state": "stopped"}
 
-    def status(profile=None, config_path=None):
+    def status(profile=None, config_path=None, skip=None):
         row = {"profile": "qwen-replicas", "nodes": {}, "router": None}
         if running["value"]:
             row["router"] = router_status
@@ -284,7 +284,13 @@ def fixture_server(args):
         raise FileNotFoundError(path)
 
     with ExitStack() as stack:
-        replacements = [(config, "load", lambda *a, **kw: cluster),
+        # The fixture portal is no lab: its pollers are not paced and no GPU turn pauses them (the polling budget
+        # itself is tested in tests/test_pollbudget.py), so every page shows its recorded node answers at once.
+        from hyperloom import pollbudget
+        replacements = [(pollbudget.Budget, "node", lambda self, *a, **kw: None),
+                        (pollbudget.Budget, "engine", lambda self, *a, **kw: None),
+                        (pollbudget.Budget, "engine_paused", lambda self, *a, **kw: None),
+                        (config, "load", lambda *a, **kw: cluster),
                         (orchestrate, "load_cluster", lambda *a, **kw: cluster),
                         (orchestrate, "up", up), (orchestrate, "down", down),
                         (orchestrate, "status", status), (orchestrate, "install", install),

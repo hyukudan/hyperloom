@@ -20,11 +20,11 @@ refreshes the portal snapshot. POST ``usb4/refresh`` asks the sampler for a coll
 import math
 import threading
 
-from hyperloom import nodegate, telemetry
+from hyperloom import nodegate, pollbudget, telemetry
 from hyperloom.telemetry.store import BASELINES
 
 
-INTERVAL_S = 10.0
+INTERVAL_S = pollbudget.CYCLE_S
 JOURNAL_EVERY_S = 60.0
 FULL_LANE_GBPS, FULL_LANES = 20.0, 2
 FULL_RATE_GBPS = FULL_LANE_GBPS * FULL_LANES
@@ -84,7 +84,7 @@ def _gate(api, machine):
     return nodegate.try_hold(config_path, machine.id)
 
 
-def _calls(api, targets, payloads):
+def _calls(api, targets, payloads, now=None):
     """{machine id: (result, error)} with at most MAX_PARALLEL calls at a time, each joined within JOIN_S. A machine
     whose previous call still runs, or whose node gate another call holds, answers (None, SKIPPED + why) without a
     call: its previous report stays."""
@@ -120,8 +120,14 @@ def _calls(api, targets, payloads):
                 _inflight.add(key)
             release = None
             try:
+                if machine.access == "ssh":
+                    why = pollbudget.for_api(api).node(machine.id, "usb4", now=now)   # paced; paused in a turn
+                    if why is not None:
+                        raise LookupError(why)
                 release = _gate(api, machine)
                 if release is None:
+                    if machine.access == "ssh":
+                        pollbudget.for_api(api).refund(machine.id, "usb4")   # no call: the grant is given back
                     raise LookupError("another node call holds this machine")
                 thread = threading.Thread(target=one, args=(machine, release, key), daemon=True,
                                           name="hyperloom-usb4-" + machine.id)
@@ -488,7 +494,7 @@ def sample(api, now):
         attempted = journal.get("attempted_at")
         due = not _finite(attempted) or now - attempted >= JOURNAL_EVERY_S or journal.get("more")
         payloads[machine.id] = {"journal": {"boot_id": journal.get("boot_id"), "cursor": journal.get("cursor")}} if due else {}
-    results = _calls(api, targets, payloads)
+    results = _calls(api, targets, payloads, now)
     points = []
     for machine in targets:
         result, error = results[machine.id]

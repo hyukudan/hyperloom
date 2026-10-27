@@ -270,7 +270,7 @@ class FakeOrchestrator:
     def __init__(self):
         self.statuses = {}
 
-    def status(self, profile=None, config_path=None):
+    def status(self, profile=None, config_path=None, skip=None):
         return self.statuses
 
     def _profile(self, cluster, profile):

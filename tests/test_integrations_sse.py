@@ -19,8 +19,14 @@ class FakeAPI:
         self.version = 0
         self.clock = time.time
         self.fail = False
+        self.empty = False
 
     def snapshot(self):
+        raise AssertionError("the stream built a snapshot (node and engine calls)")
+
+    def cached_snapshot(self):
+        if self.empty:
+            return None
         if self.fail:
             raise RuntimeError("password=" + SECRET + " at the peer")
         return {
@@ -123,6 +129,13 @@ class StreamTests(unittest.TestCase):
         self.api.version = 1
         changed = next(e for e in self.events(response, 10) if e.get("event") == "snapshot")
         self.assertEqual(changed["id"], "2")
+
+    def test_the_stream_only_projects_the_cached_snapshot(self):
+        self.api.empty = True                    # no page refreshed one yet: the stream builds none
+        _, response = self.open()
+        document = json.loads(self.events(response, 2)[1]["data"])
+        self.assertEqual(document["content"]["why"]["devices"], "unavailable")
+        self.assertIsNone(document["content"]["devices"])
 
     def test_errors_use_fixed_text(self):
         self.api.fail = True

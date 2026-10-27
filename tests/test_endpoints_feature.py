@@ -369,6 +369,21 @@ class CollectorTests(Base):
     def add(self, port, **extra):
         return self.api.feature_post("endpoints/save", {"label": "box", "host": "127.0.0.1", "port": port, **extra})[1]["target"]
 
+    def test_sampler_rounds_read_each_target_at_most_once_per_cycle(self):
+        from hyperloom import pollbudget
+        server = self.serve({"/v1/models": MODELS})
+        self.add(server.port)
+        with mock.patch.object(pollbudget, "ENGINE_CYCLE_S", 30.0):        # the real cadence (this module unpaces it)
+            endpoints.collect(self.api, self.clock())
+            first = len(server.seen)
+            self.assertGreater(first, 0)
+            self.clock.now += endpoints.INTERVAL_S                         # the collector's next run, 15 s later
+            endpoints.collect(self.api, self.clock())
+            self.assertEqual(len(server.seen), first)
+            self.clock.now += endpoints.INTERVAL_S
+            endpoints.collect(self.api, self.clock())
+            self.assertGreater(len(server.seen), first)
+
     def test_series_documents_and_token_deltas(self):
         uptime = {"value": 100.0}
         counter = {"value": 500}
@@ -692,6 +707,23 @@ class TextRuleTests(unittest.TestCase):
                 except ValueError:
                     continue
                 self.assertTrue(any(address in net for net in allowed), f"{path.name}: {literal}")
+
+
+# These tests drive the collectors with their own clock to check accounting, not pacing: the polling budget
+# (hyperloom.pollbudget, tested in tests/test_pollbudget.py) grants every read here.
+_unpaced = None
+
+
+def setUpModule():
+    global _unpaced
+    from unittest import mock as _mock
+    from hyperloom import pollbudget as _pollbudget
+    _unpaced = _mock.patch.multiple(_pollbudget, CYCLE_S=0.0, NODE_SPACING_S=0.0, ENGINE_CYCLE_S=0.0, TURN_CHECK_S=0.0)
+    _unpaced.start()
+
+
+def tearDownModule():
+    _unpaced.stop()
 
 
 if __name__ == "__main__":

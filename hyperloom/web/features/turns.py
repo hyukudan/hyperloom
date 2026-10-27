@@ -5,7 +5,7 @@ GET  turns                         per node: holder (cap, time left), verified w
                                    turns; the pair queue of the coordinating node; the big-job ledger
 POST turns/settings {ledger_path?, ledger_cap_s?, pair_cap_s?}   (audited) preferences (namespace ``turns``)
 
-The collector ``turns`` (every 5 s) calls the read-only ``turns`` node verb on every lab-mode machine with a lab
+The collector ``turns`` (every 30 s; once a minute while a turn is held, see hyperloom.pollbudget) calls the read-only ``turns`` node verb on every lab-mode machine with a lab
 directory (one call in flight per machine) and keeps each reply with its fetch time; the GET only composes the
 document from those replies. Times on the nodes are clock-only log lines whose dates are inferred; estimates are
 labelled as estimates.
@@ -18,6 +18,7 @@ import statistics
 import threading
 import time
 
+from hyperloom import pollbudget
 from hyperloom.web.features import ops
 
 NAMESPACE = "turns"
@@ -26,8 +27,8 @@ PAIR_CAP_DEFAULT_S = 480
 LEDGER_CAP_DEFAULT_S = 1800
 LEDGER_TAIL = 2 << 20
 CONFIRM_BEFORE_S, CONFIRM_AFTER_S = 75.0, 5.0
-INTERVAL = 5.0
-STALE_AFTER_S = 30.0
+INTERVAL = 30.0
+STALE_AFTER_S = 90.0
 
 _state_lock = threading.Lock()
 _replies = {}           # id(api) -> {machine: {"reply", "error", "fetched_at", "offset_s", "offset_uncertainty_s"}}
@@ -72,6 +73,12 @@ def fetch(api, machines=None, clock=time.time, skip_busy=False):
             if reply.get("error"):
                 raise ValueError(reply["error"])
             entry.update(reply=reply, fetched_at=received)
+            holder = reply.get("holder")
+            if isinstance(holder, dict) and holder.get("alive") is not False:
+                label = holder.get("label") if holder.get("parsed") else "unreadable holder"
+            else:
+                label = None                # free, or a stale holder file of a process that is gone
+            pollbudget.note_holder(api, machine.id, label)
             if isinstance(reply.get("now"), (int, float)):
                 entry["offset_s"] = reply["now"] - (sent + received) / 2
                 entry["offset_uncertainty_s"] = (received - sent) / 2
@@ -93,7 +100,7 @@ def fetch(api, machines=None, clock=time.time, skip_busy=False):
         release = None
         try:
             if skip_busy:
-                ok, enter, release = ops.sampler_gate(api, machine)
+                ok, enter, release = ops.sampler_gate(api, machine, "turns", clock())
             else:
                 ok, enter, release = True, (lambda: None), (lambda: None)
             if not ok:                      # another node call holds this machine: its previous reply stays
