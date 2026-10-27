@@ -581,7 +581,7 @@ class APITests(unittest.TestCase):
                 self.assertNotIn("config", job["arguments"])
         self.assertEqual({c.args[0] for c in self.orch.load_cluster.call_args_list}, {self.directory / "cluster.json"})
         # The detached CLI is always given the portal's configuration.
-        for action in ("up", "install"):
+        for action in ("up", "install", "down"):         # a detached down holds this configuration's admission too
             argv = self.api._cli_argv(action, {"profile": "qwen-replicas"})
             self.assertEqual(argv[argv.index("--config") + 1], str(self.directory / "cluster.json"))
 
@@ -772,5 +772,5 @@ class DetachedCommandLineTests(unittest.TestCase):
         self.assertEqual(up[up.index("--router") + 1], "halo-1")
         self.assertEqual(up[up.index("--deadline") + 1], "600")
         down = api._cli_argv("down", {"profile": "qwen-replicas", "force": True})
-        self.assertEqual(down[3:], ["down", "qwen-replicas", "--force"])
+        self.assertEqual(down[3:], ["down", "qwen-replicas", "--config", str(Path("C:/cfg/cluster.json")), "--force"])
         self.assertFalse(api.detached)

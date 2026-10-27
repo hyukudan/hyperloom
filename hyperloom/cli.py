@@ -528,6 +528,8 @@ def build_parser(parser_class=argparse.ArgumentParser):
     down = commands.add_parser("down")
     down.add_argument("profile", nargs="?")
     down.add_argument("--force", action="store_true")
+    down.add_argument("--config", type=Path, default=config_path(),
+                      help="the configuration whose admission the stop registers with (as up)")
     commands.add_parser("endpoint").add_argument("profile")
     status = commands.add_parser("status")
     status.add_argument("profile", nargs="?")

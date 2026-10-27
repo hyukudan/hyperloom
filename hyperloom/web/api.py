@@ -1689,7 +1689,7 @@ class API:
         if action == "recipes/deploy":
             return [sys.executable, "-m", "hyperloom", *self._deploy_argv(args, job=args.get("_job"))]
         argv = [sys.executable, "-m", "hyperloom", action, args["profile"]]
-        if action in ("up", "install"):
+        if action in ("up", "install", "down"):
             argv += ["--config", str(Path(self.config_path))]
         if action == "install" and args.get("build_on"):
             argv += ["--build-on", args["build_on"]]

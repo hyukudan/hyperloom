@@ -276,6 +276,17 @@ class StopWithoutAdmissionTests(unittest.TestCase):
         database.release.assert_called_once_with("hold-1")
         self.assertIn("could not be released", err)
 
+    def test_down_takes_the_configuration_its_hold_belongs_to(self):
+        database = Mock()
+        database.acquire.return_value = "hold-1"
+        self.admission.for_config.return_value = database
+        config = Path(tempfile.gettempdir()) / "other" / "cluster.json"
+        status, _, err = self.invoke("down", "qwen-replicas", "--config", str(config))
+        self.assertEqual(status, 0, err)
+        self.admission.for_config.assert_called_once_with(config)
+        database.acquire.assert_called_once()
+        self.assertEqual(database.acquire.call_args.args[0], "stop")
+
     def test_a_renewal_thread_that_cannot_start_never_blocks_a_down(self):
         database = Mock()
         database.acquire.return_value = "hold-1"
