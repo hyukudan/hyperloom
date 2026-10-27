@@ -8,6 +8,9 @@ clamping. VRAM comparisons use the integer bytes without converting GiB in Pytho
 and the earliest configured PC-BIG conflict are rechecked throughout the process lifetime; no window is opened.
 The live PC-BIG guard also rereads the PRO lock/busy signal and configured ledger at watchdog cadence.
 An open or partial ledger record, held lock, busy PRO or unreadable signal stops the owned child.
+With `pc.turn_ledger` absent the guard has no ledger signal (only the PRO lock/busy and attributable residual
+checks remain). Lab: configure `pc.turn_ledger` or a gate - in lab mode the reservation's operator gate must then
+cover PC-BIG turns that are recorded only in the ledger.
 
 Before spawn, pinned plus pageable must fit the host grant and available physical memory; MemAvailable must be at
 least 82 GB, and the charge must leave the configured commit floor. Runtime checks retain the legacy physical-RAM
