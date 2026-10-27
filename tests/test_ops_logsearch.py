@@ -331,6 +331,16 @@ class PortalSearchTests(APIFixture, unittest.TestCase):
         cluster.assets.setdefault("halo-1", {})["loose"] = {"path": "/home/someone/loose.gguf", "bytes": 1}
         with mock.patch.object(type(self.api), "cluster", lambda api: cluster):
             self.assertNotIn("/home/someone", logsearch.allowed_bases(self.api, cluster.machines["halo-1"]))
+            # While this process does not know the node's home, no asset directory is a base (a saved root inside
+            # one is not searched); the lab directory and the install root still are.
+            from hyperloom import remote
+            cluster.assets["halo-1"]["data"] = {"path": "/srv/data/m.gguf", "bytes": 1}
+            machine = cluster.machines["halo-1"]
+            with mock.patch.dict(remote._NODE_PATHS, clear=True):
+                self.assertNotIn("/srv/data", logsearch.allowed_bases(self.api, machine))
+            with mock.patch.dict(remote._NODE_PATHS, {(machine.id, machine.ssh_target, machine.ssh_port):
+                                                      "/home/op/.hyperloom-boot/hyperloom-node"}):
+                self.assertIn("/srv/data", logsearch.allowed_bases(self.api, machine))
             for roots in (["/home/someone"], ["/home/someone/runs"]):
                 with self.subTest(roots=roots), self.assertRaises(Exception):
                     self.api.feature_post("logsearch/roots", {"machine": "halo-1", "roots": roots})

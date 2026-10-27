@@ -84,6 +84,8 @@ class DocumentTests(LibraryFeatureCase):
 
 class PostTests(LibraryFeatureCase):
     def test_roots_are_validated_and_audited(self):
+        from tests.test_library_control import known_homes
+        known_homes(self, self.api.cluster())
         self.api.telemetry = self.store
         status, result = self.api.feature_post("library/roots", {"machine": "halo-2", "roots": ["/opt/assets/x"]})
         self.assertEqual(result, {"machine": "halo-2", "roots": ["/opt/assets/x"]})

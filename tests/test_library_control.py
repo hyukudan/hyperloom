@@ -8,6 +8,7 @@ import sys
 import tempfile
 import threading
 import time
+import dataclasses
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -23,6 +24,16 @@ install = models.install
 POSIX = os.name == "posix"
 
 
+def known_homes(case, cluster, home="/home/op"):
+    """The nodes' homes as the portal's first node read learns them (no ssh in tests)."""
+    from hyperloom import remote
+    paths = {(m.id, m.ssh_target, m.ssh_port): home + "/.hyperloom-boot/hyperloom-node"
+             for m in cluster.machines.values() if m.access == "ssh"}
+    patcher = patch.dict(remote._NODE_PATHS, paths)
+    patcher.start()
+    case.addCleanup(patcher.stop)
+
+
 def digest(data):
     return hashlib.sha256(data).hexdigest()
 
@@ -32,19 +43,16 @@ class RootsTests(unittest.TestCase):
         self.store = Store(":memory:")
         self.addCleanup(self.store.close)
         self.cluster = parse(example())
-        learned = patch.object(downloads, "learn_home")      # a node's home lookup (tested below)
-        learned.start()
-        self.addCleanup(learned.stop)
+        known_homes(self, self.cluster)
 
     def test_a_save_learns_the_node_home_first_and_refuses_when_it_cannot(self):
         """An asset kept directly in a home anywhere (here /srv/accounts/researcher, not named after the ssh
         user) never authorizes that home: the save learns the node's home first, or is refused."""
         from hyperloom import remote
-        patch.stopall()
         halo = self.cluster.machines["halo-1"]
         self.cluster.assets["halo-1"]["odd"] = {"path": "/srv/accounts/researcher/odd.gguf", "bytes": 1}
         client = SimpleNamespace(_tool_path=lambda timeout, cancel: remote._NODE_PATHS.__setitem__(
-            ("halo-1", "halo-1", 22), "/srv/accounts/researcher/.hyperloom-boot/hyperloom-node"))
+            (halo.id, halo.ssh_target, halo.ssh_port), "/srv/accounts/researcher/.hyperloom-boot/hyperloom-node"))
         with patch.dict(remote._NODE_PATHS, clear=True),                 patch("hyperloom.orchestrate._client", return_value=client) as made:
             with self.assertRaises(ValueError):
                 downloads.set_roots(self.cluster, self.store, "halo-1", ["/srv/accounts/researcher/runs"])
@@ -54,6 +62,16 @@ class RootsTests(unittest.TestCase):
         with patch.dict(remote._NODE_PATHS, clear=True),                 patch("hyperloom.orchestrate._client", side_effect=remote.RemoteError("unknown host key")):
             with self.assertRaisesRegex(ValueError, "home could not be checked"):
                 downloads.set_roots(self.cluster, self.store, "halo-1", ["/opt/assets/x"])
+            # Before the home is known no asset directory is a base: a saved root inside one is not used.
+            self.store.put("prefs", "library/roots", {"halo-1": ["/srv/accounts/researcher/private"]})
+            self.assertEqual(downloads.configured_bases(self.cluster, halo), [halo.install_root])
+            self.assertNotIn("/srv/accounts/researcher/private",
+                             [r["path"] for r in downloads.library_roots(self.cluster, self.store)["halo-1"]])
+        # Another ssh account under the same machine id is another identity: its home is learned again.
+        moved = dataclasses.replace(halo, ssh_target="other@halo-1")
+        with patch.dict(remote._NODE_PATHS, {(halo.id, halo.ssh_target, halo.ssh_port): "/opt/x/.hyperloom-boot/n"}):
+            self.assertIsNone(remote.known_home(moved))
+            self.assertEqual(remote.known_home(halo), "/opt/x")
 
     def test_config_and_prefs_roots(self):
         roots = downloads.library_roots(self.cluster)
@@ -85,7 +103,9 @@ class RootsTests(unittest.TestCase):
         halo = dataclasses.replace(self.cluster.machines["halo-1"], ssh_target="op@halo-1")
         self.assertTrue(downloads.too_wide(halo, "/srv/accounts/op"))
         self.assertFalse(downloads.too_wide(halo, "/srv/accounts/op/models"))
-        with patch.dict(remote._NODE_PATHS, {("halo-1", "t", 22): "/data/people/op/.hyperloom-boot/hyperloom-node"}):
+        halo = self.cluster.machines["halo-1"]
+        with patch.dict(remote._NODE_PATHS, {(halo.id, halo.ssh_target, halo.ssh_port):
+                                             "/data/people/op/.hyperloom-boot/hyperloom-node"}):
             for value in ("/data/people/op", "/data/people"):
                 self.assertTrue(downloads.too_wide(halo, value), value)
             self.assertFalse(downloads.too_wide(halo, "/data/people/op/models"))

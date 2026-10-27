@@ -188,12 +188,8 @@ def too_wide(machine, value):
     if user and parts[-1] == user:
         return True
     from . import remote
-    for (alias, _, _), tool in list(remote._NODE_PATHS.items()):
-        if alias == machine.id:
-            home = _parts(machine, str(PurePosixPath(tool).parent.parent))
-            if home[:len(parts)] == parts:
-                return True
-    return False
+    home = remote.known_home(machine)
+    return home is not None and _parts(machine, home)[:len(parts)] == parts
 
 
 def learn_home(machine):
@@ -203,7 +199,7 @@ def learn_home(machine):
     if getattr(machine, "access", None) != "ssh":
         return
     from . import orchestrate, remote
-    if any(key[0] == machine.id for key in list(remote._NODE_PATHS)):
+    if remote.known_home(machine) is not None:
         return
     try:
         orchestrate._client(machine)._tool_path(15, None)
@@ -215,8 +211,14 @@ def learn_home(machine):
 def configured_bases(cluster, machine):
     """The roots the configuration gives a machine: its install root and the parents of its configured assets
     (and of the control machine's ``control_path`` assets); an extra root must lie inside one of them. A home
-    directory (an asset kept directly in it) is never one: it would open the whole home."""
+    directory (an asset kept directly in it) is never one: it would open the whole home. An ssh node's asset
+    directories count only once this process knows that node's home (``learn_home``; the portal's node poll learns
+    it at its first read): until then a saved root inside one is not used, and a save learns it first."""
     bases = [machine.install_root]
+    if getattr(machine, "access", None) == "ssh":
+        from . import remote
+        if remote.known_home(machine) is None:
+            return bases
     local = control_machine(cluster)
     for mid, assets in cluster.assets.items():
         for asset in assets.values():

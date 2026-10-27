@@ -392,6 +392,15 @@ _NODE_PATHS = {}
 LOOKUP = "printf '%s\\n' \"$HOME/.hyperloom-boot/hyperloom-node\""
 
 
+def known_home(machine):
+    """The home this process learned for a node's current ssh identity (alias, target, port), or None."""
+    try:
+        path = _NODE_PATHS.get((_target(machine.id), _target(machine.ssh_target), _port(machine.ssh_port)))
+    except (RemoteError, AttributeError):
+        return None
+    return str(PurePosixPath(path).parent.parent) if path else None
+
+
 class Remote:
     def __init__(self, machine, known_hosts, ssh="ssh"):
         self.machine = machine
