@@ -14,7 +14,9 @@ on the next line (`curl https://x \\` then `-u a:b`) is seen without its curl; a
 word inside it (db_password_prod) hides a value after = or : only, so prose such as "key_cache shape" stays; a
 blank-separated value that starts with -- is the next option (password --verbose); a token option keeps a number
 (--hf-token 123456789012); `--user name:group` is hidden as a name:password would be; an argument list that only
-mentions mysql hides a later glued -p value.
+mentions mysql hides a later glued -p value; a snake-case name that is itself the hidden value of another name is
+not read as a name (`api_key= db_pass x` shows x), so a message after a value such as hf_probe_secret stays
+readable; a bare hf_ word is hidden only when it is 30+ token characters or calls itself a secret.
 """
 
 import re
@@ -42,13 +44,15 @@ _KEPT_PLAIN = re.compile(_PLAIN + r"[)\],;]*")
 _KEPT_COUNT = re.compile(r"(?:" + _PLAIN + "|" + _COUNT + r")[)\],;]*")
 _UID_GID = re.compile(r"[0-9]+:[0-9]+")
 _CREDENTIAL_LOOK = re.compile(r"[0-9+/=]|.[A-Z]")
+_NESTED_BEARER = re.compile(r"(?i)\bbearer\s+\S")
 _DOUBLE = r'''"(?:[^"\\\n]|\\.)*"'''
 _DOUBLE_STRING = re.compile(_DOUBLE)
 _NOT_OPTION = r"(?!-[A-Za-z](?:\s|$)|--[A-Za-z])"   # a blank-separated value is not the next option (-U, --next)
 _START = r"(?!\[redacted\])(?=\S)"                 # where a value starts (one already hidden is not read again)
 # A shell word: quoted parts (a backslash escapes inside double quotes and outside quotes) and unquoted
 # characters, concatenated (-u'alice:foo'bar and api_key=a' two words' are one word each); a quote with no closing
-# quote on its line is an ordinary character; a backslash before a newline ends the word. A value inside a quoted
+# quote on its line is an ordinary character; a backslash before a newline ends the word; an escaped quote pair
+# is a quoted part too (\"two words\" in JSON written inside a string: {\"password\": \"x y\"}). A value inside a quoted
 # string that opens and closes at a word boundary (-H "X-Api-Key: abc", '{"password": "x y"}', bash -c "curl -u
 # a:b") ends where that string ends; a string glued to more text (' ... a:b'c d') is not such a string, so the
 # value pairs its own quotes. Each value is read once: a reader never goes back over text it has read.
@@ -102,7 +106,8 @@ def _shell_word(text, pos, stops="", strings=None):
             high = middle
     if low and pos < ends[low - 1]:
         limit, enclosing = ends[low - 1], text[starts[low - 1]]
-    value, at, failed, size = [], pos, {"'": -1, '"': -1}, len(text)
+    value, at, size = [], pos, len(text)
+    failed = {"'": -1, '"': -1, "\\'": -1, '\\"': -1}
     while at < size:
         char = text[at]
         if at >= limit:                 # the enclosing string ends
@@ -110,6 +115,15 @@ def _shell_word(text, pos, stops="", strings=None):
         if char.isspace() or char in stops or char == enclosing or text[at:at + 2] == "\\\n":
             break
         if char == "\\":
+            quote = text[at + 1:at + 2]
+            if quote in ("'", '"') and at >= failed["\\" + quote]:
+                end = text.find("\\" + quote, at + 2, limit)
+                if end != -1 and "\n" not in text[at + 2:end]:
+                    value.append(text[at + 2:end])
+                    at = end + 2
+                    continue
+                line = text.find("\n", at, limit)  # no closing escaped quote: none for a later one either
+                failed["\\" + quote] = limit if line == -1 else line
             value.append(text[at + 1:min(at + 2, limit)])
             at = min(at + 2, limit)
             continue
@@ -145,8 +159,9 @@ def _keep_token_value(match, value):
 def _keep_scheme_value(match, value):
     """After a scheme word elsewhere, Bearer's value is hidden; another scheme's only when it looks like a
     credential (8+ characters, not only digits, with a digit, +, / or =, or an upper-case letter after the first):
-    "Token counters", "basic setup" and "the token 12345678" stay readable."""
-    return not match.group("bearer") and not (
+    "Token counters", "basic setup" and "the token 12345678" stay readable. A value that holds a Bearer and its
+    value (Token 'Bearer abc') is hidden: the Bearer inside it is not searched for again."""
+    return not match.group("bearer") and not _NESTED_BEARER.search(value) and not (
         len(value) >= 8 and not value.isdigit() and _CREDENTIAL_LOOK.search(value))
 
 
@@ -168,15 +183,15 @@ SECRET_PATTERNS = (
                 + _START), "", _keep_nothing),
     (re.compile(r"""(?i)\b(?:(?P<bearer>Bearer)|Basic|Digest|Token|Negotiate)\s+""" + _START), "",
      _keep_scheme_value),
-    (re.compile(r'''(?ix)(?<![\w.-])["']?(?:(?=[\w.-]*?(?P<cred>key|secret|pass|pwd|credential|auth))'''
-                r'''|(?=[\w.-]*?token(?!iz)))(?=([\w.-]*))\2["']?\s*[:=]\s*'''
+    (re.compile(r'''(?ix)(?<![\w.-])(?:\\?["'])?(?:(?=[\w.-]*?(?P<cred>key|secret|pass|pwd|credential|auth))'''
+                r'''|(?=[\w.-]*?token(?!iz)))(?=([\w.-]*))\2(?:\\?["'])?\s*[:=]\s*'''
                 r'''(?!(?:Bearer|Basic|Digest|Token|Negotiate)\s+\[redacted\])'''
                 r'''(?:(?:Bearer|Basic|Digest|Token|Negotiate)\s+(?=[^\s,;}]))?''' + _START), ",;}",
      _keep_token_value),
     # An option whose name carries a credential word (--hf-token x, --db-password=x, --oauth2-bearer x), also
     # glued after other characters of the word (x--api-key x): matched from the start of the word, up to its
     # first --.
-    (re.compile(r"(?i)(?<![\w-])\w*(?:-\w+)*--(?:(?=[\w-]*?(?P<cred>key|secret|passw(?:or)?d|credential|bearer))"
+    (re.compile(r"(?i)(?<![\w-])\w*(?:-\w+)*--(?:(?=[\w-]*?(?P<cred>key|secret|passw(?:or)?d|credential|bearer|(?<![a-z])pass(?:phrase)?(?![\w-])))"
                 r"|(?=[\w-]*?token(?!iz)))(?=([\w-]*))\2(?:\s+|=)" + _START), "", _keep_token_value),
     # The value after a password word (not an option that follows it: `-u a:password -U b:c`).
     (re.compile(r"(?i)\b(?:passw(?:or)?d|passwd|passphrase|pwd)\s+(?![:=])" + _NOT_OPTION + _START), "",
@@ -186,29 +201,36 @@ SECRET_PATTERNS = (
                 r"(?P<v>[^/\s:@]*:[^/\s@]+)@"), "", _keep_nothing),
     # An environment-style name and its value separated by blanks only (`HF_TOKEN hf_x`, `export DB_PASS s3`): the
     # name is upper case, or snake case ending with the credential word (hf_token, db_pass), so prose such as
-    # "512 tokens in 3.1 s" or "key_cache shape" stays readable.
+    # "512 tokens in 3.1 s" or "key_cache shape" stays readable. A snake-case name inside a value another rule hides
+    # is that value, not a name (HF_TOKEN hf_probe_secret (the job...): "(the" stays).
     (re.compile(r"\b(?:(?:(?=[A-Z0-9_]*?(?P<cred>KEY|SECRET|PASS|PWD|CREDENTIALS?|AUTH))|(?=[A-Z0-9_]*?TOKEN(?!IZ)))"
                 r"[A-Z0-9]+(?:_[A-Z0-9]+)*"
-                r"|(?i:(?:(?=[a-z0-9_]*?(?P<cred2>key|secret|pass|pwd|credentials?|auth))|(?=[a-z0-9_]*?token(?!iz)))"
-                r"[a-z0-9]+(?:_[a-z0-9]+)*_[a-z0-9]*(?:key|secret|token|pass(?:wd|word)?|pwd|credentials?|auth)s?))"
+                r"|(?P<lower>(?i:(?:(?=[a-z0-9_]*?(?P<cred2>key|secret|pass|pwd|credentials?|auth))"
+                r"|(?=[a-z0-9_]*?token(?!iz)))"
+                r"[a-z0-9]+(?:_[a-z0-9]+)*_[a-z0-9]*(?:key|secret|token|pass(?:wd|word)?|pwd|credentials?|auth)s?)))"
                 r"\s+(?![:=])" + _NOT_OPTION + _START), "", _keep_token_value),
     # Any other tool's `--user name:password` (a numeric uid:gid, as in `docker run --user 1000:1000`, stays; a
-    # --user followed by another option, as in `systemd-run --user --setenv=A=/x:/y`, takes no value).
-    (re.compile(r"--(?:proxy-)?user(?:\s+(?!-)|=)" + _START), "", _keep_user),
-    # A bare Hugging Face access token (no name before it): hf_ and 30 or more token characters (library and model
-    # names such as hf_transfer or hf_hub_download stay readable).
-    (re.compile(r"(?P<v>\bhf_[A-Za-z0-9]{30,}\b)"), "", _keep_nothing),
+    # --user followed by another option, as in `systemd-run --user --setenv=A=/x:/y`, takes no value; the option
+    # name may be quoted: wget "--user" a:b).
+    (re.compile(r"""(?:(?P<q>["'])--(?:proxy-)?user(?P=q)\s+(?!-)|--(?:proxy-)?user(?:\s+(?!-)|=))""" + _START), "",
+     _keep_user),
+    # A bare Hugging Face access token (no name before it): hf_ and 30 or more token characters, or an hf_ word
+    # that calls itself a secret (hf_probe_secret); library and model names such as hf_transfer, hf_hub_download
+    # or hf_token stay readable. A bare GitHub token: ghp_, gho_, ghu_, ghs_, ghr_ or github_pat_ and its characters.
+    (re.compile(r"(?P<v>\bhf_(?:[A-Za-z0-9]{30,}|(?=\w*?(?i:secret))[A-Za-z0-9_]+)\b"
+                r"|\b(?:gh[pousr]|github_pat)_[A-Za-z0-9_]+)"), "", _keep_nothing),
 )
 # Clients that take a password after -p: mysql and mariadb tools glued (`mysql -pX`, `mariadb-dump -p'x y'`; -P is
 # the port), anywhere later on the line; sshpass among its own options (`sshpass -p X`, `sshpass -f file` has none,
 # so the wrapped command's -p, ssh's port, stays). (client, password option, what a miss skips: the rest of the
-# line, or sshpass's options, taken once and never re-read from each client word inside them)
-_SSHPASS_OPTIONS = r"(?:\s+(?:-[fdP](?:\s+|(?=\S))" + _WORD + r"|-[ehvV]+))*"
+# line, or sshpass's options, taken once and never re-read from each client word inside them); sshpass's flags
+# may be grouped (-vp X).
+_SSHPASS_OPTIONS = r"(?:\s+(?:-[fdP](?:\s+|(?=\S))" + _WORD + r"|-[ehvV]+(?!\S)))*"
 GLUED_PASSWORD = (
     (re.compile(r"(?i)\b(?:mysql\w*|mariadb[\w-]*)\b"),
      re.compile(r"[^\n]*?\s-p" + _START), re.compile(r"[^\n]*")),
     (re.compile(r"(?i)\bsshpass\b"),
-     re.compile(r"(?=(" + _SSHPASS_OPTIONS + r"))\1\s+-p\s*" + _START),
+     re.compile(r"(?=(" + _SSHPASS_OPTIONS + r"))\1\s+-[ehvV]*p\s*" + _START),
      re.compile(r"(?=(" + _SSHPASS_OPTIONS + r"))\1")),
 )
 # curl's user and password options (-u user:pw, -su user:pw, -uuser:pw, --user, --user=, the proxy's -U and
@@ -228,7 +250,8 @@ CURL_OPTION = re.compile(r"""(?<=\s)(?P<o>(?P<q>["'])(?:-""" + CURL_FLAGS + r"""
 
 
 def _values(text, strings):
-    """The (start, end) of every value the rules and the -p clients hide."""
+    """(start, end, name): every value the rules and the -p clients hide; name is where a snake-case name
+    ends (its last character), a value only if that name is not inside another hidden value."""
     for pattern, stops, keep in SECRET_PATTERNS:
         pos, read = 0, 0
         while True:
@@ -236,7 +259,7 @@ def _values(text, strings):
             if found is None:
                 break
             if "v" in pattern.groupindex:
-                yield found.span("v")
+                yield (*found.span("v"), None)
                 pos = found.end()
                 continue
             # The search goes on from where the value starts, so a value that is itself a name (--api-key
@@ -247,7 +270,7 @@ def _values(text, strings):
                 continue
             read, value = _shell_word(text, pos, stops, strings)
             if read > pos and not keep(found, value):
-                yield pos, read
+                yield pos, read, found.end("lower") - 1 if found.groupdict().get("lower") else None
     for client, option, miss in GLUED_PASSWORD:
         pos = 0
         while True:
@@ -259,7 +282,7 @@ def _values(text, strings):
                 pos = max(miss.match(text, found.end()).end(), found.end())
                 continue
             end = _shell_word(text, value.end(), "", strings)[0]
-            yield value.end(), end
+            yield value.end(), end, None
             pos = max(end, value.end())
 
 
@@ -283,7 +306,26 @@ def redact_text(text):
     """``text`` with every credential the shared rules recognise replaced by [redacted] (overlapping or touching
     hidden spans become one)."""
     strings = _strings(text)
-    spans = [*_values(text, strings), *_curl_users(text, strings)]
+    found = [*_values(text, strings), *((start, end, None) for start, end in _curl_users(text, strings))]
+    spans = sorted((start, end) for start, end, name in found if name is None)
+    union, ends = [], []                # the hidden spans merged, to look a name up in them
+    for start, end in spans:
+        if union and start <= ends[-1]:
+            ends[-1] = max(ends[-1], end)
+        else:
+            union.append(start)
+            ends.append(end)
+    for start, end, name in found:
+        if name is not None:
+            low, high = 0, len(union)
+            while low < high:           # the last merged span that starts at or before the name
+                middle = (low + high) // 2
+                if union[middle] <= name:
+                    low = middle + 1
+                else:
+                    high = middle
+            if not (low and name < ends[low - 1]):
+                spans.append((start, end))
     parts, last = [], 0
     for start, end in sorted(spans):
         if end <= start:
@@ -311,14 +353,15 @@ def redact_text(text):
 # Every pattern here is matched once per argument, without backtracking into a failing suffix: an option name is
 # a whole --word, then searched for its credential word; a program is a whole file name.
 ARGV_OPTION = re.compile(r"(--[\w-]*)(?:(=)(.*))?", re.S)
-ARGV_CREDENTIAL_WORD = re.compile(r"(?i)key|secret|passw(?:or)?d|credential|bearer")
+ARGV_CREDENTIAL_WORD = re.compile(r"(?i)key|secret|passw(?:or)?d|credential|bearer|(?<![a-z])pass(?:phrase)?(?![\w-])")
 ARGV_TOKEN_WORD = re.compile(r"(?i)token(?!iz)")
 ARGV_CLIENT = re.compile(r"(?i)(curl|mysql\w*|mariadb[\w-]*|sshpass)(?:\.exe)?")
 ARGV_PATH = re.compile(r"[\\/]")
 ARGV_CURL_USER = re.compile(r"-" + CURL_FLAGS + r"*[uU]")
 ARGV_GLUED = {"curl": re.compile(r"(-" + CURL_FLAGS + r"*[uU])[^\s:]*:.*", re.S),
               "mysql": re.compile(r"(-p)(?!\[redacted\]).+", re.S),
-              "sshpass": re.compile(r"(-p)(?!\[redacted\]).+", re.S)}
+              "sshpass": re.compile(r"(-[ehvV]*p)(?!\[redacted\]).+", re.S)}
+ARGV_SSHPASS_PASSWORD = re.compile(r"-[ehvV]*p")
 ARGV_SEPARATORS = {"|", "||", "&&", ";", "&"}
 
 
@@ -388,7 +431,7 @@ def redact_argv(value, each=None):
             item.startswith("-") and not changed and len(item) == 2)
         if kind and named.group(2) is None:
             hide = kind
-        elif sshpass and item == "-p":
+        elif sshpass and ARGV_SSHPASS_PASSWORD.fullmatch(item):
             hide = "credential"
         elif "curl" in clients and ARGV_CURL_USER.fullmatch(item):
             hide = "user"

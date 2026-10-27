@@ -142,7 +142,41 @@ SECRETS = {
     '"/usr/bin/curl" "-u" "abe:Qu0tedBoth" https://example.invalid': "Qu0tedBoth",
     'curl "--user=abe:Qu0tedGlued" https://example.invalid': "Qu0tedGlued",
     "curl --oauth2-bearer Oauth2Tok https://example.invalid": "Oauth2Tok",
+    # JSON written inside a string: names and values in escaped quotes
+    '{"body": "{\\"api_key\\": \\"sk-abc123\\"}"}': "sk-abc123",
+    '{"msg": "{\\"password\\":\\"hunter2\\"}"}': "hunter2",
+    'curl -d "{\\"password\\": \\"correct horse\\"}" https://example.invalid': ("correct", "horse"),
+    'kwargs={\\"access_token\\": \\"ya29.abc\\"}': "ya29.abc",
+    'X="password=\\"Sec two\\""': ("Sec", "two"),
+    # a Bearer inside another scheme's value; other tools' quoted --user, grouped sshpass flags, --pass
+    "Token 'Bearer abcdefghijkl'": "abcdefghijkl",
+    "using token 'Bearer abcdefgh.ijkl-mnop'": "abcdefgh.ijkl-mnop",
+    'wget "--user" abe:Qu0tedWget https://example.invalid': "Qu0tedWget",
+    "sshpass -vp Gr0uped ssh host": "Gr0uped",
+    "curl --pass Phr4se -E cert.pem https://example.invalid": "Phr4se",
+    "ghp_abcdef0123456789abcdef0123456789abcd": "ghp_abcdef0123456789abcdef0123456789abcd",
 }
+# Forms other components rely on (synthetic values), each in the messages that carry it: the exact masked text.
+PLACEMENT_FORMS = {
+    "HF_TOKEN hf_probe_secret": "HF_TOKEN [redacted]",
+    'HF_TOKEN "two word secret"': "HF_TOKEN [redacted]",
+    "PASS=pass_probe_secret": "PASS=[redacted]",
+    'PASS="two word secret"': "PASS=[redacted]",
+    'password="two word secret"': "password=[redacted]",
+    'password "two word secret"': "password [redacted]",
+    '--password "two word secret"': "--password [redacted]",
+    "https://:url_probe_secret@example.invalid": "https://[redacted]@example.invalid",
+    "curl -u user:curl_probe_secret": "curl -u [redacted]",
+    "mysql -pmysql_probe_secret": "mysql -p[redacted]",
+    'mysql -p"two word secret"': "mysql -p[redacted]",
+    "sshpass -p ssh_probe_secret": "sshpass -p [redacted]",
+    'sshpass -p "two word secret"': "sshpass -p [redacted]",
+    "sshpass -p 'two word secret'": "sshpass -p [redacted]",
+    "hf_probe_secret": "[redacted]",
+    "ghp_probe_secret": "[redacted]",
+}
+PLACEMENT_MESSAGES = ("{}", "admission unavailable: {}", "audit write failed: {}",
+                      "audit write failed: {} (the job was not started)", "the job could not start: {}")
 # Text that must stay exactly as it is.
 READABLE = (
     "generated 512 tokens in 3.1 s", "keyboard input ignored", "pass 2 of 3 finished", "mysql connection pool size 8",
@@ -216,6 +250,13 @@ class SharedRulesTests(unittest.TestCase):
             for text in READABLE:
                 with self.subTest(implementation=name, text=text):
                     self.assertEqual(implementation(text), text)
+
+    def test_the_forms_other_components_rely_on(self):
+        for name, implementation in IMPLEMENTATIONS.items():
+            for form, masked in PLACEMENT_FORMS.items():
+                for message in PLACEMENT_MESSAGES:
+                    with self.subTest(implementation=name, line=message.format(form)):
+                        self.assertEqual(implementation(message.format(form)), message.format(masked))
 
     def test_what_stays_around_a_redacted_value(self):
         for name, implementation in IMPLEMENTATIONS.items():
@@ -291,6 +332,9 @@ class SharedRulesTests(unittest.TestCase):
             (["app", "--api-key=k1", "--max-tokens=512", "--hf-token=tk_x", "--user=1000:1000"],
              ["app", "--api-key=[redacted]", "--max-tokens=512", "--hf-token=[redacted]", "--user=1000:1000"]),
             (["curl", "--oauth2-bearer", "S"], ["curl", "--oauth2-bearer", "[redacted]"]),
+            (["curl", "--pass", "S", "--bypass", "x"], ["curl", "--pass", "[redacted]", "--bypass", "x"]),
+            (["sshpass", "-vp", "Sec", "ssh", "-p", "22"], ["sshpass", "-vp", "[redacted]", "ssh", "-p", "22"]),
+            (["sshpass", "-vpSec", "ssh", "-p", "22"], ["sshpass", "-vp[redacted]", "ssh", "-p", "22"]),
             (["docker", "run", "--user", '"1000:1000"', "--user", "'kim:pw'", "img"],
              ["docker", "run", "--user", '"1000:1000"', "--user", "[redacted]", "img"]),
             (["systemd-run", "--user", "--setenv=PYTHONPATH=/foo:/bar", "python3", "-u", "app.py"],
@@ -326,7 +370,8 @@ class SharedRulesTests(unittest.TestCase):
                  '"\\"', "'\\'\"", '\\"', 'curl "\\', "x\\ ", "curl -u'a'", "password -U ", 'key="', "key='x",
                  'key="\\', "key=a'", 'key=a"b ', "--user '", "--user a'", '"/curl', "'curl\"", '"C:\\x\\', "Bearer '",
                  " '", "a' ", "x='", "\"'", "Bearer a'", "-u a:' ", "\" -u ", "'-u' ", "it's ", "=\"", "CURL -u ",
-                 "--oauth2-bearer ", '"\\', "\\'", ": '", "=' x'")
+                 "--oauth2-bearer ", '"\\', "\\'", ": '", "=' x'", '\\"', 'key=\\"', '{\\"key\\": \\"',
+                 "Token 'Bearer ", "x_secret ", "hf_secret ", "ghp_", "sshpass -vp ", '"--user" ')
         for name, implementation in (("shared", redaction.redact_text), ("node", node.redact)):
             for unit in units:
                 self.assert_linear(name, unit, lambda size: implementation((unit * (size // len(unit) + 1))[:size]))
