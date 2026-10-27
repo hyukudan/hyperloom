@@ -40,7 +40,9 @@ MARKER = "HYPERLOOM_RECIPE_WORKER"
 COMMAND = None          # tests replace the worker command; otherwise `python -m hyperloom`
 # GET recipes[/...]: (operation, query keys -> argument names). Cheap and side-effect free; run in process.
 READS = {"recipes": ("list", {"model": "model"}), "recipes/active": ("active", {"profile": "profile"}),
-         "recipes/routes": ("routes", {"profile": "profile"})}
+         "recipes/routes": ("routes", {"profile": "profile"}),
+         "recipes/ready": ("ready", {"recipe": "recipe", "profile": "profile", "facts": "facts"}),
+         "recipes/matrix": ("matrix", {})}
 # POST recipes/<op>: synchronous answers (never jobs). WRITES are audited.
 QUERIES = frozenset(("recipes/validate", "recipes/explain", "recipes/check", "recipes/diff", "recipes/pick",
                      "recipes/select", "recipes/plan"))

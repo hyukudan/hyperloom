@@ -35,7 +35,8 @@ ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 DIGEST = re.compile(r"[0-9a-f]{64}")
 # Ids that would shadow a portal endpoint (GET recipes/<id>) or read as a CLI keyword.
 RESERVED = frozenset(("active", "routes", "probe", "validate", "explain", "check", "diff", "select", "plan", "save",
-                      "delete", "list", "show", "pick", "auto", "layers", "save-layer", "delete-layer"))
+                      "delete", "list", "show", "pick", "auto", "layers", "save-layer", "delete-layer", "ready",
+                      "matrix"))
 DEVICES = re.compile(r"(?i)(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³]|conin\$|conout\$)(\..*)?")   # Windows names
 MAX_SAVE_BYTES = 256 * 1024
 MAX_FILES = 512                  # recipe files read per directory by the catalog (the portal's GETs are bounded)
@@ -398,6 +399,16 @@ def model_profiles(cluster, model):
         if facts.FAMILY_MODELS.get(family, (None,))[0] == model:
             out.append(name)
     return out
+
+
+def serving_profiles(cluster, model, profile=None):
+    """[profile] when it serves ``model``, else every profile serving it; refused when there is none."""
+    serving = model_profiles(cluster, model)
+    if profile and profile not in serving:
+        raise RecipeError(f'profile {profile} does not serve "{model}" (profiles serving it: {", ".join(serving) or "none"})')
+    if not serving:
+        raise RecipeError(f'no configured profile serves "{model}"')
+    return [profile] if profile else serving
 
 
 def models(cluster):
@@ -867,12 +878,7 @@ def select(cluster, model, profile=None, *, layers=None, source_for=None, backen
     """The recipe `up --recipe auto` would run for MODEL on each deployment profile serving it (or the one named), with
     every candidate's result: passes, invalid, or refused with the reasons."""
     from . import commands, core, session
-    serving = model_profiles(cluster, model)
-    if profile and profile not in serving:
-        raise RecipeError(f'profile {profile} does not serve "{model}" (profiles serving it: {", ".join(serving) or "none"})')
-    profiles = [profile] if profile else serving
-    if not profiles:
-        raise RecipeError(f'no configured profile serves "{model}"')
+    profiles = serving_profiles(cluster, model, profile)
     backend = backend or core.backend(cluster)
     out = []
     with tempfile.TemporaryDirectory(prefix="hl-recipe-select-") as directory:
@@ -1572,6 +1578,8 @@ HARDWARE = {"facts": ("--facts", "facts")}
 OPERATIONS = {
     "list": ((), {"model": ("--model", "string")}),
     "show": (("recipe",), {}),
+    "ready": (("recipe", "profile?"), {"facts": ("--facts", "facts")}),
+    "matrix": ((), {}),
     "active": (("profile?",), {}),
     "routes": (("profile?",), {}),
     "validate": (("recipe", "profile?"), {**LAYER_ARGS, **HARDWARE}),

@@ -643,6 +643,16 @@ def build_parser(parser_class=argparse.ArgumentParser):
     recipe_list = recipe_commands.add_parser("list", help="every recipe: built-in examples, configured and user ones")
     recipe_list.add_argument("--model", help="only the recipes for this model id")
     recipe_list.add_argument("--config", type=Path, default=config_path())
+    recipe_ready = recipe_commands.add_parser("ready", help="what is still missing before up can run a recipe, with "
+                                              "the next command (offline: saved state only)")
+    recipe_ready.add_argument("recipe", help="a recipe id or file")
+    recipe_ready.add_argument("profile", nargs="?", help="default: the only profile serving the recipe's model")
+    recipe_ready.add_argument("--facts", help="a saved probe (name or file); default: the profile's newest")
+    recipe_ready.add_argument("--format", choices=("json", "text"), default="json")
+    recipe_ready.add_argument("--config", type=Path, default=config_path())
+    recipe_matrix = recipe_commands.add_parser("matrix", help="which recipe covers each model x hardware class")
+    recipe_matrix.add_argument("--format", choices=("json", "text"), default="json")
+    recipe_matrix.add_argument("--config", type=Path, default=config_path())
     recipe_show = recipe_commands.add_parser("show", help="one recipe: text, routes, settable fields")
     recipe_show.add_argument("recipe", help="a recipe id or file")
     recipe_show.add_argument("--config", type=Path, default=config_path())
@@ -881,7 +891,10 @@ def main(argv=None):
                 # Own exit codes so callers (the portal) tell "no such recipe" and "changed / taken" apart.
                 print(f"hyperloom: {exc}", file=sys.stderr)
                 return 3 if isinstance(exc, service.NotFound) else 4
-            _json(result)
+            if getattr(args, "format", "json") == "text":
+                print(_module("hyperloom.recipes.commands").text(args, result))
+            else:
+                _json(result)
             if not ok:
                 return 1
         elif args.command == "config":

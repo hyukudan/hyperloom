@@ -107,6 +107,8 @@ hardware refuses the recipe in `result.hardware`.
 |---|---|---|
 | `GET recipes[?model=M]` | `hyperloom recipe list [--model M]` | the catalog, models and the deployment profiles serving each, layers, receipts, saved facts |
 | `GET recipes/<id>` | `hyperloom recipe show ID` | one recipe: text, structure, every settable field with its type, range and default |
+| `GET recipes/ready?recipe=ID[&profile=P][&facts=F]` | `hyperloom recipe ready ID [P] [--facts F]` | what is still missing before `up` can run the recipe on the profile, step by step, each with the next command (offline) |
+| `GET recipes/matrix` | `hyperloom recipe matrix` | every recipe by model x hardware class, with its status, headline figures and their sources, and the command that runs it |
 | `POST recipes/validate` | `hyperloom recipe validate ID [PROFILE]` | schema and layers; with a profile also the hardware match and the `up` decision |
 | `POST recipes/explain` | `hyperloom recipe explain ID [PROFILE]` | each field's value, layer and origin; with a profile the decision, a simulated request and what-ifs |
 | `POST recipes/check` | `hyperloom recipe validate - [PROFILE] < draft.toml` | a draft's text, nothing written |

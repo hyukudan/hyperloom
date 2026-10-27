@@ -23,7 +23,26 @@ hyperloom recipe explain  FILE [<profile>] [--facts FACTS.json] [layers] [--all]
                           [--unavailable DEVICE_ID]... [--link-down LINK]... [--free-ram HOST=GIB]...
 hyperloom recipe diff     A B [--a-set PATH=VALUE]... [--b-set PATH=VALUE]...
 hyperloom recipe pick     <profile> [--dir DIR]... [--facts FACTS.json] [layers]
+hyperloom recipe ready    ID|FILE [<profile>] [--facts NAME|FILE] [--format json|text]
+hyperloom recipe matrix   [--format json|text]
 ```
+
+- **ready** is the place to start. It lists, in order, what `up --recipe` needs and whether this machine has it: the
+  recipe is listed and not pending, the recipe core is installed, the pinned router applies route tables, a
+  profile serves the recipe's model and can run with a recipe, the newest saved probe of that profile matches the
+  recipe (the same match and decision as `validate` and `plan`, with the same messages), and the RTX prefill
+  service plans when the recipe starts it. Each missing step names the command that fixes it; when everything
+  passes it gives the `plan` (dry run) and `up` commands. It reads only the saved configuration and state (no ssh,
+  no model reads; the service step reads this machine's free RAM, as `plan` does), so the hardware step is as old
+  as the saved probe. What only `up` can check (the GPU turn and lease, the nodes' release and assets, the RAM
+  floors around the engine start) is listed under `checked_at_start`. Exit 0 when ready, 1 otherwise.
+- **matrix** lists every recipe by model and hardware class (one Strix node, a Strix pair, Strix replicas, RTX PRO
+  decode, RTX prefill + Strix decode, RTX + Strix sharing decode), taken from the recipe's enabled routes, with its
+  status, headline figures and the command that runs it. A figure counts as measured only when the recipe says so
+  and every evidence entry it names resolves to a source; otherwise it is shown with its basis (projected, derived,
+  target, ...).
+
+`--format text` prints `ready` and `matrix` as plain text; JSON stays the default.
 
 - **validate** checks the recipe and its layers, and with a profile also the hardware match and what `up` would
   decide. It exits with 1 and lists every reason when something is refused.

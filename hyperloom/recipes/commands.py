@@ -193,7 +193,7 @@ def run(cluster_loader, args):
 def _run(cluster_loader, args, service):
     # Operations that need no hardware run without a cluster configuration (then without configured directories).
     offline = args.operation in ("diff", "list", "show", "save", "delete", "save-layer", "delete-layer",
-                                 "save-receipt", "deploy") or (
+                                 "save-receipt", "deploy", "ready", "matrix") or (
         args.operation in ("validate", "explain") and args.profile is None)
     cluster = _optional_cluster(cluster_loader, args.config) if offline else cluster_loader(args.config)
     if args.operation in ("validate", "explain") and str(args.file) == "-":
@@ -209,7 +209,20 @@ def _run(cluster_loader, args, service):
         return originals(result), ok
 
 
+def text(args, result):
+    """The --format text rendering of a ready / matrix result."""
+    from . import ready
+    return ready.ready_text(result) if args.operation == "ready" else ready.matrix_text(result)
+
+
 def _dispatch(cluster, args, service):
+    if args.operation == "ready":
+        from . import ready
+        result = ready.check(cluster, args.recipe, args.profile, config=_config_arg(args.config), facts=args.facts)
+        return result, result["ready"]
+    if args.operation == "matrix":
+        from . import ready
+        return ready.matrix(cluster, config=_config_arg(args.config)), True
     if args.operation == "probe":
         with service.runtime_lock():      # probes write the descriptor store, the disk cache and evidence
             return probe_command(cluster, args), True
@@ -273,6 +286,12 @@ def _approval(args):
     if end.tzinfo is None:
         raise ValueError("--approval-end must include a timezone")
     return {"ref": args.approval_ref, "lease_s": args.approval_lease, "end_epoch": end.timestamp()}
+
+
+def _config_arg(path):
+    """The --config value to repeat in suggested commands: None for the default configuration file."""
+    from ..cli import config_path
+    return None if Path(path) == config_path() else str(path)
 
 
 def _optional_cluster(cluster_loader, path):

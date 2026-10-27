@@ -80,6 +80,22 @@ def _backend(cluster):
                       "non-production launch")
 
 
+def check_router():
+    """Refuse when the pinned TensorMeld router cannot apply a recipe's route table."""
+    if "routes" not in render.router_policies():
+        raise RecipeError("the pinned TensorMeld router has no prefill policy \"routes\" (recipes are applied per request "
+                          "by it); update third_party/tensormeld")
+
+
+def refusal_of(evaluation):
+    """Why `up` refuses this evaluation (hardware match, then the decision), or None."""
+    if evaluation.problems:
+        return "recipe does not match this hardware: " + "; ".join(evaluation.problems)
+    if evaluation.refusal:
+        return "recipe refused: " + evaluation.refusal
+    return None
+
+
 def _service_budget(evaluation):
     """(cap, host) of the offload routes' service placement, as the recipe resolved them (defaults included)."""
     for p in evaluation.decision["prefill"]:
@@ -124,9 +140,7 @@ def prepare(cluster, profile, options, *, router, vram_cap_gib, state_dir, sourc
     backend, production = _backend(cluster)
     if vram_cap_gib is not None:
         raise RecipeError("--vram-cap-gib and --recipe both set the RTX cap: put it in the recipe (device_gib)")
-    if "routes" not in render.router_policies():
-        raise RecipeError("the pinned TensorMeld router has no prefill policy \"routes\" (recipes are applied per request "
-                          "by it); update third_party/tensormeld")
+    check_router()
     source = source or commands.live_source(cluster)
     if options.recipe == "auto":
         dirs = options.dirs if options.exact_dirs else commands.recipe_dirs(cluster, options.dirs)
@@ -137,10 +151,9 @@ def prepare(cluster, profile, options, *, router, vram_cap_gib, state_dir, sourc
         evaluation = chosen
     else:
         evaluation = session.evaluate(cluster, profile, options.recipe, options.layers, source, backend)
-    if evaluation.problems:
-        raise RecipeError("recipe does not match this hardware: " + "; ".join(evaluation.problems))
-    if evaluation.refusal:
-        raise RecipeError("recipe refused: " + evaluation.refusal)
+    why = refusal_of(evaluation)
+    if why is not None:
+        raise RecipeError(why)
     decision = evaluation.decision
     service = dict(decision["service"])
     cap, host, plan = None, None, None
