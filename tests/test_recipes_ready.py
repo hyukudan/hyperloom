@@ -107,6 +107,20 @@ class ReadyTests(unittest.TestCase):
             self.assertEqual(hardware["state"], "blocked")
             self.assertIn("the pinned TensorMeld router refuses the route table: no such field", hardware["detail"])
 
+    def test_a_configuration_error_is_a_blocked_step(self):
+        from hyperloom.config import ConfigError
+        from hyperloom.recipes import launch
+        with isolated() as env:
+            cluster = orchestrate.load_cluster(env.config)
+            env.save_facts("ds", "deepseek-v4.1-flash", "ds41-rtx")
+            user_ds()
+            with mock.patch.object(render, "router_policies", return_value=ROUTES),                     mock.patch.object(launch, "prepare", side_effect=ConfigError("engine pin differs")):
+                result = ready.check(cluster, "ds-user", "ds41-rtx")
+            hardware = next(s for s in result["steps"] if s["step"] == "hardware")
+            self.assertEqual(hardware["state"], "blocked")
+            self.assertIn("engine pin differs", hardware["detail"])
+            self.assertFalse(result["ready"])
+
     def test_a_file_outside_the_catalog_is_named_by_its_path(self):
         with isolated() as env:
             cluster = orchestrate.load_cluster(env.config)

@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 import time
 
+from ..config import ConfigError
 from .reader import RecipeError
 
 OK, TODO, BLOCKED, WARN, SKIPPED = "ok", "todo", "blocked", "warn", "skipped"
@@ -119,7 +120,7 @@ def check(cluster, ref, profile=None, *, config=None, facts=None, now=None):
                     evaluation = session.evaluate(cluster, profile, path, session.Layers(), source,
                                                   core.backend(cluster))
                     why = launch.refusal_of(evaluation)
-                except RecipeError as exc:
+                except (RecipeError, ConfigError) as exc:
                     why = str(exc)
                 steps.append(_step("hardware", "hardware and up's decision (saved probe)",
                                    BLOCKED if why else SKIPPED,
@@ -131,7 +132,7 @@ def check(cluster, ref, profile=None, *, config=None, facts=None, now=None):
                 try:
                     prepared = launch.prepare(cluster, profile, launch.Options(recipe=str(path)), router="local",
                                               vram_cap_gib=None, state_dir=state_dir, source=source)
-                except RecipeError as exc:
+                except (RecipeError, ConfigError) as exc:    # ConfigError: the profile's configuration, as up says it
                     steps.append(_step("hardware", "hardware and up's decision (saved probe)", BLOCKED,
                                        f"{exc} (probe {name}, {when})", probe_fix))
                 if prepared is not None:

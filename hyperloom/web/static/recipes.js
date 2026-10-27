@@ -46,7 +46,9 @@
       const listing = await get("recipes");
       if (!listing.ok) throw new Error(listing.error || "recipe list unavailable");
       R.catalog = listing.result; R.error = null;
-      loadMatrix();                                 // not awaited: load's callers continue with the catalog
+      // The matrix is read again only when the catalog changed (not awaited: load's callers continue with it).
+      const catalogKey = (R.catalog.recipes || []).map(r => `${r.id}:${r.sha256}`).join("|");
+      if (catalogKey !== R.matrixKey || !R.matrix) { R.matrixKey = catalogKey; loadMatrix(); }
       const models = modelsWithRecipes();
       // Default: the first model a configured deployment profile serves (what can actually run here).
       if (!R.model || !models.includes(R.model)) R.model = models.find(m => (R.catalog.models[m] || []).length) || models[0] || "";

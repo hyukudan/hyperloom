@@ -42,7 +42,9 @@ hyperloom recipe matrix   [--format json|text]
   and every evidence entry it names resolves to a source; otherwise it is shown with its basis (projected, derived,
   target, ...).
 
-`--format text` prints `ready` and `matrix` as plain text; JSON stays the default.
+`--format text` prints `ready` and `matrix` as plain text; JSON stays the default. `ready` and `matrix` are reserved
+ids (like `list` or `plan`): a user recipe saved under one of them before is listed with that error and must be
+renamed.
 
 - **validate** checks the recipe and its layers, and with a profile also the hardware match and what `up` would
   decide. It exits with 1 and lists every reason when something is refused.
