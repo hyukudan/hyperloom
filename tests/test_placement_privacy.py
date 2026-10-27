@@ -13,14 +13,20 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 PHYSICAL = re.compile(r"GPU-[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}|"
                       r"\b[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]\b")
-ABSOLUTE = re.compile(r"(?:^|[\s\"'=,])(?:[A-Za-z]:[\\/]|/(?!/)[\w.-]+/)")
 PRIVATE_KEYS = frozenset(("uuid", "pci", "pci_path", "hostname", "host_id", "user", "username"))
 PLACEHOLDER = re.compile(r"<[a-z][a-z0-9-]*>")
+_PLACEHOLDER_PATH = PLACEHOLDER.pattern + r"(?:[\\/]" + PLACEHOLDER.pattern + r")*"
+# Only complete paths with generic roots and placeholder-only suffixes are portable.
+_PORTABLE_PATH = (r"(?:/(?:home|root|tmp)(?:/" + _PLACEHOLDER_PATH + r")?|/(?:" + _PLACEHOLDER_PATH + r")?|"
+                  r"(?i:C:[\\/](?:Users(?:[\\/]" + _PLACEHOLDER_PATH + r")?|" + _PLACEHOLDER_PATH + r")?)|"
+                  r"(?:(?i:%USERPROFILE%)|~)(?:[\\/]" + _PLACEHOLDER_PATH + r")?)[\\/]?"
+                  r"(?=$|[\s`\"'(),;\]}])")
+ABSOLUTE = re.compile(r"(?:^|[\s\"'=,])(?!" + _PORTABLE_PATH + r")(?:[A-Za-z]:[\\/]|/(?!/)[\w.-]+/)")
 ADDRESS = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?!\w|\.\d)|"
                      r"(?<![\w:])(?:[0-9a-fA-F]*:){2,}[0-9a-fA-F:.]*(?:%[\w.~-]+)?(?![\w:])")
-LOCAL_IDENTITY = re.compile(r"(?i)[a-z]:[\\/](?:users[\\/]|tmp[\\/]|python\d+\b)|"
+LOCAL_IDENTITY = re.compile(r"(?!" + _PORTABLE_PATH + r")(?i:[a-z]:[\\/](?:users[\\/]|tmp[\\/]|python\d+\b)|"
                             r"/(?:mnt/[a-z]/|home/[\w.-]+/)|"
-                            r"\b(?:claude|codex)[a-z0-9]*(?:[-_][a-z0-9]+)*\b|\b(?:sol|opus)(?:[-_][a-z0-9]+)*\b")
+                            r"\b(?:claude|codex)[a-z0-9]*(?:[-_][a-z0-9]+)*\b|\b(?:sol|opus)(?:[-_][a-z0-9]+)*\b)")
 
 
 def addresses(value):
@@ -87,6 +93,37 @@ def findings():
 
 
 class PrivacyTests(unittest.TestCase):
+    def test_generic_roots_with_only_placeholder_segments_are_portable(self):
+        for value in ("/", "/home", "/home/<user>", "/root", "/tmp", "/tmp/<runtime>",
+                      "/<root>/<model>", "/home/<user>/<model>/", "C:\\", "C:\\Users",
+                      "C:\\Users\\<user>", "C:/Users/<user>/<model>", "c:/users/<user>",
+                      "%USERPROFILE%", "%USERPROFILE%/<model>", "~", "~/<model>"):
+            for text in (value, f"path '{value}',", f"``{value}``"):
+                with self.subTest(text=text):
+                    self.assertIsNone(ABSOLUTE.search(text))
+                    self.assertIsNone(LOCAL_IDENTITY.search(text))
+                    self.assertFalse(private(text))
+
+    def test_download_home_examples_are_portable(self):
+        from hyperloom.downloads import too_wide
+        self.assertIsNone(ABSOLUTE.search(too_wide.__doc__))
+        self.assertIsNone(LOCAL_IDENTITY.search(too_wide.__doc__))
+        self.assertFalse(private(too_wide.__doc__))
+
+    def test_portable_path_rule_does_not_hide_real_paths_or_identities(self):
+        for value in ("/home/alice/x", "C:\\Users\\bob", "D:/tmp/x", "/mnt/d/tmp",
+                      "/tmp/alice", "/root/alice", "/home/<user>/model", "C:/Users/<user>/model",
+                      "C:/<user>/model", "D:/<user>", "/home/<User>/x", "/home/<user>.json",
+                      "/home/<user>-alice", "/home/<user>!alice", "/home/<user>?alice"):
+            with self.subTest(value=value):
+                self.assertTrue(private(value))
+                self.assertTrue(private(f"'/home/<user>', '{value}'"))
+        for value in ("/home/alice/x", "C:\\Users\\bob", "D:/tmp/x", "/mnt/d/tmp",
+                      "claude-hl-5", "codex-red", "sol-worker", "opus-worker"):
+            with self.subTest(value=value):
+                self.assertIsNotNone(LOCAL_IDENTITY.search(value))
+                self.assertIsNotNone(LOCAL_IDENTITY.search(f"C:/Users/<user>, {value}"))
+
     def test_tracked_artifacts_add_no_identity_or_path_bearing_data(self):
         self.assertEqual(findings(), {}, "artifact carries UUID, PCI, IP, host, user or absolute path; use portable placeholders")
 
