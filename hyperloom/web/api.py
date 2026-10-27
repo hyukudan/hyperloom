@@ -170,11 +170,13 @@ def _binds_loopback(profile, status, cluster):
 DATA_TOKEN_KEY = re.compile(r"(?:[a-z0-9_]*_)?tokens(?:_[a-z0-9_]+)?|(?:[a-z0-9_]*_)?token_(?:ids|count|counts|budget)"
                             r"|tokenizer(?:_[a-z0-9_]+)?", re.I)
 COMPRESSED_IDS = re.compile(r"gz:b64:[A-Za-z0-9+/]+={0,2}")
-# Free text: a bare Hugging Face token (hf_ and 30+ token characters, or a shorter one with an upper-case letter or a
-# digit, so hf_transfer stays) and curl's user:password options (-u, -su, -U, --user, --proxy-user).
-HF_TOKEN = re.compile(r"\bhf_(?:[A-Za-z0-9]{30,}|(?=[a-z]*[A-Z0-9])[A-Za-z0-9]{8,})\b")
-CURL_USER = re.compile(r"""\b(curl\b[^\n]*?\s(?:-[A-Za-z]*[uU]\s*|--(?:proxy-)?user(?:\s+|=)))(?!\[redacted\])"""
+# Free text: a bare Hugging Face token (hf_ and 30+ token characters: hf_transfer stays) and curl's user:password
+# options (-u, -su, -U, --user, --proxy-user) within the same command (bounded, up to a pipe or `;`); any tool's
+# `--user name:password` (USER_OPTION; a numeric uid:gid stays).
+HF_TOKEN = re.compile(r"\bhf_[A-Za-z0-9]{30,}\b")
+CURL_USER = re.compile(r"""\b(curl\b[^\n|;]{0,2048}?\s(?:-[A-Za-z]*[uU]\s*|--(?:proxy-)?user(?:\s+|=)))(?!\[redacted\])"""
                        r"""(?:"[^"]*"|'[^']*'|\S+)""")
+USER_OPTION = re.compile(r"(--(?:proxy-)?user(?:\s+|=))(?!\[redacted\])(?![0-9]+:[0-9]+(?:\s|$))[^\s:]*:\S+")
 
 
 def _token_data(key, item):
@@ -220,11 +222,13 @@ def redact(value, text=True):
         return result
     if isinstance(value, (list, tuple)):
         result, hide = [], False
-        curl = bool(value) and isinstance(value[0], str) and re.search(r"(?:^|[\\/])curl(?:\.exe)?$", value[0], re.I)
+        # A curl command (also behind sudo, env or a wrapper): its -u/-U value, separate or glued (-ualice:pw).
+        curl = any(isinstance(item, str) and re.search(r"(?:^|[\\/])curl(?:\.exe)?$", item, re.I) for item in value[:4])
         for item in value:
             # After a user option, only a name:password value is hidden (`systemd-run --user --scope` stays).
             hidden = hide is True or (hide == "user" and isinstance(item, str) and ":" in item)
-            result.append("[redacted]" if hidden else redact(item, text))
+            glued = curl and isinstance(item, str) and re.fullmatch(r"(-[A-Za-z]*[uU])[^\s:]*:.*", item, re.S)
+            result.append("[redacted]" if hidden else glued.group(1) + "[redacted]" if glued else redact(item, text))
             hide = isinstance(item, str) and (item in ("--api-key", "--handoff-api-key", "--password", "--token") or (
                 "user" if item in ("--user", "--proxy-user") or curl and re.fullmatch(r"-[A-Za-z]*[uU]", item) else False))
         return result
@@ -232,7 +236,7 @@ def redact(value, text=True):
         value = re.sub(r"(?i)(Bearer\s+)\S+", r"\1[redacted]", value)
         value = re.sub(HF_TOKEN, "[redacted]", value)
         value = re.sub(CURL_USER, r"\1[redacted]", value)
-        value = re.sub(r"(--(?:proxy-)?user(?:\s+|=))(?!\[redacted\])[^\s:]*:\S+", r"\1[redacted]", value)
+        value = USER_OPTION.sub(r"\1[redacted]", value)
         return re.sub(r'''(?ix)((?:["']?(?:api[_-]?key|handoff[_-]?api[_-]?key|password|secret|token)["']?)\s*[:=]\s*|--(?:api-key|handoff-api-key|password|token)\s+)(?:"[^"]*"|'[^']*'|[^\s,;}]+)''',
                       r"\1[redacted]", value)
     return value

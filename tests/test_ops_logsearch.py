@@ -244,7 +244,6 @@ class NodeSearchTests(unittest.TestCase):
             "sshpass -p Sp4ce sshx": "Sp4ce",
             "download with hf_AbCdEfGhIjKlMnOpQrStUvWxYz01234567 ok": "hf_AbCdEfGhIjKlMnOpQrStUvWxYz01234567",
             "token is hf_abcdefghijklmnopqrstuvwxyzabcdefgh": "hf_abcdefghijklmnopqrstuvwxyzabcdefgh",
-            "using hf_Q9x7Lk2m for the mirror": "hf_Q9x7Lk2m",
             "curl -u alice:Wonder7land https://example.invalid/x": "Wonder7land",
             "curl -sSu bob:Pa55-w0rd -o out.json https://example.invalid": "Pa55-w0rd",
             "curl --user carol:hunter4 https://example.invalid": "hunter4",
@@ -259,7 +258,8 @@ class NodeSearchTests(unittest.TestCase):
                 self.assertNotIn(secret, node.redact(line))
         for prose in ("generated 512 tokens in 3.1 s", "keyboard input ignored",
                       "pass 2 of 3 finished", "mysql connection pool size 8",
-                      "hf_transfer enabled, hf_hub_download retried",
+                      "hf_transfer enabled, hf_hub_download retried, hf_qwen3moe loaded",
+                      "docker run --user 1000:1000 img", "curl -sS https://example.invalid | python3 -u -",
                       "systemd-run --user --scope -p MemoryMax=16G", "curl -sS https://example.invalid/health"):
             with self.subTest(prose=prose):
                 self.assertEqual(node.redact(prose), prose)
