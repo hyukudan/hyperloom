@@ -5,12 +5,18 @@ import argparse
 import hashlib
 import json
 import math
+import os
 from pathlib import Path, PurePosixPath
 import platform
 import re
 import shutil
 import subprocess
 import sys
+
+# Nothing is written beside the node tool: no bytecode cache for its extension modules, in this process or in the
+# Python processes it starts (the node verbs are read-only unless a verb's own contract says otherwise).
+sys.dont_write_bytecode = True
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 
 VERSION = "0.1.0"
