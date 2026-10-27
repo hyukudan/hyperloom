@@ -7,6 +7,7 @@ so it is as old as that probe. What only `up` itself can check is listed under `
 from __future__ import annotations
 
 from pathlib import Path
+import tempfile
 import time
 
 from .reader import RecipeError
@@ -32,7 +33,9 @@ def check(cluster, ref, profile=None, *, config=None, facts=None, now=None):
     from . import core, launch, probe, service, session
     now = time.time() if now is None else now
     path = service.locate(ref, cluster)              # NotFound: exit 3 / HTTP 404, like show
-    rid = service.identify(path, cluster) or Path(path).stem
+    catalog_id = service.identify(path, cluster)
+    rid = catalog_id or Path(path).stem
+    ref_arg = catalog_id or str(path)               # a file outside the catalog is named by its path in commands
     config_arg = f" --config {_quote(config)}" if config else ""
     steps, model = [], None
 
@@ -74,7 +77,7 @@ def check(cluster, ref, profile=None, *, config=None, facts=None, now=None):
             steps.append(_step("profile", "a profile serves the model", OK, profile))
         except RecipeError as exc:
             serving = service.model_profiles(cluster, model)
-            fix = (" | ".join(f"hyperloom recipe ready {_quote(rid)} {_quote(p)}{config_arg}" for p in serving)
+            fix = (" | ".join(f"hyperloom recipe ready {_quote(ref_arg)} {_quote(p)}{config_arg}" for p in serving)
                    if serving else f"add a profile for {model} to the configuration (see {SAMPLE_CONFIG})")
             profile = None
             steps.append(_step("profile", "a profile serves the model", TODO, str(exc), fix))
@@ -90,63 +93,72 @@ def check(cluster, ref, profile=None, *, config=None, facts=None, now=None):
             steps.append(_step("launch", "profile can run with a recipe", BLOCKED, str(exc)))
             blocked = steps[-1]
 
-    # 6. Hardware: the newest saved probe of the profile, evaluated as up would (match, admission, decision).
+    # 6. Hardware and up's decision on the newest saved probe of the profile: launch.prepare itself, as plan runs it
+    #    (match, admission, decision, the RTX service planned from saved descriptors and this machine's free RAM,
+    #    the router's own check of the route table), so a refusal here is up's own text. Before the core and the
+    #    router steps pass, prepare cannot run: the match is then a preview through the reader in use.
     probe_fix = (f"hyperloom recipe probe {_quote(profile)} --out "
                  f"{_quote(service.facts_dir() / (str(profile) + '.json'))}{config_arg}")
-    evaluation = None
+    prepared = None
+    gate = next((s for s in steps if s["step"] in ("core", "router") and s["state"] in (TODO, BLOCKED)), None)
     if blocked is not None or profile is None:
-        steps.append(_step("hardware", "hardware matches (saved probe)", SKIPPED,
+        steps.append(_step("hardware", "hardware and up's decision (saved probe)", SKIPPED,
                            f"needs step {blocked['step'] if blocked else 'profile'}"))
     else:
         try:
             name, facts_path, record = planner.resolve_facts(facts, [profile])
         except planner.Refused as exc:
-            steps.append(_step("hardware", "hardware matches (saved probe)", TODO,
+            steps.append(_step("hardware", "hardware and up's decision (saved probe)", TODO,
                                str(exc) if facts else f"no saved probe of profile {profile}", probe_fix))
         else:
             age = now - record.get("observed_at", 0) if "observed_at" in record else None
-            try:
-                evaluation = session.evaluate(cluster, profile, path, session.Layers(),
-                                              session.saved_source(facts_path), core.backend(cluster))
-            except RecipeError as exc:
-                steps.append(_step("hardware", "hardware matches (saved probe)", BLOCKED, str(exc), probe_fix))
+            stale = age is None or age > probe.CACHE_TTL_S
+            when = "at an unrecorded time" if age is None else f"{age / 86400:.1f} days ago"
+            source = session.saved_source(facts_path)
+            if gate is not None:
+                try:
+                    evaluation = session.evaluate(cluster, profile, path, session.Layers(), source,
+                                                  core.backend(cluster))
+                    why = launch.refusal_of(evaluation)
+                except RecipeError as exc:
+                    why = str(exc)
+                steps.append(_step("hardware", "hardware and up's decision (saved probe)",
+                                   BLOCKED if why else SKIPPED,
+                                   f"preview ({core.backend(cluster).label}): {why or 'matches'}; up's decision "
+                                   f"needs step {gate['step']} (probe {name}, {when})", probe_fix if why else None))
             else:
-                why = launch.refusal_of(evaluation)
-                stale = age is None or age > probe.CACHE_TTL_S
-                when = "at an unrecorded time" if age is None else f"{age / 86400:.1f} days ago"
-                if why is not None:
-                    steps.append(_step("hardware", "hardware matches (saved probe)", BLOCKED,
-                                       f"{why} (probe {name}, {when})", probe_fix))
-                    evaluation = None
-                else:
-                    steps.append(_step("hardware", "hardware matches (saved probe)", WARN if stale else OK,
+                with tempfile.TemporaryDirectory(prefix="hl-recipe-ready-") as directory:
+                    try:
+                        prepared = launch.prepare(cluster, profile, launch.Options(recipe=str(path)), router="local",
+                                                  vram_cap_gib=None, state_dir=directory, source=source)
+                    except RecipeError as exc:
+                        steps.append(_step("hardware", "hardware and up's decision (saved probe)", BLOCKED,
+                                           f"{exc} (probe {name}, {when})", probe_fix))
+                if prepared is not None:
+                    steps.append(_step("hardware", "hardware and up's decision (saved probe)", WARN if stale else OK,
                                        f"probe {name}, {when}" + (": probe again before up" if stale else ""),
                                        probe_fix if stale else None))
 
-    # 7. The RTX prefill service, when the decision starts it: planned from saved header descriptors and this
-    #    machine's free RAM now (the only live read: a local one, as plan makes it).
-    if evaluation is not None:
-        decision = evaluation.decision
-        if decision["service"]["start"]:
-            cap, host = launch._service_budget(evaluation)
-            plan, why = launch.plan_service(cluster, profile, cap, host)
-            if why is not None:
-                # As up decides: the service is not started and every prefill stays on the nodes.
-                steps.append(_step("service", "RTX prefill service plans", WARN,
-                                   f"planner: {why}; up keeps every prefill on the nodes",
-                                   f"hyperloom recipe probe {_quote(profile)} --descriptors{config_arg}"
-                                   if "descriptor" in why else None))
-            else:
-                steps.append(_step("service", "RTX prefill service plans", OK,
-                                   f"{cap:g} GiB VRAM, {host:g} GiB host" if plan else "nothing to plan"))
+    # 7. The RTX prefill service, as up's decision has it.
+    if prepared is not None:
+        why = prepared.service_why or ""
+        if prepared.service_start:
+            steps.append(_step("service", "RTX prefill service plans", OK,
+                               f"{prepared.vram_cap_gib:g} GiB VRAM, {prepared.host_gib:g} GiB host"))
+        elif why.startswith("planner: "):
+            # As up decides: the service is not started and every prefill stays on the nodes.
+            steps.append(_step("service", "RTX prefill service plans", WARN,
+                               f"{why}; up keeps every prefill on the nodes",
+                               f"hyperloom recipe probe {_quote(profile)} --descriptors{config_arg}"
+                               if "descriptor" in why else None))
         else:
             steps.append(_step("service", "RTX prefill service plans", SKIPPED,
-                               decision["service"].get("why") or "the decision keeps every prefill on the nodes"))
+                               why or "the decision keeps every prefill on the nodes"))
 
-    ready = all(s["state"] in (OK, WARN, SKIPPED) for s in steps) and evaluation is not None
+    ready = all(s["state"] in (OK, WARN, SKIPPED) for s in steps) and prepared is not None
     first = next((s for s in steps if s["state"] in (TODO, BLOCKED)), None)
-    up = f"hyperloom up {_quote(profile)} --recipe {_quote(rid)}{config_arg}" if profile else None
-    plan_cmd = f"hyperloom recipe plan {_quote(rid)} {_quote(profile)}{config_arg}" if profile else None
+    up = f"hyperloom up {_quote(profile)} --recipe {_quote(ref_arg)}{config_arg}" if profile else None
+    plan_cmd = f"hyperloom recipe plan {_quote(ref_arg)} {_quote(profile)}{config_arg}" if profile else None
     return {"recipe": rid, "file": str(path), "model": model, "profile": profile, "ready": ready, "steps": steps,
             "next": ({"step": first["step"], "fix": first["fix"]} if first else
                      {"step": "plan", "fix": plan_cmd} if ready else None),
@@ -181,11 +193,19 @@ def hardware_class(recipe):
     return "strix-single"
 
 
-def _with_source(figure, rows):
-    """A headline figure with the scope and evidence of the trade-off row it was taken from."""
-    same = next((r for r in rows if all(r.get(k) == figure.get(k) for k in ("route", "value", "unit", "basis", "label"))),
-                {})
-    return dict(figure, scope=same.get("scope"), evidence=same.get("evidence"))
+def _with_source(key, figure, rows):
+    """A headline figure with the evidence of every trade-off row it can have been taken from (same route, value,
+    unit, basis and label, and for TTFT the same prompt size): with two such rows, the figure counts as measured only
+    when the evidence of both resolves."""
+    prompt = int(key[5:-3]) * 1024 if key.startswith("ttft_") and key.endswith("k_s") else None
+    same = [r for r in rows if all(r.get(k) == figure.get(k) for k in ("route", "value", "unit", "basis", "label"))
+            and (prompt is None or r.get("at_prompt_tokens") == prompt)]
+    evidence = []
+    for row in same:
+        ids = row.get("evidence")
+        evidence += [ids] if isinstance(ids, str) else list(ids or [])
+    return dict(figure, scope=same[0].get("scope") if len(same) == 1 else None,
+                evidence=list(dict.fromkeys(evidence)) or None)
 
 
 def _figure(key, figure, evidence):
@@ -221,7 +241,7 @@ def matrix(cluster, *, config=None):
         launchable = row["status"] != "pending"
         entry = {"id": row["id"], "status": row["status"], "blocker": row["blocker"], "source": row["source"],
                  "description": row["description"],
-                 "figures": [_figure(k, _with_source(f, row["tradeoffs"]), evidence)
+                 "figures": [_figure(k, _with_source(k, f, row["tradeoffs"]), evidence)
                              for k, f in row["headline"].items()],
                  "profiles": profiles,
                  "ready": f"hyperloom recipe ready {_quote(row['id'])}{config_arg}",

@@ -94,6 +94,29 @@ class ReadyTests(unittest.TestCase):
             self.assertFalse(plan["up"]["ok"])
             self.assertTrue(hardware["detail"].startswith(plan["up"]["refused"]), (hardware, plan["up"]))
 
+    def test_a_route_table_the_router_refuses_blocks_like_up(self):
+        with isolated() as env:
+            cluster = orchestrate.load_cluster(env.config)
+            env.save_facts("ds", "deepseek-v4.1-flash", "ds41-rtx")
+            user_ds()
+            with mock.patch.object(render, "router_policies", return_value=ROUTES), pinned_memory(),                     mock.patch.object(render, "check_route_table", return_value="no such field"):
+                result = ready.check(cluster, "ds-user", "ds41-rtx")
+            self.assertFalse(result["ready"])
+            hardware = next(s for s in result["steps"] if s["step"] == "hardware")
+            self.assertEqual(hardware["state"], "blocked")
+            self.assertIn("the pinned TensorMeld router refuses the route table: no such field", hardware["detail"])
+
+    def test_a_file_outside_the_catalog_is_named_by_its_path(self):
+        with isolated() as env:
+            cluster = orchestrate.load_cluster(env.config)
+            outside = env.root / "elsewhere" / "ds-user.toml"
+            outside.parent.mkdir()
+            outside.write_text(user_ds().read_text(encoding="utf-8"), encoding="utf-8")
+            (service.user_dir() / "ds-user.toml").unlink()
+            result = ready.check(cluster, str(outside), "ds41-rtx")
+            self.assertIn(str(outside), result["commands"]["up"])
+            self.assertIn(str(outside), result["commands"]["plan"])
+
     def test_a_profile_that_cannot_run_a_recipe_is_blocked(self):
         with isolated() as env:
             cluster = orchestrate.load_cluster(env.config)
@@ -169,6 +192,28 @@ class MatrixTests(unittest.TestCase):
         self.assertFalse(ready._figure("decode_tok_s", {"basis": "measured", "evidence": "a", "inherited": True},
                                        evidence)["measured"])
 
+    def test_equal_values_at_other_prompt_sizes_keep_their_own_sources(self):
+        rows = [{"route": "r", "value": 2.0, "unit": "s", "basis": "measured", "label": "TTFT", "at_prompt_tokens": 1024,
+                 "evidence": "one"},
+                {"route": "r", "value": 2.0, "unit": "s", "basis": "measured", "label": "TTFT", "at_prompt_tokens": 8192,
+                 "evidence": "eight"}]
+        figure = {"route": "r", "value": 2.0, "unit": "s", "basis": "measured", "label": "TTFT", "inherited": None}
+        evidence = {"one": {"ref": "receipt-1k.json"}}
+        self.assertTrue(ready._figure("ttft_1k_s", ready._with_source("ttft_1k_s", figure, rows), evidence)["measured"])
+        self.assertFalse(ready._figure("ttft_8k_s", ready._with_source("ttft_8k_s", figure, rows), evidence)["measured"])
+        # Two rows the same figure can come from: measured only when both sources resolve.
+        twins = [dict(rows[0]), dict(rows[0], evidence="eight")]
+        self.assertFalse(ready._figure("ttft_1k_s", ready._with_source("ttft_1k_s", figure, twins), evidence)["measured"])
+
+    def test_the_matrix_get_starts_no_process(self):
+        import subprocess
+        with isolated() as env:
+            loader = lambda path: orchestrate.load_cluster(path)
+            argv = recipe_web.read_request("recipes/matrix", {}, config=env.config)[1]
+            with mock.patch.object(subprocess, "run", side_effect=AssertionError("process")),                     mock.patch.object(subprocess, "Popen", side_effect=AssertionError("process")):
+                result = recipe_web.in_process(argv, loader)
+            self.assertEqual(result.code, 0, result.stderr)
+
     def test_hardware_class_rules(self):
         def recipe(devices, routes):
             return {"match": {"devices": [{"id": i, "kind": k, "count": n} for i, k, n in devices]},
@@ -188,11 +233,14 @@ class MatrixTests(unittest.TestCase):
             self.assertIn("qwen3.8-flash-next", result["models"])
             operation, argv = recipe_web.read_request("recipes/matrix", {}, config=env.config)
             self.assertEqual((operation, argv[:2]), ("matrix", ["recipe", "matrix"]))
-            operation, argv = recipe_web.read_request("recipes/ready", {"recipe": QWEN, "profile": "qwen-replicas"},
-                                                      config=env.config)
-            self.assertEqual(argv[:4], ["recipe", "ready", QWEN, "qwen-replicas"])
+            # The checklist is a query run by a worker child (it may call the recipe core and the planner), never
+            # in the portal process.
+            self.assertNotIn("recipes/ready", recipe_web.READS)
+            self.assertIn("recipes/ready", recipe_web.QUERIES)
+            request = recipe_web.Request("recipes/ready", {"recipe": QWEN, "profile": "qwen-replicas"}, config=env.config)
+            self.assertEqual(request.argv[:4], ["recipe", "ready", QWEN, "qwen-replicas"])
             with self.assertRaises(ValueError):
-                recipe_web.read_request("recipes/ready", {"recipe": "../x.toml"}, config=env.config)
+                recipe_web.Request("recipes/ready", {"recipe": "../x.toml"}, config=env.config)
             with self.assertRaises(ValueError):
                 recipe_web.read_request("recipes/matrix", {"format": "text"}, config=env.config)
             self.assertIn("ready", service.RESERVED)

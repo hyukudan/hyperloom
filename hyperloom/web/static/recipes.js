@@ -10,7 +10,7 @@
     edits: {}, raw: {}, fieldErrors: {}, parseErrors: {}, editsError: null, explain: null, check: null, simulate: null, tokens: 8192,
     plan: null, planKey: null, diff: null, compare: "", active: null, routes: null, tuning: "", overrides: [],
     source: null, sourceCheck: null, busy: {}, timer: null, lastLoad: 0,
-    matrix: null, start: {cls: "", goal: "any", recipe: "", profile: "", ready: null}};
+    matrix: null, start: {cls: "", goal: "any", recipe: "", profile: "", ready: null, loading: false, error: null, generation: 0}};
   const esc = value => H().esc(value);
   const object = value => value !== null && typeof value === "object" && !Array.isArray(value);
   const busy = key => !!R.busy[key];
@@ -326,8 +326,8 @@
     if (!S.recipe) return "";
     const profiles = readyRow(S.recipe).profiles || [];
     const head = `<h3 class="section">${esc(S.recipe)}${S.profile ? " on " + esc(S.profile) : ""}</h3>` + (profiles.length > 1 ? `<div class="field"><label for="recipe-start-profile">Profile</label><select class="inp" id="recipe-start-profile">${profiles.map(p => `<option value="${esc(p)}"${p === S.profile ? " selected" : ""}>${esc(p)}</option>`).join("")}</select></div>` : "");
-    if (busy("ready")) return head + '<p class="hint">checking…</p>';
-    if (R.busy["ready:error"]) return head + H().unavailable(R.busy["ready:error"]);
+    if (S.loading) return head + '<p class="hint">checking…</p>';
+    if (S.error) return head + H().unavailable(S.error);
     if (!doc) return head;
     const r = doc.result;
     if (!r) return head + refusal(doc);
@@ -368,15 +368,21 @@
     return H().card("Get started", `<p class="hint">Model (above), then hardware, goal and readiness. Runnable / all recipes per hardware class. Figures marked measured name their sources (hover); the others show their basis. Nothing here launches: the commands and the workbench do, through the GPU turn and lease.</p><div class="chips" role="group" aria-label="Hardware">${chips}</div>${cell ? `<div class="row">${goal}</div><div class="grid g3 recipe-cards">${sorted.map(recipeTile).join("")}</div>` : ""}${readyBlock()}`, about);
   }
   async function checkReady(id, profile) {
+    // Only the newest request may set the answer, its error or the loading state (a slower older one is dropped).
     const profiles = readyRow(id).profiles || [];
-    Object.assign(R.start, {recipe: id, ready: null,
+    const generation = ++R.start.generation;
+    Object.assign(R.start, {recipe: id, ready: null, error: null, loading: true,
       profile: profile ?? (profiles.includes(R.start.profile) ? R.start.profile : profiles[0] || "")});
-    delete R.busy["ready:error"];
-    await run("ready", async () => {
-      const query = new URLSearchParams({recipe: id, ...(R.start.profile ? {profile: R.start.profile} : {})});
-      const doc = await get("recipes/ready?" + query);
-      if (R.start.recipe === id) R.start.ready = doc;     // a newer choice wins
-    });
+    rerender();
+    const current = () => generation === R.start.generation;
+    try {
+      const doc = await post("recipes/ready", {recipe: id, ...(R.start.profile ? {profile: R.start.profile} : {})});
+      if (current()) R.start.ready = doc;
+    } catch (error) {
+      if (current()) R.start.error = error.message;
+    } finally {
+      if (current()) { R.start.loading = false; rerender(); }
+    }
   }
 
   function render() {
@@ -437,7 +443,7 @@
   // --- actions ----------------------------------------------------------------------------------------------------
   const handlers = {
     open: control => select(control.dataset.id),
-    "start-class": control => { Object.assign(R.start, {cls: control.dataset.class, recipe: "", ready: null}); rerender(); },
+    "start-class": control => { R.start.generation++; Object.assign(R.start, {cls: control.dataset.class, recipe: "", ready: null, loading: false, error: null}); rerender(); },
     "start-ready": control => checkReady(control.dataset.id),
     "start-open": control => { if (control.dataset.profile) R.profile = control.dataset.profile; select(control.dataset.id); },
     copy: control => { navigator.clipboard?.writeText(control.dataset.text).then(() => H().announce("Copied"), () => H().announce("Copy failed: select the text instead")); },
@@ -501,7 +507,7 @@
   });
   document.addEventListener("change", event => {
     const t = event.target;
-    if (t.id === "recipe-model") { R.model = t.value; R.profile = (R.catalog.models[R.model] || [])[0] || ""; R.selected = ""; R.detail = null; Object.assign(R.start, {cls: "", recipe: "", ready: null}); rerender(); }
+    if (t.id === "recipe-model") { R.model = t.value; R.profile = (R.catalog.models[R.model] || [])[0] || ""; R.selected = ""; R.detail = null; R.start.generation++; Object.assign(R.start, {cls: "", recipe: "", ready: null, loading: false, error: null}); rerender(); }
     else if (t.id === "recipe-goal") { R.start.goal = t.value; rerender(); }
     else if (t.id === "recipe-start-profile") checkReady(R.start.recipe, t.value);
     else if (t.id === "recipe-profile") { R.profile = t.value; R.check = R.simulate = null; rerender(); }

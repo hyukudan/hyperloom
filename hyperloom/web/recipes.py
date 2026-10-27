@@ -41,11 +41,10 @@ COMMAND = None          # tests replace the worker command; otherwise `python -m
 # GET recipes[/...]: (operation, query keys -> argument names). Cheap and side-effect free; run in process.
 READS = {"recipes": ("list", {"model": "model"}), "recipes/active": ("active", {"profile": "profile"}),
          "recipes/routes": ("routes", {"profile": "profile"}),
-         "recipes/ready": ("ready", {"recipe": "recipe", "profile": "profile", "facts": "facts"}),
          "recipes/matrix": ("matrix", {})}
 # POST recipes/<op>: synchronous answers (never jobs). WRITES are audited.
 QUERIES = frozenset(("recipes/validate", "recipes/explain", "recipes/check", "recipes/diff", "recipes/pick",
-                     "recipes/select", "recipes/plan"))
+                     "recipes/select", "recipes/plan", "recipes/ready"))
 WRITES = frozenset(("recipes/save", "recipes/delete", "recipes/save-layer", "recipes/delete-layer",
                     "recipes/save-receipt"))
 # Jobs (one mutating job at a time, like up/down): probes that may write, and the server-side switch.

@@ -29,9 +29,9 @@ hyperloom recipe matrix   [--format json|text]
 
 - **ready** is the place to start. It lists, in order, what `up --recipe` needs and whether this machine has it: the
   recipe is listed and not pending, the recipe core is installed, the pinned router applies route tables, a
-  profile serves the recipe's model and can run with a recipe, the newest saved probe of that profile matches the
-  recipe (the same match and decision as `validate` and `plan`, with the same messages), and the RTX prefill
-  service plans when the recipe starts it. Each missing step names the command that fixes it; when everything
+  profile serves the recipe's model and can run with a recipe, and `up`'s own decision on the newest saved probe of
+  that profile (the dry run `plan` makes: match, admission, the RTX prefill service planned, the router's check of
+  the route table, with the same messages). Each missing step names the command that fixes it; when everything
   passes it gives the `plan` (dry run) and `up` commands. It reads only the saved configuration and state (no ssh,
   no model reads; the service step reads this machine's free RAM, as `plan` does), so the hardware step is as old
   as the saved probe. What only `up` can check (the GPU turn and lease, the nodes' release and assets, the RAM
