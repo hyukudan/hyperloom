@@ -59,52 +59,70 @@ REDACTED = "[redacted]"
 # Linear forms: a name is matched as a whole run from the position where the run starts ((?=(run))\N takes the
 # run once and never gives it back, as an atomic group would); a lookahead checks that the run carries a
 # credential word. A name whose only such word is token (max_tokens, --max-num-batched-tokens, token_ids,
-# "token-identical") keeps a number as its value (max_tokens=512, token: 151643, token-identical: 2/3 stay; any
-# other value is hidden); tokenizer names are not credentials. An authorization scheme already handled stays
-# readable (Authorization: Bearer [redacted]).
+# "token-identical", pad_token) keeps a number, a list of numbers or a special token as its value (max_tokens=512,
+# token: 151643, token-identical: 2/3, token_ids: [1, 2], pad_token: <|endoftext|> stay; any other value is
+# hidden); tokenizer names are not credentials. Any name keeps None, null, true or false. An authorization scheme
+# already handled stays readable (Authorization: Bearer [redacted]). A quoted value is hidden whole.
+_PLAIN = r"(?:None|null|true|false|True|False)"
+_COUNT = r"(?:\[?[0-9]+(?:[./][0-9]+)*|<[|\w.-]+>)"
+_END = r"(?=[)\]]*(?:[\s,;}]|$))"              # the end of a name=value value
+_END_WORD = r"(?=[)\],;]*(?:\s|$))"            # the end of a blank-separated value
+_VALUE = r"""(?:"[^"\n]*"|'[^'\n]*'|\S+)"""
 SECRET_PATTERNS = (
     # An authorization header's credentials whatever they look like; after a scheme word elsewhere, Bearer's value
-    # and a value that looks like a credential (8+ characters with a digit, +, / or =, or an upper-case letter after
-    # the first): "Token counters" and "basic setup" stay readable.
+    # and a value that looks like a credential (8+ characters, not only digits, with a digit, +, / or =, or an
+    # upper-case letter after the first): "Token counters", "basic setup" and "the token 12345678" stay readable.
     (re.compile(r"""(?i)(\b(?:proxy-)?authorization["']?\s*[:=]\s*["']?(?:Bearer|Basic|Digest|Token|Negotiate)\s+)"""
                 r"""(?!\[redacted\])[^\s"',;]+"""), r"\1[redacted]"),
-    (re.compile(r"""(?i)\b(Bearer\s+|(?:Basic|Digest|Token|Negotiate)\s+(?=[^\s"',;]{8})"""
+    (re.compile(r"""(?i)\b(Bearer\s+|(?:Basic|Digest|Token|Negotiate)\s+(?=[^\s"',;]{8})(?![0-9]+(?![^\s"',;]))"""
                 r"""(?=[^\s"',;]*?(?:[0-9+/=]|(?<![\s"',;])(?-i:[A-Z]))))(?!\[redacted\])[^\s"',;]+"""),
      r"\1[redacted]"),
     (re.compile(r'''(?ix)(?<![\w.-])(["']?(?:(?=[\w.-]*?(key|secret|pass|pwd|credential|auth))'''
                 r'''|(?=[\w.-]*?token(?!iz)))(?=([\w.-]*))\3["']?\s*[:=]\s*'''
                 r'''(?:(?:Bearer|Basic|Digest|Token|Negotiate)\s+(?=\[redacted\]))?)'''
-                r'''(?(2)|(?![0-9]+(?:[./][0-9]+)*(?=[)\]]*(?:[\s,;}]|$))))(?:"[^"]*"|'[^']*'|[^\s,;}]+)'''),
+                r'''(?!''' + _PLAIN + _END + r''')(?(2)|(?!''' + _COUNT + _END + r'''))'''
+                r'''(?:"[^"]*"|'[^']*'|[^\s,;}]+)'''),
      r"\1[redacted]"),
     # An option whose name carries a credential word (--hf-token x, --db-password=x), also glued after other
     # characters of the word (x--api-key x): the run before the option's first -- is kept as it is.
     (re.compile(r"(?i)(?<![\w-])(\w*(?:-\w+)*)(--(?:(?=[\w-]*?(key|secret|passw(?:or)?d|credential))"
-                r"|(?=[\w-]*?token(?!iz)))(?=([\w-]*))\4"
-                r"(?:\s+|=))(?(3)|(?![0-9]+(?:[./][0-9]+)*(?=[)\],;]*(?:\s|$))))(?!\[redacted\])\S+"),
+                r"|(?=[\w-]*?token(?!iz)))(?=([\w-]*))\4(?:\s+|=))"
+                r"(?!" + _PLAIN + _END_WORD + r")(?(3)|(?!" + _COUNT + _END_WORD + r"))(?!\[redacted\])" + _VALUE),
      r"\1\2[redacted]"),
-    (re.compile(r"(?i)\b(passw(?:or)?d|passwd|passphrase|pwd)(\s+)(?!\[redacted\])(?![:=])\S+"), r"\1\2[redacted]"),
-    (re.compile(r"(?i)(?<![a-z0-9+.-])(?=[a-z0-9+.-]*?(?<!\w)[a-z])((?=([a-z0-9+.-]*))\2://)[^/\s:@]+:[^/\s@]+@"),
+    (re.compile(r"(?i)\b(passw(?:or)?d|passwd|passphrase|pwd)(\s+)(?!\[redacted\])(?![:=])" + _VALUE),
+     r"\1\2[redacted]"),
+    # URL user information (also an empty user name: redis://:password@host).
+    (re.compile(r"(?i)(?<![a-z0-9+.-])(?=[a-z0-9+.-]*?(?<!\w)[a-z])((?=([a-z0-9+.-]*))\2://)[^/\s:@]*:[^/\s@]+@"),
      r"\1[redacted]@"),
     # An environment-style name and its value separated by blanks only (`HF_TOKEN hf_x`, `export DB_PASS s3`): the
-    # name is upper case or snake case, so prose such as "512 tokens in 3.1 s" stays readable.
+    # name is upper case, or snake case ending with the credential word (hf_token, db_pass), so prose such as
+    # "512 tokens in 3.1 s" or "key_cache shape" stays readable.
     (re.compile(r"\b((?:(?=[A-Z0-9_]*?(KEY|SECRET|PASS|PWD|CREDENTIALS?|AUTH))|(?=[A-Z0-9_]*?TOKEN(?!IZ)))"
                 r"[A-Z0-9]+(?:_[A-Z0-9]+)*"
-                r"|(?i:(?:(?=[a-z0-9_]*?(key|secret|pass|pwd|credentials?|auth))"
-                r"|(?=[a-z0-9_]*?token(?!iz)))[a-z0-9]+(?:_[a-z0-9]+)+))"
-                r"(\s+)(?(2)|(?(3)|(?![0-9]+(?:[./][0-9]+)*(?=[)\],;]*(?:\s|$)))))(?![:=])(?!\[redacted\])\S+"),
+                r"|(?i:(?:(?=[a-z0-9_]*?(key|secret|pass|pwd|credentials?|auth))|(?=[a-z0-9_]*?token(?!iz)))"
+                r"[a-z0-9]+(?:_[a-z0-9]+)*_[a-z0-9]*(?:key|secret|token|pass(?:wd|word)?|pwd|credentials?|auth)s?))"
+                r"(\s+)(?!" + _PLAIN + _END_WORD + r")(?(2)|(?(3)|(?!" + _COUNT + _END_WORD + r")))"
+                r"(?![:=])(?!\[redacted\])" + _VALUE),
      r"\1\4[redacted]"),
 )
-# Clients that take the password after -p (`mysql -pX`, `mariadb-dump -pX`, `sshpass -p X`), later on the line.
+# Clients that take a password after -p: mysql and mariadb tools glued (`mysql -pX`, `mariadb-dump -p'x y'`; -P is
+# the port), anywhere later on the line; sshpass among its own options (`sshpass -p X`, `sshpass -f file` has none,
+# so the wrapped command's -p, ssh's port, stays). (client, password option, whether a miss holds for the line)
 GLUED_PASSWORD = (
-    (re.compile(r"(?i)\b(?:mysql\w*|mariadb[\w-]*)\b"), re.compile(r"(?i)([^\n]*?\s-p)(?!\[redacted\])(?=\S)\S+")),
-    (re.compile(r"(?i)\bsshpass\b"), re.compile(r"(?i)([^\n]*?\s-p\s*)(?!\[redacted\])\S+")),
+    (re.compile(r"(?i)\b(?:mysql\w*|mariadb[\w-]*)\b"),
+     re.compile(r"""([^\n]*?\s-p)(?!\[redacted\])(?=\S)""" + _VALUE), True),
+    (re.compile(r"(?i)\bsshpass\b"),
+     re.compile(r"""((?:\s+(?:-[fdP](?:\s+|(?=\S))""" + _VALUE + r"""|-[ehvV]+))*\s+-p\s*)(?!\[redacted\])"""
+                + _VALUE), False),
 )
 # curl's user and password options (-u user:pw, -su user:pw, -uuser:pw, --user, --user=, the proxy's -U and
 # --proxy-user), every one of them (also after --next), within the same command: up to a newline (a backslash
 # continues the line), a pipe, `;`, `&&` or a background `&` outside quotes (a value glued to that separator stays
-# whole: `-u a:b;c` hides `a:b;c`). An unpaired quote is an ordinary character.
-CURL_COMMAND = re.compile(r"""\bcurl\b(?:'[^'\n]*'|"[^"\n]*"|\\\n|&(?![&\s]|$)|[^\n|;&'"]|['"])*\S*""")
-CURL_OPTION = re.compile(r"""'[^'\n]*'|"[^"\n]*"|(?<=\s)(-[A-Za-z]*[uU]\s*|--(?:proxy-)?user(?:\s+|=))"""
+# whole: `-u a:b;c` hides `a:b;c`). An unpaired quote is an ordinary character. Only option letters that take no
+# argument can come before u/U in one word (-sSu; -XPUT is -X PUT).
+CURL_COMMAND = re.compile(r"""\bcurl\b(?:'[^'\n]*'|"[^"\n]*"|\\\n|&(?![&\s]|$)|[^\n|;&'"]|['"])*""")
+CURL_FLAGS = r"[sSfLkvqiIOJRgGnNpBMlja0-9]"
+CURL_OPTION = re.compile(r"""'[^'\n]*'|"[^"\n]*"|(?<=\s)(-""" + CURL_FLAGS + r"""*[uU]\s*|--(?:proxy-)?user(?:\s+|=))"""
                          r"""(?!\[redacted\])(?:"[^"]*"|'[^']*'|\S+)""")
 # Any other tool's `--user name:password` (a numeric uid:gid, as in `docker run --user 1000:1000`, stays). The
 # value is looked for up to the next such option, so a run of options is read once.
@@ -116,15 +134,18 @@ HF_TOKEN = re.compile(r"\bhf_[A-Za-z0-9]{30,}\b")
 
 
 def _glued_password(text):
-    for client, option in GLUED_PASSWORD:
+    for client, option, line_wide in GLUED_PASSWORD:
         parts, last, pos = [], 0, 0
         while True:
             found = client.search(text, pos)
             if found is None:
                 break
             value = option.match(text, found.end())
-            if value is None:           # none later on this line either: go to the next line
-                pos = text.find("\n", found.end())
+            if value is None:
+                if not line_wide:
+                    pos = found.end()
+                    continue
+                pos = text.find("\n", found.end())       # none later on this line either: go to the next line
                 if pos < 0:
                     break
                 continue
@@ -148,7 +169,7 @@ def _curl_users(text):
                 continue
             parts += [text[last:option.end(1)], REDACTED]
             last = option.end()
-        pos = max(command.end(), last)
+        pos = command.end()             # a value that runs on past it may hide the next command's start
     return "".join(parts) + text[last:]
 
 

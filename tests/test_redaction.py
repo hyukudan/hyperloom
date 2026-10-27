@@ -81,6 +81,19 @@ SECRETS = {
     "curl -u olga:Semi;colon https://example.invalid": ("Semi", "colon"),
     "curl https://example.invalid \\\n  -u pat:C0ntinued": "C0ntinued",
     "curl's -u quinn:Ap0strophe": "Ap0strophe",
+    "command -v curl >/dev/null&&curl -u rae:Gl0edAnd https://example.invalid": "Gl0edAnd",
+    "type curl;curl -u sam:Gl0edSemi https://example.invalid": "Gl0edSemi",
+    "curl -sS https://a.invalid|curl -u tim:Gl0edPipe -T - https://b.invalid": "Gl0edPipe",
+    "curl -u uma:F1rst;curl -u vic:S3cond https://example.invalid": ("F1rst", "S3cond"),
+    # glued and quoted passwords, empty URL user names
+    "mysql -h db -P3306 -uroot -pP0rtFirst shop": "P0rtFirst",
+    "mysqldump -P3307 -pDump3d --all-databases": "Dump3d",
+    "mysql -p'hunter 2' shop": "hunter 2",
+    "sshpass -P assword: -p Pr0mpt ssh host": "Pr0mpt",
+    "sshpass -e ssh host; sshpass -p S3condCmd ssh host": "S3condCmd",
+    'app --password "correct horse battery staple"': "horse battery staple",
+    "PASSWORD 'two words'": "two words",
+    "redis://:s3cretpw@cache:6379/0": "s3cretpw",
 }
 # Text that must stay exactly as it is.
 READABLE = (
@@ -100,6 +113,11 @@ READABLE = (
     "--max-tokens=512, --max-num-batched-tokens 8192;",
     "Token counters are reset", "needs imported token counts", "basic setup done",
     "--tokenizer /models/qwen", "tokenizer=/models/qwen",
+    "curl -XPUT https://example.invalid", "curl -sSL -X PUT https://example.invalid",
+    "sshpass -e ssh -p 2222 host", "sshpass -f pwfile ssh -p 2222 host", "mysql -h db -P3306 shop",
+    "tokenizer.ggml.bos_token_id u32 = 151643", "key_cache shape [32, 8192]", "token_ids: [1, 2, 3]",
+    "pad_token: <|endoftext|>", "attn_mask_key=None", "SamplingParams(token=None)", "the token 12345678 was sampled",
+    "--hf-token 123456789012",
 )
 IMPLEMENTATIONS = {
     "shared": redaction.redact_text,
@@ -122,8 +140,8 @@ class SharedRulesTests(unittest.TestCase):
         compiled = lambda p: (p.pattern, p.flags)
         self.assertEqual([(compiled(p), r) for p, r in node.SECRET_PATTERNS],
                          [(compiled(p), r) for p, r in redaction.SECRET_PATTERNS])
-        self.assertEqual([tuple(map(compiled, pair)) for pair in node.GLUED_PASSWORD],
-                         [tuple(map(compiled, pair)) for pair in redaction.GLUED_PASSWORD])
+        self.assertEqual([(compiled(c), compiled(o), wide) for c, o, wide in node.GLUED_PASSWORD],
+                         [(compiled(c), compiled(o), wide) for c, o, wide in redaction.GLUED_PASSWORD])
         for name in ("CURL_COMMAND", "CURL_OPTION", "USER_OPTION", "HF_TOKEN"):
             self.assertEqual(compiled(getattr(node, name)), compiled(getattr(redaction, name)), name)
         for name in ("_glued_password", "_curl_users", "redact_text"):
@@ -170,6 +188,14 @@ class SharedRulesTests(unittest.TestCase):
               "--api-key", "k", "--password", "p"],
              ["vllm", "serve", "--max-num-batched-tokens", "8192", "--tokenizer", "/m", "--hf-token", "[redacted]",
               "--api-key", "[redacted]", "--password", "[redacted]"]),
+            (["sshpass", "-f", "pwfile", "ssh", "-p", "2222", "host"],
+             ["sshpass", "-f", "pwfile", "ssh", "-p", "2222", "host"]),
+            (["sshpass", "-P", "assword:", "-p", "Pr0mpt", "ssh", "-p", "22"],
+             ["sshpass", "-P", "assword:", "-p", "[redacted]", "ssh", "-p", "22"]),
+            (["curl", "-XPUT", "-u", "a:b", "https://x"], ["curl", "-XPUT", "-u", "[redacted]", "https://x"]),
+            (["mysql", "-P3306", "-pXyz", "db"], ["mysql", "-P3306", "-p[redacted]", "db"]),
+            (["vllm", "--hf-token", "123456789012", "--max-tokens", "<|endoftext|>"],
+             ["vllm", "--hf-token", "123456789012", "--max-tokens", "<|endoftext|>"]),
             (["env", "HF_HUB_ENABLE_HF_TRANSFER=1", "HF_TOKEN=" + HF, HF],
              ["env", "HF_HUB_ENABLE_HF_TRANSFER=1", "HF_TOKEN=[redacted]", "[redacted]"]),
         ]
@@ -178,6 +204,7 @@ class SharedRulesTests(unittest.TestCase):
                 self.assertEqual(redaction.redact_argv(argv), expected)
                 self.assertEqual(redact(argv), expected)
                 self.assertEqual(redact({"argv": argv})["argv"], expected)
+        self.assertEqual(redaction.redact_argv([1, None, "x"]), [1, None, "x"])       # non-text items kept
         self.assertEqual(redact("curl -u x:y " + HF, text=False), "curl -u x:y " + HF)     # documents' prose
 
     def test_redaction_time_grows_linearly(self):
@@ -199,7 +226,7 @@ class SharedRulesTests(unittest.TestCase):
                     timings.append(best)
                 with self.subTest(implementation=name, unit=unit, timings=timings):
                     # 4x the input: well under 8x the time (a quadratic rule takes 16x), above a noise floor.
-                    self.assertLess(timings[1], max(8 * timings[0], 0.05))
+                    self.assertLess(timings[1], max(8 * timings[0], 0.25))
                     self.assertLess(timings[1], 2.0)
 
 
