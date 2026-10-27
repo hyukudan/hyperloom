@@ -56,6 +56,18 @@ class RootsTests(unittest.TestCase):
                                ("workstation", "C:\\Users\\someone\\Documents")):
             with self.subTest(value), self.assertRaises(ValueError):
                 downloads.set_roots(self.cluster, self.store, machine, [value])
+        # A node's home elsewhere: named after its ssh account, or learned from the node tool's path.
+        from hyperloom import remote
+        import dataclasses
+        halo = dataclasses.replace(self.cluster.machines["halo-1"], ssh_target="op@halo-1")
+        self.assertTrue(downloads.too_wide(halo, "/srv/accounts/op"))
+        self.assertFalse(downloads.too_wide(halo, "/srv/accounts/op/models"))
+        with patch.dict(remote._NODE_PATHS, {("halo-1", "t", 22): "/data/people/op/.hyperloom-boot/hyperloom-node"}):
+            for value in ("/data/people/op", "/data/people"):
+                self.assertTrue(downloads.too_wide(halo, value), value)
+            self.assertFalse(downloads.too_wide(halo, "/data/people/op/models"))
+            self.cluster.assets["halo-1"]["odd"] = {"path": "/data/people/op/odd.gguf", "bytes": 1}
+            self.assertNotIn("/data/people/op", [r["path"] for r in downloads.library_roots(self.cluster)["halo-1"]])
         # A model directory inside a home is still a root.
         self.cluster.assets["halo-1"]["kept"] = {"path": "/home/someone/models/kept.gguf", "bytes": 1}
         self.assertIn({"path": "/home/someone/models", "source": "config"},

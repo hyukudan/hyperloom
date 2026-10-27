@@ -165,7 +165,8 @@ def _parts(machine, value):
 
 def too_wide(machine, value):
     """Whether a directory is a home directory or above it (``/``, ``/home``, ``/home/<user>``, ``/root``,
-    ``C:\\``, ``C:\\Users\\<user>``, this machine's own home): never a root, whatever file sits directly in it."""
+    ``C:\\``, ``C:\\Users\\<user>``, this machine's own home, a node's account home): never a root, whatever file
+    sits directly in it."""
     try:
         parts = _parts(machine, value)
     except (TypeError, ValueError):
@@ -181,6 +182,17 @@ def too_wide(machine, value):
             return parts == _parts(machine, str(_Path.home()))
         except (TypeError, ValueError, RuntimeError):
             return False
+    # A node's home anywhere else: the directory named after its ssh account (``/srv/accounts/<user>``), or the
+    # home this process learned from the node tool's path (``<home>/.hyperloom-boot/hyperloom-node``) or above it.
+    user = str(getattr(machine, "ssh_target", None) or "").rpartition("@")[0]
+    if user and parts[-1] == user:
+        return True
+    from . import remote
+    for (alias, _, _), tool in list(remote._NODE_PATHS.items()):
+        if alias == machine.id:
+            home = _parts(machine, str(PurePosixPath(tool).parent.parent))
+            if home[:len(parts)] == parts:
+                return True
     return False
 
 
