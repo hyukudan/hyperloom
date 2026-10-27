@@ -71,11 +71,15 @@ class Store:
         self.clock = clock
         self._lock = threading.RLock()
         self._db = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None, timeout=10)
-        if self.path != ":memory:":
-            self._db.execute("PRAGMA journal_mode=WAL")
-        self._db.execute("PRAGMA synchronous=NORMAL")
-        self._db.executescript(_SCHEMA)
-        self._migrate()
+        try:
+            if self.path != ":memory:":
+                self._db.execute("PRAGMA journal_mode=WAL")
+            self._db.execute("PRAGMA synchronous=NORMAL")
+            self._db.executescript(_SCHEMA)
+            self._migrate()
+        except BaseException:
+            self._db.close()                # a corrupt or unreadable file is not left open (nor locked)
+            raise
         self._series = {}       # (name, labels) -> id; only committed ids
         self._metrics = {}      # name -> descriptor; only committed descriptors
         self._last_prune = 0.0

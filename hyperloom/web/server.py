@@ -12,6 +12,7 @@ import webbrowser
 
 import select
 import socket
+import sys
 
 from .api import API, APIError, MUTATIONS, redact
 from . import recipes as recipe_web
@@ -338,6 +339,22 @@ def create_server(port=18700, *, api=None, static_dir=None):
     return PortalServer(port, api=api, static_dir=static_dir)
 
 
+def start_telemetry(api):
+    """Start the history store and its samplers; a store that cannot be opened (a corrupt or unreadable
+    telemetry.sqlite3) never stops the portal: it runs without history and the pages say so. Returns the reason, or
+    None when the samplers run."""
+    from hyperloom import telemetry
+    try:
+        telemetry.start(api)
+        return None
+    except Exception as exc:  # noqa: BLE001 - sqlite3.Error, OSError: the portal itself must still start
+        reason = f"history store unavailable ({type(exc).__name__}: {exc}); the portal runs without history"
+        api.telemetry = None
+        api.telemetry_unavailable = reason
+        print("Hyperloom portal: " + reason, file=sys.stderr, flush=True)
+        return reason
+
+
 def serve(port=18700, no_browser=False):
     with create_server(port) as server:
         # Mutations survive the portal process; test fixtures with patched backends stay in-process.
@@ -351,8 +368,7 @@ def serve(port=18700, no_browser=False):
         nodegate.portal(server.api.config_path, machines)
         # Background samplers feed the history store (features' collectors); HYPERLOOM_TELEMETRY=0 disables them.
         if os.environ.get("HYPERLOOM_TELEMETRY", "1") != "0":
-            from hyperloom import telemetry
-            telemetry.start(server.api)
+            start_telemetry(server.api)
         print("Hyperloom portal: " + server.origin, flush=True)
         if not no_browser:
             webbrowser.open(server.origin + "/")

@@ -331,5 +331,35 @@ class SamplerTests(unittest.TestCase):
             self.assertFalse(any(Path(directory).iterdir()))
 
 
+class CorruptStoreTests(unittest.TestCase):
+    def test_the_portal_starts_without_history_when_the_store_is_corrupt(self):
+        """``hyperloom ui`` with a corrupt telemetry.sqlite3: the portal still serves; the pages say why there is no
+        history, and nothing exits."""
+        import contextlib
+        import io
+        from hyperloom.web import server as web_server
+        from hyperloom.web.api import API
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "telemetry.sqlite3").write_bytes(b"this is not a database" * 64)
+            orchestrator = mock.Mock()
+            orchestrator.load_cluster.side_effect = ValueError("no configuration in this test")
+            api = API(Path(tmp) / "cluster.json", orchestrator=orchestrator, remote_module=mock.Mock(),
+                      audit_path=Path(tmp) / "audit.jsonl")
+            portal = web_server.create_server(0, api=api)
+            served = []
+            portal.serve_forever = lambda poll_interval=.2: served.append(True)
+            err = io.StringIO()
+            with mock.patch.object(web_server, "create_server", return_value=portal), \
+                    mock.patch.object(web_server.webbrowser, "open"), \
+                    mock.patch.dict("os.environ", {"HYPERLOOM_TELEMETRY": "1"}), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                web_server.serve(0, no_browser=True)
+            self.assertEqual(served, [True])
+            self.assertIsNone(api.telemetry)
+            self.assertIn("history store unavailable", api.telemetry_unavailable)
+            self.assertIn("history store unavailable", err.getvalue())
+            self.assertIsNone(telemetry.existing_store(api))
+
+
 if __name__ == "__main__":
     unittest.main()
