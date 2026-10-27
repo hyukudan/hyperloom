@@ -33,6 +33,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 from hyperloom import __version__, admission, cli, config, engines, nodegate, nodepoll, orchestrate, pollbudget, redaction, remote, render, secrets
 from hyperloom.adapters import engine, router
 from hyperloom.paths import repo_root
+from hyperloom.placement_redaction import redact as placement_redact
 from hyperloom.stats import Window
 from hyperloom.winproc import no_window
 from hyperloom.web import recipes as recipe_web
@@ -222,6 +223,17 @@ def redact(value, text=True):
 
 def _value(check):
     return check.get("value") if isinstance(check, dict) and check.get("status") == "ok" else None
+
+
+def _placement_text(value):
+    """Free-text placement output needs the node rules as well as document redaction."""
+    if isinstance(value, str):
+        return placement_redact(value)
+    if isinstance(value, dict):
+        return {key: _placement_text(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_placement_text(item) for item in value]
+    return value
 
 
 def _preflight_reason(exc):
@@ -1172,6 +1184,14 @@ class API:
                                                   "usb4_layout": 1, "excluded": "RTX 4090", "extended_turn": "explicit approver ACK required"})
         return documents
 
+    def _placement_logs(self, profile):
+        """Use the saved service record, independent of current recipe edits or profile names."""
+        try:
+            state = self.orchestrate._read(orchestrate._state_path(profile))
+        except (OSError, ValueError, RuntimeError):
+            return False
+        return (state.get("prefill_service") or {}).get("placement_supervision") is not None
+
     def _logs(self, statuses):
         actions = self._action_log()
         entries = [{**action, "process": "portal", "message": json.dumps(action)} for action in actions]
@@ -1182,6 +1202,7 @@ class API:
         budget = pollbudget.for_api(self)
         poll = nodepoll.of(self)
         for profile, status in statuses.items():
+            placement = self._placement_logs(profile)
             processes = list((status.get("nodes") or {}).keys())
             if status.get("router"):
                 processes.append("router")
@@ -1205,7 +1226,7 @@ class API:
                                                  **({"read": nodepoll.reader(self)} if poll else {}))
                     for stream in ("stdout", "stderr"):
                         for line in str(logs.get(stream) or "").splitlines():
-                            message = redact(line)
+                            message = redact(_placement_text(line) if placement else line)
                             event = next((event for event in ("POISONED", "READY", "STOPPED", "WARN") if event in message), None)
                             entries.append({"profile": profile, "process": process, "stream": stream,
                                             "message": message, "event": event, "when": None,
@@ -1279,6 +1300,8 @@ class API:
             except nodepoll.NotRead as exc:
                 why = str(exc)
             else:
+                if self._placement_logs(profile):
+                    entries = _placement_text(entries)
                 document = self._document("logs", entries=redact(entries), failures=None,
                                           why={"failures": "persistent process failure index unavailable"})
                 self._last_process_logs[key] = document
@@ -1988,7 +2011,7 @@ class API:
                 self._audit(action, arguments, {"state": "refused", "error": str(exc)})
                 raise APIError(str(exc), 409) from exc
             except (OSError, ValueError, RuntimeError) as exc:
-                self._audit(action, arguments, {"state": "refused", "error": str(exc)})
+                self._audit(action, arguments, {"state": "refused", "error": _placement_text(str(exc))})
                 raise APIError("recipe preflight refused: " + _preflight_reason(exc) + "; see local audit", 400) from exc
         occupying = action in ("up", "install", "recipes/deploy", "recipes/probe")
         # A stop: down, and every cancel that is not a feature job's (a profile's cancel and an up's or a deploy's

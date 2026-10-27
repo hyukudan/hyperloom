@@ -9,6 +9,7 @@ import re
 import subprocess
 import tomllib
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 PHYSICAL = re.compile(r"GPU-[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}|"
@@ -17,16 +18,29 @@ PRIVATE_KEYS = frozenset(("uuid", "pci", "pci_path", "hostname", "host_id", "use
 PLACEHOLDER = re.compile(r"<[a-z][a-z0-9-]*>")
 _PLACEHOLDER_PATH = PLACEHOLDER.pattern + r"(?:[\\/]" + PLACEHOLDER.pattern + r")*"
 # Only complete paths with generic roots and placeholder-only suffixes are portable.
-_PORTABLE_PATH = (r"(?:/(?:home|root|tmp)(?:/" + _PLACEHOLDER_PATH + r")?|/(?:" + _PLACEHOLDER_PATH + r")?|"
+_PORTABLE_PATH = re.compile(r"(?:/(?:home|root|tmp)(?:/" + _PLACEHOLDER_PATH + r")?|/(?:" + _PLACEHOLDER_PATH + r")?|"
                   r"(?:[Cc]:[\\/](?:(?i:users)(?:[\\/]" + _PLACEHOLDER_PATH + r")?|" + _PLACEHOLDER_PATH + r")?)|"
-                  r"(?:(?i:%USERPROFILE%)|~)(?:[\\/]" + _PLACEHOLDER_PATH + r")?)[\\/]?"
-                  r"(?=$|[\s`\"'(),;\]}])")
-ABSOLUTE = re.compile(r"(?:^|[\s\"'=,;()\[\]{}`])(?!" + _PORTABLE_PATH + r")(?:[A-Za-z]:[\\/]|/(?!/)[\w.-]+/)")
+                  r"(?:(?i:%USERPROFILE%)|~)(?:[\\/]" + _PLACEHOLDER_PATH + r")?)[\\/]?")
+# A URI's :// introduces its authority, while the third slash in file:/// starts a path.
+# Consume placeholder segments as units so their angle brackets do not become shell delimiters.
+ABSOLUTE = re.compile(r"(?<!\w)(?:[A-Za-z]:[\\/]|(?<!:/)/(?!/)|(?i:%USERPROFILE%)|~(?=[\\/\s`\"'(),;\[\]{}<>|]|$))"
+                      r"(?:<[^<>\s]*>|[^\s`\"'(),;\[\]{}<>|])*")
 ADDRESS = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?!\w|\.\d)|"
                      r"(?<![\w:])(?:[0-9a-fA-F]*:){2,}[0-9a-fA-F:.]*(?:%[\w.~-]+)?(?![\w:])")
-LOCAL_IDENTITY = re.compile(r"(?!" + _PORTABLE_PATH + r")(?i:[a-z]:[\\/](?:users[\\/]|tmp[\\/]|python\d+\b)|"
+LOCAL_IDENTITY = re.compile(r"(?!" + _PORTABLE_PATH.pattern + r"(?=$|[\s`\"'(),;\]}]))(?i:[a-z]:[\\/](?:users[\\/]|tmp[\\/]|python\d+\b)|"
                             r"/(?:mnt/[a-z]/|home/[\w.-]+/)|"
                             r"\b(?:claude|codex)[a-z0-9]*(?:[-_][a-z0-9]+)*\b|\b(?:sol|opus)(?:[-_][a-z0-9]+)*\b)")
+
+
+def private_paths(value):
+    for match in ABSOLUTE.finditer(value):
+        # A slash following a placeholder continues a relative portable fixture path.
+        if match[0].startswith("/") and re.search(PLACEHOLDER.pattern + r"$", value[:match.start()]):
+            continue
+        if match[0].startswith("/") and re.search(r"(?:^|[^\w.])\.\.?$", value[:match.start()]):
+            continue
+        if not _PORTABLE_PATH.fullmatch(match[0]):
+            yield match[0]
 
 
 def addresses(value):
@@ -49,7 +63,7 @@ def private(value, key=""):
     if isinstance(value, str):
         if key == "host" and value and not PLACEHOLDER.fullmatch(value):
             return True
-        if PHYSICAL.search(value) or ABSOLUTE.search(value) or next(addresses(value), None):
+        if PHYSICAL.search(value) or next(private_paths(value), None) or next(addresses(value), None):
             return True
         for variable in ("USERNAME", "COMPUTERNAME"):
             local = os.environ.get(variable, "")
@@ -100,13 +114,13 @@ class PrivacyTests(unittest.TestCase):
                       "%USERPROFILE%", "%USERPROFILE%/<model>", "~", "~/<model>"):
             for text in (value, f"path '{value}',", f"``{value}``"):
                 with self.subTest(text=text):
-                    self.assertIsNone(ABSOLUTE.search(text))
+                    self.assertEqual(list(private_paths(text)), [])
                     self.assertIsNone(LOCAL_IDENTITY.search(text))
                     self.assertFalse(private(text))
 
     def test_download_home_examples_are_portable(self):
         from hyperloom.downloads import too_wide
-        self.assertIsNone(ABSOLUTE.search(too_wide.__doc__))
+        self.assertEqual(list(private_paths(too_wide.__doc__)), [])
         self.assertIsNone(LOCAL_IDENTITY.search(too_wide.__doc__))
         self.assertFalse(private(too_wide.__doc__))
 
@@ -129,6 +143,31 @@ class PrivacyTests(unittest.TestCase):
 
     def test_tracked_artifacts_add_no_identity_or_path_bearing_data(self):
         self.assertEqual(findings(), {}, "artifact carries UUID, PCI, IP, host, user or absolute path; use portable placeholders")
+
+    def test_each_path_after_uri_or_shell_prefix_is_checked_independently(self):
+        for prefix in ("C:/Users/<user>;file://", "echo /home/<user>;cat<", "cat>", "cat|", "path:",
+                       "custom+scheme:///", "="):
+            with self.subTest(prefix=prefix):
+                self.assertTrue(private(prefix + "/srv/lab/alice/model"))
+                self.assertTrue(private(prefix + "D:/lab/model"))
+        for value in ("file:///home/<user>", "cat</home/<user>", "cat>/tmp/<runtime>",
+                      "custom+scheme:///<root>/<model>", "<runtime>/placement.json"):
+            with self.subTest(value=value):
+                self.assertFalse(private(value))
+
+    def test_tracked_json_injections_after_uri_and_redirection_are_found(self):
+        fixture = ROOT / "tests/fixtures/render/placement.json"
+        original = Path.read_bytes
+        for value in ("C:/Users/<user>;file:///srv/lab/alice/model",
+                      "echo /home/<user>;cat</srv/lab/alice/model"):
+            def injected(path):
+                if path == fixture:
+                    document = json.loads(original(path))
+                    document["privacy_probe"] = value
+                    return json.dumps(document).encode("utf-8")
+                return original(path)
+            with self.subTest(value=value), mock.patch.object(Path, "read_bytes", injected):
+                self.assertIn(fixture.relative_to(ROOT).as_posix(), findings())
 
     def test_strict_rule_catches_identity_paths_and_host_user_fields(self):
         import uuid

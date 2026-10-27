@@ -5,6 +5,7 @@ import ast
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -270,6 +271,52 @@ class LeadReviewTests(unittest.TestCase):
         planner.register(reg)
         self.assertTrue(all(kw.get("audited") for name, kw in registered))
         self.assertEqual(len(registered), 4)
+
+    def test_placement_preflight_audit_masks_all_node_credential_forms(self):
+        from hyperloom.web import api as portal
+        full = "PL_E_BUSY HF_TOKEN hf_probe_secret; PASS=pass_probe_secret; mysql -pmysql_probe_secret; sshpass -p ssh_probe_secret"
+        for action, arguments, argv in (
+                ("up", {"profile": "test", "recipe": "test"}, ["up", "test", "--recipe", "test"]),
+                ("recipes/deploy", {"inputs": "a" * 64}, ["recipe", "deploy", "a" * 64])):
+            api = API(self.root / "config.json", audit_path=self.root / "audit.jsonl")
+            with self.subTest(action=action), \
+                    mock.patch.object(api, "_arguments", return_value=arguments), \
+                    mock.patch.object(api, "_recipe_up_argv", return_value=argv), \
+                    mock.patch.object(api, "_deploy_argv", return_value=argv), \
+                    mock.patch.object(preflight, "cli", side_effect=reader.RecipeError(full)), \
+                    mock.patch.object(api, "_audit", wraps=api._audit) as audit:
+                with self.assertRaises(APIError) as caught:
+                    api.mutate(action, {})
+                self.assertEqual(caught.exception.status, 400)
+                entry = json.loads(api.audit_path.read_text(encoding="utf-8").splitlines()[-1])
+                self.assertEqual(entry["result"]["error"].count("[redacted]"), 4)
+                self.assertEqual(audit.call_args.args[2], entry["result"])
+                for secret in ("hf_probe_secret", "pass_probe_secret", "mysql_probe_secret", "ssh_probe_secret"):
+                    self.assertNotIn(secret, json.dumps(entry))
+                    self.assertNotIn(secret, str(caught.exception))
+        # Document callers retain the base's redaction contract.
+        base = subprocess.check_output(
+            ["git", "show", "2a7c803:hyperloom/web/api.py"], text=True, encoding="utf-8")
+        def definition(source):
+            return ast.dump(next(node for node in ast.parse(source).body
+                                 if isinstance(node, ast.FunctionDef) and node.name == "redact"))
+        self.assertEqual(definition(Path(portal.__file__).read_text(encoding="utf-8")), definition(base))
+
+    def test_placement_log_response_masks_all_node_credential_forms(self):
+        api = API(self.root / "config.json")
+        text = "HF_TOKEN hf_probe_secret; PASS=pass_probe_secret; mysql -pmysql_probe_secret; sshpass -p ssh_probe_secret"
+        api._cached = {"logs": {}}
+        api._expires = float("inf")
+        with mock.patch.object(api.orchestrate, "log_machine", return_value="local"), \
+                mock.patch.object(api.orchestrate, "_read", return_value={
+                    "prefill_service": {"placement_supervision": {}}}), \
+                mock.patch.object(api.orchestrate, "logs", return_value={"stdout": text, "stderr": text}):
+            for _ in range(2):
+                result = api.read("logs", {"profile": "placement", "process": "prefill"})
+                for stream in ("stdout", "stderr"):
+                    self.assertEqual(result["entries"][stream].count("[redacted]"), 4)
+                for secret in ("hf_probe_secret", "pass_probe_secret", "mysql_probe_secret", "ssh_probe_secret"):
+                    self.assertNotIn(secret, json.dumps(result))
 
     def test_solver_cache_evicts_oldest_by_count_and_bytes(self):
         from tests.test_placement_solver import SolverTests
