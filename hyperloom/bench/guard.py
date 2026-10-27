@@ -104,9 +104,12 @@ def document(api, query):
         if resources is not None and kind == "profile" and resources != ["*"]:
             # Shown: this configuration's ids only. The admission (and the refusal below) holds every saved state
             # for the profile, whichever configuration launched it.
+            # When this configuration's ids cannot be read (or disagree with the hold's), the preview lists none:
+            # the hold's ids would show another configuration's machines.
             shown = sorted(api._resources_of_profile(name, shown=True))
             if shown == ["*"] or not set(shown) <= set(resources):
-                shown = resources
+                shown = None
+                why["preview_resources"] = "this configuration's machines for the profile could not be read"
             elif shown != resources:
                 why["preview_resources"] = "the hold also covers machines of another configuration's launch"
         if resources is not None:

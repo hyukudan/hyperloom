@@ -198,6 +198,14 @@ class GuardAndWorkerTests(unittest.TestCase):
         self.assertIn("another configuration", guard["why"]["preview_resources"])
         with self.assertRaises(admission.Refused):
             bench.api.admission_db.acquire("bench", {"halo-1", "halo-9", "pc-2", "router"})
+        # This configuration's ids unreadable (or not within the hold's): the preview lists none, never the hold's.
+        for shown_ids in ({"*"}, {"halo-7"}):
+            bench.api._resources_of_profile = lambda profile, router=None, shown=False, ids=shown_ids: (
+                ids if shown else {"halo-1", "halo-9", "pc-2", "router"})
+            guard = bench.api.read("bench/guard", {"target": "profile:qwen"})
+            self.assertIsNone(guard["preview"]["resources"])
+            self.assertFalse(guard["preview"]["admitted"])                          # the verdict stays global
+            self.assertIn("could not be read", guard["why"]["preview_resources"])
 
     def test_the_ops_preview_counts_a_cancelled_benchmark(self):
         from hyperloom.web.features import ops

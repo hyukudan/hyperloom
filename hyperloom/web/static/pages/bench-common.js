@@ -57,7 +57,7 @@
       ? H().table(["Kind", "Holds", "Label", "Since"], doc.holds.map(h => H().cells([esc(h.kind), h.resources.map(tag).join(" "), esc(h.label || h.id), esc(new Date(h.started * 1000).toLocaleTimeString())])).join(""), "Admission holds")
       : `<p class="muted">No holds: nothing is running on the lab's benchmark resources.</p>`;
     const preview = doc.preview ? (doc.preview.admitted
-      ? `<div class="banner info">A run on this target would be admitted now · holds ${doc.preview.resources.map(tag).join(" ")}</div>`
+      ? `<div class="banner info">A run on this target would be admitted now · ${doc.preview.resources ? "holds " + doc.preview.resources.map(tag).join(" ") : esc(doc.why?.preview_resources || "machines unavailable")}</div>`
       : `<div class="banner warn">A run on this target would be refused: ${esc(doc.preview.refusal || doc.why?.preview || "admission state unavailable")}</div>`) : "";
     const rules = `<details><summary>Rules</summary><ul>${(doc.rules || []).map(r => `<li>${esc(r)}</li>`).join("")}</ul></details>`;
     return card("Admission", preview + holds + rules, `${doc.running?.length || 0} benchmark run(s) in this portal · lab cap ${doc.cap}`);
