@@ -2,7 +2,9 @@
 
 A channel is {kind: webhook|push, a URL, min_severity, reminders}. The URL is kept in the user's secret directory
 (encrypted for the current user on Windows, a private file elsewhere) and is never returned, logged or written to an
-event: documents show it masked. Only https URLs are accepted, or http to a numeric loopback address.
+event: documents show it masked. Only https URLs are accepted, or http to a numeric loopback address; a channel reaches
+only public addresses or this machine's loopback (never a private, link-local or reserved one, checked again on every
+resolved address before connecting), so a channel cannot probe the lab network.
 
 Delivery follows the findings' transitions: each health evaluation queues, per channel, ONE message with that
 evaluation's transitions in order (firing at or above the channel's minimum severity, escalated, resolved for
@@ -80,14 +82,25 @@ def check_url(url):
         raise ValueError("the channel URL needs a host")
     if port == 0:
         raise ValueError("the channel URL port is invalid")
-    if scheme == "http":
-        try:
-            loopback = ipaddress.ip_address(parts.hostname).is_loopback
-        except ValueError:
-            loopback = False
-        if not loopback:
-            raise ValueError("http is allowed only to a numeric loopback address; use https")
+    try:
+        numeric = ipaddress.ip_address(parts.hostname)
+    except ValueError:
+        numeric = None
+    if scheme == "http" and not (numeric is not None and numeric.is_loopback):
+        raise ValueError("http is allowed only to a numeric loopback address; use https")
+    if numeric is not None and not reachable(numeric):
+        raise ValueError(PRIVATE_WHY)
     return url
+
+
+PRIVATE_WHY = "a channel reaches only public addresses or this machine's loopback (not a private network address)"
+
+
+def reachable(address):
+    """Whether a channel may connect to this address: this machine's loopback, or a public (global) address."""
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    return address.is_loopback or (address.is_global and not address.is_multicast)
 
 
 def mask(url):
@@ -565,7 +578,11 @@ class _Attempt:
     def connect(self, scheme, host, port):
         port = port or (443 if scheme == "https" else 80)
         last = None
-        for family, kind, proto, _, address in self.resolve(host, port):
+        resolved = [row for row in self.resolve(host, port)
+                    if reachable(ipaddress.ip_address(str(row[4][0]).split("%", 1)[0]))]
+        if not resolved:
+            raise ConnectionError(PRIVATE_WHY)
+        for family, kind, proto, _, address in resolved:
             sock = socket.socket(family, kind, proto)
             self.register(sock)
             try:
@@ -629,6 +646,8 @@ def send(url, channel_kind, kind, message_id, items, now, timeout=SEND_TIMEOUT):
     except Exception as exc:
         if attempt.expired.is_set() or isinstance(exc, TimeoutError) or attempt.clock() >= attempt.deadline:
             return {"ok": False, "error": f"no answer within {timeout:g} s"}
+        if isinstance(exc, ConnectionError) and str(exc) == PRIVATE_WHY:
+            return {"ok": False, "error": PRIVATE_WHY}
         return {"ok": False, "error": f"connection failed ({type(exc).__name__})"}
     finally:
         attempt.close()

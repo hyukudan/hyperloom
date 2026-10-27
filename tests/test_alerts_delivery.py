@@ -119,6 +119,22 @@ class URLTests(Base):
                 self.assertNotIn(bad, str(caught.exception))
         self.assertEqual(alerts.mask(f"https://{HOST}:8443/" + TOKEN + "?k=" + TOKEN), f"https://{HOST}:8443/…")
 
+    def test_a_channel_never_reaches_a_private_address(self):
+        """No blind requests into the lab network: a private, link-local or reserved destination is refused when it
+        is saved (numeric) and on every resolved address before connecting (a name that points there)."""
+        for bad in ("https://10.1.2.3/hook", "https://192.168.50.11/x", "https://169.254.169.254/latest",
+                    "https://[fd00::1]/x", "https://0.0.0.0/x", "https://[::ffff:10.0.0.1]/x"):
+            with self.subTest(url=bad), self.assertRaisesRegex(ValueError, "public addresses"):
+                alerts.check_url(bad)
+        connects = []
+        rows = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.7", 443))]
+        with mock.patch.object(alerts.socket, "getaddrinfo", return_value=rows), \
+                mock.patch.object(alerts.socket.socket, "connect", side_effect=lambda *a: connects.append(a)):
+            result = alerts.send("https://hooks.lab-name.test/x", "webhook", "test", "m-1", [], T0)
+        self.assertFalse(result["ok"])
+        self.assertIn("public addresses", result["error"])
+        self.assertEqual(connects, [])
+
     def test_url_lives_only_in_the_secret_file(self):
         record = self.channel()
         stored = self.store.get(alerts.CHANNELS, record["id"])
