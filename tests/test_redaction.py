@@ -257,6 +257,12 @@ READABLE = (
     "curl -E cert.pem https://example.invalid", "curl.exe -E C:\\certs\\client.pem https://example.invalid",
     'curl --cert "C:\\Program Files\\certs\\c.pem" https://example.invalid',
     "curl --cert 'C:\\certs\\c.pem' https://example.invalid", 'curl --cert="C:\\certs\\c.pem" https://example.invalid',
+    # kept values in escaped quotes: JSON written inside a string, a repr
+    json.dumps({"body": json.dumps({"max_tokens": "512", "msg": "ok"})}),
+    json.dumps(json.dumps({"api_key": "None"})),
+    '{"body": "{\\"token\\": null, \\"max_new_tokens\\": \\"1024\\"}"}',
+    json.dumps({"cmd": 'docker run --user "1000:1000" img'}),
+    "max_tokens=\\'512\\' then", 'max_tokens=\\"512\\" then', 'token: \\"None\\" ok',
 )
 IMPLEMENTATIONS = {
     "shared": redaction.redact_text,

@@ -212,7 +212,10 @@ def _shell_word(text, pos, stops="", strings=None):
             elif run % 2 and (quote == '"' or quote == "'" and at == pos):
                 end = _close(text, cache, ((quote, "any"),), at + run, limit)
             if end != -1:
-                value.append(text[at + run + 1:end])
+                content = end                   # the value ends before the closing quote's backslashes
+                while content > at + run + 1 and text[content - 1] == "\\":
+                    content -= 1
+                value.append(text[at + run + 1:content])
                 at = end + 1
                 continue
             value.append(text[at + 1:min(at + run + run % 2, limit)])
