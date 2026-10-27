@@ -51,6 +51,9 @@ class RemoteTests(unittest.TestCase):
         self.machine = SimpleNamespace(id="halo-1", http_address="192.0.2.1",
                                        ssh_target="operator@halo-1", ssh_port=2222)
         self.client = remote.Remote(self.machine, self.known)
+        paths = patch.dict(remote._NODE_PATHS, clear=True)
+        paths.start()
+        self.addCleanup(paths.stop)
         self.env = patch.dict(os.environ, {"HYPERLOOM_FAKE_KEY": self.key.key_b64,
                                           "HYPERLOOM_FAKE_LOG": str(self.log),
                                           "HYPERLOOM_FAKE_MODE": "ok"})
@@ -164,9 +167,28 @@ class RemoteTests(unittest.TestCase):
         reply = self.client.call("doctor", payload, 3)
         self.assertEqual(reply, {"verb": "doctor", "payload": payload})
         command = self.calls()[-1]["argv"][-1]
-        self.assertEqual(shlex.split(command), ["$HOME/.hyperloom-boot/hyperloom-node", "doctor"])
+        self.assertEqual(shlex.split(command), ["/opt/operator space ' Ω/.hyperloom-boot/hyperloom-node", "doctor"])
         self.assertNotIn("雪", command)
-        self.assertEqual(len(self.calls()), 1)              # one ssh session per call (no path lookup first)
+        self.assertNotIn("$", command)
+
+    def test_the_remote_home_is_expanded_once_per_process(self):
+        # SPEC §2.6: one read-only lookup before the first call (or bootstrap); then one session per call, naming
+        # the absolute path, from this client and from any other client of the same node in this process.
+        self.pin()
+        self.client.call("gpu", {}, 3)
+        self.client.call("doctor", {}, 3)
+        remote.Remote(self.machine, self.known).call("version", {}, 3)
+        commands = [call["argv"][-1] for call in self.calls()]
+        self.assertEqual(commands[0], remote.LOOKUP)
+        for word in ("mkdir", "scp", "mv", "chmod", "rm", "umask"):
+            self.assertNotIn(word, commands[0].split())
+        self.assertEqual([shlex.split(command) for command in commands[1:]],
+                         [["/opt/operator space ' Ω/.hyperloom-boot/hyperloom-node", verb]
+                          for verb in ("gpu", "doctor", "version")])
+        other = SimpleNamespace(id="halo-2", http_address="192.0.2.2", ssh_target="operator@halo-2", ssh_port=2222)
+        self.known.pin(other.id, other.http_address, other.ssh_port, self.key)
+        remote.Remote(other, self.known).call("gpu", {}, 3)
+        self.assertEqual(self.calls()[-2]["argv"][-1], remote.LOOKUP)     # another node: its own lookup
 
     def test_ssh_config_is_written_once_and_never_rewritten_under_readers(self):
         # Concurrent hyperloom processes (and their ssh children) read the config file; rewriting it on every call

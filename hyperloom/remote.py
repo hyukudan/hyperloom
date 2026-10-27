@@ -382,6 +382,13 @@ def _json(raw):
         raise RemoteError(f"expected one UTF-8 JSON object from hyperloom-node; got: {head!r}") from exc
 
 
+# The node tool's absolute path per node (alias, target, port), learned once per process: the remote home is
+# expanded once (by bootstrap, or by one read-only lookup before the first call) and every later call names the
+# absolute path, so a call's command line never depends on the node shell's expansion.
+_NODE_PATHS = {}
+LOOKUP = "printf '%s\\n' \"$HOME/.hyperloom-boot/hyperloom-node\""
+
+
 class Remote:
     def __init__(self, machine, known_hosts, ssh="ssh"):
         self.machine = machine
@@ -405,7 +412,14 @@ class Remote:
                 raise ValueError("invalid remote boot path")
         except (UnicodeError, ValueError) as exc:
             raise RemoteError("invalid remote boot path") from exc
-        self.node_path = path
+        self.node_path = _NODE_PATHS[(self.alias, self.target, self.port)] = path
+
+    def _tool_path(self, timeout, cancel_event):
+        if self.node_path is None:
+            self.node_path = _NODE_PATHS.get((self.alias, self.target, self.port))
+        if self.node_path is None:
+            self._path(self._ssh(LOOKUP, timeout=timeout, cancel_event=cancel_event))
+        return self.node_path
 
     def has_tool(self, timeout=30, *, cancel_event=None):
         """Whether ~/.hyperloom-boot/hyperloom-node exists (read-only; changes nothing on the node)."""
@@ -462,8 +476,7 @@ class Remote:
             raise RemoteError("payload must be UTF-8 JSON") from exc
         if len(data) > MAX_JSON:
             raise RemoteError("payload exceeds the size limit")
-        # One ssh session per call: the tool's fixed location is expanded by the node's shell (no separate path
-        # lookup session first); a path learned by bootstrap is used as it is.
-        tool = shlex.quote(self.node_path) if self.node_path is not None else '"$HOME/.hyperloom-boot/hyperloom-node"'
-        raw = self._ssh(tool + " " + verb, data, timeout, cancel_event)
+        # One ssh session per call, with the absolute path learned once per process (SPEC §2.6: the remote home is
+        # expanded once); only the first call to a node this process has not bootstrapped looks the path up.
+        raw = self._ssh(shlex.quote(self._tool_path(timeout, cancel_event)) + " " + verb, data, timeout, cancel_event)
         return _json(raw)
