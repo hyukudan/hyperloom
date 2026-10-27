@@ -170,6 +170,11 @@ def _binds_loopback(profile, status, cluster):
 DATA_TOKEN_KEY = re.compile(r"(?:[a-z0-9_]*_)?tokens(?:_[a-z0-9_]+)?|(?:[a-z0-9_]*_)?token_(?:ids|count|counts|budget)"
                             r"|tokenizer(?:_[a-z0-9_]+)?", re.I)
 COMPRESSED_IDS = re.compile(r"gz:b64:[A-Za-z0-9+/]+={0,2}")
+# Free text: a bare Hugging Face token (hf_ and 30+ token characters, or a shorter one with an upper-case letter or a
+# digit, so hf_transfer stays) and curl's user:password options (-u, -su, -U, --user, --proxy-user).
+HF_TOKEN = re.compile(r"\bhf_(?:[A-Za-z0-9]{30,}|(?=[a-z]*[A-Z0-9])[A-Za-z0-9]{8,})\b")
+CURL_USER = re.compile(r"""\b(curl\b[^\n]*?\s(?:-[A-Za-z]*[uU]\s*|--(?:proxy-)?user(?:\s+|=)))(?!\[redacted\])"""
+                       r"""(?:"[^"]*"|'[^']*'|\S+)""")
 
 
 def _token_data(key, item):
@@ -215,12 +220,19 @@ def redact(value, text=True):
         return result
     if isinstance(value, (list, tuple)):
         result, hide = [], False
+        curl = bool(value) and isinstance(value[0], str) and re.search(r"(?:^|[\\/])curl(?:\.exe)?$", value[0], re.I)
         for item in value:
-            result.append("[redacted]" if hide else redact(item, text))
-            hide = isinstance(item, str) and item in ("--api-key", "--handoff-api-key", "--password", "--token")
+            # After a user option, only a name:password value is hidden (`systemd-run --user --scope` stays).
+            hidden = hide is True or (hide == "user" and isinstance(item, str) and ":" in item)
+            result.append("[redacted]" if hidden else redact(item, text))
+            hide = isinstance(item, str) and (item in ("--api-key", "--handoff-api-key", "--password", "--token") or (
+                "user" if item in ("--user", "--proxy-user") or curl and re.fullmatch(r"-[A-Za-z]*[uU]", item) else False))
         return result
     if isinstance(value, str) and text:
         value = re.sub(r"(?i)(Bearer\s+)\S+", r"\1[redacted]", value)
+        value = re.sub(HF_TOKEN, "[redacted]", value)
+        value = re.sub(CURL_USER, r"\1[redacted]", value)
+        value = re.sub(r"(--(?:proxy-)?user(?:\s+|=))(?!\[redacted\])[^\s:]*:\S+", r"\1[redacted]", value)
         return re.sub(r'''(?ix)((?:["']?(?:api[_-]?key|handoff[_-]?api[_-]?key|password|secret|token)["']?)\s*[:=]\s*|--(?:api-key|handoff-api-key|password|token)\s+)(?:"[^"]*"|'[^']*'|[^\s,;}]+)''',
                       r"\1[redacted]", value)
     return value

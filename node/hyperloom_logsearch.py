@@ -50,7 +50,8 @@ LEVELS = {"error": re.compile(r"ERROR|FATAL|POISON|Traceback|panic|failed", re.I
 KEYS = ("text", "regex", "ignore_case", "root", "roots", "exclude", "since", "until", "process", "level", *LIMITS)
 # Redaction of whole lines on the node (wider than the portal's document rules: free log text): credentials after
 # an authorization scheme, any name that carries key/secret/token/password/credential/auth (AWS_SECRET_ACCESS_KEY=,
-# "db.password": ...), the value after a password word ("password x"), option forms and URL user information.
+# "db.password": ...), the value after a password word ("password x"), option forms, URL user information, curl's
+# user:password option and bare Hugging Face tokens.
 SECRET_PATTERNS = (
     (re.compile(r"(?i)\b((?:Bearer|Basic|Digest|Token|Negotiate)\s+)[A-Za-z0-9+/=._~:-]+"), r"\1[redacted]"),
     (re.compile(r'''(?ix)(["']?[\w.-]*(?:key|secret|token|pass|pwd|credential|auth)[\w.-]*["']?\s*[:=]\s*)'''
@@ -68,6 +69,14 @@ SECRET_PATTERNS = (
     # Clients that take the password glued to a short option (`mysql -pX`, `sshpass -pX`, `sshpass -p X`).
     (re.compile(r"(?i)\b((?:mysql\w*|mariadb[\w-]*)\b[^\n]*?\s-p)(?!\[redacted\])(?=\S)\S+"), r"\1[redacted]"),
     (re.compile(r"(?i)\b(sshpass\b[^\n]*?\s-p\s*)(?!\[redacted\])\S+"), r"\1[redacted]"),
+    # curl's user and password options (`curl -u user:pw`, `curl -su user:pw`, `--user user:pw`, `--user=user:pw`,
+    # the proxy's -U / --proxy-user), and any other tool's `--user name:password`.
+    (re.compile(r"""\b(curl\b[^\n]*?\s(?:-[A-Za-z]*[uU]\s*|--(?:proxy-)?user(?:\s+|=)))(?!\[redacted\])"""
+                r"""(?:"[^"]*"|'[^']*'|\S+)"""), r"\1[redacted]"),
+    (re.compile(r"(--(?:proxy-)?user(?:\s+|=))(?!\[redacted\])[^\s:]*:\S+"), r"\1[redacted]"),
+    # A bare Hugging Face access token (no name before it): hf_ and 30 or more token characters, or a shorter one
+    # with an upper-case letter or a digit in it (hf_transfer, hf_hub_download stay readable).
+    (re.compile(r"\bhf_(?:[A-Za-z0-9]{30,}|(?=[a-z]*[A-Z0-9])[A-Za-z0-9]{8,})\b"), "[redacted]"),
 )
 FD_WALK = (os.open in os.supports_dir_fd and os.scandir in os.supports_fd and hasattr(os, "O_DIRECTORY")
            and hasattr(os, "O_NOFOLLOW"))

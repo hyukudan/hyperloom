@@ -694,6 +694,31 @@ class APITests(unittest.TestCase):
         self.assertIsInstance(self.api.read("settings")["secrets"], dict)
         self.assertEqual(redact({"secrets": {"engine": "hidden"}}), {"secrets": "[redacted]"})
 
+    def test_redaction_of_bare_hugging_face_tokens_and_curl_user_options(self):
+        token = "hf_AbCdEfGhIjKlMnOpQrStUvWxYz01234567"
+        lines = {"pulled with " + token: token, "short hf_Q9x7Lk2m here": "hf_Q9x7Lk2m",
+                 "curl -u alice:Wonder7land https://example.invalid": "Wonder7land",
+                 "curl -sSu bob:Pa55-w0rd https://example.invalid": "Pa55-w0rd",
+                 "curl --user=dave:Sw0rdfish https://example.invalid": "Sw0rdfish",
+                 "curl -U frank:Pr0xyPw -x http://proxy.invalid https://example.invalid": "Pr0xyPw",
+                 "wget --user hank:C0mbined https://example.invalid": "C0mbined"}
+        for line, secret in lines.items():
+            with self.subTest(line=line):
+                self.assertNotIn(secret, json.dumps(redact({"stderr": line, "lines": [line]})))
+        value = redact({"argv": ["curl", "-sS", "-u", "carol:hunter4", "https://example.invalid"],
+                        "env": ["HF_HUB_ENABLE_HF_TRANSFER=1", token],
+                        "unit": ["systemd-run", "--user", "--scope", "true"],
+                        "python": ["python3", "-u", "serve.py"]})
+        self.assertEqual(value["argv"], ["curl", "-sS", "-u", "[redacted]", "https://example.invalid"])
+        self.assertEqual(value["env"], ["HF_HUB_ENABLE_HF_TRANSFER=1", "[redacted]"])
+        self.assertEqual((value["unit"], value["python"]), (["systemd-run", "--user", "--scope", "true"],
+                                                            ["python3", "-u", "serve.py"]))
+        # Token counts and token-id data are not credentials (unchanged), nor are prose and hf_ library names.
+        kept = {"prompt_tokens": 512, "token_ids": [1, 2, 3], "note": "hf_transfer on, generated 512 tokens",
+                "argv": ["curl", "-sS", "https://example.invalid/health"]}
+        self.assertEqual(redact(kept), kept)
+        self.assertEqual(redact("curl -u " + "x:y" + " " + token, text=False), "curl -u x:y " + token)
+
 
 class TransportTests(unittest.TestCase):
     def setUp(self):
