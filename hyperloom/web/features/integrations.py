@@ -788,6 +788,8 @@ def serve_stream(handler, head=False, *, interval=None, max_s=None, heartbeat=No
         last, seq = None, 0
         while True:
             now = time.monotonic()
+            from hyperloom.web import server as _server
+            _server._page_seen(api)             # an open stream is an open page (the node poll reads for it)
             if ended.is_set():
                 write('event: end\ndata: {"why": "a newer page took this stream slot; reconnect"}\n\n')
                 return

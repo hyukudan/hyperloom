@@ -34,7 +34,7 @@ import sys
 import threading
 import time
 
-from hyperloom import nodegate, pollbudget, procs, secrets, telemetry
+from hyperloom import nodegate, nodepoll, pollbudget, procs, secrets, telemetry
 from hyperloom.adapters import engine as engine_adapter
 from hyperloom.paths import repo_root
 from hyperloom.telemetry.store import BASELINES as BASELINE_NAMESPACE
@@ -509,9 +509,14 @@ def _call_node(api, machine, payload):
     return api.node(machine, "host", payload)
 
 
-def _node_answer(api, machine, payload):
+def _node_answer(api, machine, payload, polled=None):
     try:
-        answer = _call_node(api, machine, payload)
+        if polled is not None:                  # the portal's node poll answered (or not) for this machine
+            answer, error = polled
+            if error is not None:
+                raise ValueError(error)
+        else:
+            answer = _call_node(api, machine, payload)
         if not isinstance(answer, dict) or answer.get("schema") != "hyperloom/node-v1":
             raise ValueError("unexpected node answer")
         if answer.get("error"):
@@ -570,7 +575,20 @@ def collect_nodes(api, now):
             release()
 
     budget = pollbudget.for_api(api)
+    poll = nodepoll.of(api)
     for machine in machines:
+        if poll is not None:
+            # The portal's node poll reads the node (one session per cycle for every reader); this round takes its
+            # latest host reading, once.
+            payload = {"cpu": state.cpu[machine.id]} if machine.id in state.cpu else {}
+            if targets.get(machine.id):
+                payload["engine_status"] = [{"port": t["port"], "paths": list(ENGINE_PATHS)} for t in targets[machine.id]]
+            answer, error, at = poll.read(machine.id, "host", "host", payload, now=now, reader="fleet-nodes")
+            if answer is None and (error == nodepoll.NOT_YET or error.startswith(("paused", "no new"))):
+                skipped[machine.id] = error
+            else:
+                answers[machine.id] = _node_answer(api, machine, payload, polled=(answer, error))
+            continue
         why = budget.node(machine.id, "fleet-nodes", now=now)     # paced; paused during a GPU turn
         if why is not None:
             skipped[machine.id] = why

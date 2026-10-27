@@ -30,7 +30,7 @@ import time
 import uuid
 from urllib.request import ProxyHandler, Request, build_opener
 
-from hyperloom import __version__, admission, cli, config, engines, nodegate, orchestrate, pollbudget, remote, render, secrets
+from hyperloom import __version__, admission, cli, config, engines, nodegate, nodepoll, orchestrate, pollbudget, remote, render, secrets
 from hyperloom.adapters import engine, router
 from hyperloom.paths import repo_root
 from hyperloom.stats import Window
@@ -583,7 +583,22 @@ class API:
         verbs = ("doctor", "gpu")
         now = self.clock()
         paused = None
+        poll = nodepoll.of(self) if machine.access == "ssh" else None
         for verb in verbs:
+            if poll is not None:
+                # The portal's node poll reads the node (one session per cycle for every reader): its latest answer.
+                value, error, at = poll.read(machine.id, verb, verb, {}, now=now)
+                if value is None and (error == nodepoll.NOT_YET or error.startswith("paused")):
+                    paused = error if error.startswith("paused") else paused
+                    continue
+                if value is not None and value.get("schema") == "hyperloom/node-v1" and not value.get("error"):
+                    self._inspections[(machine.id, verb)] = {"value": value, "error": None, "at": at}
+                    if verb == "doctor":
+                        self._note_turn(machine, value, now)
+                else:
+                    self._inspections[(machine.id, verb)] = {
+                        "value": None, "error": str(error or (value or {}).get("error") or "unknown node schema"), "at": at}
+                continue
             if machine.access == "ssh":
                 why = pollbudget.for_api(self).node(machine.id, "inventory-" + verb, now=now)
             else:
@@ -636,6 +651,7 @@ class API:
             self._status_poller = "status-job" if after_job else "status"
         poller = self._status_poller
         budget = pollbudget.for_api(self)
+        poll = nodepoll.of(self)
         denied = {}
 
         def skip(machine_id, kind="node", profile=None):
@@ -646,6 +662,8 @@ class API:
                 host = None if machine_id == "local" else machine_id
                 why = budget.engine(host, f"{kind}-status:{profile}:{machine_id}",
                                     poller, now=now)
+            elif poll is not None:
+                why = poll.paused(machine_id, now)      # the node poll paces the read itself
             else:
                 why = budget.node(machine_id, poller, now=now)
             if why is not None:
@@ -653,7 +671,8 @@ class API:
             return why
         try:
             # This configuration's launches, read at the polling budget's pace.
-            statuses, error = self.orchestrate.status(config_path=self.config_path, skip=skip), None
+            statuses, error = self.orchestrate.status(config_path=self.config_path, skip=skip,
+                                                      **({"read": nodepoll.reader(self, now)} if poll else {})), None
         except (OSError, ValueError, RuntimeError) as exc:
             statuses, error = None, str(exc)
         if isinstance(statuses, dict):
@@ -1163,6 +1182,7 @@ class API:
                     for action in actions if isinstance(action.get("result"), dict) and action["result"].get("state") == "failed"]
         reasons = {}
         budget = pollbudget.for_api(self)
+        poll = nodepoll.of(self)
         for profile, status in statuses.items():
             processes = list((status.get("nodes") or {}).keys())
             if status.get("router"):
@@ -1173,7 +1193,8 @@ class API:
                 host = status.get("router_machine") if process == "router" else process
                 why = None
                 if host not in (None, "local"):
-                    why = budget.node(host, f"logs-{profile}-{process}", now=self.clock())
+                    why = (poll.paused(host) if poll is not None
+                           else budget.node(host, f"logs-{profile}-{process}", now=self.clock()))
                 if why is not None:
                     if why.startswith("paused"):
                         reasons[profile + "/" + process] = why + "; not read"
@@ -1182,7 +1203,8 @@ class API:
                     continue
                 mark = len(entries)
                 try:
-                    logs = self.orchestrate.logs(profile, process, 100, config_path=self.config_path)
+                    logs = self.orchestrate.logs(profile, process, 100, config_path=self.config_path,
+                                                 **({"read": nodepoll.reader(self)} if poll else {}))
                     for stream in ("stdout", "stderr"):
                         for line in str(logs.get(stream) or "").splitlines():
                             message = redact(line)
@@ -1191,6 +1213,10 @@ class API:
                                             "message": message, "event": event, "when": None,
                                             "why": {"when": "timestamp unavailable unless present in captured output"}})
                     self._last_logs[(profile, process)] = entries[mark:]
+                except nodepoll.NotRead as exc:
+                    entries.extend(self._last_logs.get((profile, process), []))
+                    if (profile, process) not in self._last_logs:
+                        reasons[profile + "/" + process] = str(exc)
                 except (OSError, ValueError, RuntimeError) as exc:
                     reasons[profile + "/" + process] = str(exc)
         return self._document("logs", entries=entries[-1000:], failures=failures,
@@ -1243,14 +1269,22 @@ class API:
             except Exception:  # noqa: BLE001
                 host = None
         why = None
+        poll = nodepoll.of(self) if host != "local" else None
         if host != "local":
-            why = (pollbudget.for_api(self).node(host, f"page-logs-{profile}-{process}-{tail}", now=self.clock()) if host
-                   else "the machine of this process is not known: not read")
+            why = ((poll.paused(host) if poll is not None
+                    else pollbudget.for_api(self).node(host, f"page-logs-{profile}-{process}-{tail}", now=self.clock()))
+                   if host else "the machine of this process is not known: not read")
         if why is None:
-            document = self._document("logs", entries=redact(self.orchestrate.logs(*key, config_path=self.config_path)),
-                                      failures=None, why={"failures": "persistent process failure index unavailable"})
-            self._last_process_logs[key] = document
-            return document
+            try:
+                entries = self.orchestrate.logs(*key, config_path=self.config_path,
+                                                **({"read": nodepoll.reader(self)} if poll is not None else {}))
+            except nodepoll.NotRead as exc:
+                why = str(exc)
+            else:
+                document = self._document("logs", entries=redact(entries), failures=None,
+                                          why={"failures": "persistent process failure index unavailable"})
+                self._last_process_logs[key] = document
+                return document
         last = self._last_process_logs.get(key)
         if last is not None and not why.startswith("paused"):
             return last

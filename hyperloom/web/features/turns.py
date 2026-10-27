@@ -6,9 +6,10 @@ GET  turns                         per node: holder (cap, time left), verified w
 POST turns/settings {ledger_cap_s?, pair_cap_s?}   (audited) preferences (namespace ``turns``); the ledger path is
                                    the configuration's ``pc.turn_ledger`` (never a portal setting)
 
-The collector ``turns`` (every 30 s; once a minute while a turn is held, see hyperloom.pollbudget) calls the read-only ``turns`` node verb on every lab-mode machine with a lab
-directory (one call in flight per machine) and keeps each reply with its fetch time; the GET only composes the
-document from those replies. Times on the nodes are clock-only log lines whose dates are inferred; estimates are
+In the portal, the turn check is part of the node poll (hyperloom.nodepoll: every 30 s, once a minute while a turn
+is held, with or without a page open or a history store), which reads the read-only ``turns`` node verb on every
+lab-mode machine with a lab directory and keeps each reply here with its fetch time (``record``); the GET only
+composes the document from those replies. The command line reads the nodes directly (``fetch``). Times on the nodes are clock-only log lines whose dates are inferred; estimates are
 labelled as estimates.
 """
 
@@ -64,32 +65,16 @@ def fetch(api, machines=None, clock=time.time, skip_busy=False):
 
     def one(machine, enter, release):
         sent = clock()
-        entry = {"fetched_at": None, "reply": None, "error": None, "offset_s": None, "offset_uncertainty_s": None}
+        reply, error = None, None
         try:
             enter()
             reply = ops._node_call(api, machine, "turns", {"lab_dir": machine.lab_dir})
-            received = clock()
-            if not isinstance(reply, dict) or reply.get("schema") != "hyperloom/node-v1":
-                raise ValueError("unexpected reply from the node tool")
-            if reply.get("error"):
-                raise ValueError(reply["error"])
-            entry.update(reply=reply, fetched_at=received)
-            holder = reply.get("holder")
-            if isinstance(holder, dict) and holder.get("alive") is not False:
-                label = holder.get("label") if holder.get("parsed") else "unreadable holder"
-            else:
-                label = None                # free, or a stale holder file of a process that is gone
-            pollbudget.note_holder(api, machine.id, label)
-            if isinstance(reply.get("now"), (int, float)):
-                entry["offset_s"] = reply["now"] - (sent + received) / 2
-                entry["offset_uncertainty_s"] = (received - sent) / 2
         except Exception as exc:
-            entry.update(error=str(exc)[:300], fetched_at=clock())
+            error = str(exc)
         finally:
             release()
-        results[machine.id] = entry
+        results[machine.id] = record(api, machine, reply, error, sent, clock())
         with _state_lock:
-            _replies.setdefault(key, {})[machine.id] = entry
             _running.pop((key, machine.id), None)
 
     threads = []
@@ -121,8 +106,38 @@ def fetch(api, machines=None, clock=time.time, skip_busy=False):
     return results
 
 
+def record(api, machine, reply, error, sent, received):
+    """Keep one turn reading of a machine (``reply`` of the ``turns`` verb, or the ``error`` of its call) and give
+    its holder to the polling budget (a held turn pauses the node's other reads)."""
+    entry = {"fetched_at": received, "reply": None, "error": None, "offset_s": None, "offset_uncertainty_s": None}
+    try:
+        if error is not None:
+            raise ValueError(error)
+        if not isinstance(reply, dict) or reply.get("schema") != "hyperloom/node-v1":
+            raise ValueError("unexpected reply from the node tool")
+        if reply.get("error"):
+            raise ValueError(reply["error"])
+        entry["reply"] = reply
+        holder = reply.get("holder")
+        if isinstance(holder, dict) and holder.get("alive") is not False:
+            label = holder.get("label") if holder.get("parsed") else "unreadable holder"
+        else:
+            label = None                # free, or a stale holder file of a process that is gone
+        pollbudget.note_holder(api, machine.id, label)
+        if isinstance(reply.get("now"), (int, float)):
+            entry["offset_s"] = reply["now"] - (sent + received) / 2
+            entry["offset_uncertainty_s"] = (received - sent) / 2
+    except Exception as exc:
+        entry.update(reply=None, error=str(exc)[:300])
+    with _state_lock:
+        _replies.setdefault(id(api), {})[machine.id] = entry
+    return entry
+
+
 def sample(api, now):
-    fetch(api, skip_busy=True)
+    from hyperloom import nodepoll
+    if nodepoll.of(api) is None:        # the portal's node poll already runs the turn check (no second session)
+        fetch(api, skip_busy=True)
     return []
 
 

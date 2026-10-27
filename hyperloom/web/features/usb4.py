@@ -20,7 +20,7 @@ refreshes the portal snapshot. POST ``usb4/refresh`` asks the sampler for a coll
 import math
 import threading
 
-from hyperloom import nodegate, pollbudget, telemetry
+from hyperloom import nodegate, nodepoll, pollbudget, telemetry
 from hyperloom.telemetry.store import BASELINES
 
 
@@ -90,6 +90,7 @@ def _calls(api, targets, payloads, now=None):
     call: its previous report stays."""
     out = {}
     lock = threading.Lock()
+    every = list(targets)
 
     def one(machine, release, key):
         try:
@@ -109,6 +110,18 @@ def _calls(api, targets, payloads, now=None):
         with lock:
             out[machine.id] = (result, error)
 
+    poll = nodepoll.of(api)
+    if poll is not None:
+        # The portal's node poll reads the ssh nodes (one session per cycle for every reader): their latest report.
+        for machine in [m for m in targets if m.access == "ssh"]:
+            result, error, _ = poll.read(machine.id, "usb4", "usb4", payloads[machine.id], now=now, reader="usb4")
+            if result is None and (error == nodepoll.NOT_YET or error.startswith(("paused", "no new"))):
+                out[machine.id] = (None, f"{SKIPPED}: {error}"[:300])
+            elif result is None or result.get("error"):
+                out[machine.id] = (None, str(error or result.get("error"))[:300])
+            else:
+                out[machine.id] = (result, None)
+        targets = [m for m in targets if m.access != "ssh"]
     for start in range(0, len(targets), MAX_PARALLEL):
         batch = []
         for machine in targets[start:start + MAX_PARALLEL]:
@@ -143,7 +156,7 @@ def _calls(api, targets, payloads, now=None):
         for thread in batch:
             thread.join(JOIN_S)
     with lock:
-        return {m.id: out.get(m.id, (None, "node call did not return within %g s" % JOIN_S)) for m in targets}
+        return {m.id: out.get(m.id, (None, "node call did not return within %g s" % JOIN_S)) for m in every}
 
 
 # -- summary (shared with the CLI) -------------------------------------------------------------------------------

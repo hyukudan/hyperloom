@@ -5,6 +5,10 @@ The pollers are everything that reads a node or an engine without a person askin
 launch status and engine statistics. Every poll asks this budget first; a refused poll is skipped (the previous
 answer stays, with the reason), it never waits. Core actions a person starts (doctor, up, down, a job) never ask it.
 
+In the portal, the background reads of ssh nodes go through hyperloom.nodepoll instead (one combined read-only
+session per node and cycle, the turn check included); this budget keeps the turn readings (``note_turn``) that pause
+a node, paces the engine reads, and paces the node reads of a portal without a node poll (test fixtures):
+
 Node (ssh) polls (one grant = one ssh session: the transport opens one session per verb call):
 - each poller reads a node at most once per ``CYCLE_S`` (30 s);
 - all other pollers together open at most one ssh session to a node per ``NODE_SPACING_S`` (5 s), so never a burst:

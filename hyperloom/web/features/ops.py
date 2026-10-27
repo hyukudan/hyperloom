@@ -454,9 +454,24 @@ def sample_nodes(api, now):
             with _checks_lock:
                 _checks_busy.discard(key)
 
+    from hyperloom import nodepoll
+    poll = nodepoll.of(api)
     threads = []
     for machine in cluster.machines.values():
         if machine.access != "ssh":
+            continue
+        if poll is not None:
+            # The portal's node poll reads the node (one session per cycle for every reader): its latest answer.
+            reply, error, _ = poll.read(machine.id, "version", "version", {}, now=now, reader="ops-nodes")
+            if reply is None and (error == nodepoll.NOT_YET or error.startswith(("paused", "no new"))):
+                continue
+            row = {"checked_at": now, "deployed": None, "error": None, "seen_at": None}
+            if reply is None or reply.get("error"):
+                row["error"] = str(error or reply.get("error"))[:300]
+            else:
+                row.update(deployed=_tool_of(reply), seen_at=now)
+            found = macs_in(((store.get("fleet/host", machine.id) if store is not None else None) or {}).get("host"))
+            _publish_check(api, store, machine.id, row, found, now)
             continue
         key = (id(api), machine.id)
         with _checks_lock:

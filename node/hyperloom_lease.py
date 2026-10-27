@@ -445,13 +445,18 @@ def waiter_alive(pid, label):
     return label.encode() in cmdline
 
 
-def settle_dead_waiter(root, state):
+def settle_dead_waiter(root, state, write=True):
     """A queued lease whose waiter exited never acquired its turn (the lab launcher refused it on arrival, or it
     was killed): mark it failed with the end of its log instead of leaving it queued until the controller's queue
-    timeout."""
+    timeout. ``write`` False (the portal's read-only poll): report it failed without changing the record."""
     if waiter_alive(state.get("turn_pid"), state.get("label", "")):
         return state
     lease = identifier(state["lease"])
+    if not write:
+        lines = [line for line in tail_file(inside(root, "log", "lease-" + lease + ".log"), 4096).splitlines()
+                 if line.strip()]
+        return {**state, "state": "failed", "reason": "turn ended before acquire: "
+                + (lines[-1][-300:] if lines else "no output")}
     with state_lock(root, lease):
         current = read_json(record_path(root, lease))
         if current.get("state") != "queued":  # the supervisor acquired (or something settled it) meanwhile
@@ -935,7 +940,7 @@ def run(verb, payload):
                     owner = inside(root, "run", "owner-" + identifier(state["lease"]) + ".json")
                     if state["state"] == "queued" and owner.exists():
                         state["turn_pid"] = read_json(owner)["pid"]
-                        state = settle_dead_waiter(root, state)
+                        state = settle_dead_waiter(root, state, write=not payload.get("observe"))
                     leases.append(state)
                 result["leases"] = leases
                 result["jobs"] = [read_json(inside(root, "run", filename.name))

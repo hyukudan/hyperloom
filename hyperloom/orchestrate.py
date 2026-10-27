@@ -1277,18 +1277,27 @@ def down(profile, force=False):
         lock.close()
 
 
-def status(profile=None, config_path=None, skip=None):
+def _node_read(read, mid, verb, payload):
+    """One read-only verb of a launch's node through ``read(mid, verb, payload)`` (the portal's node poll)."""
+    result = read(mid, verb, payload)
+    if result.get("error"):
+        raise OrchestrationError(f"{mid}: {verb}: {result['error']}")
+    return result
+
+
+def status(profile=None, config_path=None, skip=None, read=None):
     """One profile's status, or every saved launch's ({profile: status}); with ``config_path``, only the launches of
     that configuration (`owns`): another configuration's launch is neither listed nor polled, and asked by name it
     answers stopped, with the reason. A launch without the record (written before launch states recorded it) is
     listed and read, marked ``config_identity: unknown`` with the reason: shown, never hidden, and stoppable.
     ``skip(machine id or "local", kind, profile)``: a reason not to read that node ("node"), the profile's router
     ("router", on that machine or this one) or its prefill service ("prefill", this machine) now (the portal's
-    polling budget), or None."""
+    polling budget), or None. ``read(machine id, verb, payload)``: how a node is read (the portal's node poll); by
+    default one ssh call."""
     if profile is None:
         names = (list(launch_states(config_path, unknown=True)) if config_path is not None
                  else [path.stem[3:] for path in secrets.runtime_dir().glob("up-*.json")])
-        return {name: status(name, config_path, skip) for name in names}
+        return {name: status(name, config_path, skip, read) for name in names}
     path = _state_path(profile)
     if not path.exists():
         return {"profile": profile, "state": "stopped"}
@@ -1310,7 +1319,9 @@ def status(profile=None, config_path=None, skip=None):
             result["nodes"][mid] = {"error": why}       # not read (the caller's polling budget: a GPU turn holds it)
             continue
         try:
-            result["nodes"][mid] = _call(_client(SimpleNamespace(**machine), state["known_hosts"]), "status", {"root": machine["install_root"]})
+            payload = {"root": machine["install_root"]}
+            result["nodes"][mid] = (_node_read(read, mid, "status", payload) if read is not None else
+                                    _call(_client(SimpleNamespace(**machine), state["known_hosts"]), "status", payload))
         except (remote.RemoteError, OrchestrationError) as exc:
             result["nodes"][mid] = {"error": str(exc)}
     if state.get("router"):
@@ -1352,9 +1363,10 @@ def log_machine(profile, process, read=None):
     return lease.get("process_machines", {}).get(name, lease["machine"])
 
 
-def logs(profile, process, tail=100, config_path=None):
+def logs(profile, process, tail=100, config_path=None, read=None):
     """A process's recent output; with ``config_path``, only of a launch of that configuration (`owns`): another
-    configuration's launch (or one without the record) is refused before any read or call."""
+    configuration's launch (or one without the record) is refused before any read or call. ``read``: as in
+    ``status``."""
     if type(tail) is not int or not 1 <= tail <= 65536:
         raise ValueError("tail must be in 1..65536")
     state = _read(_state_path(profile))
@@ -1384,5 +1396,7 @@ def logs(profile, process, tail=100, config_path=None):
     name = _node_name(process) if process == lease["machine"] else process
     mid = lease.get("process_machines", {}).get(name, lease["machine"])
     machine = state["machines"][mid]
-    return _call(_client(SimpleNamespace(**machine), state["known_hosts"]), "logs",
-                 {"root": machine["install_root"], "lease": lease["lease"], "name": name, "tail": tail})
+    payload = {"root": machine["install_root"], "lease": lease["lease"], "name": name, "tail": tail}
+    if read is not None:
+        return _node_read(read, mid, "logs", payload)
+    return _call(_client(SimpleNamespace(**machine), state["known_hosts"]), "logs", payload)

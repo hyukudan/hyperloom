@@ -286,8 +286,11 @@ def fixture_server(args):
     with ExitStack() as stack:
         # The fixture portal is no lab: its pollers are not paced and no GPU turn pauses them (the polling budget
         # itself is tested in tests/test_pollbudget.py), so every page shows its recorded node answers at once.
-        from hyperloom import pollbudget
-        replacements = [(pollbudget.Budget, "node", lambda self, *a, **kw: None),
+        # For the same reason the node poll (hyperloom.nodepoll, tested in tests/test_nodepoll.py) does not run: the
+        # pages read the recorded node answers directly.
+        from hyperloom import nodepoll, pollbudget
+        replacements = [(nodepoll, "start", lambda api: None),
+                        (pollbudget.Budget, "node", lambda self, *a, **kw: None),
                         (pollbudget.Budget, "engine", lambda self, *a, **kw: None),
                         (pollbudget.Budget, "engine_paused", lambda self, *a, **kw: None),
                         (config, "load", lambda *a, **kw: cluster),

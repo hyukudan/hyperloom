@@ -24,6 +24,7 @@ from .winproc import no_window, retry_sharing
 
 
 MAX_JSON = 256 * 1024
+POLL_REPLY = 1024 * 1024 + 64 * 1024        # the node's combined poll answers up to 1 MiB of parts
 VERBS = frozenset({"version", "doctor", "gpu",
                    # hyperloom_install (phase 1a)
                    "install", "job", "releases", "activate", "uninstall", "verify-model", "stat-assets", "push-release",
@@ -37,6 +38,8 @@ VERBS = frozenset({"version", "doctor", "gpu",
                    "service-install", "service-start", "service-stop", "service-status", "service-remove",
                    # observability (read-only) and the model library
                    "host", "usb4", "turns", "logs-search",
+                   # the portal's combined read-only poll (several of the read verbs above in one session)
+                   "poll",
                    "models", "model-verify", "copy-plan", "copy", "copy-job", "copy-cancel"})
 
 
@@ -400,10 +403,10 @@ class Remote:
         self.port = _port(machine.ssh_port)
         self.node_path = None
 
-    def _ssh(self, command, data=b"", timeout=30, cancel_event=None):
+    def _ssh(self, command, data=b"", timeout=30, cancel_event=None, limit=MAX_JSON):
         options = self.known_hosts.options(self.alias, self.address, self.port)
         return _run([self.ssh, *options, "-p", str(self.port), "-T", "--", self.target, command],
-                    data, timeout, cancel_event)
+                    data, timeout, cancel_event, limit)
 
     def _path(self, raw):
         try:
@@ -478,5 +481,6 @@ class Remote:
             raise RemoteError("payload exceeds the size limit")
         # One ssh session per call, with the absolute path learned once per process (SPEC §2.6: the remote home is
         # expanded once); only the first call to a node this process has not bootstrapped looks the path up.
-        raw = self._ssh(shlex.quote(self._tool_path(timeout, cancel_event)) + " " + verb, data, timeout, cancel_event)
+        raw = self._ssh(shlex.quote(self._tool_path(timeout, cancel_event)) + " " + verb, data, timeout, cancel_event,
+                        POLL_REPLY if verb == "poll" else MAX_JSON)
         return _json(raw)

@@ -146,6 +146,8 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == "/favicon.ico":
                 self._send(204, b"", "image/x-icon", head=head)
                 return
+            if parsed.path.startswith("/hyperloom/api/"):
+                _page_seen(self.server.api)         # a page is open: the node poll reads what the pages show
             if parsed.path == "/hyperloom/api/stream":
                 # Live snapshot stream (server-sent events); same Host and target checks as every GET.
                 from .features import integrations
@@ -339,6 +341,13 @@ def create_server(port=18700, *, api=None, static_dir=None):
     return PortalServer(port, api=api, static_dir=static_dir)
 
 
+def _page_seen(api):
+    from hyperloom import nodepoll
+    poll = nodepoll.of(api)
+    if poll is not None:
+        poll.page_seen()
+
+
 def start_telemetry(api):
     """Start the history store and its samplers; a store that cannot be opened (a corrupt or unreadable
     telemetry.sqlite3) never stops the portal: it runs without history and the pages say so. Returns the reason, or
@@ -366,6 +375,10 @@ def serve(port=18700, no_browser=False):
         except Exception:  # noqa: BLE001 - an unreadable configuration is shown by the pages; no machines yet
             machines = []
         nodegate.portal(server.api.config_path, machines)
+        # The node poll (hyperloom.nodepoll): every background read of an ssh node, one session per node and cycle,
+        # and the GPU turn check, which runs with or without the history store below.
+        from hyperloom import nodepoll
+        nodepoll.start(server.api)
         # Background samplers feed the history store (features' collectors); HYPERLOOM_TELEMETRY=0 disables them.
         if os.environ.get("HYPERLOOM_TELEMETRY", "1") != "0":
             start_telemetry(server.api)
