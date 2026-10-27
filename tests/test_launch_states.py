@@ -70,11 +70,17 @@ class LaunchStatesTests(unittest.TestCase):
         self.config_a.write_text('{"a": 3}', encoding="utf-8")   # an edit never hides the profiles it launched
         self.assertEqual(orchestrate.launch_states(self.config_a), {"prof-a": a})
 
-    def test_a_record_without_a_path_is_not_shown(self):
+    def test_a_record_without_a_path_is_polled_by_no_reader_but_listed_as_unknown(self):
         for index, record in enumerate(({}, {"sha256": "0" * 64}, {"path": 7}, "text", None)):
             state = dict(self.state(f"odd-{index}"), config=record)
             (self.run / f"up-odd-{index}.json").write_text(json.dumps(state), encoding="utf-8")
+        self.state("prof-b", self.config_b)
         self.assertEqual(orchestrate.launch_states(self.config_a), {})
+        self.assertEqual(sorted(orchestrate.launch_states(self.config_a, unknown=True)),
+                         [f"odd-{index}" for index in range(5)])                 # never another configuration's
+        self.assertEqual(orchestrate.ownership({"config": {"path": 7}}, self.config_a), "unknown")
+        self.assertEqual(orchestrate.ownership(self.state("prof-a", self.config_a), self.config_a), "own")
+        self.assertEqual(orchestrate.ownership(self.state("prof-a", self.config_a), self.config_b), "other")
 
     def test_portal_readers_on_b_never_see_a(self):
         self.state("prof-a", self.config_a, port=18600)
@@ -113,20 +119,22 @@ class LaunchStatesTests(unittest.TestCase):
                 mock.patch.object(orchestrate, "_call", call), \
                 mock.patch.object(orchestrate, "_http_json", side_effect=OSError("no router here")):
             result = orchestrate.status(config_path=self.config_b)
-            self.assertEqual(list(result), ["prof-b"])
-            self.assertEqual(polled, ["/opt/b"])
+            # The legacy launch (no configuration record) is shown, marked unknown, never hidden; prof-a never.
+            self.assertEqual(list(result), ["legacy", "prof-b"])
+            self.assertEqual(sorted(polled), ["/opt/b", "/opt/legacy"])
+            self.assertEqual(result["legacy"]["config_identity"], "unknown")
+            self.assertIn("unknown configuration", result["legacy"]["why_config"])
+            self.assertNotIn("config_identity", result["prof-b"])
             polled.clear()
             self.assertEqual(sorted(orchestrate.status()), ["legacy", "prof-a", "prof-b"])   # no configuration: all
             self.assertEqual(sorted(polled), ["/opt/a", "/opt/b", "/opt/legacy"])
 
     def test_status_by_name_on_b_never_polls_a_launch_of_a(self):
         self.state("prof-a", self.config_a, machines={"node-a": {"install_root": "/opt/a"}})
-        self.state("legacy", machines={"node-legacy": {"install_root": "/opt/legacy"}})
         with mock.patch.object(orchestrate, "_call", side_effect=AssertionError("polled")), \
                 mock.patch.object(orchestrate, "_http_json", side_effect=AssertionError("polled")):
-            for name in ("prof-a", "legacy"):
-                answer = orchestrate.status(name, config_path=self.config_b)
-                self.assertEqual((answer["state"], answer["why"]), ("stopped", "launched from another configuration"))
+            answer = orchestrate.status("prof-a", config_path=self.config_b)
+            self.assertEqual((answer["state"], answer["why"]), ("stopped", "launched from another configuration"))
 
     def test_logs_on_b_refuse_a_launch_of_a_before_any_read_or_call(self):
         self.state("prof-a", self.config_a, machines={"node-a": {"install_root": "/opt/a"}})

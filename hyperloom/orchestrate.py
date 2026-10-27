@@ -84,11 +84,26 @@ def owns(state, config_path):
     return wanted is not None and isinstance(recorded, str) and _config_key(recorded) == wanted
 
 
-def launch_states(config_path, read=None):
+UNKNOWN_CONFIG = ("launched before launch states recorded their configuration: shown with an unknown "
+                  "configuration (it can be stopped here)")
+
+
+def ownership(state, config_path):
+    """"own" (launched from the configuration at ``config_path``), "other" (it records another one) or "unknown" (a
+    state written before launch states recorded their configuration)."""
+    record = state.get("config") if isinstance(state, dict) else None
+    if not isinstance(record, dict) or not isinstance(record.get("path"), str):
+        return "unknown"
+    return "own" if owns(state, config_path) else "other"
+
+
+def launch_states(config_path, read=None, unknown=False):
     """{profile: state} of the saved launch states (the up-*.json files) launched from the configuration at
-    ``config_path``, in profile order. A state that records another configuration, or none (written before launch
-    states recorded it), is left out: a portal or a command on one configuration never shows or polls the profiles
-    of another. ``read``: the state reader (default `_read`); an unreadable state is skipped."""
+    ``config_path``, in profile order. A state that records another configuration is left out: a portal or a command
+    on one configuration never shows or polls the profiles of another. A state without the record (written before
+    launch states recorded it) belongs to no known configuration: the readers that poll leave it out; ``unknown``
+    (the status listing) includes it, so it is shown, marked, and can be stopped. ``read``: the state reader (default
+    `_read`); an unreadable state is skipped."""
     read = read or _read
     found = {}
     for path in sorted(secrets.runtime_dir().glob("up-*.json")):
@@ -96,7 +111,8 @@ def launch_states(config_path, read=None):
             state = read(path)
         except (OSError, ValueError):
             continue
-        if owns(state, config_path):
+        kind = ownership(state, config_path)
+        if kind == "own" or (unknown and kind == "unknown"):
             found[path.stem[3:]] = state
     return found
 
@@ -1251,17 +1267,19 @@ def down(profile, force=False):
 
 def status(profile=None, config_path=None):
     """One profile's status, or every saved launch's ({profile: status}); with ``config_path``, only the launches of
-    that configuration (`owns`): another configuration's launch (or one without the record) is neither listed nor
-    polled, and asked by name it answers stopped, with the reason."""
+    that configuration (`owns`): another configuration's launch is neither listed nor polled, and asked by name it
+    answers stopped, with the reason. A launch without the record (written before launch states recorded it) is
+    listed and read, marked ``config_identity: unknown`` with the reason: shown, never hidden, and stoppable."""
     if profile is None:
-        names = (list(launch_states(config_path)) if config_path is not None
+        names = (list(launch_states(config_path, unknown=True)) if config_path is not None
                  else [path.stem[3:] for path in secrets.runtime_dir().glob("up-*.json")])
         return {name: status(name, config_path) for name in names}
     path = _state_path(profile)
     if not path.exists():
         return {"profile": profile, "state": "stopped"}
     state = _read(path)
-    if config_path is not None and not owns(state, config_path):
+    kind = ownership(state, config_path) if config_path is not None else None
+    if kind == "other":
         return {"profile": profile, "state": "stopped", "why": "launched from another configuration"}
     result = {"profile": profile, "nodes": {}, "router": None,
               "assets": state.get("assets", []), "asset_cache_note": assets.CACHE_NOTE, "launch": state.get("launch"),
@@ -1269,6 +1287,8 @@ def status(profile=None, config_path=None):
               "production": state.get("production", True), "diagnostic": state.get("diagnostic", [])}
     if "recipe" in state:
         result["recipe"] = state["recipe"]
+    if kind == "unknown":
+        result["config_identity"], result["why_config"] = "unknown", UNKNOWN_CONFIG
     for mid, machine in state["machines"].items():
         try:
             result["nodes"][mid] = _call(_client(SimpleNamespace(**machine), state["known_hosts"]), "status", {"root": machine["install_root"]})

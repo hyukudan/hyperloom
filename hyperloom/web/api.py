@@ -492,12 +492,18 @@ class API:
         return {"schema": f"hyperloom/ui-{screen}-v1", "server_time": self.clock(),
                 "poll_interval_s": POLL_INTERVAL, "why": {}, **fields}
 
-    def _node(self, machine, verb, payload=None):
+    def _node(self, machine, verb, payload=None, gated=False):
+        """A node verb. The core's own calls (``gated`` False) never wait on the node gate: a collector's hung call
+        cannot turn them into a timeout. Feature calls (``node``) take the gate, reentrant for a collector that
+        adopted it."""
         payload = payload or {}
         if machine.access == "ssh":
-            # One node call per machine at a time across portal processes and the CLI (reentrant for a holder).
+            call = lambda: self.remote.Remote(machine, self.orchestrate._known_hosts()).call(verb, payload, timeout=10)
+            if not gated:
+                return call()
+            # One feature node call per machine at a time across portal processes and the CLI.
             with nodegate.hold(self.config_path, machine.id, wait=15.0):
-                return self.remote.Remote(machine, self.orchestrate._known_hosts()).call(verb, payload, timeout=10)
+                return call()
         if machine.access != "local":
             raise ValueError("later phase · TensorMeld agent")
         result = subprocess.run([str(Path(sys.executable).absolute()),
@@ -685,8 +691,13 @@ class API:
             owned = {}
             try:
                 saved = self.orchestrate._read(self.orchestrate._state_path(name))
-                if not orchestrate.owns(saved, self.config_path):
+                kind = orchestrate.ownership(saved, self.config_path)
+                if kind == "other":
                     raise KeyError("launched from another configuration")    # not this portal's launch: none of it
+                if kind == "unknown":
+                    # Written before launch states recorded their configuration: shown, marked, stoppable.
+                    row["config_identity"] = "unknown"
+                    row["why"]["configuration_identity"] = orchestrate.UNKNOWN_CONFIG
                 owned = saved
                 # Ownership records are authoritative for router placement.
                 row["launch"] = redact({key: owned[key] for key in ("router", "leases", "release_id") if key in owned})
@@ -1095,7 +1106,7 @@ class API:
             if machine not in machines:
                 raise LookupError("unknown machine " + machine)
             machine = machines[machine]
-        return self._node(machine, verb, payload)
+        return self._node(machine, verb, payload, gated=True)
 
     def audit(self, action, arguments, result):
         self._audit(action, arguments, result)

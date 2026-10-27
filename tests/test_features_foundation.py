@@ -159,7 +159,7 @@ class APIDispatchTests(unittest.TestCase):
         self.api.orchestrate.load_cluster.return_value = SimpleNamespace(machines={"halo-1": machine})
         with mock.patch.object(self.api, "_node", return_value={"verb": "host"}) as node:
             self.assertEqual(self.api.node("halo-1", "host"), {"verb": "host"})
-            node.assert_called_once_with(machine, "host", None)
+            node.assert_called_once_with(machine, "host", None, gated=True)      # a feature call takes the gate
             with self.assertRaises(LookupError):
                 self.api.node("nope", "host")
         self.assertIsNone(self.api.cached_snapshot())

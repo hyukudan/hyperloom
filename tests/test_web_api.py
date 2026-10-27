@@ -201,16 +201,57 @@ class APITests(unittest.TestCase):
                                     "env": {"FOREIGN_SETTING": "1"}}],
                  "rendered_router": {"replicas": [{"id": "foreign-replica", "address": "127.0.0.1", "port": 18999}]}}
         status = {"qwen-replicas": {"nodes": {}}}
-        for owner in (None, orchestrate.config_record(self.directory / "other" / "cluster.json")):
-            self.orch._read.side_effect = lambda path, state=dict(owned, config=owner): state
-            row = self.api._profiles(self.cluster, status)[0]
-            self.assertIsNone(row["launch"])
-            self.assertEqual(row["why"]["launch"], "no owned launch")
-            self.assertNotIn("foreign", json.dumps(row).lower())          # nothing of the other launch shows
+        self.orch._read.side_effect = lambda path: dict(owned, config=orchestrate.config_record(
+            self.directory / "other" / "cluster.json"))
+        row = self.api._profiles(self.cluster, status)[0]
+        self.assertIsNone(row["launch"])
+        self.assertEqual(row["why"]["launch"], "no owned launch")
+        self.assertNotIn("foreign", json.dumps(row).lower())              # nothing of the other launch shows
+        # A launch written before states recorded their configuration is shown, marked unknown (and stoppable).
+        self.orch._read.side_effect = lambda path: dict(owned)
+        row = self.api._profiles(self.cluster, status)[0]
+        self.assertEqual((row["router"], row["config_identity"]), ("halo-1", "unknown"))
+        self.assertIn("unknown configuration", row["why"]["configuration_identity"])
         self.orch._read.side_effect = lambda path: dict(owned, config=orchestrate.config_record(self.api.config_path))
         row = self.api._profiles(self.cluster, status)[0]
         self.assertEqual(row["router"], "halo-1")
         self.assertEqual(row["release"], "r" * 12)
+
+    def test_core_node_calls_never_wait_behind_a_collector(self):
+        """A collector's hung ssh call holds the machine's node gate: the core's doctor and gpu reads still answer
+        at once (no TimeoutError after the gate's wait), while a feature call keeps waiting for the gate."""
+        from hyperloom import nodegate
+        held, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+
+        def collector():
+            with nodegate.hold(self.api.config_path, "halo-1", wait=1.0):
+                held.set()
+                release.wait(10)
+        thread = threading.Thread(target=collector, daemon=True)
+        thread.start()
+        self.assertTrue(held.wait(2))
+        started = time.monotonic()
+        document = self.api.read("devices")
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertIn("doctor", self.calls)
+        self.assertIn("gpu", self.calls)
+        row = next(m for m in document["machines"] if m["id"] == "halo-1")
+        self.assertNotIn("busy", json.dumps(row["why"]))
+        with patch.object(nodegate, "hold", side_effect=TimeoutError("node halo-1 is busy with another call")):
+            with self.assertRaises(TimeoutError):
+                self.api.node("halo-1", "host", {})            # a feature call is gated (and skipped when busy)
+        release.set()
+        thread.join(5)
+
+    def test_a_launch_without_a_configuration_record_can_be_stopped_here(self):
+        from hyperloom import orchestrate
+        legacy = {"profile": "qwen-replicas", "router": {"machine": "halo-1"}, "machines": {}}
+        self.orch._read.side_effect = lambda path: dict(legacy)
+        self.assertEqual(orchestrate.ownership(legacy, self.api.config_path), "unknown")
+        job = wait_job(self.api, self.api.mutate("down", {"profile": "qwen-replicas"}))
+        self.assertEqual(job["state"], "succeeded")
+        self.orch.down.assert_called_once_with("qwen-replicas", force=False)
 
     def test_install_down_doctor_rotate_and_host_pin_endpoints(self):
         for action, arguments in (("install", {"profile": "qwen-replicas"}),

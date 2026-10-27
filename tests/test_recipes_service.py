@@ -688,9 +688,10 @@ class DeployRefusalTests(unittest.TestCase):
     def test_a_target_state_of_another_configuration_refuses_before_stopping(self):
         state = orchestrate._state_path("ds41-rtx")
         state.parent.mkdir(parents=True, exist_ok=True)
-        for owner in (None, orchestrate.config_record(self.env.root / "other" / "cluster.json")):
+        for owner, why in ((None, "unknown configuration .*stop it first"),
+                           (orchestrate.config_record(self.env.root / "other" / "cluster.json"), "another configuration")):
             state.write_text(json.dumps({"profile": "ds41-rtx", "config": owner}), encoding="utf-8")
-            with self.assertRaisesRegex(service.Conflict, "another configuration"):
+            with self.assertRaisesRegex(service.Conflict, why):
                 self.deploy()
         state.unlink()
         self.fake.down.assert_not_called()

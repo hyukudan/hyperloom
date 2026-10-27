@@ -1083,6 +1083,14 @@ def _deploy_pinned(digest, stop, source, orchestrate, approval, progress):
     if profile not in running and default_orchestrate._state_path(profile).exists():
         # Before anything is stopped: up would refuse this profile's saved state of another configuration (or one
         # without the record) only after the switch had stopped the reviewed profiles.
+        try:
+            kind = default_orchestrate.ownership(default_orchestrate._read(default_orchestrate._state_path(profile)),
+                                                 config_file())
+        except (OSError, ValueError):
+            kind = "unreadable"
+        if kind == "unknown":
+            raise Conflict(f"{profile} has a saved launch state of an unknown configuration (launched before launch "
+                           "states recorded it): stop it first (it is listed and can be stopped here)")
         raise Conflict(f"{profile} has a saved launch state of another configuration: stop it there first")
     orchestrate.check_launch(cluster, profile, intent["router"], recipe=True)
     check()
