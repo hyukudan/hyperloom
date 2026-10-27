@@ -18,10 +18,10 @@ PLACEHOLDER = re.compile(r"<[a-z][a-z0-9-]*>")
 _PLACEHOLDER_PATH = PLACEHOLDER.pattern + r"(?:[\\/]" + PLACEHOLDER.pattern + r")*"
 # Only complete paths with generic roots and placeholder-only suffixes are portable.
 _PORTABLE_PATH = (r"(?:/(?:home|root|tmp)(?:/" + _PLACEHOLDER_PATH + r")?|/(?:" + _PLACEHOLDER_PATH + r")?|"
-                  r"(?i:C:[\\/](?:Users(?:[\\/]" + _PLACEHOLDER_PATH + r")?|" + _PLACEHOLDER_PATH + r")?)|"
+                  r"(?:[Cc]:[\\/](?:(?i:users)(?:[\\/]" + _PLACEHOLDER_PATH + r")?|" + _PLACEHOLDER_PATH + r")?)|"
                   r"(?:(?i:%USERPROFILE%)|~)(?:[\\/]" + _PLACEHOLDER_PATH + r")?)[\\/]?"
                   r"(?=$|[\s`\"'(),;\]}])")
-ABSOLUTE = re.compile(r"(?:^|[\s\"'=,])(?!" + _PORTABLE_PATH + r")(?:[A-Za-z]:[\\/]|/(?!/)[\w.-]+/)")
+ABSOLUTE = re.compile(r"(?:^|[\s\"'=,;()\[\]{}`])(?!" + _PORTABLE_PATH + r")(?:[A-Za-z]:[\\/]|/(?!/)[\w.-]+/)")
 ADDRESS = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?!\w|\.\d)|"
                      r"(?<![\w:])(?:[0-9a-fA-F]*:){2,}[0-9a-fA-F:.]*(?:%[\w.~-]+)?(?![\w:])")
 LOCAL_IDENTITY = re.compile(r"(?!" + _PORTABLE_PATH + r")(?i:[a-z]:[\\/](?:users[\\/]|tmp[\\/]|python\d+\b)|"
@@ -114,7 +114,10 @@ class PrivacyTests(unittest.TestCase):
         for value in ("/home/alice/x", "C:\\Users\\bob", "D:/tmp/x", "/mnt/d/tmp",
                       "/tmp/alice", "/root/alice", "/home/<user>/model", "C:/Users/<user>/model",
                       "C:/<user>/model", "D:/<user>", "/home/<User>/x", "/home/<user>.json",
-                      "/home/<user>-alice", "/home/<user>!alice", "/home/<user>?alice"):
+                      "/home/<user>-alice", "/home/<user>!alice", "/home/<user>?alice",
+                      "C:/<user>;D:/models/qwen", "PATH=C:\\Users\\<user>;D:\\lab\\bin",
+                      "(/home/<user>)(/srv/alice/m)", "`/tmp/<runtime>`/srv/alice/x", "C:/;D:/hf/models",
+                      "C:/Users/<Alice>", "C:\\Users\\<BOB>"):
             with self.subTest(value=value):
                 self.assertTrue(private(value))
                 self.assertTrue(private(f"'/home/<user>', '{value}'"))
