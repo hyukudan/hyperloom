@@ -304,4 +304,3 @@ def test_helper_readiness_ends_load_allowance_without_real_threads(tmp_path, mon
     assert state["reason"] == "stopped"
     assert "cleanup_errors" not in state
     assert len(dogs) == 1 and not dogs[0]._thread.is_alive()
-

@@ -159,7 +159,7 @@ def test_live_source_accepts_policy_without_mutation(monkeypatch):
     assert not hasattr(source, "identity")
 
 
-def test_legacy_evaluator_and_picker_are_a8d112c_code():
+def test_legacy_evaluator_and_picker_are_main_baseline_code():
     original = ast.parse(baseline_text(session))
     import inspect
     for old_name, new_name in (("evaluate", "_legacy_evaluate"), ("pick", "_legacy_pick")):

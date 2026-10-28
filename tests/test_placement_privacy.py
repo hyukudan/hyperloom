@@ -1,4 +1,4 @@
-"""Every tracked recipe/profile/receipt/fixture passes the same portable-data rule, without exceptions."""
+"""Portable artifact data, with one path-and-hash exemption for the reviewed adversarial redaction corpus."""
 import ast
 import hashlib
 import ipaddress
@@ -13,6 +13,10 @@ import unicodedata
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
+# Main 8539c28's adversarial corpus deliberately contains synthetic private-looking strings.
+# Any byte change removes the exemption and requires another privacy review.
+EXEMPTIONS = {"tests/fixtures/redaction/corpus.jsonl":
+              "d46b87708f5d14f344214c86563c93158e8e1e39f7b2cb098ab9259da2d8a8aa"}
 PHYSICAL = re.compile(r"GPU-[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}|"
                       r"\b[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]\b")
 PRIVATE_KEYS = frozenset(("uuid", "pci", "pci_path", "hostname", "host_id", "user", "username"))
@@ -33,19 +37,20 @@ ABSOLUTE = re.compile(r"(?<!\w)(?:[A-Za-z]:(?=[\\/]|[\w.-]+[\\/]|[\w-]+\.[\w.-]+
                       r"~(?=[\\/\s`\"'(),;\[\]{}<>|]|$)|~[A-Za-z_][\w.-]*(?=[\\/])|\\(?=[\w<])|"
                       r"(?:(?<![\s\S])|(?<=[`\"'=]))~[A-Za-z_][\w.-]*(?=$|[`\"']))"
                       r"(?:<[^<>\s]*>|[^\s`\"'(),;\[\]{}<>|])*")
-# Public HTTP resource URLs are portable references, rather than filesystem paths.
+# Public HTTP resource URLs are portable references, rather than filesystem paths; their hosts are checked below.
 URI_PATH = re.compile(r"\b(?!(?i:https?)://)[a-zA-Z][a-zA-Z0-9+.-]*://(?:<[^<>\s]*>|[^/\s`\"'<>;|])+(?P<path>/"
                       r"(?:<[^<>\s]*>|[^\s`\"'(),;\[\]{}<>|])*)")
 # Such a URI also names a host (smb://alice-host/share): only an empty host, localhost, a <placeholder> or a
 # reserved example name (RFC 2606) is portable.
-URI_AUTHORITY = re.compile(r"\b(?!(?i:https?)://)[a-zA-Z][a-zA-Z0-9+.-]*://(?:[^/\s`\"'<>;|@]*@)?"
+URI_AUTHORITY = re.compile(r"\b(?P<scheme>[a-zA-Z][a-zA-Z0-9+.-]*)://(?:[^/\s`\"'<>;|@]*@)?"
                            r"(?P<host>\[[^\]\s]*\]|<[^<>\s]*>|[^/\\\s`\"'<>;|:]*)")
 PORTABLE_HOST = re.compile(r"|(?i:localhost)|" + PLACEHOLDER.pattern +
                            r"|(?i:(?:[\w-]+\.)*(?:example(?:\.(?:com|net|org))?|invalid|test))")
 # Slash and backslash look-alikes that NFKC keeps (division and fraction slash, big solidus, set minus, ...).
 LOOK_ALIKES = str.maketrans({"∕": "/", "⁄": "/", "⧸": "/", "／": "/", "╱": "/",
                              "⧵": "\\", "⧹": "\\", "∖": "\\", "＼": "\\", "╲": "\\",
-                             "﹨": "\\", "\u27cb": "/", "\u27cd": "\\"})
+                             "﹨": "\\", "\u27cb": "/", "\u27cd": "\\", "\U0001f67c": "/",
+                             "\U0001f67d": "\\", "\u0338": "/"})
 ADDRESS = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?!\w|\.\d)|"
                      r"(?<![\w:])(?:[0-9a-fA-F]*:){2,}[0-9a-fA-F:.]*(?:%[\w.~-]+)?(?![\w:])")
 LOCAL_IDENTITY = re.compile(r"(?!" + _PORTABLE_PATH.pattern + r"(?=$|[\s`\"'(),;\]}]))(?i:[a-z]:[\\/](?:users[\\/]|tmp[\\/]|python\d+\b)|"
@@ -56,12 +61,20 @@ LOCAL_IDENTITY = re.compile(r"(?!" + _PORTABLE_PATH.pattern + r"(?=$|[\s`\"'(),;
 def private_paths(value):
     value = unicodedata.normalize("NFKC", value).translate(LOOK_ALIKES)
     for match in URI_AUTHORITY.finditer(value):
-        if not PORTABLE_HOST.fullmatch(match["host"]):
+        host = match["host"]
+        # HTTP references may use public DNS names, but single-label/LAN names, local suffixes and IPs are private.
+        public_http = (match["scheme"].lower() in ("http", "https") and
+                       re.fullmatch(r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,}", host) and
+                       not host.lower().endswith((".local", ".localhost", ".lan", ".internal", ".home", ".home.arpa",
+                                                  ".localdomain", ".corp", ".intranet", ".private")))
+        if not PORTABLE_HOST.fullmatch(host) and not public_http:
             yield match[0]
     for match in URI_PATH.finditer(value):
         if not _PORTABLE_PATH.fullmatch(match["path"]):
             yield match["path"]
     for match in ABSOLUTE.finditer(value):
+        if match[0].startswith("/") and value[:match.start()].endswith("$"):
+            continue  # Currency/unit prose such as $/hour is not a variable path.
         # A slash following a placeholder continues a relative portable fixture path.
         if match[0].startswith(("/", "\\")) and re.search(PLACEHOLDER.pattern + r"$", value[:match.start()]):
             continue
@@ -109,8 +122,20 @@ def private(value, key=""):
 
 
 def artifacts():
-    paths = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-                           cwd=ROOT, capture_output=True, check=True).stdout.decode().split("\0")
+    if (ROOT / ".git").exists():
+        paths = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+                               cwd=ROOT, capture_output=True, check=True).stdout.decode().split("\0")
+    else:
+        # Source archives have no index: inspect every candidate file rather than skipping the privacy gate.
+        # Gitlinks belong to independent repositories and are not files in the parent's index.
+        submodules = {line.split("=", 1)[1].strip() for line in
+                      (ROOT / ".gitmodules").read_text(encoding="utf-8").splitlines()
+                      if re.match(r"\s*path\s*=", line)}
+        paths = []
+        for directory, dirs, files in os.walk(ROOT):
+            relative = Path(directory).relative_to(ROOT)
+            dirs[:] = [name for name in dirs if (relative / name).as_posix() not in submodules]
+            paths.extend((relative / name).as_posix() for name in files)
     for name in sorted(set(paths)):
         path = Path(name)
         if ((ROOT / path).is_file() and path.suffix.lower() in (".json", ".toml", ".csv", ".jsonl", ".log", ".txt")
@@ -123,6 +148,8 @@ def findings():
     found = {}
     for name, path in artifacts():
         raw = path.read_bytes()
+        if EXEMPTIONS.get(name) == hashlib.sha256(raw).hexdigest():
+            continue
         text = raw.decode("utf-8")
         try:
             doc = (json.loads(text) if path.suffix == ".json" else
@@ -145,6 +172,23 @@ def findings():
 
 
 class PrivacyTests(unittest.TestCase):
+    def test_only_reviewed_main_corpus_bytes_are_exempt(self):
+        name = "tests/fixtures/redaction/corpus.jsonl"
+        digest = "d46b87708f5d14f344214c86563c93158e8e1e39f7b2cb098ab9259da2d8a8aa"
+        self.assertEqual(EXEMPTIONS, {name: digest})
+        path = ROOT / name
+        raw = path.read_bytes()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), digest)
+        with mock.patch(__name__ + ".artifacts", return_value=[(name, path)]), \
+                mock.patch.object(Path, "glob", return_value=[]):
+            self.assertEqual(findings(), {})
+            with mock.patch.object(Path, "read_bytes", return_value=raw + b"\n"):
+                self.assertIn(name, findings())
+        # Matching bytes at a different path do not inherit the exemption either.
+        with mock.patch(__name__ + ".artifacts", return_value=[("tests/fixtures/copied-corpus.jsonl", path)]), \
+                mock.patch.object(Path, "glob", return_value=[]):
+            self.assertIn("tests/fixtures/copied-corpus.jsonl", findings())
+
     def test_generic_roots_with_only_placeholder_segments_are_portable(self):
         for value in ("/", "/home", "/home/<user>", "/root", "/tmp", "/tmp/<runtime>",
                       "/<root>/<model>", "/home/<user>/<model>/", "C:\\", "C:\\Users",
@@ -209,7 +253,10 @@ class PrivacyTests(unittest.TestCase):
                       "$USERPROFILE/alice", "$XDG_CONFIG_HOME/x", "$TMPDIR/alice",
                       *(separator + "srv" + separator + "alice" for separator in
                         map(chr, (0x2215, 0x2044, 0x29f8, 0xff0f, 0x2571, 0x29f5, 0x29f9, 0x2216,
-                                  0xff3c, 0x2572, 0xfe68, 0x27cb, 0x27cd))),
+                                  0xff3c, 0x2572, 0xfe68, 0x27cb, 0x27cd, 0x1f67c, 0x1f67d, 0x0338))),
+                      "http://alice-pc:8080/x", "https://alice-pc/x", "http://alice.local/x",
+                      "https://nas.lan/x", "https://nas.internal/x", "https://nas.home.arpa/x",
+                      "https://nas.localdomain/x", "http://nas.corp/x", "https://nas.intranet/x", "https://nas.private/x",
                       *("C:/Users/<user>;" + prefix + "-worker" for prefix in (
                           "clau" + "de", "co" + "dex", "s" + "ol", "op" + "us"))):
             with self.subTest(value=value):
@@ -245,7 +292,7 @@ class PrivacyTests(unittest.TestCase):
         for value in ("$MODEL_DIR/<model>", "${MODEL_DIR}\\<model>", "%MODEL_DIR%\\<model>", "$env:LOCALAPPDATA\\<runtime>",
                       "smb://<host>/<root>", "file://localhost/<root>", "file:///<root>", "nfs://nas.example/<root>",
                       "a:b", "ratio a:b of c", "x ~approx 3", "about ~approx", "50%/60%", "load 50%/60% of 100%",
-                      "costs $5/hour", "\u29f8"):
+                      "costs $5/hour", "$/hour", "costs $/hour", "https://github.com/project/repo", "\u29f8"):
             with self.subTest(value=value):
                 self.assertFalse(private(value))
                 self.assertEqual(self.injected_findings({"nested": [value]}), {})

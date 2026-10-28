@@ -96,7 +96,8 @@ silently wins, and `pick` and `up --recipe auto` refuse them the same way.
 
 Every recipe request **is** a `hyperloom recipe ...` command line. The portal checks the JSON arguments, builds the
 command line, runs it (a child process, or the same parser and function in process for the cheap reads), and answers
-with what the command printed. So the CLI and the API give the same results and the same refusals, word for word.
+with what the command printed. Recipe evaluation answers preserve the CLI results and refusals, word for word.
+Synchronous launch preflight uses the fixed public error below and keeps the detailed reason in the local audit.
 
 Every recipe answer has this shape:
 
@@ -158,15 +159,18 @@ hardware refuses the recipe in `result.hardware`.
 | `GET recipes/routes[?profile=P]` | `hyperloom recipe routes [P]` | per-route and per-request routing of the running recipe (RTX vs nodes) |
 
 Launch preflight is synchronous for `POST recipes/deploy` and `POST up` with `recipe` or `recipe_inputs`, on
-legacy and placement routes alike. Refusals detected at this stage return **HTTP 400** with exactly
-`{"error": "<the CLI refusal message>"}`. There is no job id or recipe-command envelope, and no job is created.
-These include conflicting snapshot options; invalid approval, deadline, queue timeout or job arguments; missing,
+legacy and placement routes alike. Refusals detected by preflight return **HTTP 400** with exactly
+`{"error": "recipe preflight refused: preflight checks failed; see local audit"}`. There is no job id or
+recipe-command envelope, and no job is created. The local audit records the detailed reason through the shared
+credential redactor. These include conflicting snapshot options; invalid approval, deadline or queue timeout; missing,
 expired or changed snapshot files; a reviewed stop list that differs from the running set; unknown or excluded
 nodes/devices, unsupported router/diagnostic selections, saved running state, unavailable recipe references; and
 placement descriptor, content-manifest, policy, budget or grant refusals found by passive rendering. For example,
-an expired snapshot returns `400 {"error": "recipe inputs <digest>: no snapshot (it may have expired: plan again)"}`.
-The web UI retains this message in the job-error panel, labelled as refused before job creation. These refusals
-previously appeared as errors inside an asynchronous job. Checks that require the actual launch (including the
+an expired snapshot returns the fixed 400 envelope above; its local audit explains that the snapshot is missing
+or may have expired and must be planned again. JSON argument-validation errors remain HTTP 400 with their specific
+validation message. A saved launch owned by another or unknown configuration remains HTTP 409 with its specific
+ownership message. The web UI retains the public message in the job-error panel, labelled as refused before job
+creation. These refusals previously appeared as errors inside an asynchronous job. Checks that require the actual launch (including the
 operator gate and engine load/runtime checks) still report failure through the accepted job. The HTTP rules for
 recipe evaluation answers above are unchanged.
 

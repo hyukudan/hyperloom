@@ -708,8 +708,10 @@ def recipes_walkthrough(client, server, output=None):
     wait("!document.querySelector('[data-recipe-action=deploy]').disabled")
     click('[data-recipe-action="deploy"]')
     wait("document.getElementById('recipe-dialog')?.open")
+    previous_job = client.evaluate("Hyperloom.state.job?.id || null")
     click("#recipe-dialog-confirm")
-    wait("/(succeeded|failed)/.test(document.getElementById('job-panel').innerText)", timeout=120)
+    wait("!Hyperloom.state.launchRefusal && Hyperloom.state.job?.id !== " + json.dumps(previous_job)
+         + " && ['succeeded', 'failed'].includes(Hyperloom.state.job?.state)", timeout=120)
     job = client.evaluate("document.getElementById('job-panel').innerText")
     if "recipes/deploy" not in job or "succeeded" not in job:
         raise AssertionError("recipes walkthrough: the deploy job did not succeed: " + job[:2000])
@@ -722,7 +724,8 @@ def preflight_refusal_walkthrough(client, server):
     """A real synchronous legacy recipe refusal stays in the job-error panel through polling."""
     client.call("Page.navigate", url=server.url + "#/recipes")
     eventually(lambda: client.evaluate("!!window.Hyperloom && Hyperloom.state.fresh && !Hyperloom.mutationReason()"))
-    for action, arguments, message in (
+    message = "recipe preflight refused: preflight checks failed; see local audit"
+    for action, arguments, detail in (
             ("up", {"profile": "qwen-replicas", "recipe_inputs": "0" * 64, "node": ["halo-1"]},
              "planned snapshot as it is"),
             ("recipes/deploy", {"inputs": "0" * 64}, "no snapshot")):
@@ -731,8 +734,12 @@ def preflight_refusal_walkthrough(client, server):
                         ".catch(e => { window.refusal = {message: e.message, status: e.status}; });")
         eventually(lambda: client.evaluate("window.refusal !== null"))
         refusal = client.evaluate("window.refusal")
-        if refusal["status"] != 400 or message not in refusal["message"]:
+        if refusal != {"status": 400, "message": message}:
             raise AssertionError("unexpected preflight refusal: " + json.dumps(refusal))
+        audit_path = server.directory / "hyperloom/audit.jsonl"
+        audit = json.loads(audit_path.read_text(encoding="utf-8").splitlines()[-1])
+        if audit["action"] != action or audit["result"]["state"] != "refused" or detail not in audit["result"]["error"]:
+            raise AssertionError("local preflight audit did not retain the refusal detail")
         eventually(lambda: client.evaluate("!document.getElementById('job-panel').hidden && "
                                            "document.getElementById('job-panel').innerText.includes(window.refusal.message)"), timeout=5)
         client.evaluate("Hyperloom.refresh()")

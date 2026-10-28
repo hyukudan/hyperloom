@@ -25,7 +25,7 @@ def test_06_unmatched_4090_and_matched_policy_agree_across_views(identity):
         assert not api._accelerator(card, {}, {}, [configured])["excluded"]
 
 
-def test_11_all_committed_artifacts_pass_privacy_without_exceptions():
+def test_11_all_committed_artifacts_pass_reviewed_privacy_policy():
     from tests.test_placement_privacy import findings
     assert findings() == {}
 

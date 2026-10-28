@@ -1,4 +1,4 @@
-"""Legacy results follow a8d112c; configuration ownership refusals follow the hardened c806317 base."""
+"""Legacy results and configuration ownership refusals follow frozen main 8539c28 sources."""
 
 from copy import deepcopy
 from functools import lru_cache
@@ -8,7 +8,6 @@ from unittest import mock
 import ast
 import hashlib
 import json
-import subprocess
 
 try:
     import pytest
@@ -26,16 +25,16 @@ from tests.test_web_recipes import Portal, QWEN
 
 
 @lru_cache
-def baseline_text(module, revision="a8d112c"):
-    relative = Path(module.__file__).resolve().relative_to(Path(__file__).resolve().parents[1]).as_posix()
-    return subprocess.check_output(["git", "show", revision + ":" + relative], text=True, encoding="utf-8")
+def baseline_text(module):
+    path = Path(__file__).parent / "fixtures/placement_baseline" / (module.__name__ + ".py")
+    return path.read_text(encoding="utf-8")
 
 
-def baseline(module, name, *, revision="a8d112c"):
-    definition = next(node for node in ast.walk(ast.parse(baseline_text(module, revision)))
+def baseline(module, name):
+    definition = next(node for node in ast.walk(ast.parse(baseline_text(module)))
                       if isinstance(node, ast.FunctionDef) and node.name == name)
     namespace = dict(vars(module))
-    exec(compile(ast.Module(body=[definition], type_ignores=[]), revision + ":" + name, "exec"), namespace)
+    exec(compile(ast.Module(body=[definition], type_ignores=[]), "8539c28:" + name, "exec"), namespace)
     return namespace[name]
 
 
@@ -46,7 +45,7 @@ def outcome(operation):
         return type(exc), str(exc)
 
 
-def test_core_input_text_matches_a8d112c():
+def test_core_input_text_matches_main_baseline():
     captured = []
     def run(argv, **kwargs):
         captured.append([Path(p).read_bytes() for p in argv[2:]])
@@ -65,7 +64,7 @@ def test_legacy_probe_report_ignores_cuda_driver_and_h2d():
     gathered = {"model": "test", "devices": {"synthetic": {"name": "GPU", "driver": "600",
                 "h2d_gbytes_ps": 30, "memory_gib": 96}}}
     old_facts = deepcopy(gathered)
-    old_facts["devices"]["synthetic"].pop("driver")  # a8d112c's PC gather never supplied driver identity.
+    old_facts["devices"]["synthetic"].pop("driver")  # Main's PC gather never supplied driver identity.
     old_facts["devices"]["synthetic"].pop("h2d_gbytes_ps")
     assert apply.probe_report(recipe, bound, gathered) == baseline(apply, "probe_report")(recipe, bound, old_facts)
 
@@ -142,7 +141,7 @@ def test_legacy_context_error_precedes_reading_recipe_or_layers(tmp_path, monkey
 @pytest.mark.parametrize("input_kind", ["recipe", "profile", "override"])
 @pytest.mark.parametrize("invalid", ["missing", "malformed"])
 @pytest.mark.parametrize("backend_kind", ["stub", "core"])
-def test_legacy_unreadable_input_matches_a8d112c(tmp_path, operation, input_kind, invalid, backend_kind):
+def test_legacy_unreadable_input_matches_main_baseline(tmp_path, operation, input_kind, invalid, backend_kind):
     from hyperloom.recipes import core
     recipes = tmp_path / "recipes"
     recipes.mkdir()
@@ -245,10 +244,10 @@ def test_portal_foreign_target_deploy_matches_hardened_base(recorded):
         portal = Portal(env, orchestrator=fake)
         try:
             # Execute the base's deploy check and CLI-to-HTTP mapping on the same real snapshot and saved state.
-            old_deploy = baseline(service, "deploy", revision="c806317")
+            old_deploy = baseline(service, "deploy")
             with mock.patch.object(service, "deploy", old_deploy), \
-                    mock.patch.object(service, "_deploy_pinned", baseline(service, "_deploy_pinned", revision="c806317")):
-                old = baseline(recipe_web, "in_process", revision="c806317")(
+                    mock.patch.object(service, "_deploy_pinned", baseline(service, "_deploy_pinned")):
+                old = baseline(recipe_web, "in_process")(
                     ["recipe", "deploy", digest, "--config", str(env.config)], orchestrate.load_cluster)
             assert old.code == 4
             expected = (recipe_web.STATUS[old.code],

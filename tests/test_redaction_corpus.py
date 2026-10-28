@@ -71,19 +71,7 @@ BASE = Rules(lambda text: substitution_hidden(base.PORTAL_TEXT_PATTERNS, text),
 
 def load_corpus():
     with (FIXTURE / "corpus.jsonl").open(encoding="utf-8") as handle:
-        return [_restore_separators(json.loads(line)) for line in handle]
-
-
-def _restore_separators(value):
-    """The corpus stores synthetic path/escape separators as portable placeholders; parser inputs stay exact."""
-    if isinstance(value, str):
-        return (value.replace("<forward-slash>", "/").replace("<backslash>", chr(92))
-                .replace("<ipv6-unspecified>", "::"))
-    if isinstance(value, list):
-        return [_restore_separators(item) for item in value]
-    if isinstance(value, dict):
-        return {_restore_separators(key): _restore_separators(item) for key, item in value.items()}
-    return value
+        return [json.loads(line) for line in handle]
 
 
 class CorpusTests(unittest.TestCase):

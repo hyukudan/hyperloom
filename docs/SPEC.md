@@ -759,7 +759,7 @@ A = accepted, P = partly accepted, R = rejected. Section references are to this 
 | TM-R16 | TensorMeld | link-probe over the mTLS channel | Phase 4 |
 
 
-## 15. Answers to implementation's second review (`the second implementation review`; §13–14 + UI)
+## 15. Answers to the second implementation review (§13–14 + UI)
 
 A = accepted, P = partly accepted. Each answer is the binding change. Where it amends §13/§14 or the UI-SPEC, that text applies and overrides the earlier wording.
 

@@ -556,3 +556,40 @@ The first full comparison exposed a Windows-only race in the existing live-ledge
 unlinking the temporary ledger could overlap the reader's open handle. The test now verifies an initial clear
 sample, starts the watchdog behind an event, installs each real live signal, and releases the reader. This
 preserves every shutdown assertion while making the signal transition deterministic; production code is unchanged.
+
+## Integrated-base review resolutions
+
+Legacy comparisons now read frozen main `8539c28` function sources from `tests/fixtures/placement_baseline`,
+including the descriptor cache writer. No placement comparison invokes `git show` or skips because history is
+missing. Source archives run the same comparisons as checkouts. The session evaluator/picker and the unchanged
+legacy helpers retain their previous expectations; snapshot, CLI admission/entry point and pinned deploy
+comparisons use main's integrated behavior. This supersedes the historical-base skip policy recorded above.
+
+The browser preflight walkthrough asserts the exact fixed public error for both direct snapshot launch and
+recipe deploy. Detailed refusal reasons are checked only in the local audit. The existing assertions still
+require no job, no engine launch and message retention through polling. The subsequent recipe walkthrough waits
+for its new job's terminal state, so the word "failed" in an earlier preflight refusal cannot finish that wait.
+API documentation distinguishes the
+fixed preflight envelope from argument-validation errors and foreign-configuration conflicts.
+
+Main's adversarial redaction corpus, `tests/fixtures/redaction/corpus.jsonl`, and its loader are restored to
+`8539c28` byte for byte. The corpus deliberately contains synthetic paths, hosts and credentials to challenge
+redaction; rewriting those inputs for placement privacy would obscure the independent redaction regression
+suite. The artifact scanner therefore has exactly one explicit exemption, keyed by both that repository path
+and SHA-256 `d46b87708f5d14f344214c86563c93158e8e1e39f7b2cb098ab9259da2d8a8aa`. Any byte change removes
+the exemption: the corpus is scanned again and must receive a new privacy review before updating the digest.
+A test asserts the exemption mapping has exactly this entry and verifies that changed bytes or the same bytes
+at another path are scanned. The corpus is no longer placeholder-encoded; the earlier encoding notes above
+describe superseded work. Runtime redaction rules and the G6 oracle are unchanged.
+
+The privacy scan additionally normalizes the very heavy solidus/reverse-solidus characters and combining
+solidus overlay (U+1F67C, U+1F67D, U+0338). HTTP(S) authorities are checked for single-label and private-suffix
+hostnames, while public DNS references and currency/unit prose such as `$/hour` remain portable. In-memory
+artifact injections cover both rejected and accepted examples. A source archive scans its candidate files
+without relying on a git index.
+
+Verification uses Python 3.13 and pytest 8.4.2 with initialized submodules. External evidence records full pytest,
+unittest discovery, Chrome smoke, a source-archive placement run and the 21-row byte comparison. Real per-user
+configuration listings (names, sizes and modification times) bracket verification, alongside concurrent Python
+process command lines for attribution if a listing changes. Logs and screenshots remain outside the repository;
+TEMP/TMP retain their external values.

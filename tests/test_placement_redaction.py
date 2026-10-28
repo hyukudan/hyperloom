@@ -3,7 +3,6 @@ import ast
 from contextlib import ExitStack
 import json
 from pathlib import Path
-import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -57,12 +56,7 @@ BOUNDARIES = (
 
 class PlacementBoundaryTests(unittest.TestCase):
     def base_source(self):
-        available = subprocess.run(["git", "cat-file", "-e", "2a7c803^{commit}"], cwd=Path(__file__).resolve().parents[1],
-                                   capture_output=True)
-        if available.returncode:
-            self.skipTest("legacy comparison requires the historical base commit")
-        return subprocess.check_output(["git", "show", "2a7c803:hyperloom/web/api.py"],
-                                       cwd=Path(__file__).resolve().parents[1], text=True, encoding="utf-8")
+        return (Path(__file__).parent / "fixtures/placement_baseline/hyperloom.web.api.py").read_text(encoding="utf-8")
 
     def test_masking_regressions_fail_instead_of_skipping(self):
         for case in CASES:
