@@ -206,6 +206,23 @@ class LaunchTests(unittest.TestCase):
         history.assert_called_once_with(self.api)
         self.assertEqual(progress.call_count, 1)
 
+    def test_latest_skips_failed_deploys_named_only_by_progress(self):
+        # A failed recipes/deploy names its profile only in its progress file: read once, then remembered.
+        launch._resolved.clear()
+        self.api._jobs.clear()
+        for i in range(20):
+            jid = format(i, "x")
+            self.api._jobs[jid] = {"job": jid, "action": "recipes/deploy", "arguments": {"inputs": "d" * 64, "stop": []},
+                                   "state": "failed", "started_at": 110 + i, "finished_at": 140, "result": None, "error": "x"}
+        progress = {"phase": "failed", "profile": "qwen", "stopped": []}
+        with mock.patch.object(launch, "read_history", return_value=([], None)),                 mock.patch.object(service, "read_progress", return_value=progress) as read:
+            self.api.read("launch")
+            first = read.call_count
+            self.api._expires = 0
+            doc = self.api.read("launch")
+        self.assertEqual([r["job"] for r in doc["launches"]], ["13"])
+        self.assertEqual(read.call_count - first, 1)
+
     def test_latest_skips_job_evicted_between_roster_and_detail(self):
         self.api._jobs["bcd"] = dict(self.job, job="bcd", arguments={"profile": "other"})
         real = launch.launch

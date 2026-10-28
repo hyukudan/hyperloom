@@ -174,6 +174,8 @@ def collect(api, now, store=None):
             source["_endpoint"] = endpoint
             if "stale" not in source["why"]:
                 source["as_of"] = now
+                # Kept with the source: a retained (paused) observation reports the count it was read with.
+                source["_parsed"] = len(source.get("sessions") or [])
             sources.append(source)
         supported = (True if any(s["supported"] is True for s in sources) else
                      False if not kind or sources and all(s["supported"] is False for s in sources) else None)
@@ -194,11 +196,12 @@ def collect(api, now, store=None):
             if stats[field] is None:
                 stats_why[field] = "not reported by every replica; see sources"
         stats["why"] = stats_why
-        coverage = {"scope": "queried endpoints only; TP2 peer RAM is not reported", "limit": LIMIT, "returned": min(len(rows), LIMIT), "parsed": len(rows),
-                    "omitted": max(0, len(rows) - LIMIT), "discovery_omitted": omitted,
+        parsed = sum(s.get("_parsed", len(s.get("sessions") or [])) for s in sources)
+        coverage = {"scope": "queried endpoints only; TP2 peer RAM is not reported", "limit": LIMIT, "returned": min(len(rows), LIMIT), "parsed": parsed,
+                    "omitted": max(0, parsed - LIMIT), "discovery_omitted": omitted,
                     "order": "newest first where last_used is reported; otherwise engine order",
                     "complete": bool(sources) and all(s["supported"] is True and s["sessions"] is not None
-                                                     and not s["why"] for s in sources) and len(rows) <= LIMIT
+                                                     and not s["why"] for s in sources) and parsed <= LIMIT
                                 and not any(omitted.values())}
         # Keep only capped sessions once, rather than duplicating unbounded source lists.
         for source in sources:

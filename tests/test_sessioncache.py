@@ -307,6 +307,19 @@ class CollectorTests(unittest.TestCase):
             sc.collect(self.api, 1032, self.store)
         self.assertNotIn("stale", sc.document(self.api, {}, self.store)["profiles"][0]["why"])
 
+    def test_paused_read_keeps_parsed_and_omitted_counts(self):
+        many = {"list": {"sessions": ["s%d" % i for i in range(300)]}, "stats": fixture("deepseek")["stats"]}
+        first = self.collect(lambda *a, **kw: many[kw["json_body"]["op"]])
+        self.assertEqual((first["coverage"]["parsed"], first["coverage"]["omitted"]), (300, 44))
+        budget = pollbudget.for_api(self.api)
+        budget.note_turn("node0", "foreign", now=1031)
+        with patch.object(sc, "_http") as http:
+            sc.collect(self.api, 1031, self.store)
+            http.assert_not_called()
+        row = sc.document(self.api, {}, self.store)["profiles"][0]
+        self.assertEqual((row["coverage"]["parsed"], row["coverage"]["omitted"], row["coverage"]["returned"]), (300, 44, 256))
+        self.assertFalse(row["coverage"]["complete"])
+
     def test_closed_page_or_missing_poller_keeps_previous_without_discovery(self):
         original = self.collect(lambda *a, **kw: fixture("deepseek")[kw["json_body"]["op"]])
         for poll in (None, SimpleNamespace(page_open=lambda: False)):

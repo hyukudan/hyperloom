@@ -293,14 +293,23 @@ def launch(api, jid, query, *, retained=None):
     return redact(api.document("launch", **result, eta=estimate(api, result["profile"], retained), why=why))
 
 
+# job id -> profile of finished jobs whose profile only their progress file names (a failed recipes/deploy): lets
+# GET launch skip superseded ones without reading that file again. Bounded by the portal's job roster.
+_resolved = {}
+
+
 def latest(api, query):
     if query:
         raise ValueError("launch accepts no query parameters")
     rows = {}
     retained = read_history(api)
     seen = set()
-    for job in sorted(jobs(api), key=lambda j: j.get("started_at") or 0, reverse=True):
-        name = (job.get("arguments", {}).get("profile") or completed(job.get("result")).get("profile"))
+    roster = jobs(api)
+    for jid in set(_resolved) - {j["job"] for j in roster}:
+        _resolved.pop(jid, None)
+    for job in sorted(roster, key=lambda j: j.get("started_at") or 0, reverse=True):
+        name = (job.get("arguments", {}).get("profile") or completed(job.get("result")).get("profile")
+                or _resolved.get(job["job"]))
         if job.get("state") != "running" and name and name in seen:
             continue
         try:
@@ -308,6 +317,8 @@ def latest(api, query):
         except LookupError:  # the bounded job roster can evict a job between reads
             continue
         if document["profile"]:
+            if job.get("state") != "running":
+                _resolved[job["job"]] = document["profile"]
             seen.add(document["profile"])
             rows.setdefault(document["profile"], document)
     from hyperloom.web.api import redact
