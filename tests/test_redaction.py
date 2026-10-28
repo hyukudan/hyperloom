@@ -218,6 +218,16 @@ SECRETS = {
     json.dumps({"cmd": r'curl -H "X: \"a|b\"" -u alice:HeaderSecret2'}): "HeaderSecret2",
     repr({"body": json.dumps({"password": "a' SecretSuffix"})}): "SecretSuffix",
     repr(json.dumps({"password": "a' SecretSuffix2"})): "SecretSuffix2",
+    # a leak-closing pass never makes another rule's value readable
+    "xBearer db_pass (s3cretpw)": "s3cretpw",
+    "app.kBearer db_pass (s3cretpw)": "s3cretpw",
+    "password --x'a_key (hunter2 s3cretpw)": "hunter2",
+    "api_key1 it's fine; db_pass 'hunter2 s3cretpw'": ("hunter2", "s3cretpw"),
+    "--password --it's password 'hunter2 s3cretpw'": ("hunter2", "s3cretpw"),
+    "HF_TOKEN --it's; HF_TOKEN 'hunter2 s3cretpw'": ("hunter2", "s3cretpw"),
+    "password --certa:X1pw": "X1pw",
+    "-uBearer a:X2pw": "X2pw",
+    "HF_TOKENcurl a:X3pw": "X3pw",
     # a scheme word that is itself a name with a value
     "api_key: Token : Sch3meName": "Sch3meName",
 }

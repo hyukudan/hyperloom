@@ -79,7 +79,7 @@ _QUOTES = re.compile(r"""['"]""")
 _NESTED_BEARER = re.compile(r"(?i)\bbearer\s+\S")
 _DOUBLE = r'''"(?:[^"\\\n]|\\.)*"'''
 _DOUBLE_STRING = re.compile(_DOUBLE)
-_NOT_OPTION = r"(?!-[A-Za-z](?:\s|$))"   # a blank-separated value is not the next short option (-u a:pw -U b:c)
+_NOT_OPTION = r"(?!-[A-Za-z](?:\s|$)|--[A-Za-z])"   # a blank-separated value is not the next option (-U, --next)
 _START = r"(?!\[redacted\])(?=\S)"                 # where a value starts (one already hidden is not read again)
 # A shell word: quoted parts (a backslash escapes inside double quotes and outside quotes) and unquoted
 # characters, concatenated (-u'alice:foo'bar and api_key=a' two words' are one word each); a quote with no closing
@@ -315,7 +315,7 @@ SECRET_PATTERNS = (
     # _keep_scheme_value.
     (re.compile(r"""(?i)\b(?:proxy-)?authorization["']?\s*[:=]\s*["']?(?:Bearer|Basic|Digest|Token|Negotiate)\s+"""
                 + _START), "", _keep_nothing),
-    (re.compile(r"""(?i)(?:(?P<bearer>Bearer)|\b(?:Basic|Digest|Token|Negotiate))\s+""" + _START), "",
+    (re.compile(r"""(?i)\b(?:(?P<bearer>Bearer)|Basic|Digest|Token|Negotiate)\s+""" + _START), "",
      _keep_scheme_value),
     (re.compile(r'''(?ix)(?<![\w.-])(?:(?<!\\)\\*["'])?(?:(?=[\w.-]*?(?P<cred>key|secret|pass|pwd|credential|auth))'''
                 r'''|(?=[\w.-]*?token(?!iz)))(?=([\w.-]*))\2(?:\\*["'])?\s*[:=]\s*'''
@@ -341,7 +341,7 @@ SECRET_PATTERNS = (
                 r"[A-Z0-9]+(?:_[A-Z0-9]+)*"
                 r"|(?P<lower>(?i:(?:(?=[a-z0-9_]*?(?P<cred2>key|secret|pass|pwd|credentials?|auth))"
                 r"|(?=[a-z0-9_]*?token(?!iz)))"
-                r"[a-z0-9]+(?:_[a-z0-9]+)*_[a-z0-9]*(?:key|secret|token|pass(?:wd|word)?|pwd|credentials?|auth)[a-z0-9]*)))"
+                r"[a-z0-9]+(?:_[a-z0-9]+)*_[a-z0-9]*(?:key|secret|token|pass(?:wd|word)?|pwd|credentials?|auth)s?)))"
                 r"\s+(?![:=])" + _NOT_OPTION + _START), "", _keep_token_value),
     # Any other tool's `--user name:password` (a numeric uid:gid, as in `docker run --user 1000:1000`, stays; a
     # --user followed by another option, as in `systemd-run --user --setenv=A=/x:/y`, takes no value; the option
@@ -392,11 +392,11 @@ CURL_OPTION = re.compile(r"""(?<=\s)(?P<o>(?P<q>["'])(?:-""" + CURL_FLAGS + r"""
                          + r"""|'[^'\n]*'|""" + _DOUBLE + r"""|\\.""")
 
 
-def _values(text, strings):
+def _values(text, strings, patterns=None, shorter_read=False):
     """(start, end, name): every value the rules and the -p clients hide; name, when set, is where a snake-case
     name ends (its last character): that value is hidden only if the name is not inside another hidden value. A
     snake-case name's own value (name -1) is not such a value: db_pass a_key (x hides x."""
-    for pattern, stops, keep in SECRET_PATTERNS:
+    for pattern, stops, keep in SECRET_PATTERNS if patterns is None else patterns:
         pos, read = 0, 0
         while True:
             found = pattern.search(text, pos)
@@ -419,8 +419,8 @@ def _values(text, strings):
             conditional = found.groupdict().get("lower") and text[pos] == "(" and not _QUOTES.search(text, pos, end)
             if end > pos and not keep(found, value):
                 yield pos, end, found.end("lower") - 1 if conditional else -1 if found.groupdict().get("lower") else None
-            read = pos if conditional else shorter
-    for client, option, miss in GLUED_PASSWORD:
+            read = pos if conditional else shorter if shorter_read else end
+    for client, option, miss in GLUED_PASSWORD if patterns is None else ():
         pos = 0
         while True:
             found = client.search(text, pos)
@@ -456,10 +456,11 @@ def _curl_users(text, strings):
         pos = command.end()             # a value that runs on past it may hide the next command's start
 
 
-def _layer_spans(text):
-    """The spans the rules hide in ``text`` itself (layer 0)."""
-    strings = _strings(text)
-    found = [*_values(text, strings), *((start, end, None) for start, end in _curl_users(text, strings))]
+def _pass_spans(text, strings, patterns=None, shorter_read=False):
+    """The spans one pass of the rules hides in ``text`` (the rules themselves: patterns None)."""
+    found = [*_values(text, strings, patterns, shorter_read)]
+    if patterns is None:
+        found += [(start, end, None) for start, end in _curl_users(text, strings)]
     spans = [(start, end) for start, end, name in found if name is None or name == -1]
     union, ends = [], []                # the hidden spans merged, to look a name up in them
     for start, end in sorted((start, end) for start, end, name in found if name is None):
@@ -473,6 +474,39 @@ def _layer_spans(text):
             low = _first_after(union, name)     # the last merged span that starts at or before the name
             if not (low and name < ends[low - 1]):
                 spans.append((start, end))
+    return spans
+
+
+# Leak-closing passes, each run on its own over the text, their spans added to the rules' (no pass can make
+# another's span readable): a name read after the shorter reading of an apostrophe value ({'a_key': 'it\'s"x',
+# 'secret': " y'"}), a value that starts with -- after a password word or an environment-style name
+# (password --x), Bearer glued after other characters (xBearer t), a snake-case name with letters glued after its
+# credential word (hf_tokencurl t).
+_ENV_UPPER = (r"(?:(?=[A-Z0-9_]*?(?P<cred>KEY|SECRET|PASS|PWD|CREDENTIALS?|AUTH))|(?=[A-Z0-9_]*?TOKEN(?!IZ)))"
+              r"[A-Z0-9]+(?:_[A-Z0-9]+)*")
+_ENV_LOWER = (r"(?P<lower>(?i:(?:(?=[a-z0-9_]*?(?P<cred2>key|secret|pass|pwd|credentials?|auth))"
+              r"|(?=[a-z0-9_]*?token(?!iz)))"
+              r"[a-z0-9]+(?:_[a-z0-9]+)*_[a-z0-9]*(?:key|secret|token|pass(?:wd|word)?|pwd|credentials?|auth)%s))")
+_PASSES = (
+    ("shorter reading", None, True),
+    ("dash value", (
+        (re.compile(r"(?i)\b(?:passw(?:or)?d|passwd|passphrase|pwd)\s+(?=--[A-Za-z])" + _START), "", _keep_plain),
+        (re.compile(r"\b(?:" + _ENV_UPPER + "|" + _ENV_LOWER % "s?" + r")\s+(?=--[A-Za-z])" + _START), "",
+         _keep_token_value)), False),
+    ("glued scheme", (
+        (re.compile(r"(?i)(?<=\w)(?P<bearer>Bearer)\s+" + _START), "", _keep_scheme_value),), False),
+    ("glued name", (
+        (re.compile(r"\b(?:" + _ENV_LOWER % "[a-z0-9]+" + r")\s+(?![:=])" + _NOT_OPTION + _START), "",
+         _keep_token_value),), False),
+)
+
+
+def _layer_spans(text):
+    """The spans hidden in ``text`` itself: the rules', and each leak-closing pass's."""
+    strings = _strings(text)
+    spans = _pass_spans(text, strings)
+    for name, patterns, shorter_read in _PASSES:
+        spans += _pass_spans(text, strings, patterns, shorter_read)
     return spans
 
 

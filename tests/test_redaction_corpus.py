@@ -1,8 +1,8 @@
 """The redaction corpus (tests/fixtures/redaction/corpus.jsonl): every case of the shared table, the review cases and
 a seeded sample of generated text (JSON, repr and shell encodings of credentials, kept values, unpaired quotes) and
 argument lists. Against the frozen rules of 2a7c803 and of 65f2fe5 (copies in the fixture), the rules show no secret
-either hid; against 65f2fe5 they hide nothing more, except the entries allowlist.json names, each with the change
-that explains it."""
+either hid; against 65f2fe5 they hide no other character, except in the entries allowlist.json names, each with the
+change that explains it, and every allowlisted entry still needs its reason."""
 
 import importlib.util
 import json
@@ -10,6 +10,7 @@ from pathlib import Path
 import unittest
 
 from hyperloom.web.api import redact
+from tests.redaction_corpus_metric import hides_more, shows
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURE = ROOT / "tests" / "fixtures" / "redaction"
@@ -34,39 +35,30 @@ def outputs(entry, portal, node_redact):
     return {"portal": portal(value), "recipe": portal(value, text=False)}
 
 
-def text(value):
-    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
-
-
-def hides_more(new, old, markers):
-    """``new`` hides more than ``old`` (more [redacted], or as many and a shorter text) where ``old`` showed no
-    secret."""
-    new, old = text(new), text(old)
-    return new != old and not any(marker in old for marker in markers) and (
-        new.count("[redacted]") > old.count("[redacted]") or
-        new.count("[redacted]") == old.count("[redacted]") > 0 and len(new) < len(old))
-
-
 class CorpusTests(unittest.TestCase):
     def test_no_new_leak_and_no_unexplained_redaction(self):
         allow = json.loads((FIXTURE / "allowlist.json").read_text(encoding="utf-8"))
         corpus = [json.loads(line) for line in (FIXTURE / "corpus.jsonl").open(encoding="utf-8")]
         self.assertGreater(len(corpus), 3000)
-        leaks, extra = [], []
+        leaks, extra, stale = [], [], []
         for entry in corpus:
             new = outputs(entry, redact, node.redact)
-            for name, rules in (("2a7c803", BASE), ("65f2fe5", PREVIOUS)):
-                old = outputs(entry, rules.portal_redact, rules.node_redact)
-                for path in new:
-                    shown = [m for m in entry["markers"] if m in text(new[path]) and m not in text(old[path])]
+            previous = outputs(entry, PREVIOUS.portal_redact, PREVIOUS.node_redact)
+            base = outputs(entry, BASE.portal_redact, BASE.node_redact)
+            for path in new:
+                for name, old in (("2a7c803", base), ("65f2fe5", previous)):
+                    shown = shows(entry, new[path], old[path])
                     if shown:
                         leaks.append((name, path, entry["id"], entry["input"], shown))
-                    if name == "65f2fe5" and hides_more(new[path], old[path], entry["markers"]):
-                        reason = allow["entries"].get(str(entry["id"]), {}).get(path)
-                        if reason not in allow["reasons"]:
-                            extra.append((path, entry["id"], entry["input"], text(new[path]), text(old[path])))
+                reason = allow["entries"].get(str(entry["id"]), {}).get(path)
+                more = hides_more(entry, new[path], previous[path])
+                if more and reason not in allow["reasons"]:
+                    extra.append((path, entry["id"], entry["input"], new[path], previous[path]))
+                elif reason is not None and not more:
+                    stale.append((path, entry["id"], reason))
         self.assertEqual(leaks, [])
         self.assertEqual(extra, [])
+        self.assertEqual(stale, [])
 
 
 if __name__ == "__main__":

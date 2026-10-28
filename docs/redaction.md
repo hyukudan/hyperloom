@@ -29,6 +29,10 @@ Each row is a form the rules deliberately leave as described.
 | A bare `hf_` or GitHub token word is hidden only with 30+ token characters or when it calls itself a secret | `hf_hub_download` | unchanged |
 | A shell-quoted value holding a double quote and a blank, inside a single-quoted command, as written, JSON-encoded or in a repr | `ssh host 'export HF_TOKEN='"'"'"q r x'"'"''` | `r x` shown |
 | A client certificate's password is hidden for curl only | `wget --certificate c.pem:pw` | unchanged |
+| After `Token`, `Basic`, `Digest` or `Negotiate` (not in an `Authorization` header), a value is hidden only when it looks like a credential: 8+ characters, not only digits, with a digit, `+`, `/`, `=` or an inner capital | `Token hunter2` | unchanged |
+| An apostrophe that opens prose (`it's`) can pair with the opening quote of a later value, which then shows its words after the first blank | `a_key it's db_pass 'hunter2 pw'` | `pw'` shown |
+| A shell-escaped blank joins the next command into a value | `sshpass -p=a\ {sshpass -p 'x"y'` | `'x"y'` shown |
+| A kept value (None, a count, a uid:gid) written inside a repr of JSON is hidden, and so is the closing quote after it; in one more layer of encoding it stays hidden | `'{"m": "api_key=None"}'` | `api_key=[redacted]}'` |
 
 ## Follow-ups
 
