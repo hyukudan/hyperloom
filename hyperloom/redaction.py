@@ -17,7 +17,6 @@ Known limits (also in docs/redaction.md, with the follow-ups):
 
     limit                                                      example                         result
     the node reads one line: a continued command is split      curl https://x \\ / -u a:pw     a:pw shown
-    a credential word inside a lower-case name: = or : only    db_password_prod pw             unchanged
     a token option keeps a number                              --hf-token 123456789012         unchanged
     --user name:group is hidden like name:password             docker run --user root:root     [redacted]
     an argument list that mentions mysql hides a glued -p      ["echo", "mysql", "-pretty"]    -p[redacted]
@@ -26,7 +25,6 @@ Known limits (also in docs/redaction.md, with the follow-ups):
     a shell-quoted value with " and a blank in a quoted        ssh host 'export HF_TOKEN=      r x shown
       command (as written, JSON-encoded or in a repr)            '"'"'"q r x'"'"''
     certificate passwords: curl only                           wget --certificate c.pem:pw     unchanged
-    Token/Basic/Digest/Negotiate: credential-shaped values     Token hunter2                   unchanged
     a prose apostrophe pairs with a later value's quote        a_key it's db_pass 'hunter2 pw' pw' shown
     a shell-escaped blank joins the next command               sshpass -p=a\\ {sshpass -p 'x"y' 'x"y' shown
     a kept value inside a repr of JSON (and deeper)            '{"m": "api_key=None"}'         [redacted]}'
@@ -282,6 +280,12 @@ def _keep_scheme_value(match, value):
         len(value) >= 8 and not value.isdigit() and _CREDENTIAL_LOOK.search(value))
 
 
+def _keep_short_scheme_value(match, value):
+    """A value of any length after a scheme word is hidden when it looks like a credential (not only digits, with a
+    digit, +, / or =, or an upper-case letter after the first: Token hunter2), as the base rules hid it."""
+    return value.isdigit() or not _CREDENTIAL_LOOK.search(value)
+
+
 def _keep_user(match, value):
     """--user keeps a value without a colon and a numeric uid:gid (docker run --user 1000:1000)."""
     return ":" not in value or _UID_GID.fullmatch(value) is not None
@@ -464,7 +468,9 @@ def _pass_spans(text, strings, patterns=None, shorter_read=False):
 # another's span readable): a name read after the shorter reading of an apostrophe value ({'a_key': 'it\'s"x',
 # 'secret': " y'"}), a value that starts with -- after a password word or an environment-style name
 # (password --x), Bearer glued after other characters (xBearer t), a snake-case name with letters glued after its
-# credential word (hf_tokencurl t).
+# credential word (hf_tokencurl t); and, as the base rules read them, a snake-case name that holds pass, pwd or
+# secret anywhere (db_password_prod x, secret_db x; not a parenthesised message after it) and a short credential-shaped value after a scheme word
+# (Token hunter2).
 _ENV_UPPER = (r"(?:(?=[A-Z0-9_]*?(?P<cred>KEY|SECRET|PASS|PWD|CREDENTIALS?|AUTH))|(?=[A-Z0-9_]*?TOKEN(?!IZ)))"
               r"[A-Z0-9]+(?:_[A-Z0-9]+)*")
 _ENV_LOWER = (r"(?P<lower>(?i:(?:(?=[a-z0-9_]*?(?P<cred2>key|secret|pass|pwd|credentials?|auth))"
@@ -478,6 +484,11 @@ _PASSES = (
          _keep_token_value)), False),
     ("glued scheme", (
         (re.compile(r"(?i)(?<=\w)(?P<bearer>Bearer)\s+" + _START), "", _keep_scheme_value),), False),
+    ("base parity: password or secret in a snake-case name", (
+        (re.compile(r"(?i)\b(?=[a-z0-9_]*?(?:pass|pwd|secret))(?=[a-z0-9_]*_[a-z0-9])(?=([a-z0-9_]+))\1"
+                    r"\s+(?![:=(])(?!\[redacted\])(?P<v>\S+)"), "", _keep_nothing),), False),
+    ("base parity: a short scheme value", (
+        (re.compile(r"(?i)\b(?:Basic|Digest|Token|Negotiate)\s+" + _START), "", _keep_short_scheme_value),), False),
     ("glued name", (
         (re.compile(r"\b(?:" + _ENV_LOWER % "[a-z0-9]+" + r")\s+(?![:=])" + _NOT_OPTION + _START), "",
          _keep_token_value),), False),
@@ -511,8 +522,9 @@ _TRIGGER = re.compile(r"(?i)key|secret|token|pass|pwd|credential|auth|bearer|bas
 
 
 def _decoded(text, start, end):
-    """(decoded, starts, ends): the literal text[start:end] (without its quotes) unescaped, and for each decoded
-    character the span of text it was written with; decoding stops at an escape it does not know."""
+    """(decoded, starts, ends, whole): the literal text[start:end] (without its quotes) unescaped, for each decoded
+    character the span of text it was written with, and whether it was decoded to its end (decoding stops at an
+    escape it does not know)."""
     decoded, starts, ends, at = [], [], [], start
     while at < end:
         char = text[at]
@@ -537,14 +549,16 @@ def _decoded(text, start, end):
         starts.append(at)
         ends.append(at + size)
         at += size
-    return "".join(decoded), starts, ends
+    return "".join(decoded), starts, ends, at >= end
 
 
 def _hidden(text, depth=0):
     """The spans to hide in ``text``: the rules' own, and what they hide in its escaped string literals, decoded. A
-    decoded layer that holds nothing a rule starts from, or that is itself one escaped string literal (JSON of JSON),
-    is only decoded further."""
-    whole = depth and text[:1] in ("'", '"') and _LITERAL[text[0]].fullmatch(text) is not None
+    decoded layer that holds nothing a rule starts from is only decoded further, and so is one that is itself one
+    string literal with escapes that decodes whole (JSON of JSON) when another layer will read it; the last layer,
+    and a literal whose decoding stops, are always read."""
+    whole = (0 < depth < _LAYERS and text[:1] in ("'", '"') and len(text) > 1 and "\\" in text[1:-1]
+             and _LITERAL[text[0]].fullmatch(text) is not None and _decoded(text, 1, len(text) - 1)[3])
     spans = _layer_spans(text) if not depth or not whole and _TRIGGER.search(text) else []
     if depth >= _LAYERS or "\\" not in text:
         return spans
@@ -564,7 +578,7 @@ def _hidden(text, depth=0):
         pos = literal.end()
         if "\\" not in text[at + 1:pos - 1]:
             continue
-        decoded, starts, ends = _decoded(text, at + 1, pos - 1)
+        decoded, starts, ends, _ = _decoded(text, at + 1, pos - 1)
         for start, end in _hidden(decoded, depth + 1):
             if start < end:
                 spans.append((starts[start], ends[end - 1]))

@@ -1,34 +1,34 @@
 {
  "entries": {
-  "1009": {
+  "1021": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "1111": {
+  "1123": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "1340": {
+  "1352": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "1401": {
+  "1413": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "1498": {
+  "1510": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "1561": {
+  "1573": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "1562": {
+  "1574": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "1626": {
+  "1638": {
    "node": "decoded",
    "portal": "decoded"
   },
@@ -52,75 +52,87 @@
    "node": "dash value",
    "portal": "dash value"
   },
-  "1746": {
+  "1758": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "1812": {
+  "1814": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "1825": {
+  "1824": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "1891": {
+  "1837": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "1937": {
+  "187": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "2078": {
+  "1903": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "2116": {
+  "1949": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "2143": {
+  "2090": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "2144": {
+  "2128": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "2190": {
+  "2155": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "2320": {
+  "2156": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "2344": {
+  "2202": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "2408": {
+  "2332": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "2356": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "2420": {
    "node": "dash value",
    "portal": "dash value"
   },
-  "2555": {
+  "2567": {
    "node": "glued scheme",
    "portal": "glued scheme"
   },
-  "2564": {
+  "2576": {
    "node": "dash value",
    "portal": "dash value"
   },
-  "2592": {
+  "2604": {
    "node": "glued scheme",
    "portal": "glued scheme"
   },
-  "2618": {
-   "node": "dash value",
-   "portal": "dash value"
+  "2610": {
+   "node": "base parity: a short scheme value",
+   "portal": "base parity: a short scheme value"
   },
-  "2640": {
+  "2611": {
+   "node": "base parity: password or secret in a snake-case name",
+   "portal": "base parity: password or secret in a snake-case name"
+  },
+  "2630": {
    "node": "dash value",
    "portal": "dash value"
   },
@@ -128,75 +140,107 @@
    "node": "dash value",
    "portal": "dash value"
   },
-  "2682": {
+  "2664": {
+   "node": "dash value + base parity: password or secret in a snake-case name",
+   "portal": "dash value + base parity: password or secret in a snake-case name"
+  },
+  "2694": {
    "node": "glued scheme",
    "portal": "glued scheme"
   },
-  "2684": {
+  "2696": {
+   "node": "dash value + base parity: password or secret in a snake-case name",
+   "portal": "dash value + base parity: password or secret in a snake-case name"
+  },
+  "2766": {
+   "node": "dash value + base parity: a short scheme value",
+   "portal": "dash value + base parity: a short scheme value"
+  },
+  "2782": {
    "node": "dash value",
    "portal": "dash value"
   },
-  "2754": {
+  "2816": {
+   "node": "base parity: a short scheme value",
+   "portal": "base parity: a short scheme value"
+  },
+  "2830": {
+   "node": "base parity: a short scheme value",
+   "portal": "base parity: a short scheme value"
+  },
+  "2832": {
+   "node": "base parity: a short scheme value",
+   "portal": "base parity: a short scheme value"
+  },
+  "2835": {
    "node": "dash value",
    "portal": "dash value"
   },
-  "2770": {
+  "2843": {
    "node": "dash value",
    "portal": "dash value"
   },
-  "2823": {
-   "node": "dash value",
-   "portal": "dash value"
+  "2844": {
+   "node": "base parity: password or secret in a snake-case name",
+   "portal": "base parity: password or secret in a snake-case name"
   },
-  "2831": {
-   "node": "dash value",
-   "portal": "dash value"
-  },
-  "2882": {
-   "node": "dash value",
-   "portal": "dash value"
+  "2860": {
+   "node": "base parity: password or secret in a snake-case name",
+   "portal": "base parity: password or secret in a snake-case name"
   },
   "2894": {
    "node": "dash value",
    "portal": "dash value"
   },
   "2906": {
+   "node": "dash value + base parity: password or secret in a snake-case name",
+   "portal": "dash value + base parity: password or secret in a snake-case name"
+  },
+  "2918": {
+   "node": "dash value + base parity: password or secret in a snake-case name",
+   "portal": "dash value + base parity: password or secret in a snake-case name"
+  },
+  "2954": {
+   "node": "glued scheme",
+   "portal": "glued scheme"
+  },
+  "3025": {
+   "node": "glued name",
+   "portal": "glued name"
+  },
+  "3030": {
    "node": "dash value",
    "portal": "dash value"
   },
-  "2942": {
+  "3041": {
+   "node": "base parity: a short scheme value",
+   "portal": "base parity: a short scheme value"
+  },
+  "3048": {
+   "node": "base parity: a short scheme value",
+   "portal": "base parity: a short scheme value"
+  },
+  "3055": {
+   "node": "glued name + base parity: password or secret in a snake-case name",
+   "portal": "glued name + base parity: password or secret in a snake-case name"
+  },
+  "3059": {
+   "node": "glued name + base parity: password or secret in a snake-case name",
+   "portal": "glued name + base parity: password or secret in a snake-case name"
+  },
+  "3080": {
+   "node": "glued name",
+   "portal": "glued name"
+  },
+  "3093": {
    "node": "glued scheme",
    "portal": "glued scheme"
   },
-  "3013": {
-   "node": "glued name",
-   "portal": "glued name"
-  },
-  "3018": {
-   "node": "dash value",
-   "portal": "dash value"
-  },
-  "3043": {
-   "node": "glued name",
-   "portal": "glued name"
-  },
-  "3047": {
-   "node": "glued name",
-   "portal": "glued name"
-  },
-  "3068": {
-   "node": "glued name",
-   "portal": "glued name"
-  },
-  "3081": {
+  "3158": {
    "node": "glued scheme",
    "portal": "glued scheme"
   },
-  "3146": {
-   "node": "glued scheme",
-   "portal": "glued scheme"
-  },
-  "537": {
+  "549": {
    "node": "decoded",
    "portal": "decoded"
   },
@@ -204,27 +248,32 @@
    "node": "dash value",
    "portal": "dash value"
   },
-  "628": {
+  "640": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "722": {
+  "734": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "879": {
+  "891": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "984": {
+  "996": {
    "node": "decoded",
    "portal": "decoded"
   }
  },
  "reasons": {
+  "base parity: a short scheme value": "base parity: a short credential-shaped value after Token, Basic, Digest or Negotiate is hidden, as 2a7c803 did",
+  "base parity: password or secret in a snake-case name": "base parity: a snake-case name that holds pass, pwd or secret anywhere hides its value, as 2a7c803 did",
   "dash value": "a value after a password or credential word that starts with -- is hidden, as 2a7c803 hid it",
+  "dash value + base parity: a short scheme value": "a value after a password or credential word that starts with -- is hidden, as 2a7c803 hid it and base parity: a short credential-shaped value after Token, Basic, Digest or Negotiate is hidden, as 2a7c803 did",
+  "dash value + base parity: password or secret in a snake-case name": "a value after a password or credential word that starts with -- is hidden, as 2a7c803 hid it and base parity: a snake-case name that holds pass, pwd or secret anywhere hides its value, as 2a7c803 did",
   "decoded": "hidden in a decoded string literal as the same text is hidden in plain text",
   "glued name": "a snake-case name with letters glued after its credential word, as 2a7c803 read it",
+  "glued name + base parity: password or secret in a snake-case name": "a snake-case name with letters glued after its credential word, as 2a7c803 read it and base parity: a snake-case name that holds pass, pwd or secret anywhere hides its value, as 2a7c803 did",
   "glued scheme": "Bearer glued after other characters is a scheme word, as 2a7c803 read it"
  }
 }

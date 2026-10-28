@@ -21,7 +21,6 @@ Each row is a form the rules deliberately leave as described.
 | Limit | Minimal example | Result |
 |---|---|---|
 | The node redacts one log line at a time; a command continued with a backslash is seen without its first line | `curl https://x \` then `  -u a:pw` | the second line shows `a:pw` |
-| A lower-case name with the credential word inside it hides a value after `=` or `:` only (prose such as `key_cache shape` stays readable) | `db_password_prod pw` | unchanged |
 | A token option keeps a number | `--hf-token 123456789012` | unchanged |
 | `--user name:group` is hidden like `name:password` | `docker run --user root:root img` | `--user [redacted]` |
 | An argument list that only mentions mysql hides a later glued `-p` value | `["echo", "mysql", "-pretty"]` | `-p[redacted]` |
@@ -29,7 +28,6 @@ Each row is a form the rules deliberately leave as described.
 | A bare `hf_` or GitHub token word is hidden only with 30+ token characters or when it calls itself a secret | `hf_hub_download` | unchanged |
 | A shell-quoted value holding a double quote and a blank, inside a single-quoted command, as written, JSON-encoded or in a repr | `ssh host 'export HF_TOKEN='"'"'"q r x'"'"''` | `r x` shown |
 | A client certificate's password is hidden for curl only | `wget --certificate c.pem:pw` | unchanged |
-| After `Token`, `Basic`, `Digest` or `Negotiate` (not in an `Authorization` header), a value is hidden only when it looks like a credential: 8+ characters, not only digits, with a digit, `+`, `/`, `=` or an inner capital | `Token hunter2` | unchanged |
 | An apostrophe that opens prose (`it's`) can pair with the opening quote of a later value, which then shows its words after the first blank | `a_key it's db_pass 'hunter2 pw'` | `pw'` shown |
 | A shell-escaped blank joins the next command into a value | `sshpass -p=a\ {sshpass -p 'x"y'` | `'x"y'` shown |
 | A kept value (None, a count, a uid:gid) written inside a repr of JSON is hidden, and so is the closing quote after it; in one more layer of encoding it stays hidden | `'{"m": "api_key=None"}'` | `api_key=[redacted]}'` |
@@ -41,7 +39,6 @@ Each row is a form the rules deliberately leave as described.
 - Redact `\`-continued commands across lines on the node (the portal reads whole texts).
 - Certificate options of tools other than curl (`wget --certificate`, `httpie --cert`).
 - Tell a value's trailing parenthesised message from a parenthesised secret (`(the job ...)` vs `(x)`).
-- Hide a short value after `Token`, `Basic`, `Digest` or `Negotiate` when the line otherwise looks like a header.
 - Keep a prose apostrophe (`it's`) from pairing with a later value's opening quote.
 - Read a shell-escaped blank (`\ `) as part of one word without joining the next command into it.
 - Keep a kept value's closing quote in a repr of JSON (`'{"m": "api_key=None"}'` keeps `None"}'`).

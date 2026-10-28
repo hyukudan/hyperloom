@@ -21,21 +21,31 @@ def text(value):
     return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
 
 
-def shows(entry, new, old):
-    """The secrets (markers) ``new`` shows that ``old`` hid."""
-    return [marker for marker in entry["markers"] if marker in text(new) and marker not in text(old)]
-
-
-def hides_more(entry, new, old):
-    """``new`` hides a character ``old`` showed, outside the secrets, where ``old`` showed no secret."""
-    if any(marker in text(old) for marker in entry["markers"]):
-        return False
-    value = entry["input"]
-    secret = set()
+def secret_positions(entry):
+    """{marker: the positions of its characters in the input} (every occurrence)."""
+    value, found = entry["input"], {}
     for marker in entry["markers"]:
+        positions = found.setdefault(marker, set())
         for index, item in enumerate([value] if isinstance(value, str) else value):
             at = item.find(marker) if isinstance(item, str) else -1
             while at != -1:
-                secret |= {at + k if isinstance(value, str) else (index, at + k) for k in range(len(marker))}
+                positions |= {at + k if isinstance(value, str) else (index, at + k) for k in range(len(marker))}
                 at = item.find(marker, at + 1)
-    return bool(hidden(value, new) - hidden(value, old) - secret)
+    return found
+
+
+def shows(entry, new, old):
+    """The secrets (markers) of which ``new`` shows a character that ``old`` hid (a partial exposure counts)."""
+    new_hidden, old_hidden = hidden(entry["input"], new), hidden(entry["input"], old)
+    return [marker for marker, positions in secret_positions(entry).items()
+            if (positions & old_hidden) - new_hidden]
+
+
+def hides_more(entry, new, old):
+    """``new`` hides a character ``old`` showed, outside the secrets, where ``old`` hid every secret character."""
+    secrets = secret_positions(entry)
+    old_hidden = hidden(entry["input"], old)
+    if any(positions - old_hidden for positions in secrets.values()):
+        return False
+    secret = set().union(*secrets.values()) if secrets else set()
+    return bool(hidden(entry["input"], new) - old_hidden - secret)

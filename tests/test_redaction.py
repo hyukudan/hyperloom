@@ -232,6 +232,21 @@ SECRETS = {
     "api_keyfile --X4pw": "X4pw",
     "db_passwordx\t--X4pw": "X4pw",
     "HF_TOKENcurl --X4pw": "X4pw",
+    # as the base rules read them: pass, pwd or secret anywhere in a snake-case name, a short credential-shaped value
+    # after a scheme word
+    "db_password_prod ProdSecret42": "ProdSecret42",
+    "secret_db ProdSecret43": "ProdSecret43",
+    "Token hunter2": "hunter2",
+    "Basic hunter3": "hunter3",
+    # decoded string literals: the last layer, and a literal whose own decoding stops, are read
+    json.dumps(json.dumps(json.dumps(r'"\"password=Secret42\""'))): "Secret42",
+    repr("\"curl -H 'Cookie: a;b' -u alice:pw9 h\""): "pw9",
+    repr("\"curl -u alice:'pw 9' h\""): ("pw", "9'"),
+    '{"url": "\\"https:\\/\\/alice:pw9@h\\/x\\""}': "pw9",
+    '"\\"p\\u0061ssword hunter4\\""': "hunter4",
+    '"\\"\\u0063url -u alice:pw10 h\\""': "pw10",
+    '"\\"HF\\u005fTOKEN hunter5\\""': "hunter5",
+    "'\\'Bear\\x65r hunter6\\''": "hunter6",
     # a scheme word that is itself a name with a value
     "api_key: Token : Sch3meName": "Sch3meName",
 }
@@ -525,13 +540,17 @@ class SharedRulesTests(unittest.TestCase):
         # literals among them (each decoded layer is read once more): each stays well under a second.
         # Credential-dense prose JSON-encoded 4 times over: every layer is decoded.
         dense = ("a_key 'it's' db_pass (x) password --x xBearer a hf_tokens b Token c " * 962) + "\n"
+        wrapped = dense
         for _ in range(4):
-            dense = json.dumps(dense)
+            dense, wrapped = json.dumps(dense), json.dumps({"m": wrapped})
+        # Every layer of the wrapped form runs every pass (about 0.7 s on a loaded machine; linear, see
+        # test_redaction_time_grows_linearly): the bound leaves room for a slow machine.
         for name, implementation in (("shared", redaction.redact_text), ("node", node.redact), ("portal", redact)):
-            with self.subTest(implementation=name, unit="dense, 4 layers"):
-                started = time.perf_counter()
-                implementation(dense)
-                self.assertLess(time.perf_counter() - started, 1.0)
+            for unit, line in (("dense, 4 layers", dense), ("dense in objects, 4 layers", wrapped)):
+                with self.subTest(implementation=name, unit=unit):
+                    started = time.perf_counter()
+                    implementation(line)
+                    self.assertLess(time.perf_counter() - started, 2.5)
         nested = json.dumps({"log": json.dumps({"password": "a b\\", "api_key": "x"})})
         units = ("--password \\'", "curl -E \\'", "Bearer \\'", "\\\\\\\"", "'\\'\"", nested, repr(nested),
                  json.dumps(repr(nested)), '"\\"' * 3, "'\\\\'", "a_key (", "--key=", "x\\\"y ", "{\\\"k\\\": \\\"")
