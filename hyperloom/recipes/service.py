@@ -36,7 +36,7 @@ DIGEST = re.compile(r"[0-9a-f]{64}")
 # Ids that would shadow a portal endpoint (GET recipes/<id>) or read as a CLI keyword.
 RESERVED = frozenset(("active", "routes", "probe", "validate", "explain", "check", "diff", "select", "plan", "save",
                       "delete", "list", "show", "pick", "auto", "layers", "save-layer", "delete-layer", "ready",
-                      "matrix"))
+                      "matrix", "export", "import"))
 DEVICES = re.compile(r"(?i)(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³]|conin\$|conout\$)(\..*)?")   # Windows names
 MAX_SAVE_BYTES = 256 * 1024
 MAX_FILES = 512                  # recipe files read per directory by the catalog (the portal's GETs are bounded)
@@ -1497,24 +1497,11 @@ def save_layer(cluster, layer_name, recipe_ref=None, sets=(), *, text=None, repl
         if sets:
             raise RecipeError("--set builds an overrides layer for --recipe; --from takes a whole layer document")
         tree = reader.load_text(text, layer_name)
-        kind = reader.legacy_id(tree.get("schema"))     # tierstream/* ids are the same kinds; the text is stored as given
-        if kind not in (reader.PROFILE_SCHEMA, reader.OVERRIDES_SCHEMA):
-            raise RecipeError(f"layer {layer_name}: schema must be {reader.spellings(reader.PROFILE_SCHEMA)} or "
-                              f"{reader.spellings(reader.OVERRIDES_SCHEMA)}")
         row = next((r for r in catalog(cluster) if r["name"] == tree.get("recipe") and not r["error"]), None)
         if row is None:
             raise RecipeError(f'layer {layer_name}: no recipe named "{tree.get("recipe")}" in the catalog')
-        recipe_text = session.read_text(row["path"])
-        recipe = reader.parse(recipe_text, Path(row["path"]).name)
-        if kind == reader.OVERRIDES_SCHEMA:
-            _resolve_text(recipe_text, Path(row["path"]).name, backend=backend, extra=[(layer_name + ".layer", text)])
-        else:
-            try:
-                reader.parse_layer(text, layer_name, recipe, _sha256(recipe_text.encode("utf-8")), probe=None)
-            except reader.StaleProfile as exc:
-                if "tuned on another version" in str(exc):
-                    raise
-                # Hardware staleness is judged where the profile is used (no hardware here).
+        recipe = check_layer_document(layer_name, text, session.read_text(row["path"]), Path(row["path"]).name,
+                                      backend)
     data = text.encode("utf-8")
     if len(data) > MAX_SAVE_BYTES:
         raise RecipeError(f"layer larger than {MAX_SAVE_BYTES // 1024} KiB")
@@ -1525,6 +1512,108 @@ def save_layer(cluster, layer_name, recipe_ref=None, sets=(), *, text=None, repl
         target = _publish(root, layer_name + suffix, data, current)
     return {"name": target.name, "recipe": recipe["name"], "path": str(target), "sha256": _sha256(data),
             "replaced": current is not None}
+
+
+def check_layer_document(layer_name, text, recipe_text, recipe_file, backend):
+    """A whole layer document checked against its recipe's text as save-layer checks it: an overrides layer is
+    resolved with the recipe; a tuning profile is checked for schema, recipe and sha (its staleness against the
+    hardware is judged where it is used). Returns the parsed recipe."""
+    from . import reader
+    tree = reader.load_text(text, layer_name)
+    kind = reader.legacy_id(tree.get("schema"))     # tierstream/* ids are the same kinds; the text is stored as given
+    if kind not in (reader.PROFILE_SCHEMA, reader.OVERRIDES_SCHEMA):
+        raise RecipeError(f"layer {layer_name}: schema must be {reader.spellings(reader.PROFILE_SCHEMA)} or "
+                          f"{reader.spellings(reader.OVERRIDES_SCHEMA)}")
+    recipe = reader.parse(recipe_text, recipe_file)
+    if tree.get("recipe") != recipe["name"]:
+        raise RecipeError(f'layer {layer_name}: applies to recipe "{tree.get("recipe")}", not "{recipe["name"]}"')
+    if kind == reader.OVERRIDES_SCHEMA:
+        _resolve_text(recipe_text, recipe_file, backend=backend, extra=[(layer_name + ".layer", text)])
+    else:
+        try:
+            reader.parse_layer(text, layer_name, recipe, _sha256(recipe_text.encode("utf-8")), probe=None)
+        except reader.StaleProfile as exc:
+            if "tuned on another version" in str(exc):
+                raise
+            # Hardware staleness is judged where the profile is used (no hardware here).
+    if len(text.encode("utf-8")) > MAX_SAVE_BYTES:
+        raise RecipeError(f"layer larger than {MAX_SAVE_BYTES // 1024} KiB")
+    return recipe
+
+
+def publish_bundle(cluster, recipe_id, recipe_text, layers, *, replace=None):
+    """Write an import's checked files: under the writers' lock, a catalog recipe with exactly this text is reused
+    (nothing written for it), else the recipe is written with save's id/name/CAS checks; a layer [(name, text)] whose
+    file already holds exactly that text is kept, any other taken name refuses the import. Every check runs before
+    the first write, so a refusal writes nothing. Each file is written atomically; if a write fails part-way (a full
+    disk, a stopped process), what was written is valid on its own, and running the same import again completes it."""
+    from . import reader
+    with _transaction(cluster) as root:
+        layers_root = _plain_dir(root / "layers")
+        data = recipe_text.encode("utf-8")
+        sha = _sha256(data)
+        suffix = ".json" if recipe_text.lstrip().startswith("{") else ".toml"
+        current = _existing(root, recipe_id)
+        if current is not None and current.read_bytes() == data:
+            present = {"id": current.stem}          # this id already holds exactly this text (a re-run)
+            _check_namespace(cluster, recipe_id, reader.parse(recipe_text, current.name)["name"], current)
+        else:
+            present = next((r for r in catalog(cluster) if r["sha256"] == sha and not r["error"]), None)
+            if present is not None:                  # the listing is bounded: the reused recipe is checked in full
+                _check_namespace(cluster, present["id"], present["name"], Path(present["path"]))
+        if present is None:
+            new_name = reader.parse(recipe_text, recipe_id + suffix)["name"]
+            if current is not None and current.suffix != suffix:
+                # One atomic file per id: a replacement never changes TOML into JSON or back (two spellings of one
+                # id would remain if removing the old one failed).
+                raise Conflict(f"user recipe {recipe_id} is {current.suffix[1:].upper()} and the bundle's is "
+                               f"{suffix[1:].upper()}: import it under another id (--id), or delete yours first")
+            if current is None and len(_recipe_files(root)) >= MAX_FILES:
+                raise RecipeError(f"{root} already holds {MAX_FILES} recipes, the most the catalog lists: "
+                                  "delete one first")
+            _check_namespace(cluster, recipe_id, new_name, current)
+            _check_replace(current, replace, f"user recipe {recipe_id}")
+        pending, kept, taken = [], [], []
+        for name, text in layers:
+            existing = _existing(layers_root, name)
+            if existing is None:
+                pending.append((name, text))
+            elif existing.read_bytes() == text.encode("utf-8"):
+                kept.append(existing.name)
+            else:
+                taken.append(name)
+        if taken:
+            raise Conflict(f"layer names already in use: {', '.join(taken)} (remove or rename them first)")
+        out = {"recipe": None, "present": present["id"] if present else None, "layers": [], "kept": kept}
+        if present is None:
+            target = _publish(root, recipe_id + suffix, data, current)
+            out["recipe"] = {"id": recipe_id, "name": new_name, "path": str(target), "sha256": _sha256(data),
+                             "replaced": current is not None}
+        for name, text in pending:
+            data = text.encode("utf-8")
+            target = _publish(layers_root, name + (".json" if text.lstrip().startswith("{") else ".toml"), data, None)
+            out["layers"].append({"name": target.name, "path": str(target), "sha256": _sha256(data)})
+    return out
+
+
+def _check_namespace(cluster, recipe_id, name, own):
+    """Under the writers' lock: no other recipe file of any source (every file, not the bounded listing) has this id
+    or this recipe name; ``own`` (the user file being replaced or reused) is not another."""
+    from . import reader
+    for source, directory in directories(cluster):
+        if not directory.is_dir():
+            continue
+        for path in _recipe_files(directory):
+            if own is not None and _key(path) == _key(own):
+                continue
+            if path.stem.casefold() == recipe_id.casefold():
+                raise Conflict(f'recipe id "{recipe_id}" is taken by {source} {path}')
+            try:
+                other = reader.load_text(path.read_bytes().decode("utf-8"), path.name).get("name")
+            except (OSError, UnicodeError, RecipeError):
+                continue                                # unreadable: listed with its error, not a name
+            if other == name:
+                raise Conflict(f'recipe name "{name}" is taken by {path.stem} ({source}): give it another name')
 
 
 def save_receipt(cluster, name, text, *, replace=None):
@@ -1580,6 +1669,8 @@ OPERATIONS = {
     "show": (("recipe",), {}),
     "ready": (("recipe", "profile?"), {"facts": ("--facts", "facts")}),
     "matrix": ((), {}),
+    "export": (("recipe",), {"layer": ("--layer", "strings")}),
+    "import": (("bundle",), {"id": ("--id", "string"), "replace": ("--replace", "string")}),
     "active": (("profile?",), {}),
     "routes": (("profile?",), {}),
     "validate": (("recipe", "profile?"), {**LAYER_ARGS, **HARDWARE}),
@@ -1608,7 +1699,8 @@ OPERATIONS = {
 POSITIONAL_KINDS = {"recipe": "recipe", "a": "recipe", "b": "recipe", "profile": "profile", "inputs": "digest"}
 AUTO = frozenset(("plan",))
 # Positionals that may be "-": the recipe text comes on stdin (the portal's draft checks and text saves).
-STDIN = {"validate": "recipe", "explain": "recipe", "save": "text", "save-layer": "text", "save-receipt": "text"}
+STDIN = {"validate": "recipe", "explain": "recipe", "save": "text", "save-layer": "text", "save-receipt": "text",
+         "import": "bundle"}
 
 
 def _string(key, value):

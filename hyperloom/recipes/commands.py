@@ -193,7 +193,7 @@ def run(cluster_loader, args):
 def _run(cluster_loader, args, service):
     # Operations that need no hardware run without a cluster configuration (then without configured directories).
     offline = args.operation in ("diff", "list", "show", "save", "delete", "save-layer", "delete-layer",
-                                 "save-receipt", "deploy", "ready", "matrix") or (
+                                 "save-receipt", "deploy", "ready", "matrix", "export", "import") or (
         args.operation in ("validate", "explain") and args.profile is None)
     cluster = _optional_cluster(cluster_loader, args.config) if offline else cluster_loader(args.config)
     if args.operation in ("validate", "explain") and str(args.file) == "-":
@@ -216,6 +216,24 @@ def text(args, result):
 
 
 def _dispatch(cluster, args, service):
+    if args.operation == "export":
+        from . import bundle
+        result = bundle.export(cluster, args.recipe, args.layer or [])
+        if args.out:
+            data = (json.dumps(result, indent=1, ensure_ascii=False) + "\n").encode("utf-8")
+            Path(args.out).write_bytes(data)
+            return {"bundle_file": str(args.out), "recipe": result["recipe"]["id"],
+                    "layers": [layer["name"] for layer in result["layers"]]}, True
+        return result, True
+    if args.operation == "import":
+        from . import bundle
+        limit = bundle.MAX_BUNDLE_BYTES + 1          # one byte more: an oversized bundle is refused, not cut
+        if args.bundle == "-":
+            data = sys.stdin.buffer.read(limit)
+        else:
+            with open(args.bundle, "rb") as handle:
+                data = handle.read(limit)
+        return bundle.import_(cluster, data, recipe_id=args.id, replace=args.replace), True
     if args.operation == "ready":
         from . import ready
         result = ready.check(cluster, args.recipe, args.profile, config=_config_arg(args.config), facts=args.facts)

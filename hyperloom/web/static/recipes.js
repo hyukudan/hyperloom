@@ -169,7 +169,7 @@
       : `<select class="inp" id="recipe-profile" disabled aria-describedby="recipe-profile-hint"><option>none</option></select>`;
     return `<section class="card"><div class="grid g2"><div class="field"><label for="recipe-model">Model</label><select class="inp" id="recipe-model">${models.map(m => `<option value="${esc(m)}"${m === R.model ? " selected" : ""}>${esc(m)}</option>`).join("")}</select></div>
       <div class="field"><label for="recipe-profile">Deployment profile</label>${profileControl}<span class="hint" id="recipe-profile-hint">${serving.length ? "The machines a recipe of this model runs on (cluster configuration)." : "No configured profile serves this model: recipes can be read and edited, not checked or deployed."}</span></div></div>
-      <p class="hint">A recipe profile is one recipe file (<span class="mono">model.variant</span>): built-in ones are read-only examples; yours live in <span class="mono">${esc(R.catalog?.user_dir || "")}</span>.</p></section>`;
+      <p class="hint">A recipe profile is one recipe file (<span class="mono">model.variant</span>): built-in ones are read-only examples; yours live in <span class="mono">${esc(R.catalog?.user_dir || "")}</span>.</p><div class="row"><button type="button" class="btn sm" data-recipe-action="import">Import a recipe bundle…</button></div></section>`;
   }
   function activeCard() {
     const deployments = R.active?.deployments || [];
@@ -292,7 +292,7 @@
   function actions() {
     const row = current();
     const deployReason = !R.profile ? "No deployment profile serves this model" : row?.status === "pending" ? `pending: ${row.blocker || "see its header"}` : invalid() ? "Fix the invalid fields first" : Object.keys(R.edits).length ? "Deploy launches only a reviewed snapshot: save the field changes as a layer (Layers), keep it selected, and preview again" : !R.plan ? "Preview the placement first" : R.planKey !== planKey() ? "Preview again: fields or layers changed" : !R.plan.result?.up?.ok ? "The preview refuses: see Placement preview" : H().mutationReason();
-    return `<div class="row recipe-actions"><button type="button" class="btn pri" data-recipe-action="deploy" ${deployReason ? `disabled title="${esc(deployReason)}"` : ""}>Deploy…</button><button type="button" class="btn" data-recipe-action="save-copy">Save as my recipe…</button>${deployReason ? `<span class="hint">${esc(deployReason)}</span>` : ""}</div>`;
+    return `<div class="row recipe-actions"><button type="button" class="btn pri" data-recipe-action="deploy" ${deployReason ? `disabled title="${esc(deployReason)}"` : ""}>Deploy…</button><button type="button" class="btn" data-recipe-action="save-copy">Save as my recipe…</button><button type="button" class="btn" data-recipe-action="export" title="The recipe and the overrides layers selected under Layers, as one file (no machine data; tuning profiles stay here)">Export</button>${deployReason ? `<span class="hint">${esc(deployReason)}</span>` : ""}</div>`;
   }
   function detail() {
     if (!R.selected) return `<p class="hint">Open a recipe profile to see its trade-offs, edit its fields, check it and deploy it.</p>`;
@@ -479,6 +479,30 @@
       submit: async element => { ensureOk(await post("recipes/save-layer", {name: value(element, "layer-add-name"), text: element.querySelector("#layer-add-text").value})); await load(true); }}),
     "delete-layer": control => dialog({title: `Delete layer ${control.dataset.name}`, confirm: "Delete layer", destructive: true, effects: "<p>Removes the layer file from the user layers directory.</p>",
       submit: async () => { ensureOk(await post("recipes/delete-layer", {name: control.dataset.name, sha256: control.dataset.sha})); R.overrides = R.overrides.filter(n => n !== control.dataset.name); await load(true); }}),
+    export: () => run("export", async () => {
+      // The bundle comes from the same `hyperloom recipe export`; the browser only saves it as a file. The recipe is
+      // captured before the request: another selection meanwhile does not rename this file.
+      const id = R.selected, layer = [...R.overrides];     // overrides layers only: a tuning profile is not bundled
+      const doc = ensureOk(await post("recipes/export", {recipe: id, ...(layer.length ? {layer} : {})}));
+      const blob = new Blob([JSON.stringify(doc.result, null, 1) + "\n"], {type: "application/json"});
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = `${id}.bundle.json`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(link.href), 0);
+      H().announce(`Exported ${id} with ${doc.result.layers.length} layer(s)`);
+    }),
+    import: () => dialog({title: "Import a recipe bundle",
+      fields: `<div class="field"><label for="bundle-file">Bundle file</label><input class="inp" id="bundle-file" type="file" accept=".json,application/json"></div><div class="field"><label for="bundle-text">or its text</label><textarea class="inp mono" id="bundle-text" rows="8"></textarea></div><div class="field"><label for="bundle-id">Save as recipe id (optional)</label><input class="inp mono" id="bundle-id"></div>`,
+      effects: `<p>The whole bundle is checked first (its digests, the recipe and every layer). Then the recipe and its layers are written to your recipes and layers directories; a recipe already in the catalog with the same text is not copied. Nothing runs.</p>`, confirm: "Import",
+      submit: async element => {
+        const file = element.querySelector("#bundle-file").files?.[0];
+        const text = file ? await file.text() : element.querySelector("#bundle-text").value;
+        const id = value(element, "bundle-id");
+        const doc = ensureOk(await post("recipes/import", {text, ...(id ? {id} : {})}));
+        await load(true);
+        H().announce(`Imported ${doc.result.recipe?.id || doc.result.present} and ${doc.result.layers.length} layer(s)`);
+      }}),
     "add-receipt": () => dialog({title: "Add a disk receipt",
       fields: `<div class="field"><label for="receipt-name">Receipt name</label><input class="inp mono" id="receipt-name"></div><div class="field"><label for="receipt-text">Receipt JSON (disk_read_gbytes_ps, method "direct", host, path)</label><textarea class="inp mono" id="receipt-text" rows="6"></textarea></div>`, confirm: "Store receipt",
       submit: async element => { ensureOk(await post("recipes/save-receipt", {name: value(element, "receipt-name"), text: element.querySelector("#receipt-text").value})); await load(true); }}),
