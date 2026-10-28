@@ -1,0 +1,20 @@
+{
+  "list": {
+    "sessions": [
+      "conversation-A",
+      "conversation_B"
+    ],
+    "ram_bytes": 4096,
+    "ram_entries": 2,
+    "evictions": 3,
+    "refused": 4,
+    "seconds": 0.001
+  },
+  "stats": {
+    "ram_bytes": 4096,
+    "ram_entries": 2,
+    "evictions": 3,
+    "refused": 4,
+    "seconds": 0.001
+  }
+}

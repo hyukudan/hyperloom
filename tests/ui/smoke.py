@@ -26,9 +26,9 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-ROUTES = ("devices", "topology", "models", "recipes", "engines", "stats", "logs", "settings")
+ROUTES = ("devices", "topology", "models", "recipes", "engines", "stats", "logs", "settings", "results", "sessioncache")
 TITLES = ("Devices", "Topology & links", "Models & placement", "Recipes & profiles", "Engines", "Live stats", "Logs",
-          "Settings & pairing")
+          "Settings & pairing", "Measured results", "Session cache")
 API = "/hyperloom/api/"
 # A node-only Qwen recipe that fits the fixture's one-node profile (test data, not a lab recipe).
 FIXTURE_RECIPE = """schema = "strix-stream/recipe-v1"
@@ -88,7 +88,7 @@ def eventually(check, timeout=15):
 class FixtureServer:
     """A separate process runs the real CLI/server, with backend calls replaced."""
 
-    def __init__(self, *, blocked=False, port=None):
+    def __init__(self, *, blocked=False, port=None, launch_fixture=False):
         self.temporary = tempfile.TemporaryDirectory(prefix="hyperloom-ui-")
         self.directory = Path(self.temporary.name)
         self.port = port or free_port()
@@ -99,6 +99,8 @@ class FixtureServer:
                    "--port", str(self.port), "--fixture-dir", str(self.directory)]
         if blocked:
             command.append("--blocked")
+        if launch_fixture:
+            command.append("--launch-fixture")
         self.process = subprocess.Popen(command, cwd=ROOT, stdout=self.output, stderr=self.output)
         try:
             eventually(self._ready)
@@ -360,6 +362,40 @@ def fixture_server(args):
             stack.enter_context(patch.object(owner, name, value))
         os.environ.update(HYPERLOOM_RECIPE_STUB="1", HYPERLOOM_TS_RECIPE="", HYPERLOOM_SS_RECIPE="")
         os.environ["HYPERLOOM_UI_INPROCESS"] = "1"  # patched backends: keep jobs in this process
+        if args.launch_fixture:
+            from hyperloom.recipes import service
+            from hyperloom.web.features import launch
+            original_init, original_profiles = web_api.API.__init__, web_api.API._profiles
+
+            def launch_init(self, *a, **kw):
+                original_init(self, *a, **kw)
+                started = time.time() - 20
+                job = {"job": "abc123ab", "id": "abc123ab", "action": "up", "arguments": {"profile": "qwen-replicas"},
+                       "state": "running", "started_at": started, "finished_at": None,
+                       "result": None, "error": None, "progress": "waiting for READY"}
+                self._jobs[job["job"]] = job
+                self._active = job["job"]
+                with service.configured(self.config_path):
+                    service._write_progress(service.deploy_progress(job["job"]),
+                                            {"phase": "launching", "profile": "qwen-replicas", "stopped": []})
+                    (service.runtime_dir() / "launch-history.json").write_text(json.dumps([
+                        {"profile": "qwen-replicas", "config": launch.config_key(self), "seconds": seconds}
+                        for seconds in (70, 90, 110)]),
+                        encoding="utf-8")
+
+            def launch_profiles(self, *a, **kw):
+                rows = original_profiles(self, *a, **kw)
+                for row in rows:
+                    if row["id"] == "qwen-replicas":
+                        started = self._jobs["abc123ab"]["started_at"]
+                        row.update(state="starting", started_at=started + 1,
+                                   leases=[{"machine": "halo-1", "state": "starting"}],
+                                   processes=[{"machine": "halo-1", "name": "replica", "state": "starting",
+                                               "start_time": started + 10}])
+                return rows
+
+            stack.enter_context(patch.object(web_api.API, "__init__", launch_init))
+            stack.enter_context(patch.object(web_api.API, "_profiles", launch_profiles))
         return cli.main(["ui", "--port", str(args.port), "--no-browser"])
 
 
@@ -620,7 +656,7 @@ def keyboard_walkthrough(client, server):
             raise AssertionError("Dialog failed to return focus: " + action + " -- " + json.dumps(client.evaluate(
                 f"(() => {{ const b = document.querySelector({json.dumps(selector)}); return {{active: document.activeElement.outerHTML.slice(0, 200), "
                 "opener: b && b.outerHTML.slice(0, 200), connection: document.getElementById('connection').textContent, "
-                "fresh: window.Hyperloom.state.fresh}}; }})()")))
+                f"fresh: window.Hyperloom.state.fresh}}; }})()")))
         if client.errors:
             raise AssertionError(json.dumps(client.errors))
         print("PASS keyboard " + action + " (Tab, reverse Tab, Space, Escape)", flush=True)
@@ -1260,7 +1296,33 @@ def seed_fixtures(directory, now):
     return patches
 
 
-def browser_smoke(chrome, server, output, *, keyboard=False, keyboard_only=False, recipes_only=False):
+def launch_walkthrough(client, server, output):
+    client.call("Emulation.setDeviceMetricsOverride", width=1440, height=1000, deviceScaleFactor=1, mobile=False)
+    client.call("Page.navigate", url=server.url + "#/engines")
+    eventually(lambda: client.evaluate("document.querySelectorAll('#job-panel .launch-progress li').length === 6 && "
+                                      "document.querySelectorAll('main .launch-progress li').length === 6"))
+    for scope in ("#job-panel", "main"):
+        if not client.evaluate(f"document.querySelector('{scope} .launch-progress [aria-current=step]')?.textContent.includes('Load models')"):
+            raise AssertionError("launch: loading phase missing in " + scope)
+        if not client.evaluate(f"document.querySelector('{scope} .launch-progress').textContent.includes('estimate from 3 previous starts')"):
+            raise AssertionError("launch: historical ETA label missing in " + scope)
+    if not client.evaluate("[...document.querySelectorAll('#job-panel [data-action=cancel], #job-panel [data-action=stop]')].length === 2 && "
+                           "[...document.querySelectorAll('#job-panel button')].every(b => !b.disabled)"):
+        raise AssertionError("launch: cancel and stop must remain reachable")
+    if not client.evaluate("(() => {const el = document.createElement('div'); "
+                           "el.innerHTML = HyperloomLaunch.render({phases: [{label: '<img src=x>', state: 'unknown', why: 'not recorded'}], "
+                           "elapsed_s: 2, eta: {n: 0, seconds: null, why: 'no history'}}); "
+                           "return !el.querySelector('progress, img') && el.textContent.includes('not recorded');})()"):
+        raise AssertionError("launch: missing history or escaping failed")
+    png = client.call("Page.captureScreenshot", format="png", captureBeyondViewport=False)
+    (output / "launch-1440-light.png").write_bytes(base64.b64decode(png["data"]))
+    if client.errors:
+        raise AssertionError("launch console errors: " + json.dumps(client.errors))
+    print("PASS launch timeline, Engines, historical ETA, missing history, cancel/stop controls", flush=True)
+
+
+def browser_smoke(chrome, server, output, *, keyboard=False, keyboard_only=False, recipes_only=False,
+                  launch_only=False):
     with tempfile.TemporaryDirectory(prefix="hyperloom-chrome-", ignore_cleanup_errors=True) as profile:
         port = free_port()
         command = [chrome, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-first-run", "--no-default-browser-check",
@@ -1289,6 +1351,9 @@ def browser_smoke(chrome, server, output, *, keyboard=False, keyboard_only=False
                 client.call("Runtime.enable")
                 client.call("Page.enable")
                 client.call("Page.addScriptToEvaluateOnNewDocument", source="localStorage.removeItem('hyperloom-theme');")
+                if launch_only:
+                    launch_walkthrough(client, server, output)
+                    return 1
                 captures = 0
                 for width in (() if keyboard_only or recipes_only else (1440, 390)):
                     client.call("Emulation.setDeviceMetricsOverride", width=width, height=1000,
@@ -1324,6 +1389,21 @@ def browser_smoke(chrome, server, output, *, keyboard=False, keyboard_only=False
                                     raise AssertionError("Only the machine with a cable warning should be degraded")
                                 if client.evaluate("document.querySelector('.packages')?.open"):
                                     raise AssertionError("ROCm package details should start collapsed")
+                            if route == "sessioncache":
+                                for text in ("RAM used / budget", "conversation-A", "Unsupported", "engine build has no session cache", "limit 256", "skips the prompt prefill", "qwen-session-demo", "ram+disk", "8.0 MiB"):
+                                    if text not in metrics["body"]:
+                                        raise AssertionError("Session cache is missing: " + text)
+                                tables = client.evaluate("[...document.querySelectorAll('.sessioncache table')].map(t => t.querySelectorAll('th[scope=col]').length).join(',')")
+                                if not tables or set(tables.split(",")) != {"5"}:
+                                    raise AssertionError("Each session table needs five column headers: " + repr(tables))
+                                if client.evaluate("document.querySelectorAll('.sessioncache button').length"):
+                                    raise AssertionError("Session cache is read-only and must have no buttons")
+                            if route == "results":
+                                for text in ("Published measurements", "published · 62d7b0ac", "Live now", "live · engine-side", "TTFT"):
+                                    if text not in metrics["body"]:
+                                        raise AssertionError("Measured results is missing: " + text)
+                                if not client.evaluate("document.querySelectorAll('#results-model option').length >= 4 && document.querySelectorAll('.results th[scope=col]').length === 8"):
+                                    raise AssertionError("Measured results needs model choices and accessible table headers")
                             if route == "recipes":
                                 for text in ("Profiles of", "qwen3.8-flash-next.lab", "Deployment profile", "Active"):
                                     if text not in metrics["body"]:
@@ -1392,6 +1472,7 @@ def main():
     parser.add_argument("--fixture-server", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--fixture-dir", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--blocked", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--launch-fixture", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.fixture_server:
         return fixture_server(args)
@@ -1417,7 +1498,9 @@ def main():
     with FixtureServer() as server:
         count = browser_smoke(chrome, server, output, keyboard=args.keyboard, keyboard_only=args.keyboard_only,
                               recipes_only=args.recipes_only)
-    print(f"PASS {count} route/viewport/theme captures; no console errors" if count else "PASS keyboard walkthrough; no console errors")
+    with FixtureServer(launch_fixture=True) as server:
+        count += browser_smoke(chrome, server, output, launch_only=True)
+    print(f"PASS {count} route/viewport/theme captures; no console errors" if count else "PASS requested walkthrough; no console errors")
     return 0
 
 

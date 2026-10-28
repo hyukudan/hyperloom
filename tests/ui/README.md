@@ -22,7 +22,7 @@ the run. The contrast check always runs, even when Chrome is absent. Browser
 smoke is a separate command so ordinary unittest discovery needs no browser.
 
 The script prints a retained temporary screenshot directory. `--output PATH`
-selects another directory. There are 32 PNGs: eight hash routes, two themes, and
+selects another directory. There are 36 PNGs: nine hash routes, two themes, and
 1440×1000 / 390×1000 viewports. It uses `--headless=new` and DevTools
 `Emulation.setDeviceMetricsOverride`, then asserts the actual
 `document.documentElement.clientWidth`. The narrow screenshots are real
@@ -151,6 +151,8 @@ Check dialog names, control labels, associated field errors, focus return, and
 new-warning/error announcements. Numeric polling must not repeatedly announce
 values. This is a manual reviewer check; the automated script does not claim an
 NVDA or full accessibility pass. Record findings before Phase 1b acceptance.
+
+Measured results reuses the running-profile, stats and observability replay fixtures. Its captures check published source badges and separately labelled live values alongside the packaged README measurements.
 
 The sanitized inspection fixtures in `tests/fixtures/web/inspection.json` cover
 workstation plus halo-1/halo-2, unified GPU-visible memory, the flat versioned

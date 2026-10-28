@@ -35,7 +35,7 @@ import re
 import threading
 
 
-MODULES = ("overview", "machines", "history", "observe", "ledger", "endpoints", "usb4", "energy", "health", "alerts",
+MODULES = ("overview", "results", "sessioncache", "launch", "machines", "history", "observe", "ledger", "endpoints", "usb4", "energy", "health", "alerts",
            "events", "bench", "planner", "turns", "library", "logsearch", "ops", "integrations", "prefs")
 NAME = re.compile(r"[a-z][a-z0-9-]*(?:/[a-z0-9][a-z0-9-]*)*/?")
 RESERVED = frozenset(("devices", "topology", "models", "profiles", "stats", "logs", "settings", "jobs", "up", "down",

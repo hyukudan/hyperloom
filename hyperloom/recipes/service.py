@@ -1271,9 +1271,9 @@ def _check_overlap(cluster, root):
 
 
 @contextmanager
-def _file_lock(path):
+def _file_lock(path, *, thread_lock=_thread_lock):
     """An exclusive OS lock on ``path`` (msvcrt / fcntl), across threads and processes."""
-    with _thread_lock:
+    with thread_lock:
         fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
         try:
             if os.name == "nt":

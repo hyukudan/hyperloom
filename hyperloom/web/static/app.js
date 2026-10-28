@@ -208,7 +208,7 @@
     const processRows = rows(p.processes ?? d.processes);
     const choice = `<div class="field"><label for="profile-select">Profile</label><select class="inp" id="profile-select">${profiles().map(item => `<option value="${esc(profileId(item))}"${profileId(item) === profileId(p) ? " selected" : ""}>${esc(item.label || profileId(item))}</option>`).join("")}</select></div>`;
     const identity = `<dl class="kv"><dt>Started</dt><dd>${p.started_at == null ? unavailable(reason(p, "started_at", "profile has not started")) : esc(formatTime(timestamp(p.started_at), true))}</dd></dl>` + kv(p, [["Release", "release"], ["Qualified receipt", "receipt"], ["Identity", "identity"], ["Router runs on", "router"], ["Linked machines", "nodes"], ["Linked devices", "devices"]]);
-    return card(p.label || profileId(p), choice + `<div class="row">${statusPill(p.state, reason(p, "state"))} ${profileBlocker(p) ? `<span class="hint">${esc(profileBlocker(p))}</span>` : ""}</div>${identity}${rows(p.leases).map(l => leaseView(l, d.server_time)).join("")}${p.error ? `<p class="field-error">${display(p.error)}</p><a class="btn" href="#/logs">View failure and logs</a>` : ""}`)
+    return card(p.label || profileId(p), choice + (state.launchErrors?.launch ? '<p class="hint">Launch timeline unavailable</p>' : "") + (window.HyperloomLaunch?.render(rows(state.docs.launch?.launches).find(l => l.profile === profileId(p) && l.job_state === "running")) || "") + `<div class="row">${statusPill(p.state, reason(p, "state"))} ${profileBlocker(p) ? `<span class="hint">${esc(profileBlocker(p))}</span>` : ""}</div>${identity}${rows(p.leases).map(l => leaseView(l, d.server_time)).join("")}${p.error ? `<p class="field-error">${display(p.error)}</p><a class="btn" href="#/logs">View failure and logs</a>` : ""}`)
       + card("Processes", processRows.length ? table(["Process", "Machine", "State", ["Ready after", "hide-n"], ["Endpoint", "hide-n"], ["Binary SHA", "hide-n"], "Logs"], processRows.map(proc => {
         const lease = rows(p.leases).find(l => l.lease === proc.lease);
         const health = proc.state || (lease && lease.state !== "ready" ? lease.state : proc.ready === true ? "ready" : proc.ready === false ? "starting" : null);
@@ -410,7 +410,7 @@
     const panel = $("job-panel"), job = state.job;
     panel.hidden = !job;
     if (!job) return;
-    panel.innerHTML = `<div class="row"><b>${esc(job.action || "Action")} · ${statusPill(job.state || job.status)}</b><span class="mono">${esc(job.id || job.job || "")}</span>${activeJob() && ["up", "recipes/deploy"].includes(job.action) ? button("Cancel start now", "cancel") : ""}${activeJob() ? button("Stop profile now", "stop", {style: "dan"}) : ""}</div><p>${display(job.progress, "waiting for progress")}</p>${job.error ? `<p class="field-error">${display(job.error)}</p><a class="btn" href="#/logs">View logs</a>` : ""}${job.result != null ? `<details><summary>Result (redacted)</summary><pre class="raw">${esc(JSON.stringify(job.result, null, 2))}</pre></details>` : ""}`;
+    panel.innerHTML = `<div class="row"><b>${esc(job.action || "Action")} · ${statusPill(job.state || job.status)}</b><span class="mono">${esc(job.id || job.job || "")}</span>${activeJob() && ["up", "recipes/deploy"].includes(job.action) ? button("Cancel start now", "cancel") : ""}${activeJob() ? button("Stop profile now", "stop", {style: "dan"}) : ""}</div><p>${display(job.progress, "waiting for progress")}</p>${["up", "recipes/deploy"].includes(job.action) ? window.HyperloomLaunch?.render(state.docs["launch/" + (job.id || job.job)]) || (state.launchErrors?.["launch/" + (job.id || job.job)] ? '<p class="hint">Launch timeline unavailable</p>' : "") : ""}${job.error ? `<p class="field-error" role="alert">${display(job.error)}</p><a class="btn" href="#/logs">View logs</a>` : ""}${job.result != null ? `<details><summary>Result (redacted)</summary><pre class="raw">${esc(JSON.stringify(job.result, null, 2))}</pre></details>` : ""}`;
   }
   async function request(endpoint, options = {}) {
     const response = await fetch(api + endpoint, {cache: "no-store", credentials: "same-origin", ...options});
@@ -421,10 +421,12 @@
   async function refresh() {
     if (document.hidden || !navigator.onLine) { state.fresh = false; renderConnection(); return; }
     if (inFlight) return inFlight;
-    const generation = state.generation;
+    const generation = state.generation, accepted = state.accepted;
     inFlight = (async () => {
       const own = [...endpoints, ...pageEndpoints(route()).filter(e => !endpoints.includes(e))];
+      const launchId = ["up", "recipes/deploy"].includes(state.job?.action) ? state.job.id || state.job.job : null;
       const names = [...own, "jobs"];
+      refreshLaunch(generation, launchId);
       const prefsEpoch = prefsSync.epoch;
       pollAbort = new AbortController();
       const timeout = setTimeout(() => pollAbort?.abort(), 30000);
@@ -444,8 +446,12 @@
         if (result.status === "fulfilled") {
           if (name === "jobs") {
             state.lastJobs = result.value.jobs;
-            const jobs = rows(result.value.jobs), active = jobs.find(j => (j.id || j.job) === result.value.active);
-            state.job = active || jobs.find(j => (j.id || j.job) === (state.job?.id || state.job?.job)) || state.job;
+            const jobs = rows(result.value.jobs).filter(j => !state.expiredLaunches?.has(j.id || j.job)), active = jobs.find(j => (j.id || j.job) === result.value.active);
+            const listed = jobs.find(j => (j.id || j.job) === (state.job?.id || state.job?.job));
+            // A roster requested before the latest mutation was accepted cannot know that job: it only refreshes the
+            // job it lists. A newer roster is authoritative: a job it no longer lists (portal restart, eviction) is gone.
+            if (accepted !== state.accepted) { if (listed) state.job = listed; }
+            else state.job = active || listed || null;
             if (state.job?.error && !state.warnings.has(state.job.id)) { state.warnings.add(state.job.id); announce(state.job.error); }
           } else { state.docs[name] = result.value; state.fetched[name] = arrived[name]; }
           delete state.errors[name];
@@ -460,6 +466,34 @@
       refreshOptional(generation, prefsEpoch, own);
     })().finally(() => { inFlight = null; });
     return inFlight;
+  }
+  let launchAbort = null;
+  function refreshLaunch(generation, launchId) {
+    launchAbort?.abort();
+    launchAbort = new AbortController();
+    const signal = launchAbort.signal;
+    const names = [...(route() === "engines" ? ["launch"] : []), ...(launchId ? ["launch/" + encodeURIComponent(launchId)] : [])];
+    state.launchErrors ||= {};
+    // Same polling cadence, independent promises: timeline availability cannot gate ordinary actions.
+    names.forEach(async name => {
+      try {
+        const value = await fetchDocument(name, signal);
+        if (generation !== state.generation || signal.aborted) return;
+        state.docs[name] = value;
+        delete state.launchErrors[name];
+      } catch (error) {
+        if (generation !== state.generation || signal.aborted) return;
+        delete state.docs[name];
+        if (error.status === 404 && error.message === "unknown launch job") {
+          delete state.launchErrors[name];
+          if (name.startsWith("launch/")) {
+            (state.expiredLaunches ||= new Set()).add(decodeURIComponent(name.slice(7)));
+          }
+          if (name === "launch/" + encodeURIComponent(state.job?.id || state.job?.job)) state.job = null;
+        } else state.launchErrors[name] = "Launch timeline unavailable";
+      }
+      render();
+    });
   }
   function fetchDocument(name, signal) {
     const query = name === "logs" && state.logProcess !== "all" && state.logProcess !== "portal" && selected() ? `?${new URLSearchParams({profile: profileId(selected()), process: state.logProcess, tail: "200"})}` : "";
@@ -608,6 +642,7 @@
     render();
     try {
       state.job = await request(action, {method: "POST", headers: {"Content-Type": "application/json", "X-Hyperloom-CSRF": token}, body: JSON.stringify(args), signal: AbortSignal.timeout(30000)});
+      state.accepted = (state.accepted || 0) + 1;
       state.fresh = false;
     } catch (error) { state.fresh = false; refresh(); throw error; }
     finally { state.busy = false; render(); }

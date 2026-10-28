@@ -36,6 +36,7 @@ from hyperloom.adapters import AdapterError, engine, minimax, prom, router
 
 INTERVAL = 5.0
 HTTP_DEADLINE_S, HTTP_CAP = 2.0, 1024 * 1024
+SESSIONCACHE_READ_ONLY_OPS = frozenset(("list", "stats"))
 RUN_BUDGET_S = 4.0
 MAX_PROFILES, MAX_REPLICAS, MAX_PAGES, PAGE_LIMIT = 8, 8, 8, 128
 MAX_ROWS, MAX_RECORD_BYTES, MAX_ENGINE_RECORD_BYTES = 20000, 8192, 4096
@@ -143,9 +144,9 @@ def _dechunk(body):
         pos = stop + 2
 
 
-def http_get(url, headers=None, text=False, deadline=None):
-    """One HTTP/1.1 GET on a plain socket: every connect, send and receive gets the time left of one absolute
-    deadline (at most 2 s), so a slow or trickling peer is cut at the deadline; headers <= 64 KiB, body <= 1 MiB;
+def _bounded_http(url, headers=None, text=False, deadline=None, *, method="GET", json_body=None):
+    """One HTTP/1.1 telemetry query (GET by default; optional JSON POST) on a plain socket. Every connect, send
+    and receive gets the time left of one absolute deadline (at most 2 s), so a slow or trickling peer is cut at the deadline; headers <= 64 KiB, body <= 1 MiB;
     no proxy is involved and redirects are never followed. 404/405/501 -> Unavailable."""
     limit = time.monotonic() + HTTP_DEADLINE_S
     deadline = limit if deadline is None else min(deadline, limit)
@@ -156,9 +157,20 @@ def http_get(url, headers=None, text=False, deadline=None):
         if remaining <= 0:
             raise TimeoutError("response not complete within the deadline")
         return remaining
-    lines = [f"GET {target} HTTP/1.1", f"Host: {_host(host)}:{port}", "Connection: close", "Accept-Encoding: identity",
+    if method == "POST":
+        field = {"/admin/session-cache": "op", "/v1/session-cache": "operation"}.get(urlsplit(url).path)
+        if (not field or not isinstance(json_body, dict) or set(json_body) != {field}
+                or not isinstance(json_body[field], str) or json_body[field] not in SESSIONCACHE_READ_ONLY_OPS):
+            raise ValueError("only list/stats session cache queries are allowed")
+    payload = b"" if json_body is None else json.dumps(json_body).encode("utf-8")
+    if method not in ("GET", "POST") or (method == "GET" and json_body is not None):
+        raise ValueError("invalid telemetry query method")
+    headers = dict(headers or {})
+    if json_body is not None:
+        headers.update({"Content-Type": "application/json", "Content-Length": str(len(payload))})
+    lines = [f"{method} {target} HTTP/1.1", f"Host: {_host(host)}:{port}", "Connection: close", "Accept-Encoding: identity",
              *(f"{k}: {v}" for k, v in (headers or {}).items())]
-    request = CRLF.join(line.encode("latin-1") for line in lines) + CRLF + CRLF
+    request = CRLF.join(line.encode("latin-1") for line in lines) + CRLF + CRLF + payload
     with socket.create_connection((host, port), timeout=left()) as sock:
         sock.settimeout(left())
         sock.sendall(request)
@@ -197,8 +209,16 @@ def http_get(url, headers=None, text=False, deadline=None):
     if 300 <= code < 400:
         raise OSError(f"HTTP {code}: redirects are not followed")
     if code != 200:
-        raise OSError(f"HTTP {code}")
+        error = OSError(f"HTTP {code}")
+        if method == "POST":
+            error.response_body = body
+        raise error
     return body.decode("utf-8") if text else json.loads(body)
+
+
+def http_get(url, headers=None, text=False, deadline=None):
+    """GET-only interface retained for all existing observe callers."""
+    return _bounded_http(url, headers, text, deadline)
 
 
 # Tests and the browser fixture replace this one function.
