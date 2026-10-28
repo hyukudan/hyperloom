@@ -1,6 +1,7 @@
 """Shared fakes for the fleet tests (no tests here): machines, an API double with an in-memory store, recorded node
 answers and launch records."""
 
+from tests.portable_fixtures import read_fixture
 import copy
 import ipaddress
 import json
@@ -18,11 +19,11 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures" / "fleet"
 
 
 def host(name):
-    return json.loads((FIXTURES / f"host-{name}.json").read_text(encoding="utf-8"))
+    return json.loads(read_fixture(FIXTURES / f"host-{name}.json"))
 
 
 def nvidia_csv():
-    return (FIXTURES / "nvidia-gpus.csv").read_text(encoding="utf-8"), (FIXTURES / "nvidia-apps.csv").read_text(encoding="utf-8")
+    return read_fixture(FIXTURES / "nvidia-gpus.csv"), read_fixture(FIXTURES / "nvidia-apps.csv")
 
 
 def machine(mid, os_name="linux", access="ssh", devices=None):

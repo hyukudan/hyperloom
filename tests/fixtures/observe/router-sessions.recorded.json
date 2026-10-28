@@ -8,19 +8,19 @@
   {
    "key": "5e55a0b1c2d3e4f5",
    "kind": "prefix",
-   "path": "/v1/chat/completions",
+   "path": "<posix>/v1/chat/completions",
    "first_seen": 1800000007.937,
    "last_seen": 1800000007.937,
    "turns": 1,
-   "replica": "halo-1",
+   "replica": "<node-1>",
    "replicas": {
-    "halo-1": 1
+    "<node-1>": 1
    },
    "recent": [
     {
      "at": 1800000007.9371,
      "id": "17ea148e46cfb6e3",
-     "replica": "halo-1",
+     "replica": "<node-1>",
      "outcome": "served",
      "prompt_tokens": 8192,
      "cached_tokens": 1024,

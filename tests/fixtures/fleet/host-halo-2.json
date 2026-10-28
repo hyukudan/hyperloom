@@ -115,7 +115,7 @@
     {
      "hwmon": "hwmon2",
      "name": "k10temp",
-     "device": "0000:00:18.3",
+     "device": "<sensor-cpu>",
      "temps": [
       {
        "sensor": "Tctl",
@@ -157,7 +157,7 @@
     {
      "hwmon": "hwmon5",
      "name": "amdgpu",
-     "device": "0000:c5:00.0",
+     "device": "<sensor-gpu>",
      "temps": [
       {
        "sensor": "edge",
@@ -199,7 +199,7 @@
      "free_bytes": 383580213248
     },
     {
-     "mount": "/boot/efi",
+     "mount": "<posix>/boot/efi",
      "fstype": "vfat",
      "total_bytes": 1124999168,
      "used_bytes": 6606848,

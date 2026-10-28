@@ -55,8 +55,16 @@ class BuiltinTests(unittest.TestCase):
         if upstream:
             for name in files:
                 source = Path(upstream) / "recipes" / "examples" / name
-                self.assertEqual(source.read_bytes().replace(b"\r\n", b"\n"),
-                                 (service.BUILTIN_DIR / name).read_bytes(), name)
+                # Local provenance is scrubbed for distribution; executable recipe content stays upstream-equal.
+                import tomllib
+                def executable(value):
+                    if isinstance(value, dict):
+                        return {k: executable(v) for k, v in value.items() if not k.startswith("x-")}
+                    if isinstance(value, list):
+                        return [executable(v) for v in value]
+                    return value
+                self.assertEqual(executable(tomllib.loads(source.read_text(encoding="utf-8"))),
+                                 executable(tomllib.loads((service.BUILTIN_DIR / name).read_text(encoding="utf-8"))), name)
 
     def test_every_builtin_parses_and_pending_ones_name_their_blocker(self):
         with isolated():

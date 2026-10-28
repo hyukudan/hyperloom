@@ -2,8 +2,8 @@
  "boot_id": "000000000000000000000000000000b0",
  "collected_at": 1792888336.6058912,
  "domains": {
-  "0": "0000:c7:00.5",
-  "1": "0000:c7:00.6"
+  "0": "<nhi-a>",
+  "1": "<nhi-b>"
  },
  "full_rate": {
   "gbps_per_lane": 20.0,
@@ -17,7 +17,7 @@
     "count": 146953,
     "domain": 0,
     "irq": 53,
-    "nhi": "0000:c7:00.5",
+    "nhi": "<nhi-a>",
     "ring": "control",
     "vector": 0
    },
@@ -25,7 +25,7 @@
     "count": 146628,
     "domain": 0,
     "irq": 54,
-    "nhi": "0000:c7:00.5",
+    "nhi": "<nhi-a>",
     "ring": "control",
     "vector": 1
    },
@@ -33,7 +33,7 @@
     "count": 196442,
     "domain": 1,
     "irq": 88,
-    "nhi": "0000:c7:00.6",
+    "nhi": "<nhi-b>",
     "ring": "control",
     "vector": 0
    },
@@ -41,7 +41,7 @@
     "count": 196370,
     "domain": 1,
     "irq": 89,
-    "nhi": "0000:c7:00.6",
+    "nhi": "<nhi-b>",
     "ring": "control",
     "vector": 1
    }
@@ -180,8 +180,8 @@
     "full_speed": true,
     "gbps": 40.0,
     "id": "A",
-    "nhi": "0000:c7:00.5",
-    "peer": "halo-2",
+    "nhi": "<nhi-a>",
+    "peer": "<node-2>",
     "router": "0-2",
     "state": "up",
     "streams": [
@@ -196,8 +196,8 @@
     "full_speed": false,
     "gbps": 20.0,
     "id": "B",
-    "nhi": "0000:c7:00.6",
-    "peer": "halo-2",
+    "nhi": "<nhi-b>",
+    "peer": "<node-2>",
     "router": "1-2",
     "state": "up",
     "streams": [
@@ -231,7 +231,7 @@
      "spin_us": -1,
      "throttling": 8192
     },
-    "device": "/dev/tbstream0",
+    "device": "<posix>/dev/tbstream0",
     "domain": 0,
     "id": "0-2.0/data0",
     "in_hopid": 8,
@@ -268,7 +268,7 @@
      "spin_us": -1,
      "throttling": 8192
     },
-    "device": "/dev/tbstream2",
+    "device": "<posix>/dev/tbstream2",
     "domain": 0,
     "id": "0-2.0/data1",
     "in_hopid": 9,
@@ -305,7 +305,7 @@
      "spin_us": -1,
      "throttling": 8192
     },
-    "device": "/dev/tbstream1",
+    "device": "<posix>/dev/tbstream1",
     "domain": 1,
     "id": "1-2.0/data0",
     "in_hopid": 8,
@@ -342,7 +342,7 @@
      "spin_us": -1,
      "throttling": 8192
     },
-    "device": "/dev/tbstream3",
+    "device": "<posix>/dev/tbstream3",
     "domain": 1,
     "id": "1-2.0/data1",
     "in_hopid": 9,
@@ -366,7 +366,7 @@
   ],
   "version": 2,
   "warnings": [
-   "cable B (0000:c7:00.6/usb4_port2) trained below Gen3 x2: rx 10x2, tx 10x2"
+   "cable B (<nhi-b>/usb4_port2) trained below Gen3 x2: rx 10x2, tx 10x2"
   ]
  },
  "links": [
@@ -374,8 +374,8 @@
    "below_full_rate": [],
    "domain": 0,
    "full_rate": true,
-   "nhi": "0000:c7:00.5",
-   "peer": "halo-2",
+   "nhi": "<nhi-a>",
+   "peer": "<node-2>",
    "peer_unique_id": "00000000-0000-4000-8000-000000000001",
    "peer_vendor": "Linux",
    "router": "0-2",
@@ -404,8 +404,8 @@
    ],
    "domain": 1,
    "full_rate": false,
-   "nhi": "0000:c7:00.6",
-   "peer": "halo-2",
+   "nhi": "<nhi-b>",
+   "peer": "<node-2>",
    "peer_unique_id": "00000000-0000-4000-8000-000000000002",
    "peer_vendor": "Linux",
    "router": "1-2",

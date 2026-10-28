@@ -12,6 +12,34 @@ The shapes of the examples are exact; their values are illustrative (a test fixt
 - [Feature routes](#feature-routes): all 22 feature modules, arguments, execution, audit and refusal rules
 - [Route documentation convention](#route-documentation-convention): keeping this inventory complete
 
+## Legacy-visible changes
+
+Placement retains these changes to the legacy interface:
+
+- Launch preflight runs before CLI admission holds, snapshot publication, pins and progress files. This keeps
+  deterministic refusals free of launch state for legacy and placement recipes alike. The no-profile Phase 1a
+  placeholder still prints before unused launch arguments are validated.
+  Legacy `--recipe auto` in a mixed directory containing placement candidates can run
+  read-only live fact probes on the nodes before the admission hold, even when a node benchmark later refuses
+  the launch. Pure-legacy directories keep their existing probe order.
+  If the final selection of such a launch differs from the admitted one (recipe, digest, kind or resources),
+  it is refused before any launch state with `recipe selection changed after admission; retry`.
+- The portal returns synchronous HTTP 400 refusals for invalid recipe launches/deploys before creating a job;
+  the UI displays a fixed public refusal and the full reason stays in the local audit. Previously these could
+  become asynchronous job failures.
+- An occupied portal returns HTTP 409 before preflight for another non-priority mutation, including legacy recipe
+  launches. The busy check runs again under the job mutex after preflight to cover concurrent admission.
+- A configured device's `excluded` flag controls its eligibility, including an explicitly included RTX 4090.
+  This permits operator-granted placement turns. The legacy devices summary, lab-rule legend and default exclusion
+  reason keep their original text; the flag and any explicit configured reason remain authoritative.
+- Recipe readers and `save-layer` accept `tierstream/` schema aliases and normalise them to `strix-stream/`.
+  This supports the core's namespace rename and lets placement layers use the existing editor/catalog workflow.
+- Fidelity dispatch inspects saved service ownership to choose the native placement gate. Legacy preset errors
+  still precede missing/not-running state errors; the extra state read is needed to identify the opt-in adapter.
+
+Legacy recipe reports omit placement-only CUDA driver/H2D identities; their passive GPU probe uses the original
+single query and preserves GPU-name whitespace. Deploy keeps its original queue-timeout exception and message.
+
 ## Access and authentication
 
 | | rule |
@@ -70,7 +98,8 @@ silently wins, and `pick` and `up --recipe auto` refuse them the same way.
 
 Every recipe request **is** a `hyperloom recipe ...` command line. The portal checks the JSON arguments, builds the
 command line, runs it (a child process, or the same parser and function in process for the cheap reads), and answers
-with what the command printed. So the CLI and the API give the same results and the same refusals, word for word.
+with what the command printed. Recipe evaluation answers preserve the CLI results and refusals, word for word.
+Synchronous launch preflight uses the fixed public error below and keeps the detailed reason in the local audit.
 
 Every recipe answer has this shape:
 
@@ -79,7 +108,7 @@ Every recipe answer has this shape:
   "schema": "hyperloom/recipes-<operation>-v1",
   "server_time": 1792877018.27,
   "operation": "validate",
-  "cli": "hyperloom recipe validate qwen3.8-flash-next.lab --config /home/op/.config/hyperloom/cluster.json",
+  "cli": "hyperloom recipe validate qwen3.8-flash-next.lab --config <config>/cluster.json",
   "exit_code": 0,
   "ok": true,
   "result": { "...": "the command's JSON output" },
@@ -130,6 +159,22 @@ hardware refuses the recipe in `result.hardware`.
 | `GET recipes/active` | `hyperloom recipe active [P]` | what each running profile was launched with, as launched |
 | `GET recipes/routes` | `hyperloom recipe routes [P]` | per-route and per-request routing of the running recipe (RTX vs nodes) |
 
+Launch preflight is synchronous for `POST recipes/deploy` and `POST up` with `recipe` or `recipe_inputs`, on
+legacy and placement routes alike. Refusals detected by preflight return **HTTP 400** with exactly
+`{"error": "recipe preflight refused: preflight checks failed; see local audit"}`. There is no job id or
+recipe-command envelope, and no job is created. The local audit records the detailed reason through the shared
+credential redactor. These include conflicting snapshot options; invalid approval, deadline or queue timeout; missing,
+expired or changed snapshot files; a reviewed stop list that differs from the running set; unknown or excluded
+nodes/devices, unsupported router/diagnostic selections, saved running state, unavailable recipe references; and
+placement descriptor, content-manifest, policy, budget or grant refusals found by passive rendering. For example,
+an expired snapshot returns the fixed 400 envelope above; its local audit explains that the snapshot is missing
+or may have expired and must be planned again. JSON argument-validation errors remain HTTP 400 with their specific
+validation message. A saved launch owned by another or unknown configuration remains HTTP 409 with its specific
+ownership message. The web UI retains the public message in the job-error panel, labelled as refused before job
+creation. These refusals previously appeared as errors inside an asynchronous job. Checks that require the actual launch (including the
+operator gate and engine load/runtime checks) still report failure through the accepted job. The HTTP rules for
+recipe evaluation answers above are unchanged.
+
 Common arguments of the evaluation calls (they map to the CLI's layer options):
 
 | JSON | CLI | |
@@ -149,7 +194,7 @@ hyperloom recipe list --model qwen3.8-flash-next
 
 ```json
 {"schema": "hyperloom/recipes-list-v1", "operation": "list", "exit_code": 0, "ok": true,
- "cli": "hyperloom recipe list --model qwen3.8-flash-next --config /home/op/.config/hyperloom/cluster.json",
+ "cli": "hyperloom recipe list --model qwen3.8-flash-next --config <config>/cluster.json",
  "result": {
   "recipes": [{
     "id": "qwen3.8-flash-next.lab", "name": "qwen3.8-flash-next-lab", "model": "qwen3.8-flash-next",
@@ -163,7 +208,7 @@ hyperloom recipe list --model qwen3.8-flash-next
                    "value": 2.94, "at_prompt_tokens": 8192, "basis": "measured", "evidence": "qw-rtx-8k"}]}],
   "models": {"qwen3.8-flash-next": ["qwen-replicas"], "deepseek-v4.1-flash": ["ds41-pair", "ds41-rtx"]},
   "layers": [], "receipts": [], "facts": [],
-  "user_dir": "/home/op/.config/hyperloom/recipes",
+  "user_dir": "<config>/recipes",
   "builtin": {"repo": "strix-stream", "path": "recipes/examples", "commit": "4f95e1dd..."}},
  "error": null}
 ```
@@ -338,7 +383,7 @@ POST recipes/save {"id": "qwen3.8-flash-next.fast", "base": "qwen3.8-flash-next.
 POST recipes/save {"id": "qwen3.8-flash-next.mine", "text": "...", "replace": "<sha256 it had when read>"}
 POST recipes/delete {"id": "qwen3.8-flash-next.mine", "sha256": "<sha256 it had when read>"}
 -> {"exit_code": 0, "result": {"id": "qwen3.8-flash-next.fast", "name": "qwen-fast",
-                               "path": "/home/op/.config/hyperloom/recipes/qwen3.8-flash-next.fast.json",
+                               "path": "<config>/recipes/qwen3.8-flash-next.fast.json",
                                "sha256": "...", "replaced": false, "reader": "core ..."}}
 ```
 

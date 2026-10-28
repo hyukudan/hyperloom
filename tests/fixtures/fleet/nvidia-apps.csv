@@ -1,3 +1,3 @@
-GPU-a0b1c2d3-0000-4000-8000-000000000001, 29048, C:\Program Files\Vendor\tool.exe, [N/A]
-GPU-a0b1c2d3-0000-4000-8000-000000000001, 121920, C:\lab\bin\engine.exe, [N/A]
-GPU-d4e5f6a7-0000-4000-8000-000000000002, 18092, C:\Windows\explorer.exe, [N/A]
+<gpu-pro>, 29048, <drive-c>\Program Files\Vendor\tool.exe, [N/A]
+<gpu-pro>, 121920, <drive-c>\lab\bin\engine.exe, [N/A]
+<gpu-assist>, 18092, <drive-c>\Windows\explorer.exe, [N/A]

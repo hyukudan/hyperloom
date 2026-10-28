@@ -1,3 +1,4 @@
+from tests.portable_fixtures import read_fixture
 from copy import deepcopy
 from dataclasses import asdict
 import hashlib
@@ -27,7 +28,7 @@ class RenderTests(unittest.TestCase):
             self.obj["router"]["replica_api_key_files"][mid] = str(self.key)
 
     def test_qwen_receipt_golden_argv_and_explicit_env(self):
-        expected = json.loads((FIXTURES / "qwen-replicas.golden.json").read_text())
+        expected = json.loads(read_fixture(FIXTURES / "qwen-replicas.golden.json"))
         actual = render_processes(parse(self.obj), "qwen-replicas")
         self.assertEqual([asdict(p) for p in actual], expected)
         self.assertEqual(actual[0].argv[2:5], ["11", "22", "33"])
@@ -35,7 +36,7 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(actual[0].argv[actual[0].argv.index("--http-default-max-tokens")+1], "256")
 
     def test_ds41_contract_golden_both_ranks(self):
-        expected = json.loads((FIXTURES / "ds41-pair.golden.json").read_text())
+        expected = json.loads(read_fixture(FIXTURES / "ds41-pair.golden.json"))
         actual = render_processes(parse(self.obj), "ds41-pair")
         self.assertEqual([asdict(p) for p in actual], expected)
 

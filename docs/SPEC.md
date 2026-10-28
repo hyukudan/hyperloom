@@ -1,8 +1,8 @@
 # SPEC — `hyperloom`: one installable product that weaves TensorMeld, the Strix Halo engine and a discrete-GPU front into one cluster
 
-Status: **FINAL for main's OK** (2026-10-23; sections 13-14 added after the 03:09 crash for the user's addenda A and B; second Sol review in SPEC-review-sol-2.md, answered in section 15).
-- Author: the product design session (Opus).
-- History: `SPEC-draft.md` was reviewed by Sol (high) in `SPEC-review-sol.md`. Every review point is answered in §12. The spec body below already includes the accepted changes.
+Status: **FINAL for main's OK** (2026-10-23; sections 13-14 added after the 03:09 crash for the user's addenda A and B; second implementation review answered in section 15).
+- Author: the product design session (independent review).
+- History: `SPEC-draft.md` received an implementation review. Every review point is answered in §12. The spec body below already includes the accepted changes.
 - Language: English. Repo: **private** `hyukudan/hyperloom`.
 
 ## 0. Goal, scope, non-goals
@@ -208,7 +208,7 @@ hyperloom/
   hyperloom/            config.py render.py remote.py lease.py stats.py adapters/ web/ presets/
   node/           hyperloom-node   build-node.sh
   windows/        install.ps1  hyperloom.cmd  build-cuda-front.ps1 (Phase 3)
-  tests/          unittest; fake engines that REPLAY real captured outputs; fake ssh
+  tests/          unittest classes and pytest fixtures; fake engines that REPLAY real captured outputs; fake ssh
   docs/           install, prerequisites, auth matrix, lab mode, component requests
 ```
 
@@ -450,7 +450,7 @@ Tested with paths containing spaces, on Python 3.11, 3.12 and 3.13.
 
 **Every phase ends with:**
 - unit and hygiene tests green;
-- an Opus review of each Sol task, one commit per task;
+- an independent review of each implementation task, one commit per task;
 - a report in ds41-coord.md.
 
 **Rules for GPU acceptance runs:**
@@ -553,17 +553,17 @@ It starts only when the engine ships a CUDA FRONT with an HTTP serving API, `/he
 
 ## 8. Conventions
 - **Repo:** `hyukudan/hyperloom` (private). Package and CLI: `hyperloom`. Node tool: `hyperloom-node`.
-- **Python:** stdlib only (PC ≥ 3.11, node system python3 ≥ 3.10); `unittest`.
+- **Python:** stdlib only in production (PC ≥ 3.11, node system python3 ≥ 3.10); pytest (`.[test]`), including unittest classes.
 - **Commit author** `hyukudan <19479239+hyukudan@users.noreply.github.com>`, with no trailers (no co-author or session lines).
 - **License:** proprietary/private for now; the `NOTICE` file preserves component licenses.
 
-## 9. Build process with Sol (after main's OK)
-- One phase at a time. Sol workers get **disjoint** tasks (files/modules), for example in Phase 0:
+## 9. Build process (after main's OK)
+- One phase at a time. Coding workers get **disjoint** tasks (files/modules), for example in Phase 0:
   - (a) config + render + golden tests;
   - (b) adapters + fixtures;
   - (c) remote/ssh + `hyperloom-node` doctor;
   - (d) the Windows install and router child.
-- Opus reviews each diff, runs the tests and commits.
+- The reviewer checks each diff, runs the tests and commits.
 - No GPU, no node writes beyond `doctor` until Phase 1a, and then only in leases approved by main.
 
 ## 10. Component requests (filed in each component's repo; not done here)
@@ -593,7 +593,7 @@ It starts only when the engine ships a CUDA FRONT with an HTTP serving API, `/he
 4. **Repo name** `hyperloom`: OK?
 5. **Phase 2 waits** for the engine publish merge to be pushed to `main`. OK?
 
-## 12. Answers to Sol's review (`SPEC-review-sol.md`)
+## 12. Answers to the implementation review
 
 A = accepted, P = partly accepted, R = rejected. Section references are to this SPEC.
 
@@ -706,8 +706,8 @@ A = accepted, P = partly accepted, R = rejected. Section references are to this 
 - The design is in `docs/ui/UI-SPEC.md`, with mockups in `ui/mockups/` and images in `ui/img/` (desktop light/dark and narrow, for all 7 screens).
 - **Build order:**
   1. main shows the mockups to the user;
-  2. Sol builds Phase 1b against them;
-  3. Opus reviews side by side.
+  2. The coding worker builds Phase 1b against them;
+  3. The reviewer compares side by side.
 
 ### 14.2 How configuration reaches each component (target design)
 
@@ -759,7 +759,7 @@ A = accepted, P = partly accepted, R = rejected. Section references are to this 
 | TM-R16 | TensorMeld | link-probe over the mTLS channel | Phase 4 |
 
 
-## 15. Answers to Sol's second review (`SPEC-review-sol-2.md`; §13–14 + UI)
+## 15. Answers to the second implementation review (§13–14 + UI)
 
 A = accepted, P = partly accepted. Each answer is the binding change. Where it amends §13/§14 or the UI-SPEC, that text applies and overrides the earlier wording.
 

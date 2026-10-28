@@ -1,4 +1,5 @@
 """Diagnostic-run mode: verified preset table, production render unchanged, non-production marking."""
+from tests.portable_fixtures import read_fixture
 import contextlib
 from dataclasses import asdict
 import importlib.util
@@ -47,7 +48,7 @@ class DiagnosticRenderTests(unittest.TestCase):
     setUp = test_render.RenderTests.setUp
     def test_production_render_is_unchanged_without_diagnostics(self):
         for kind in ("qwen-replicas", "ds41-pair"):
-            expected = json.loads((FIXTURES / (kind + ".golden.json")).read_text())
+            expected = json.loads(read_fixture(FIXTURES / (kind + ".golden.json")))
             for kwargs in ({}, {"diagnostics": ()}, {"diagnostics": [], "run": "abcdef012345"}):
                 self.assertEqual([asdict(p) for p in render_processes(parse(self.obj), kind, **kwargs)], expected)
 

@@ -90,6 +90,33 @@ def add(commands):
     placement.add_argument("--catalog-only", action="store_true", help=argparse.SUPPRESS)
     placement.add_argument("--config", type=Path, default=config_path())
     placement.set_defaults(ext_run=run_placement)
+    solve = commands.add_parser("solve", help="Tierstream placement rows from cached local inputs; pick explicitly")
+    solve.add_argument("recipe", nargs="?", help="recipe id or file (required when solving)")
+    solve.add_argument("--route")
+    solve.add_argument("--bundle", help="local run/solver-inputs/NAME.json (cached probe and solver inputs)")
+    solve.add_argument("--selection", help="snapshot digest to pick from")
+    solve.add_argument("--pick", help="the core row id chosen by the operator")
+    solve.add_argument("--save-layer", help="save exactly the core-emitted overrides after its re-plan check")
+    solve.add_argument("--catalog-only", action="store_true", help=argparse.SUPPRESS)
+    solve.add_argument("--config", type=Path, default=config_path())
+    solve.set_defaults(ext_run=run_solve)
+
+
+def run_solve(args):
+    from hyperloom.recipes import service
+    with service.configured(args.config):
+        cluster = _loader(args.config)
+        if args.selection is not None:
+            if not args.pick or not args.save_layer or args.recipe or args.route or args.bundle:
+                raise Refused("--selection requires --pick ROW --save-layer NAME, with no new solve inputs")
+            result = service.pick_solve(cluster, args.selection, args.pick, args.save_layer)
+        else:
+            if not args.recipe or not args.route or not args.bundle or args.pick or args.save_layer:
+                raise Refused("solve requires RECIPE --route ROUTE --bundle NAME; choose a row after reviewing it")
+            ref = service.recipe_ref("recipe", args.recipe) if args.catalog_only else args.recipe
+            result = service.solve(cluster, ref, args.route, args.bundle)
+    _emit(result)
+    return 0
 
 
 def _emit(result):
@@ -672,6 +699,7 @@ def summarize(variant, explained, planned, *, explain_error=None, plan_error=Non
     else:
         service_row = _unavailable(no_decision)
     return {"fields": shown,
+            "solver": planned.get("solver"),
             "match": (hardware or {}).get("match") if hardware else None,
             "fits": None if hardware is None else not (hardware.get("match") or []),
             "untuned": explained.get("untuned"), "refused_layers": explained.get("refused_layers"),

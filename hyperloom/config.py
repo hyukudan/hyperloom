@@ -43,6 +43,8 @@ class Cluster:
 MAX_CONFIG_BYTES = 256 * 1024
 BROKER_HOST = re.compile(r"(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}"
                          r"[A-Za-z0-9])?)*|[0-9A-Fa-f:.]{2,45}")
+DEFAULT_DEVICE_POLICIES = ({"name_contains": "4090", "excluded": True, "require_identity": True,
+                            "reason": "RTX 4090 is excluded by policy"},)
 PRESETS = Path(__file__).with_name("presets")
 
 
@@ -256,16 +258,20 @@ def parse(obj: dict) -> Cluster:
             raise ConfigError("devices: expected list")
         ids = set()
         for device in devices:
-            record(device, "device", ("id",), ("type", "uuid", "excluded"))
+            record(device, "device", ("id",), ("type", "uuid", "excluded", "name", "memory_gib", "pci", "arch", "driver", "pc_big_conflict"))
             did = identifier(device["id"], "device.id")
             if did in ids:
                 raise ConfigError("duplicate device id")
             ids.add(did)
-            for key in ("type", "uuid"):
+            for key in ("type", "uuid", "name", "pci", "arch", "driver"):
                 if key in device:
                     text(device[key], f"device.{key}")
             if "excluded" in device:
                 boolean(device["excluded"], "device.excluded")
+            if "pc_big_conflict" in device:
+                boolean(device["pc_big_conflict"], "device.pc_big_conflict")
+            if "memory_gib" in device:
+                number(device["memory_gib"], "device.memory_gib", 0, 1048576)
         device_count += len(devices)
         lab = m.get("lab_dir")
         if "lab_dir" in m:
@@ -378,12 +384,17 @@ def parse(obj: dict) -> Cluster:
             if key == "ui_listen" and endpoint["address"] != "127.0.0.1":
                 raise ConfigError("UI must listen on 127.0.0.1")
     if "cuda" in pc:
-        cuda = record(pc["cuda"], "pc.cuda", optional=("pro_uuid", "reservation"))
+        cuda = record(pc["cuda"], "pc.cuda", optional=("pro_uuid", "reservation", "grants", "host_grant"))
         if "pro_uuid" in cuda:
             text(cuda["pro_uuid"], "pc.cuda.pro_uuid")
         if cuda.get("reservation") is not None:
             from . import rtx
             rtx.parse_reservation(cuda["reservation"])
+        from .recipes import grants
+        if "grants" in cuda:
+            grants.parse_grants(cuda["grants"])
+        if "host_grant" in cuda:
+            grants.parse_host_grant(cuda["host_grant"])
     router = obj.get("router", {})
     _router(router, machines)
     return Cluster(machines, assets, profiles, router, pc, obj)

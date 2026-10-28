@@ -3,7 +3,7 @@
 Read `docs/SPEC.md` first: §2 architecture, §2.3 config, §2.4–2.7, §3, §5, §13, §15 and §16. Sections 15 and 16 override earlier text. Package name `hyperloom`, node tool `hyperloom-node`, labels `hl-`.
 
 ## Rules for every worker
-- Python ≥ 3.11 on the control machine and ≥ 3.10 for `node/hyperloom-node`; **stdlib only**; tests use `unittest` (`python -m unittest discover -s tests -v`). Tests must pass on Windows (this machine) and be portable to Linux.
+- Python ≥ 3.11 on the control machine and ≥ 3.10 for `node/hyperloom-node`; **stdlib only in production**; tests use pytest (`python -m pytest -q`, install `.[test]`) with unittest classes supported. Tests must pass on Windows (this machine) and be portable to Linux.
 - **Edit only the files you own** (listed per task). Shared files that already exist (`hyperloom/__init__.py`, `tests/__init__.py`) are read-only. Never edit `third_party/` (pinned submodules, read-only). **Do not commit, push or change git config**; the reviewer commits.
 - **No identifying data in any file:**
   - no IPv4 except 127.0.0.1 and the documentation ranges 192.0.2.0/24, 198.51.100.0/24 and 203.0.113.0/24;
@@ -55,7 +55,7 @@ Read `docs/SPEC.md` first: §2 architecture, §2.3 config, §2.4–2.7, §3, §5
 - Test it with `validate_router`, by importing the real parser from `third_party/tensormeld/src`.
 
 **Presets** are data only.
-- **Qwen:** derived from the lab receipt `D:\tmp\cluster-opus-spec\campaign\qwen\rep\runs\r3\prod-c1.cmd`, plus `D:\tmp\cluster-opus-spec\campaign\qwen\harness-copy\qwen_cmd.sh` and `campaign\qwen\rep\qserve.py` (read-only). Keep the exact flag order and values. Model, sidecar, golden, vocab and calibration-token file come from asset paths. The calibration token IDs are positional arguments: the render reads them from an asset file, and the test uses a synthetic ID file. Env is explicit.
+- **Qwen:** derived from the lab receipt `<reference-tree>\campaign\qwen\rep\runs\r3\prod-c1.cmd`, plus `<reference-tree>\campaign\qwen\harness-copy\qwen_cmd.sh` and `campaign\qwen\rep\qserve.py` (read-only). Keep the exact flag order and values. Model, sidecar, golden, vocab and calibration-token file come from asset paths. The calibration token IDs are positional arguments: the render reads them from an asset file, and the test uses a synthetic ID file. Env is explicit.
 - **DeepSeek pair:** from `third_party/engine/docs/ds41-production-defaults.md`: `--transport usb4gpu`, `--prefill-path device`, DSpark flags, and the identity env.
 
 **Golden test**
@@ -74,7 +74,7 @@ Read `docs/SPEC.md` first: §2 architecture, §2.3 config, §2.4–2.7, §3, §5
 - CUDA prefill service `/health` and `/v1/describe`: `apps/cuda_ds41_prefill_service_main.cu`.
 
 **Fixtures**
-- Prefer real captured outputs. Search read-only under `D:\tmp\cluster-opus-spec` (e.g. `campaign/**/` for `api/status` or `router-final.json` dumps) and sanitize them.
+- Prefer real captured outputs. Search read-only under `<reference-tree>` (e.g. `campaign/**/` for `api/status` or `router-final.json` dumps) and sanitize them.
 - Otherwise build fixtures exactly from the code's field names, and note which kind each fixture is in a README beside them.
 
 **Behaviour**

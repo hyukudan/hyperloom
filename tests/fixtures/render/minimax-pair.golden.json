@@ -1,16 +1,16 @@
 [
   {
-    "machine_id": "halo-1",
+    "machine_id": "<node-1>",
     "role": "rank0",
     "argv": [
-      "/opt/hyperloom/releases/000000000000/bin/strix-minimax-serve",
-      "/models/minimax-m3.1-flash-exl3",
+      "<posix>/opt/hyperloom/releases/000000000000/bin/strix-minimax-serve",
+      "<posix>/models/minimax-m3.1-flash-exl3",
       "--rank",
       "0",
       "--transport",
       "usb4-auto",
       "--bind",
-      "127.0.0.1",
+      "<ipv4-loopback>",
       "--port",
       "18441",
       "--model-id",
@@ -28,17 +28,17 @@
     "ready": "minimax-stdout"
   },
   {
-    "machine_id": "halo-2",
+    "machine_id": "<node-2>",
     "role": "rank1",
     "argv": [
-      "/opt/hyperloom/releases/000000000000/bin/strix-minimax-serve",
-      "/models/minimax-m3.1-flash-exl3",
+      "<posix>/opt/hyperloom/releases/000000000000/bin/strix-minimax-serve",
+      "<posix>/models/minimax-m3.1-flash-exl3",
       "--rank",
       "1",
       "--transport",
       "usb4-auto",
       "--bind",
-      "127.0.0.1",
+      "<ipv4-loopback>",
       "--port",
       "18441",
       "--model-id",

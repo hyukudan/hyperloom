@@ -17,6 +17,10 @@ for version in 3.11 3.12 3.13; do
     # A writable copy: tests create files beside the checkout.
     # Unprivileged, like the nodes: the non-lab service code refuses to run as root.
     docker run --rm --user 1000:1000 -e HOME=/tmp -v "$src:/ro:ro" python:"$version"-slim sh -c \
-        'cp -a /ro /tmp/src && cd /tmp/src && python -m unittest discover -s tests -t .' || status=1
+        'cp -a /ro /tmp/src && cd /tmp/src || exit 1
+         status=0
+         python -m unittest discover -s tests -t . || status=1
+         python -m pip install -e ".[test]" && python -m pytest -q || status=1
+         exit "$status"' || status=1
 done
 exit $status

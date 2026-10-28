@@ -1,6 +1,6 @@
 # UI-SPEC — `hyperloom` portal
 
-Status: design for main/user review (2026-10-23); sections 9-11 answer Sol review 2 (../SPEC-review-sol-2.md). Author: the product design session (Opus). Builder: Sol workers, following SPEC.md §2.4 and this file.
+Status: design for main/user review (2026-10-23); sections 9-11 answer the second implementation review. Author: the product design session (independent review). Builder: coding workers, following SPEC.md §2.4 and this file.
 
 - Mockups: `mockups/*.html`, sharing `mockups/ds.css` and `mockups/shell.js`.
 - Rendered images: `img/<screen>-{desktop,desktop-dark,narrow}.png`, at 1440 px and 390 px. Regenerate them with `./render.sh <screen>...`.
@@ -227,7 +227,7 @@ Status: design for main/user review (2026-10-23); sections 9-11 answer Sol revie
 - Motion: no animations except a 150 ms fade on state change; `prefers-reduced-motion` disables it.
 - Targets are at least 32 px (44 px on narrow).
 
-## 8. Build notes for Sol
+## 8. Build notes for implementation
 - **Stack:**
   - stdlib `http.server` serving `hyperloom/web/static/` (one `index.html`, `app.css` derived from `ds.css`, `app.js`);
   - vanilla JS with hash routing (`#/devices`, `#/stats`, …);

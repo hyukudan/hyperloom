@@ -3,7 +3,7 @@
  "verb": "models",
  "roots": [
   {
-   "path": "/opt/lab/models",
+   "path": "<posix>/opt/lab/models",
    "units": [
     {
      "name": "model-a",

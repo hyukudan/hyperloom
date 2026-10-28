@@ -103,10 +103,15 @@ def decode_set(bound):
     return next(s for s, r in bound["roles"].items() if r == "decode")
 
 
-def probe_report(recipe, bound, facts):
+def probe_report(recipe, bound, facts, *, cluster=None, ctx=None, inventory=None):
     """The core's probe report (§8.2) with exactly the bound devices, so the core's binding can only pick them.
     ``facts``: {"model", "model_sha256", "devices": {probe id: {kind, name, memory_gib, host_ram_gib,
     disk_read_gbytes_ps, driver}}, "links": [{kind, hosts, gbps}]} (capability values only)."""
+    if any(reader.placement_mode(r) for r in recipe["routes"]):
+        from . import devices
+        if cluster is None or ctx is None or inventory is None:
+            raise RecipeError("placement probe requires configured candidates")
+        return devices.candidates(cluster, ctx, inventory, facts)
     devices = []
     for device in recipe["match"]["devices"]:
         for member in bound["binding"][device["id"]]:
@@ -114,6 +119,8 @@ def probe_report(recipe, bound, facts):
             row = {"id": member["id"], "kind": device["kind"], "name": item.get("name"),
                    "memory_gib": item.get("memory_gib"), "host": member["host"]}
             for key in ("host_ram_gib", "disk_read_gbytes_ps", "driver"):
+                if device["kind"] == "cuda" and key == "driver":
+                    continue  # Legacy PC CUDA profiles never used these placement-only facts.
                 if item.get(key) is not None:
                     row[key] = item[key]
             devices.append(row)
@@ -349,9 +356,14 @@ def check_endpoints(recipe, bound, decode, ctx):
                               f"placements ({', '.join(diff)})")
 
 
-def launch_flags(route, set_id, table, what, memory_min, checked=()):
+def launch_flags(route, set_id, table, what, memory_min, checked=(), *, placement_files=None):
     """The launch values a placement maps to; any other non-default field is refused, never dropped (``checked``
     fields are verified elsewhere against the engine's declaration)."""
+    if reader.placement_mode(route):
+        if placement_files is None:
+            raise RecipeError("PL_E_CAPABILITY placement needs the qualified decode adapter and runtime artifacts")
+        placement_files.read()
+        return dict(zip(placement_files.argv()[::2], placement_files.argv()[1::2]))
     placement = route["placement"][set_id]
     defaults = dict(_defaults(), device_gib=memory_min)
     unmapped = sorted(k for k in placement if k not in table and k not in BOUND_FIELDS and k not in checked
@@ -387,8 +399,21 @@ def check_bounds(route, set_id, kind, ctx):
                 raise RecipeError(f"{where}.{field}: {value} > the engine's {flag} {bound}")
 
 
-def refuse_unsupported(recipe):
+def refuse_unsupported(recipe, *, adapter=None):
+    if any(reader.placement_mode(r) for r in recipe["routes"]):
+        from . import runtime
+        if adapter is None:
+            raise RecipeError("PL_E_CAPABILITY placement requires the opt-in RTX decode adapter (schema only for legacy engines)")
+        runtime.qualified(adapter)
+        return
+    if any(any(key in device for key in ("optional", "uuid", "pci", "index"))
+           for device in recipe["match"]["devices"]):
+        raise RecipeError("PL_E_CAPABILITY placement selectors require a qualified placement adapter (schema only)")
     for route in recipe["routes"]:
+        if reader.placement_mode(route) or any(key in placement for placement in route["placement"].values()
+                                               for key in reader.HOST):
+            raise RecipeError(f"routes.{route['id']}: PL_E_CAPABILITY placement launch is unavailable until the "
+                              "placement adapter and release are qualified (schema only)")
         w = route["when"]
         if route["phase"] == "prefill" and (w["batch_min"] != 1 or w["batch_max"] is not None):
             raise RecipeError(f"routes.{route['id']}.when: batch predicates on prefill routes are not supported by the "

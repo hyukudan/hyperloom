@@ -271,6 +271,7 @@
         + (service ? `<p>RTX prefill service: ${service.start ? `starts at VRAM cap <b>${esc(service.vram_cap_gib)}</b> GiB, host <b>${esc(service.host_gib)}</b> GiB` : "not started · " + esc(service.why || "")}</p>` : "")
         + (plan ? `<details open><summary>Planner (vramplan)</summary>${H().table(["Item", "Value"], Object.entries(plan).filter(([k, v]) => typeof v !== "object").map(([k, v]) => H().cells([esc(k.replaceAll("_", " ")), esc(v)])).join(""), "Placement plan")}<pre class="raw">${esc(JSON.stringify(plan, null, 1))}</pre></details>` : "")
         + (res.route_table ? `<details><summary>Router route table</summary><pre class="raw">${esc(JSON.stringify(res.route_table, null, 1))}</pre></details>` : "")
+        + (res.solver ? `<details open><summary>Tierstream solve rows</summary><pre class="raw">${esc(res.solver.table || JSON.stringify(res.solver.rows, null, 1))}</pre><p class="hint">Choose a row explicitly in the planner. Hypothetical FILE rows cannot be saved; solving never enables an assist.</p></details>` : "")
         + `<details><summary>Checked when up starts</summary><ul>${(res.checked_at_start || []).map(x => `<li>${esc(x)}</li>`).join("")}</ul></details>`
         + `<p class="hint">Snapshot <span class="mono">${esc((res.inputs || "").slice(0, 16))}</span> · deploy launches exactly this snapshot (recipe, layers, configuration, profile).</p>`;
     }

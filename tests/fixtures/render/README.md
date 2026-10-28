@@ -29,7 +29,43 @@ replica_api_key_files are local to the selected router host. For remote router
 placement, configure key paths on that machine. Rendering itself never reads
 keys; validate_router invokes the real TensorMeld parser, which reads them.
 
-Run: python -m unittest tests.test_config tests.test_render -v
+Run: python -m pytest -q tests/test_config.py tests/test_render.py
+
+G6 legacy oracle: `legacy-eb9ae96.json` freezes argv, explicit env, release id,
+engine/binary pins, build component pins/options and expected refusals for every
+shipped preset and the `ds41-rtx` service profile, with no cap, a 90 GiB cap and
+an insufficient 8 GiB cap. Caps on profiles without a service exercise `up`'s
+early refusal. Only pure renders run for service profiles; no engine, gate,
+lease, network, model scan or GPU operation runs. Inputs are synthetic; the
+clock, operator reservation, free RAM, process environment and cached model
+header are fixed. RTX explicit env includes the legacy visibility variables,
+as required by contract rev 21b section 7.1.7. Inherited env is cleared.
+
+Generate independently using a separately prepared read-only checkout of the frozen revision
+(PowerShell, repository root; replace `<baseline-checkout>` with that checkout):
+
+```powershell
+python tests/legacy_render.py --source "<baseline-checkout>" --output tests/fixtures/render/legacy-eb9ae96.json
+python -m pytest -q tests/test_legacy_render.py
+```
+
+The generator imports Hyperloom only from `--source` in a fresh interpreter.
+The stored fixture uses portable placeholders. `tests/portable_fixtures.py`
+reconstructs its original values only in memory; the reconstructed bytes retain
+SHA-256 `40489d24e0a9b64d9b6186b2742d2fff734e4d66e310dd1776d8b62c340168e7`.
+The generator saves portable output by default; `--raw` is for local comparison
+only. The test renders with `--raw` and compares LF JSON bytes against the
+reconstructed frozen file; it never regenerates the oracle. Any difference needs reporting
+and product review, not an automatic golden update. A second independent
+generation at eb9ae96 was byte-identical; the integrated branch matched all
+21 cases when this oracle was introduced. Paths and identities here are
+portable fixture data. All 22 previously exempt portable fixtures remain unexempted
+and reconstruct their original bytes in memory. Main's adversarial redaction corpus
+has the single reviewed path-and-SHA-256 exemption documented in
+[placement-review-resolution.md](../../../docs/placement-review-resolution.md#integrated-base-review-resolutions).
+IPv4 and IPv6 literals, including documentation and loopback addresses, also use portable placeholders. The
+privacy gate validates address candidates in values and mapping keys with `ipaddress`; documentation ranges have
+no exemption. Address substitutions expand only in memory before parser or byte comparisons.
 
 The qwen-replicas-w5, ds41-pair-w5 and minimax-pair goldens use the same abstraction (docs/adapters.md):
 qwen-replicas-w5 equals the qwen-replicas line; ds41-pair-w5 is the ds41-pair argv with the w5 identity

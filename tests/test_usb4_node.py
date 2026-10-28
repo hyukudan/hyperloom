@@ -1,5 +1,6 @@
 """Node verb usb4: read-only USB4 link telemetry from a recorded node tree (sysfs, /proc, layout, journal)."""
 
+from tests.portable_fixtures import read_fixture
 import importlib.util
 import io
 import json
@@ -16,7 +17,7 @@ import unittest
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
-FIXTURE = json.loads((ROOT / "tests/fixtures/usb4/tree-halo-2.json").read_text(encoding="utf-8"))
+FIXTURE = json.loads(read_fixture(ROOT / "tests/fixtures/usb4/tree-halo-2.json"))
 spec = importlib.util.spec_from_file_location("hyperloom_usb4_under_test", ROOT / "node" / "hyperloom_usb4.py")
 node = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(node)

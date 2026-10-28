@@ -15,6 +15,149 @@ class ProcessError(RuntimeError):
     pass
 
 
+def check_port(address, port):
+    """Read-only availability check; the caller must still bind/recheck when it starts serving."""
+    family = socket.AF_INET6 if ":" in address else socket.AF_INET
+    with socket.socket(family, socket.SOCK_STREAM) as probe:
+        if os.name == "nt":
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind((address, port))
+        except OSError as exc:
+            raise ProcessError(f"port unavailable: {address}:{port}") from exc
+
+
+def port_owned(address, port, pids):
+    """Read-only proof that an occupied IPv4 listener belongs to a reviewed child; unknown owners fail closed."""
+    if not pids:
+        return False
+    try:
+        if os.name == "nt":
+            from ctypes import wintypes
+            class Row(ctypes.Structure):
+                _fields_ = [(name, wintypes.DWORD) for name in
+                            ("state", "local", "port", "remote", "remote_port", "pid")]
+            query = ctypes.WinDLL("iphlpapi").GetExtendedTcpTable
+            query.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD), wintypes.BOOL,
+                              wintypes.ULONG, ctypes.c_int, wintypes.ULONG]
+            query.restype = wintypes.DWORD
+            size = wintypes.DWORD()
+            if query(None, ctypes.byref(size), False, socket.AF_INET, 3, 0) != 122:
+                return False
+            buffer = ctypes.create_string_buffer(size.value)
+            if query(buffer, ctypes.byref(size), False, socket.AF_INET, 3, 0):
+                return False
+            count = wintypes.DWORD.from_buffer(buffer).value
+            rows = (Row * count).from_buffer(buffer, ctypes.sizeof(wintypes.DWORD))
+            owners = {row.pid for row in rows if row.state == 2 and socket.ntohs(row.port & 0xffff) == port
+                      and socket.inet_ntoa(bytes(wintypes.DWORD(row.local))) in (address, "0.0.0.0")}
+            return bool(owners) and owners <= set(pids)
+        inodes = set()
+        for line in Path("/proc/net/tcp").read_text().splitlines()[1:]:
+            row = line.split()
+            host, number = row[1].split(":")
+            if (row[3] == "0A" and int(number, 16) == port
+                    and socket.inet_ntoa(bytes.fromhex(host)[::-1]) in (address, "0.0.0.0")):
+                inodes.add(row[9])
+        owned = set()
+        for pid in pids:
+            for fd in (Path("/proc") / str(pid) / "fd").iterdir():
+                try:
+                    target = os.readlink(fd)
+                except OSError:
+                    continue
+                if target.startswith("socket:["):
+                    owned.add(target[8:-1])
+        return bool(inodes) and inodes <= owned
+    except (OSError, ValueError, IndexError):
+        return False
+
+
+def private_resident_bytes(pid):
+    """Conservative reclaimable physical AND commit bytes; shared/file-backed pages earn no credit.
+
+    Unknown/inaccessible counters return zero. Never infer residency from an allocation budget or virtual size.
+    """
+    if type(pid) is not int or pid <= 0:
+        return 0
+    try:
+        if os.name == "nt":
+            from ctypes import wintypes
+            class Counters(ctypes.Structure):
+                # PROCESS_MEMORY_COUNTERS_EX2. Older systems leaving its extra fields empty earn no credit.
+                _fields_ = [("cb", wintypes.DWORD), ("faults", wintypes.DWORD)] + [
+                    (name, ctypes.c_size_t) for name in ("peak_ws", "ws", "peak_paged", "paged", "peak_nonpaged",
+                                                       "nonpaged", "pagefile", "peak_pagefile", "private", "private_ws")
+                ] + [("shared_commit", ctypes.c_uint64)]
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel.OpenProcess.restype = wintypes.HANDLE
+            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            kernel.CloseHandle.restype = wintypes.BOOL
+            query = ctypes.WinDLL("psapi", use_last_error=True).GetProcessMemoryInfo
+            query.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD]
+            query.restype = wintypes.BOOL
+            handle = kernel.OpenProcess(0x410, False, pid)  # QUERY_INFORMATION | VM_READ
+            if not handle:
+                return 0
+            try:
+                counters = Counters()
+                counters.cb = ctypes.sizeof(counters)
+                if not query(handle, ctypes.byref(counters), counters.cb):
+                    return 0
+                return min(counters.private, counters.private_ws)
+            finally:
+                kernel.CloseHandle(handle)
+        # Only private, commit-accounted anonymous mappings can restore both counters at exit.
+        credit, private, anonymous = 0, 0, 0
+        with (Path("/proc") / str(pid) / "smaps").open(encoding="ascii") as stream:
+            for line in stream:
+                key = line.split(":", 1)[0]
+                if key in ("Private_Clean", "Private_Dirty"):
+                    private += int(line.split()[1]) * 1024
+                elif key == "Anonymous":
+                    anonymous = int(line.split()[1]) * 1024
+                elif key == "VmFlags":
+                    flags = line.split()[1:]
+                    if "ac" in flags and "sh" not in flags:
+                        credit += min(private, anonymous)
+                    private, anonymous = 0, 0
+        return credit
+    except (OSError, ValueError, IndexError, AttributeError):
+        return 0
+
+
+def lock_held(path):
+    """Inspect a lifetime lock without ever taking it. Unreadable state raises; missing files are free."""
+    path = Path(path)
+    try:
+        info = path.stat()
+    except FileNotFoundError:
+        return False
+    if os.name == "nt":
+        try:
+            # Windows mandatory byte locks reject a ReadFile overlapping the locked byte. No lock request,
+            # file creation or write occurs, so a concurrent helper can still acquire its lifetime lock.
+            with path.open("rb", buffering=0) as stream:
+                stream.read(1)
+        except PermissionError:
+            return True  # Held or inaccessible: both must refuse admission.
+        return False
+    # Linux flock locks are visible in /proc/locks; F_GETLK only sees POSIX record locks, not flock.
+    identity = (os.major(info.st_dev), os.minor(info.st_dev), info.st_ino)
+    for line in Path("/proc/locks").read_text(encoding="ascii").splitlines():
+        fields = line.split()
+        if len(fields) >= 6 and fields[1] == "FLOCK":
+            device = fields[5].split(":")
+            if len(device) != 3:
+                raise ProcessError("lock inventory unreadable")
+            if (int(device[0], 16), int(device[1], 16), int(device[2])) == identity:
+                return True
+    return False
+
+
 class InstanceLock:
     """An OS lock, released even on a crash. The lock file is never unlinked."""
 
@@ -175,17 +318,7 @@ class LocalChild:
     def _check_port(self):
         if self.port is None:
             return
-        address, port = self.port
-        family = socket.AF_INET6 if ":" in address else socket.AF_INET
-        with socket.socket(family, socket.SOCK_STREAM) as probe:
-            if os.name == "nt":
-                probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-            else:
-                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                probe.bind((address, port))
-            except OSError as exc:
-                raise ProcessError(f"port unavailable: {address}:{port}") from exc
+        check_port(*self.port)
 
     def start(self):
         if self.process is not None:

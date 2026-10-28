@@ -12,7 +12,7 @@ import sys
 import tempfile
 
 from .. import orchestrate
-from . import core, descriptors, facts, probe, reader, session
+from . import content_cache, core, descriptors, facts, probe, reader, session
 from .reader import RecipeError
 
 
@@ -27,6 +27,20 @@ def cache():
 
 def store():
     return descriptors.Store(runtime_dir() / "descriptors")
+
+
+def components_store():
+    return content_cache.ComponentsStore(runtime_dir())
+
+
+def measure_command(cluster, args):
+    """Only the top-level probe command calls this explicit acquisition path."""
+    from . import measurements
+    mode = "xfer" if args.xfer else "store" if args.store else "manifest"
+    return measurements.acquire(cluster, mode, runtime=runtime_dir(), uuid=args.uuid,
+                                xfer_sha256=args.xfer_sha256, store_id=args.store_id,
+                                files=args.file, window=args.window,
+                                manifest_runner=lambda files, window: measurements.manifest(cluster, files, window))
 
 
 def recipe_dirs(cluster, extra=()):
@@ -44,9 +58,20 @@ def node_call(cluster):
     return call
 
 
-def live_source(cluster, measure_disks=False):
-    def source(ctx):
-        return facts.gather(cluster, ctx, call=node_call(cluster), cache=cache(), measure_disks=measure_disks)
+def live_source(cluster, measure_disks=False, *, placement=False):
+    def source(ctx, *, policy=None):
+        placement_policy, identity_policy = (placement, False) if policy is None else policy
+        executable = None
+        data = None
+        if placement_policy or identity_policy:
+            from . import runtime
+            data = runtime.preset()
+            if data.get("engine_sha") is not None:
+                executable = runtime.executable(cluster, ctx.pc, data)
+        return facts.gather(cluster, ctx, call=node_call(cluster), cache=cache(), measure_disks=measure_disks,
+                            **({"placement": True} if placement_policy or identity_policy else {}),
+                            **({"release_executable": executable, "release_commit": data["engine_sha"]}
+                               if executable is not None else {}))
     return source
 
 

@@ -7,7 +7,7 @@ schema = "strix-stream/recipe-v1"
 name = "glm-5.3-flash-lab"
 description = "GLM-5.3-Flash: pair TP2, 77.5 GiB/rank all resident, up to 4 sequences x 128K context (provisional, no speed measured)"
 x-status = "pending: TP2 engine (P2) not run; provisional"
-x-schema = "wave4/recipes/core/schema-draft-5.md (Sol GO)"
+x-schema = "wave4/recipes/core/schema-draft-5.md (reviewed)"
 
 [match]
 model = "glm-5.3-flash"

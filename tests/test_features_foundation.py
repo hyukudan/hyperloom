@@ -768,13 +768,16 @@ class CLIAdmissionTests(unittest.TestCase):
     def test_cli_deploys_respect_benchmark_holds_and_stops_cancel_them(self):
         import contextlib
         import io
-        from hyperloom import cli
+        from hyperloom import cli, config
+        from tests.test_config import example
         db = admission.Admission(":memory:")
         self.addCleanup(db.close)
         bench = db.acquire("bench", {"halo-1"}, label="bench decode")
         err = io.StringIO()
-        with mock.patch.object(admission, "for_config", lambda *a, **kw: db), \
-                mock.patch.object(cli, "_cluster", side_effect=ValueError("no config")), \
+        with tempfile.TemporaryDirectory() as temporary, \
+                mock.patch.object(admission, "for_config", lambda *a, **kw: db), \
+                mock.patch.object(cli, "_cluster", return_value=config.parse(example())), \
+                mock.patch("hyperloom.orchestrate._state_path", return_value=Path(temporary) / "up.json"), \
                 contextlib.redirect_stderr(err):
             self.assertEqual(cli.main(["up", "qwen-replicas"]), 1)
             self.assertIn("benchmark or demo holds", err.getvalue())

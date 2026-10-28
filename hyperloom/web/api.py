@@ -224,6 +224,11 @@ def _value(check):
     return check.get("value") if isinstance(check, dict) and check.get("status") == "ok" else None
 
 
+def _preflight_reason(exc):
+    """Only fixed public wording crosses this boundary; arbitrary exception text stays in the local audit."""
+    return "preflight checks failed"
+
+
 def _finite(value):
     return type(value) in (float, int) and math.isfinite(value)
 
@@ -386,9 +391,8 @@ def _accelerator(raw, doctor, gpu, declared):
         row["memory_free_bytes"] = row["memory_total_bytes"] - row["memory_used_bytes"]
     if not amd and _finite(row["memory_total_bytes"]) and _finite(row["memory_free_bytes"]):
         row["memory_used_bytes"] = row["memory_total_bytes"] - row["memory_free_bytes"]
-    policy = next((device for device in declared if device.get("id") == raw.get("id") and raw.get("id")), {})
-    row["excluded"] = policy.get("excluded", False) or "4090" in (row["name"] or "")
-    row["policy_reason"] = policy.get("reason") or ("RTX 4090 is excluded by policy" if row["excluded"] else None)
+    from ..device_policy import resolve
+    row.update(resolve(dict(raw, name=row["name"]), declared))
     return _missing(row, ("id", "name", "memory_used_bytes", "memory_total_bytes", "memory_free_bytes", "utilization_pct",
                           "temperature_c", "power_w", "driver", "runtime", "kernel", "usb4_driver", "layout", "policy_reason"))
 
@@ -1710,6 +1714,8 @@ class API:
                 argv += [flag, str(args[key])]
         if args.get("_job"):
             argv += ["--job", args["_job"]]            # set by mutate: the job's cancel marker
+        if args.get("_admitted_selection") is not None:
+            argv += ["--admitted-selection", json.dumps(args["_admitted_selection"])]
         return argv
 
     def _cli_argv(self, action, args):
@@ -1964,6 +1970,26 @@ class API:
             self._audit(action, arguments, {"state": "refused", "error": str(exc)})
             raise
         priority = action in ("down", "cancel")
+        # Reject an occupied portal before any live node/preflight probes. The reservation below repeats this
+        # check under the same mutex to cover another request arriving during passive admission.
+        with self._job_lock:
+            if self._active and not priority:
+                self._audit(action, arguments, {"state": "refused", "error": "another mutating job is running"})
+                raise APIError("another mutating job is running", 409)
+        checked_resources, selected = None, None
+        if action == "recipes/deploy" or (action == "up" and (arguments.get("recipe") or arguments.get("recipe_inputs"))):
+            from hyperloom.recipes import preflight, service
+            try:
+                argv = self._deploy_argv(arguments) if action == "recipes/deploy" else self._recipe_up_argv(arguments)
+                parsed = cli.build_parser(recipe_web.RaisingParser).parse_args(argv)
+                checked_resources = preflight.cli(parsed, load_cluster=self._recipe_loader)
+                selected = getattr(parsed, "_prepared_selection", None)
+            except service.ForeignConfiguration as exc:
+                self._audit(action, arguments, {"state": "refused", "error": str(exc)})
+                raise APIError(str(exc), 409) from exc
+            except (OSError, ValueError, RuntimeError) as exc:
+                self._audit(action, arguments, {"state": "refused", "error": redact(str(exc))})
+                raise APIError("recipe preflight refused: " + _preflight_reason(exc) + "; see local audit", 400) from exc
         occupying = action in ("up", "install", "recipes/deploy", "recipes/probe")
         # A stop: down, and every cancel that is not a feature job's (a profile's cancel and an up's or a deploy's
         # cancel stop a profile, or may).
@@ -1982,6 +2008,8 @@ class API:
                 if isinstance(profile, str) and profile else {"*"}
             if action == "up" and arguments.get("recipe_inputs"):
                 resources = {"*"}       # a snapshot launches with the placement it was planned on: hold everything
+            if checked_resources is not None:
+                resources = checked_resources
         jid = uuid.uuid4().hex
         with self._job_lock:
             if self._active and not priority:
@@ -2043,6 +2071,8 @@ class API:
             self._unaccept(jid, accepted)
         if action in ("recipes/deploy", "up"):
             arguments = dict(arguments, _job=jid)    # the launch's cancel marker is named by its job
+            if selected is not None:
+                arguments["_admitted_selection"] = dict(selected, resources=sorted(resources))
         def run():
             try:
                 result = self._execute(action, arguments)

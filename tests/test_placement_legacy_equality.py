@@ -1,0 +1,281 @@
+"""Legacy results and configuration ownership refusals follow frozen main 8539c28 sources."""
+
+from copy import deepcopy
+from functools import lru_cache
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+import ast
+import hashlib
+import json
+
+try:
+    import pytest
+except ImportError:
+    from unittest import SkipTest
+    raise SkipTest("requires the test extra (pytest)") from None
+
+from hyperloom import cli, device_policy, orchestrate, rtx
+from hyperloom.recipes import apply, commands, core, facts, probe, reader, service, launch, session
+from hyperloom.web import api, recipes as recipe_web
+
+from tests import test_web_summaries, test_recipes
+from tests.recipe_fixtures import isolated
+from tests.test_web_recipes import Portal, QWEN
+
+
+@lru_cache
+def baseline_text(module):
+    path = Path(__file__).parent / "fixtures/placement_baseline" / (module.__name__ + ".py")
+    return path.read_text(encoding="utf-8")
+
+
+def baseline(module, name):
+    definition = next(node for node in ast.walk(ast.parse(baseline_text(module)))
+                      if isinstance(node, ast.FunctionDef) and node.name == name)
+    namespace = dict(vars(module))
+    exec(compile(ast.Module(body=[definition], type_ignores=[]), "8539c28:" + name, "exec"), namespace)
+    return namespace[name]
+
+
+def outcome(operation):
+    try:
+        return operation()
+    except Exception as exc:
+        return type(exc), str(exc)
+
+
+def test_core_input_text_matches_main_baseline():
+    captured = []
+    def run(argv, **kwargs):
+        captured.append([Path(p).read_bytes() for p in argv[2:]])
+        kwargs["stdout"].write(b"{}")
+        return SimpleNamespace(returncode=0)
+    instance = core.Core("ss-recipe", run=run)
+    inputs = {"recipe.toml": 'name = "caf\u00e9"\n\n', "probe.json": {"devices": []}}
+    args = ["validate", *inputs]
+    assert instance.call(args, inputs) == baseline(core, "call")(instance, args, inputs) == {}
+    assert captured[0] == captured[1]
+
+
+def test_legacy_probe_report_ignores_cuda_driver_and_h2d():
+    recipe = {"routes": [], "match": {"devices": [{"id": "cuda", "kind": "cuda"}]}}
+    bound = {"binding": {"cuda": [{"id": "synthetic", "host": "local"}]}}
+    gathered = {"model": "test", "devices": {"synthetic": {"name": "GPU", "driver": "600",
+                "h2d_gbytes_ps": 30, "memory_gib": 96}}}
+    old_facts = deepcopy(gathered)
+    old_facts["devices"]["synthetic"].pop("driver")  # Main's PC gather never supplied driver identity.
+    old_facts["devices"]["synthetic"].pop("h2d_gbytes_ps")
+    assert apply.probe_report(recipe, bound, gathered) == baseline(apply, "probe_report")(recipe, bound, old_facts)
+
+
+@pytest.mark.parametrize("returncode", [0, 1])
+def test_legacy_nvidia_query_and_name_match_baseline(returncode):
+    result = SimpleNamespace(returncode=returncode, stdout="synthetic, Test   GPU, 24576, 1\n", stderr="failed")
+    run = mock.Mock(return_value=result)
+    old_run = mock.Mock(return_value=result)
+    assert outcome(lambda: probe.nvidia_gpus(run)) == outcome(lambda: baseline(probe, "nvidia_gpus")(old_run))
+    assert run.call_args_list == old_run.call_args_list
+
+
+def test_legacy_facts_do_not_collect_host_topology(monkeypatch):
+    monkeypatch.setattr(facts, "node_runtime", lambda *a: {})
+    ctx = SimpleNamespace(pc="local", model="test", nodes=[], service=None)
+    cluster = SimpleNamespace(assets={})
+    with mock.patch("hyperloom.recipes.topology.host", side_effect=AssertionError("legacy topology walk")):
+        result = facts.gather(cluster, ctx, call=mock.Mock(), gpus=lambda: [],
+                              memory=lambda: {"total_gib": 128, "free_gib": 90, "free_commit_gib": 100})
+    assert result == baseline(facts, "gather")(cluster, ctx, call=mock.Mock(), gpus=lambda: [],
+        memory=lambda: {"total_gib": 128, "free_gib": 90, "free_commit_gib": 100})
+
+
+@pytest.mark.parametrize("timeout", [None, False, 59, orchestrate.MAX_QUEUE_S + 1])
+def test_deploy_queue_refusal_matches_baseline(monkeypatch, timeout):
+    intent = dict(service.DEFAULT_INTENT, profile="test", queue_timeout_s=timeout)
+    monkeypatch.setattr(service, "options_from_inputs", lambda _: (None, intent, None))
+    progress = mock.Mock()
+    expected = outcome(lambda: baseline(service, "_deploy_pinned")("id", [], None, None, None, progress))
+    assert expected == (reader.RecipeError, "the snapshot's queue timeout is out of range")
+    assert outcome(lambda: service._deploy_pinned("id", [], None, None, None, progress)) == expected
+
+
+@pytest.mark.parametrize("flags", [["--deadline", "0"], ["--queue-timeout", "0"], ["--approval-ref", "ref"]])
+def test_phase_1a_print_precedes_unused_launch_validation(capsys, flags):
+    old = baseline(cli, "main")
+    old.__globals__["_admission_hold"] = baseline(cli, "_admission_hold")
+    expected = old(["up", *flags])
+    expected_output = capsys.readouterr()
+    assert expected == 0 and expected_output.out == "Phase 1a\n"
+    assert cli.main(["up", *flags]) == expected
+    assert capsys.readouterr() == expected_output
+
+
+@pytest.mark.parametrize("preset_valid", [False, True])
+def test_legacy_fidelity_error_precedence_matches_baseline(monkeypatch, preset_valid):
+    def preset(*args):
+        if preset_valid:
+            return None, {}, None
+        raise rtx.ServiceError("unknown preset")
+    def running(*args):
+        raise rtx.ServiceError("not running")
+    monkeypatch.setattr(rtx, "_service", preset)
+    monkeypatch.setattr(rtx, "_running", running)
+    assert outcome(lambda: rtx.fidelity_gate(None, "unknown", None)) == outcome(
+        lambda: baseline(rtx, "fidelity_gate")(None, "unknown", None))
+
+
+@pytest.mark.parametrize("operation", ["evaluate", "pick"])
+def test_legacy_context_error_precedes_reading_recipe_or_layers(tmp_path, monkeypatch, operation):
+    def context(*args):
+        raise rtx.ConfigError("unknown profile")
+    monkeypatch.setattr(session.facts, "context", context)
+    layers = session.Layers(profile=tmp_path / "missing-layer.json")
+    path = tmp_path / "missing-recipe.json" if operation == "evaluate" else [tmp_path]
+    args = (None, "unknown", path, layers, mock.Mock(side_effect=AssertionError("facts")))
+    expected = outcome(lambda: baseline(session, operation)(*args))
+    assert expected == (rtx.ConfigError, "unknown profile")
+    assert outcome(lambda: getattr(session, operation)(*args)) == expected
+
+
+@pytest.mark.parametrize("operation", ["evaluate", "pick"])
+@pytest.mark.parametrize("input_kind", ["recipe", "profile", "override"])
+@pytest.mark.parametrize("invalid", ["missing", "malformed"])
+@pytest.mark.parametrize("backend_kind", ["stub", "core"])
+def test_legacy_unreadable_input_matches_main_baseline(tmp_path, operation, input_kind, invalid, backend_kind):
+    from hyperloom.recipes import core
+    recipes = tmp_path / "recipes"
+    recipes.mkdir()
+    path = recipes / "legacy.toml"
+    path.write_text(test_recipes.PLAIN, encoding="utf-8")
+    bad = path if input_kind == "recipe" else tmp_path / "layer.toml"
+    if invalid == "malformed":
+        bad.write_text("broken [[[", encoding="utf-8")
+    else:
+        bad.unlink(missing_ok=True)
+    layers = session.Layers(**({"profile": bad} if input_kind == "profile" else
+                              {"overrides": [bad]} if input_kind == "override" else {}))
+    source = session.saved_source(test_recipes.saved_facts(tmp_path / "facts.json"))
+    backend = core.StubBackend()
+    if backend_kind == "core":
+        def run(*a, **kw):
+            return SimpleNamespace(returncode=1, stdout="", stderr="authoritative core input error")
+        backend = core.CoreBackend(core.Core("fake", run=run))
+    old = baseline(session, operation)
+    if operation == "pick":
+        old.__globals__["evaluate"] = baseline(session, "evaluate")
+    args = (test_recipes.fake_cluster(), "mm", path if operation == "evaluate" else [recipes], layers, source, backend)
+    assert outcome(lambda: getattr(session, operation)(*args)) == outcome(lambda: old(*args))
+
+
+@pytest.mark.parametrize("excluded", [False, True])
+def test_devices_document_summary_and_rules_match_baseline(tmp_path, monkeypatch, excluded):
+    fixture = test_web_summaries.SummaryTests()
+    fixture.setUp()
+    try:
+        fixture.cluster.machines["workstation"].devices[-1]["excluded"] = excluded
+        monkeypatch.setattr(fixture.api, "_cluster", lambda: fixture.cluster)
+        fixture.orch.status.return_value = {}
+        monkeypatch.setattr(api, "default_config_path", lambda: tmp_path / "config.json", raising=False)
+        fixture.api.config_path = tmp_path / "config.json"
+        fixture.orch._state_path.return_value = tmp_path / "state.json"
+        fixture.orch._known_hosts.return_value = tmp_path / "known-hosts"
+        old = baseline(api, "_snapshot")(fixture.api)
+        new = fixture.api._snapshot()
+        assert new["devices"]["summary"]["excluded_reason"] == old["devices"]["summary"]["excluded_reason"]
+        assert new["settings"]["lab_rules"] == old["settings"]["lab_rules"]
+    finally:
+        fixture.doCleanups()
+
+
+def test_configured_exclusion_reason_matches_legacy_default():
+    card = {"id": "configured", "name": "GPU"}
+    declared = [{"id": "configured", "excluded": True}]
+    expected = baseline(api, "_accelerator")(card, {}, {}, declared)
+    assert device_policy.resolve(card, declared)["policy_reason"] == expected["policy_reason"]
+
+
+def test_engine_dependent_ingestion_has_no_dead_launch_wrappers():
+    from hyperloom.recipes import launch
+    assert not hasattr(launch, "ingest_context")
+    assert not hasattr(commands, "manifest_store")
+    document = (Path(__file__).resolve().parents[1] / "docs/placement-render.md").read_text(encoding="utf-8")
+    assert "Engine-dependent open point: context-v1 ingestion" in document
+
+
+def test_activation_document_matches_rev_21c():
+    document = (Path(__file__).resolve().parents[1] / "docs/placement-core.md").read_text(encoding="utf-8")
+    assert "Only non-empty `assist` or `components` tables activate placement" in document
+    assert "Table presence activates placement" not in document
+
+
+@pytest.mark.parametrize("table", ["assist", "components"])
+def test_10_empty_table_stays_legacy_as_in_tierstream(table):
+    # Contract rev 21c: only a non-empty table opts in; an empty one is normalised away (tierstream recipe.hpp:133).
+    doc = test_recipes.PlacementSchemaTests.document()
+    route = doc["routes"][0]
+    for key in ("assist", "components", "max_rows", "max_sequences"):
+        route.pop(key, None)
+    legacy = reader.parse(json.dumps(doc))
+    route[table] = {}
+    parsed = reader.parse(json.dumps(doc))
+    assert not reader.placement_mode(parsed["routes"][0])
+    assert table not in parsed["routes"][0]
+    assert parsed == legacy
+
+
+def test_11_portable_g6_reconstructs_original_frozen_bytes():
+    from tests.portable_fixtures import read_fixture
+    path = Path(__file__).parent / "fixtures/render/legacy-eb9ae96.json"
+    assert hashlib.sha256(read_fixture(path).encode()).hexdigest() == "40489d24e0a9b64d9b6186b2742d2fff734e4d66e310dd1776d8b62c340168e7"
+
+
+@pytest.mark.parametrize("recorded", [False, True])
+def test_portal_foreign_target_deploy_matches_hardened_base(recorded):
+    with isolated() as env:
+        cluster = orchestrate.load_cluster(env.config)
+        digest = service.launch_inputs(cluster, service.locate(QWEN, cluster), session.Layers(),
+                                       intent=dict(service.DEFAULT_INTENT, profile="qwen-replicas"))
+        state = orchestrate._state_path("qwen-replicas")
+        state.parent.mkdir(parents=True, exist_ok=True)
+        owner = orchestrate.config_record(env.root / "other" / "cluster.json") if recorded else None
+        state.write_text(json.dumps({"profile": "qwen-replicas", "config": owner}), encoding="utf-8")
+        saved = state.read_bytes()
+        fake = mock.Mock(wraps=orchestrate)
+        portal = Portal(env, orchestrator=fake)
+        try:
+            # Execute the base's deploy check and CLI-to-HTTP mapping on the same real snapshot and saved state.
+            old_deploy = baseline(service, "deploy")
+            with mock.patch.object(service, "deploy", old_deploy), \
+                    mock.patch.object(service, "_deploy_pinned", baseline(service, "_deploy_pinned")):
+                old = baseline(recipe_web, "in_process")(
+                    ["recipe", "deploy", digest, "--config", str(env.config)], orchestrate.load_cluster)
+            assert old.code == 4
+            expected = (recipe_web.STATUS[old.code],
+                        {"error": old.stderr.decode("utf-8").removeprefix("hyperloom: ")})
+            assert expected[0] == 409
+            if recorded:
+                assert expected[1] == {"error": "qwen-replicas has a saved launch state of another configuration: "
+                                              "stop it there first"}
+            else:
+                assert "unknown configuration" in expected[1]["error"]
+                assert "it is listed and can be stopped here" in expected[1]["error"]
+            current = recipe_web.in_process(
+                ["recipe", "deploy", digest, "--config", str(env.config)], orchestrate.load_cluster)
+            assert (current.code, current.stderr) == (old.code, old.stderr)
+            assert portal.request("POST", "recipes/deploy", {"inputs": digest}) == expected
+            assert portal.api._jobs == {}
+            assert portal.api._active is None
+            assert not (env.config.parent / "run" / "admission.sqlite3").exists()
+            fake.down.assert_not_called()
+            fake.up.assert_not_called()
+            assert state.read_bytes() == saved
+            audit = json.loads(portal.api.audit_path.read_text(encoding="utf-8").splitlines()[-1])
+            assert audit["result"] == {"state": "refused", "error": expected[1]["error"]}
+            # Stop-list conflicts keep the generic preflight response and their full local explanation.
+            assert portal.request("POST", "recipes/deploy", {"inputs": digest, "stop": ["qwen-replicas"]}) == (
+                400, {"error": "recipe preflight refused: preflight checks failed; see local audit"})
+            audit = json.loads(portal.api.audit_path.read_text(encoding="utf-8").splitlines()[-1])
+            assert audit["result"] == {"state": "refused", "error": "the running profiles are none, not the reviewed "
+                                                                    "qwen-replicas: review the switch again"}
+        finally:
+            portal.close()

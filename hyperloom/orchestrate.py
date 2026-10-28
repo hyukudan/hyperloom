@@ -572,6 +572,13 @@ def _approval(deadline_s, approval):
         raise ValueError("deadline above 1140 seconds requires explicit approval")
 
 
+def validate_command(deadline_s, approval, queue_timeout_s):
+    """Passive launch-argument validation, shared by admission, snapshots, deploy and the final launch check."""
+    _approval(deadline_s, approval)
+    if type(queue_timeout_s) is not int or not 60 <= queue_timeout_s <= MAX_QUEUE_S:
+        raise ValueError(f"queue timeout must be 60..{MAX_QUEUE_S} seconds")
+
+
 def _release(client, machine, profile, configured, needs=None, rows_out=None):
     """The release to run; with needs=(binary, strings), each string must be in the release's static check.
     rows_out, if given, receives the release's listing row (its manifest)."""
@@ -674,7 +681,8 @@ def prelaunch(cluster, profile, settings, kind, clients, mids):
             "node_paths": node_paths, "release_rows": release_rows}
 
 
-def check_launch(cluster, profile, router="local", nodes=None, *, diagnostics=None, recipe=False):
+def check_launch(cluster, profile, router="local", nodes=None, *, diagnostics=None, recipe=False,
+                 devices=None, vram_cap_gib=None):
     """The profile, node and router checks up makes before any I/O (also `hyperloom recipe plan`'s preflight)."""
     settings, kind, defaults = _profile(cluster, profile)
     name = _preset_name(cluster, profile)
@@ -704,29 +712,19 @@ def check_launch(cluster, profile, router="local", nodes=None, *, diagnostics=No
         if router != "local":
             # The router reads the route state hyperloom writes on this machine every second.
             raise ValueError("--recipe runs the router locally (it reads the route state written here): use --router local")
+    check_selection(cluster, mids, router, settings.get("prefill_service"), devices, vram_cap_gib)
     return settings, kind, defaults, engine, name, pair, diagnostics, mids
 
 
-def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s=1140, approval=None, queue_timeout_s=3600,
-       diagnostics=None, vram_cap_gib=None, recipe=None, cancelled=None):
-    _approval(deadline_s, approval)
-    if type(queue_timeout_s) is not int or not 60 <= queue_timeout_s <= MAX_QUEUE_S:
-        raise ValueError(f"queue timeout must be 60..{MAX_QUEUE_S} seconds")
-    settings, kind, defaults, engine, name, pair, diagnostics, mids = check_launch(
-        cluster, profile, router, nodes, diagnostics=diagnostics, recipe=recipe is not None)
+def check_selection(cluster, mids, router, service, devices=None, vram_cap_gib=None):
+    """Passive device/router/cap checks, repeated with the recipe's effective service at launch."""
     declared = list(mids)
-    service = settings.get("prefill_service")
-    launch = None
-    if recipe is not None:
-        from .recipes import launch as recipe_launch
-        launch = recipe_launch.prepare(cluster, profile, recipe, router=router, vram_cap_gib=vram_cap_gib,
-                                       state_dir=_state_path(profile).parent)
-        if not launch.service_start:
-            service = None  # every prefill stays on the nodes (the why is recorded); no PRO lease, no start
     if service is not None and router != "local":
         raise ValueError("the RTX prefill service is loopback-only: use --router local")
-    if vram_cap_gib is not None and service is None:
-        raise ValueError("--vram-cap-gib places an RTX prefill service; this profile has none")
+    if vram_cap_gib is not None:
+        if service is None:
+            raise ValueError("--vram-cap-gib places an RTX prefill service; this profile has none")
+        rtx.effective_cap(cluster.pc.get("cuda", {}).get("reservation"), vram_cap_gib)
     for device in devices or []:
         try:
             mid, did = device.split(":", 1)
@@ -743,6 +741,28 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
     for mid in declared:
         if mid not in cluster.machines:
             raise ValueError("unknown machine: " + mid)
+    return declared
+
+
+def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s=1140, approval=None, queue_timeout_s=3600,
+       diagnostics=None, vram_cap_gib=None, recipe=None, cancelled=None, admitted_selection=None):
+    validate_command(deadline_s, approval, queue_timeout_s)
+    settings, kind, defaults, engine, name, pair, diagnostics, mids = check_launch(
+        cluster, profile, router, nodes, diagnostics=diagnostics, recipe=recipe is not None,
+        devices=devices, vram_cap_gib=vram_cap_gib)
+    service = settings.get("prefill_service")
+    launch = None
+    if recipe is not None:
+        from .recipes import launch as recipe_launch
+        launch = recipe_launch.prepare(cluster, profile, recipe, router=router, vram_cap_gib=vram_cap_gib,
+                                       state_dir=_state_path(profile).parent)
+        recipe_launch.check_admission(cluster, profile, launch, admitted_selection, router=router)
+        if getattr(launch, "placement_request", None) is not None:
+            return recipe_launch.up_placement(cluster, profile, launch, deadline_s=deadline_s, cancelled=cancelled,
+                **({"admitted_selection": admitted_selection} if admitted_selection is not None else {}))
+        if not launch.service_start:
+            service = None  # every prefill stays on the nodes (the why is recorded); no PRO lease, no start
+    declared = check_selection(cluster, mids, router, service, devices, vram_cap_gib)
     path = _state_path(profile)
     lock = procs.InstanceLock(path.with_suffix(".lock")).acquire()
     state = {"profile": profile, "leases": [], "router": None,
@@ -1021,6 +1041,8 @@ def endpoint(profile, config_path=None):
     state = _read(_state_path(profile))
     if config_path is not None and not owns(state, config_path):
         raise OrchestrationError(f"{profile}: launched from another configuration")
+    if state.get("recipe", {}).get("deploy", {}).get("placement") and state.get("prefill_service"):
+        return {"protocol": "ds41-replica-spool-v1", "directory": state["prefill_service"]["spool"]}
     if not state.get("router"):
         raise OrchestrationError("profile router has not started")
     return {"url": _url(state["router"]["endpoint"], ""),
@@ -1353,7 +1375,21 @@ def status(profile=None, config_path=None, skip=None, read=None):
                 result["router"] = _http_json(state["router"]["endpoint"])
             except (OSError, ValueError) as exc:
                 result["router"] = {"error": str(exc)}
-    if (state.get("prefill_service") or {}).get("port"):
+    if (state.get("prefill_service") or {}).get("spool"):
+        why = skip("local", "prefill", profile) if skip is not None else None
+        if why:
+            result["prefill_service"] = {"error": why}
+        else:
+            from .replica_spool import Client
+            service = state["prefill_service"]
+            # Passive status does not enqueue work. The owning helper checks liveness with --ping.
+            try:
+                helper = _read(Path(service["directory"]) / "state.json")
+                result["prefill_service"] = {"state": helper.get("state"), "ready": Client(
+                    service["spool"], alive=lambda: helper.get("state") == "ready").ready()}
+            except (OSError, ValueError) as exc:
+                result["prefill_service"] = {"error": str(exc)}
+    elif (state.get("prefill_service") or {}).get("port"):
         why = skip("local", "prefill", profile) if skip is not None else None
         if why:
             result["prefill_service"] = {"error": why}

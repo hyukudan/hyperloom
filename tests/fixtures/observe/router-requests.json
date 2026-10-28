@@ -12,7 +12,7 @@
    "id": "0123456789abcdef",
    "client_id": "client-req-01",
    "at": 1800000000.0,
-   "path": "/v1/chat/completions",
+   "path": "<posix>/v1/chat/completions",
    "policy": "routes",
    "caller": "default",
    "session": "5e55a0b1c2d3e4f5",
@@ -20,7 +20,7 @@
    "outcome": "served",
    "status": 200,
    "why": null,
-   "replica": "halo-1",
+   "replica": "<node-1>",
    "route": "rtx-long",
    "prefill": "offload",
    "stream": true,
@@ -52,7 +52,7 @@
     {
      "n": 2,
      "kind": "decode",
-     "target": "halo-1",
+     "target": "<node-1>",
      "at_ms": 812.6,
      "outcome": "served",
      "why": null
@@ -92,7 +92,7 @@
    "id": "fedcba9876543210",
    "client_id": null,
    "at": 1800000003.0,
-   "path": "/v1/chat/completions",
+   "path": "<posix>/v1/chat/completions",
    "policy": "routes",
    "caller": "bench",
    "session": null,
@@ -135,7 +135,7 @@
    "id": "00112233445566aa",
    "client_id": null,
    "at": 1800000004.0,
-   "path": "/v1/completions",
+   "path": "<posix>/v1/completions",
    "policy": "routes",
    "caller": "default",
    "session": "77aa88bb99cc00dd",
@@ -143,7 +143,7 @@
    "outcome": null,
    "status": null,
    "why": null,
-   "replica": "halo-2",
+   "replica": "<node-2>",
    "route": "nodes",
    "prefill": "local",
    "stream": true,
@@ -167,7 +167,7 @@
     {
      "n": 1,
      "kind": "decode",
-     "target": "halo-2",
+     "target": "<node-2>",
      "at_ms": 2.2,
      "outcome": "sent",
      "why": null
@@ -187,7 +187,7 @@
    "id": "aabbccddeeff0011",
    "client_id": null,
    "at": 1800000005.0,
-   "path": "/v1/chat/completions",
+   "path": "<posix>/v1/chat/completions",
    "policy": "routes",
    "caller": "default",
    "session": "5e55a0b1c2d3e4f5",
@@ -195,7 +195,7 @@
    "outcome": "served",
    "status": 200,
    "why": null,
-   "replica": "halo-1",
+   "replica": "<node-1>",
    "route": "nodes",
    "prefill": "cache",
    "stream": false,
@@ -219,7 +219,7 @@
     {
      "n": 1,
      "kind": "decode",
-     "target": "halo-2",
+     "target": "<node-2>",
      "at_ms": 2.3,
      "outcome": "connect_failed",
      "why": "connect"
@@ -227,7 +227,7 @@
     {
      "n": 2,
      "kind": "decode",
-     "target": "halo-1",
+     "target": "<node-1>",
      "at_ms": 3.0,
      "outcome": "served",
      "why": null

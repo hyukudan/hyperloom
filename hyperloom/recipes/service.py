@@ -62,6 +62,10 @@ class Conflict(RecipeError):
     """A write against a file that changed, or an id/name already taken: the CLI exits 4, the portal answers 409."""
 
 
+class ForeignConfiguration(Conflict):
+    """A deploy target has saved state belonging to another configuration or without an owner record."""
+
+
 # --- places ------------------------------------------------------------------------------------------------------
 
 # The cluster configuration in use (`--config`), per call: a context variable, so a portal request (or an in-process
@@ -785,10 +789,15 @@ def rename(value, mapping):
     return value
 
 
-def up_options(cluster, recipe, profile=None, *, layers=None, dirs=(), intent=None):
+def up_options(cluster, recipe, profile=None, *, layers=None, dirs=(), intent=None, approval=None):
     """(cluster, intent, launch.Options) for ``up --recipe REF`` (a file, a recipe id or auto): everything is
     snapshotted first and the launch reads only the snapshot (its configuration copy included)."""
-    from . import session
+    from .. import orchestrate
+    from . import launch, preflight, session
+    command = dict(DEFAULT_INTENT, **(intent or {}))
+    orchestrate.validate_command(command["deadline_s"], approval, command["queue_timeout_s"])
+    if cluster is None:
+        cluster = orchestrate.load_cluster(config_path_in_use())
     layers = layers or session.Layers()
     if recipe == "auto":
         if not profile:
@@ -797,6 +806,9 @@ def up_options(cluster, recipe, profile=None, *, layers=None, dirs=(), intent=No
     else:
         path, candidates = locate(recipe, cluster, for_up=True, extra=dirs), ()
         profile = deployment_profile(cluster, path, profile)
+    preflight.before_options(cluster, profile, launch.Options("auto" if path is None else str(path), layers,
+                                                              list(candidates)),
+                             router=(intent or {}).get("router", "local"))
     digest, pin = launch_inputs(cluster, path, layers, candidates, intent=dict(intent or {}, profile=profile), pin=True)
     try:
         cluster, intent, options = options_from_inputs(digest, profile)
@@ -912,7 +924,17 @@ def config_sha256():
         return None
 
 
-def plan(cluster, ref, profile, *, layers=None, source=None, inputs=None):
+def solve(cluster, ref, route, bundle, *, layers=None, backend=None):
+    from . import solver
+    return solver.solve(cluster, ref, route, bundle, layers=layers, backend=backend)
+
+
+def pick_solve(cluster, selection, row, name, *, backend=None, replace=None):
+    from . import solver
+    return solver.pick(cluster, selection, row, name, backend=backend, replace=replace)
+
+
+def plan(cluster, ref, profile, *, layers=None, source=None, inputs=None, solver_bundle=None, solver_route=None):
     """Launch eligibility and preview: what `up PROFILE --recipe REF` decides before any lease (orchestrate's launch
     checks, then a dry run of launch.prepare on a snapshot of the inputs: match, decision, the RTX service planned at
     the recipe's budget, the router's route table). ``up.ok`` only when every check passes; otherwise the refusal, and
@@ -932,6 +954,10 @@ def plan(cluster, ref, profile, *, layers=None, source=None, inputs=None):
     out = {"profile": profile, "recipe": (entry["id"] if entry else "auto"),
            "file": entry["original"] if entry else "auto", "inputs": inputs, "intent": manifest["intent"],
            "checked_at_start": CHECKED_AT_START}
+    if solver_bundle is not None:
+        if entry is None or not solver_route:
+            raise RecipeError("solver preview requires an explicit recipe and route")
+        out["solver"] = solve(cluster, ref, solver_route, solver_bundle, layers=layers)
     refusal = None
     try:
         cluster, _, options = options_from_inputs(inputs, profile)
@@ -962,7 +988,7 @@ def plan(cluster, ref, profile, *, layers=None, source=None, inputs=None):
     preview = {"label": "preview only: up would refuse (see up.refused)", "evaluation": evaluation.summary()}
     if evaluation.ok:
         service = dict(evaluation.decision["service"], plan=None)
-        if service["start"]:
+        if service["start"] and not evaluation.decision.get("placement"):
             cap, host = launch._service_budget(evaluation)
             service.update(vram_cap_gib=cap, host_gib=host)
             service["plan"], why = launch.plan_service(cluster, profile, cap, host)
@@ -1050,6 +1076,29 @@ def launch_progress(job, what, profile=None):
                 pass        # the job's own id: a marker left behind cancels nothing else (pruned after a day)
 
 
+def reviewed_stops(stop, *, profile=None):
+    """Passive stop-list validation, repeated under the snapshot pin before the switch."""
+    reviewed = _states()
+    running = sorted(reviewed)
+    if sorted(set(stop)) != running:
+        raise Conflict(f"the running profiles are {', '.join(running) or 'none'}, not the reviewed "
+                       f"{', '.join(sorted(set(stop))) or 'none'}: review the switch again")
+    from .. import orchestrate
+    if profile is not None and profile not in reviewed and orchestrate._state_path(profile).exists():
+        # Before anything is stopped: up would refuse this profile's saved state of another configuration (or one
+        # without the record) only after the switch had stopped the reviewed profiles.
+        try:
+            kind = orchestrate.ownership(orchestrate._read(orchestrate._state_path(profile)),
+                                         config_file())
+        except (OSError, ValueError):
+            kind = "unreadable"
+        if kind == "unknown":
+            raise ForeignConfiguration(f"{profile} has a saved launch state of an unknown configuration (launched before launch "
+                                       "states recorded it): stop it first (it is listed and can be stopped here)")
+        raise ForeignConfiguration(f"{profile} has a saved launch state of another configuration: stop it there first")
+    return reviewed
+
+
 def deploy(digest, stop=(), *, source=None, orchestrate=None, approval=None, job=None):
     """The switch as one operation: launch exactly the planned snapshot ``digest`` after stopping the reviewed running
     profiles ``stop``. Everything that can refuse deterministically is checked BEFORE anything is stopped: the snapshot
@@ -1061,6 +1110,8 @@ def deploy(digest, stop=(), *, source=None, orchestrate=None, approval=None, job
     after it owns the profile (the hand-over) and then starts nothing. The progress file says how far the deploy got,
     so a cancel undoes only what the deploy did (a cancelled deploy's error says what it had stopped)."""
     from .. import orchestrate as default_orchestrate
+    from . import preflight
+    preflight.snapshot(digest, source=source, stop=stop, approval=approval, job=job)
     orchestrate = orchestrate or default_orchestrate
     with launch_progress(job, "deploy") as progress:
         return _deploy(digest, stop, source, orchestrate, approval, progress)
@@ -1071,38 +1122,30 @@ def _deploy(digest, stop, source, orchestrate, approval, progress):
         return _deploy_pinned(digest, stop, source, orchestrate, approval, progress)
 
 
+def validate_snapshot(intent, approval):
+    """Keep deploy's legacy queue-timeout refusal, including before an admission hold is written."""
+    from .. import orchestrate
+    orchestrate._approval(intent["deadline_s"], approval)
+    if type(intent["queue_timeout_s"]) is not int or not 60 <= intent["queue_timeout_s"] <= orchestrate.MAX_QUEUE_S:
+        raise RecipeError("the snapshot's queue timeout is out of range")
+
+
 def _deploy_pinned(digest, stop, source, orchestrate, approval, progress):
     from .. import orchestrate as default_orchestrate
-    from . import commands, launch
+    from . import commands, launch, preflight
     check = progress.check
     cluster, intent, options = options_from_inputs(digest)
     profile = intent["profile"]
     progress.record(profile=profile)
     # The launch arguments' own checks (deadline, approval, queue timeout) before anything is stopped.
-    default_orchestrate._approval(intent["deadline_s"], approval)
-    if type(intent["queue_timeout_s"]) is not int or not 60 <= intent["queue_timeout_s"] <= default_orchestrate.MAX_QUEUE_S:
-        raise RecipeError("the snapshot's queue timeout is out of range")
-    running = sorted(_states())
-    if sorted(set(stop)) != running:
-        raise Conflict(f"the running profiles are {', '.join(running) or 'none'}, not the reviewed "
-                       f"{', '.join(sorted(set(stop))) or 'none'}: review the switch again")
-    if profile not in running and default_orchestrate._state_path(profile).exists():
-        # Before anything is stopped: up would refuse this profile's saved state of another configuration (or one
-        # without the record) only after the switch had stopped the reviewed profiles.
-        try:
-            kind = default_orchestrate.ownership(default_orchestrate._read(default_orchestrate._state_path(profile)),
-                                                 config_file())
-        except (OSError, ValueError):
-            kind = "unreadable"
-        if kind == "unknown":
-            raise Conflict(f"{profile} has a saved launch state of an unknown configuration (launched before launch "
-                           "states recorded it): stop it first (it is listed and can be stopped here)")
-        raise Conflict(f"{profile} has a saved launch state of another configuration: stop it there first")
+    validate_snapshot(intent, approval)
+    reviewed = reviewed_stops(stop, profile=profile)
     orchestrate.check_launch(cluster, profile, intent["router"], recipe=True)
     check()
     with tempfile.TemporaryDirectory(prefix="hl-recipe-deploy-") as directory:
         launch.prepare(cluster, profile, options, router=intent["router"], vram_cap_gib=None, state_dir=directory,
-                       source=source or commands.live_source(cluster))
+                       source=source or commands.live_source(cluster),
+                       **({"reviewed": reviewed} if preflight.includes(options) else {}))
     stopped = []
     for name in sorted(set(stop)):
         progress.before_stop(name)
@@ -1111,6 +1154,9 @@ def _deploy_pinned(digest, stop, source, orchestrate, approval, progress):
                         stop_states=dict(progress.state.get("stop_states") or {},
                                          **{name: stop_outcome(stopped[-1]["down"])}))
     check()
+    if preflight.includes(options):
+        # Reviewed credits are gone: resample actual physical RAM and commit before any new launch state.
+        preflight.snapshot(digest, source=source, approval=approval)
     # The hand-over is checked again by up right after it takes ownership of the profile (no gap: a later cancel
     # sees "launching" and stops the launching profile through its own stop marker).
     try:
@@ -1379,7 +1425,10 @@ def derive(base_text, base_file, new_name, sets, base_id, backend):
     expected = _resolve_text(base_text, base_file, backend=backend, extra=[("edits.json", layer)]).to_json()
     tree = reader.load_text(base_text, base_file)
     for path, value in sets:
-        _tree_node(tree, path)[path.split(".")[-1]] = value
+        node, field = _tree_node(tree, path), path.split(".")[-1]
+        if ".components." in path and field in ("gib", "units"):
+            node.pop("gib" if field == "units" else "units", None)
+        node[field] = value
     tree["name"] = new_name
     tree["x-derived-from"] = {"recipe": base_id or base["name"], "name": base["name"],
                               "sha256": _sha256(base_text.encode("utf-8")), "set": [[p, v] for p, v in sets],
@@ -1411,6 +1460,8 @@ def _tree_node(tree, path):
         return route
     if parts[2] == "when":
         return route.setdefault("when", {})
+    if parts[2] in ("assist", "components"):
+        return route.setdefault(parts[2], {}).setdefault(parts[3], {})
     placement = route.setdefault("placement", {}).setdefault(parts[3], {})
     if len(parts) == 5:
         return placement

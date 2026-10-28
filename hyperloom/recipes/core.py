@@ -1,4 +1,4 @@
-"""The strix-stream recipe core through its CLI (`ss-recipe`, JSON on stdout), and the two backends hyperloom
+"""The Tierstream recipe core through its CLI (`ts-recipe`, with legacy `ss-recipe` discovery), and two backends
 evaluates recipes with: the core (authoritative) and the stub reader (offline diagnostics, tests).
 
 Both give one resolved document that every later step uses: the core's effective recipe is re-read by the stub
@@ -67,14 +67,23 @@ def locate(cluster=None):
     return None
 
 
-def _bounded(stream, what):
-    data = stream.read(MAX_OUTPUT + 1)
-    if len(data) > MAX_OUTPUT:
-        raise RecipeError(f"ss-recipe {what} exceeds {MAX_OUTPUT >> 20} MiB")
+def _bounded(stream, what, label="ss-recipe", *, limit=None):
+    limit = MAX_OUTPUT if limit is None else limit
+    data = stream.read(limit + 1)
+    if len(data) > limit:
+        raise RecipeError(f"{label} {what} exceeds {limit >> 20} MiB")
     try:
         return data.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise RecipeError(f"ss-recipe {what} is not UTF-8") from exc
+        raise RecipeError(f"{label} {what} is not UTF-8") from exc
+
+
+@dataclass(frozen=True)
+class PlacementOutput:
+    """The same core invocation's machine-readable result and human-readable stdout."""
+    document: dict
+    text: str
+    overrides: bytes | None = None
 
 
 class Core:
@@ -83,40 +92,75 @@ class Core:
         self.run = run
 
     def call(self, args, inputs=None):
-        """JSON object on stdout of one ss-recipe call; exit 1 raises RecipeError with the core's message. Output is
-        read through files, at most MAX_OUTPUT bytes each, as UTF-8."""
+        """A core JSON document. Placement always uses --json-out, even without a text switch."""
+        return self._call(args, inputs, with_text=False)
+
+    def placement(self, args, inputs=None):
+        """JSON plus --explain/--table stdout; never attempt to parse text as JSON or fall back."""
+        if not args or args[0] not in ("place", "solve"):
+            raise RecipeError("placement output requires ts-recipe place or solve")
+        return self._call(args, inputs, with_text=True)
+
+    def _call(self, args, inputs, with_text):
         inputs = inputs or {}
+        placing = bool(args and args[0] in ("place", "solve"))
+        label = "ts-recipe" if placing else "ss-recipe"
         with tempfile.TemporaryDirectory(prefix="hl-recipe-") as directory:
             for name, value in inputs.items():
                 (Path(directory) / name).write_text(value if isinstance(value, str) else json.dumps(value),
                                                     encoding="utf-8")
             # Input names in args stand for the temporary files written above.
-            argv = [self.executable, *[str(Path(directory) / a) if a in inputs else a for a in args]]
+            argv = [str(self.executable), *[str(Path(directory) / a) if a in inputs else str(a) for a in args]]
+            overrides_path = None
+            if placing and "--emit-overrides" in argv:
+                index = argv.index("--emit-overrides") + 1
+                overrides_path = Path(directory) / "picked-overrides.toml"
+                argv[index] = str(overrides_path)
+            json_path = Path(directory) / "placement-output.json"
+            if placing:
+                argv += ["--json-out", str(json_path)]
             with open(Path(directory) / ".stdout", "w+b") as stdout, open(Path(directory) / ".stderr", "w+b") as stderr:
                 try:
                     out = self.run(argv, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, timeout=TIMEOUT_S,
                                    **no_window())
                 except (OSError, subprocess.TimeoutExpired) as exc:
-                    raise RecipeError(f"ss-recipe unavailable: {exc}") from exc
+                    raise RecipeError(f"{label} unavailable: {exc}") from exc
                 stdout.seek(0)
                 stderr.seek(0)
-                text, err = _bounded(stdout, "output"), _bounded(stderr, "error output")
-        message = err.strip()
-        for prefix in (name + ": " for name in NAMES):
-            if message.startswith(prefix):
-                message = message[len(prefix):]
-                break
-        if out.returncode == 1:
-            raise RecipeError(message or "ss-recipe refused")
-        if out.returncode != 0:
-            raise RecipeError(f"ss-recipe usage error: {message}")
-        try:
-            result = json.loads(text)
-        except (ValueError, RecursionError) as exc:
-            raise RecipeError(f"ss-recipe printed no JSON: {exc}") from exc
-        if not isinstance(result, dict):
-            raise RecipeError(f"ss-recipe printed {type(result).__name__}, not a JSON object")
-        return result
+                text, err = _bounded(stdout, "output", label), _bounded(stderr, "error output", label)
+            if placing and out.returncode != 0:
+                # Keep the core's PL_E_* diagnostics, including prefixes, details and indentation, verbatim.
+                raise RecipeError(err.rstrip("\r\n") or "ts-recipe refused")
+            message = err.strip()
+            for prefix in (name + ": " for name in NAMES):
+                if message.startswith(prefix):
+                    message = message[len(prefix):]
+                    break
+            if out.returncode == 1:
+                raise RecipeError(message or "ss-recipe refused")
+            if out.returncode != 0:
+                raise RecipeError(f"{label} usage error: {message}")
+            try:
+                if placing:
+                    with json_path.open("rb") as stream:
+                        doc = json.loads(_bounded(stream, "placement JSON output", label))
+                else:
+                    doc = json.loads(text)
+            except (OSError, ValueError, RecursionError) as exc:
+                message = f"{label} printed no valid JSON" if placing else "ss-recipe printed no JSON"
+                raise RecipeError(f"{message}: {exc}") from exc
+            if not isinstance(doc, dict):
+                raise RecipeError(f"{label} printed {type(doc).__name__}, not a JSON object")
+            overrides = None
+            if overrides_path is not None:
+                try:
+                    with overrides_path.open("rb") as stream:
+                        overrides = stream.read(MAX_OUTPUT + 1)
+                    if len(overrides) > MAX_OUTPUT:
+                        raise RecipeError("ts-recipe picked overrides exceeds output limit")
+                except OSError as exc:
+                    raise RecipeError("ts-recipe emitted no picked overrides after re-plan") from exc
+            return PlacementOutput(doc, text, overrides) if with_text else doc
 
 
 def _set_text(value):
@@ -239,6 +283,40 @@ class CoreBackend:
                                                                  or isinstance(result.get("route"), str)):
             raise RecipeError("the core's select output has an unexpected shape")
         return result
+
+    def _placement(self, command, path, layers, route, documents, identity, text_flag, pick=None):
+        inputs = {}
+        args = [command, str(path), "--route", route]
+        for name, value in documents.items():
+            if value is None:
+                continue
+            if isinstance(value, (dict, list)):
+                filename = f"placement-{name}.json"
+                inputs[filename] = value
+                args += [f"--{name}", filename]
+            else:
+                args += [f"--{name}", str(value)]
+        args += self._layer_args(layers, inputs, identity)
+        if pick is not None:
+            if command != "solve" or not isinstance(pick, str) or not pick or pick.startswith("-"):
+                raise RecipeError("PL_E_SCHEMA solve pick requires a row id")
+            args += ["--pick", pick, "--emit-overrides", "picked-overrides.toml"]
+        if text_flag:
+            args.append(text_flag)
+        return self.core.placement(args, inputs)
+
+    def place(self, path, layers, *, route, probe, components, desc=None, usage=None, context=None,
+              identity=None, explain=True):
+        """Plan from cached inputs; Tierstream owns binding, validation, arithmetic and refusals."""
+        return self._placement("place", path, layers, route,
+                               {"probe": probe, "components": components, "desc": desc, "usage": usage,
+                                "context": context}, identity, "--explain" if explain else None)
+
+    def solve(self, path, layers, *, route, probe, inputs, desc=None, context=None, identity=None, table=True, pick=None):
+        """Solve from cached configuration documents; keep both the core's rows and its display text."""
+        return self._placement("solve", path, layers, route,
+                               {"probe": probe, "inputs": inputs, "desc": desc, "context": context},
+                               identity, "--table" if table else None, pick=pick)
 
 
 def backend(cluster=None):
