@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -102,8 +103,20 @@ class LeadReviewTests(unittest.TestCase):
                     dog = placement_supervision.Watchdog(replace(_binary_spec(), placement_supervision=data,
                         deadline=NOW + 600), 42, lambda: killed.append(1), lambda _: None, observer=observer,
                         clock=lambda: NOW, memory=lambda: dict(free_physical_gib=100, free_commit_gib=120),
-                        interval=.01, memory_interval=.01).start()
+                        interval=.01, memory_interval=.01)
+                    self.assertIsNone(dog.check())
+                    changed = threading.Event()
+                    check = dog.check
+                    def after_change():
+                        if not changed.wait(2):
+                            raise AssertionError("live signal was not installed")
+                        return check()
+                    # Windows cannot unlink a ledger while the reader has it open. Start from a proven clear
+                    # sample, then let the running watchdog read only after this live signal is installed.
+                    case.enter_context(mock.patch.object(dog, "check", side_effect=after_change))
+                    dog.start()
                     case.callback(dog.stop)
+                    case.callback(changed.set)
                     if signal == "lock":
                         lock = procs.InstanceLock(self.root / "pro.lock").acquire()
                         case.callback(lock.close)
@@ -114,6 +127,7 @@ class LeadReviewTests(unittest.TestCase):
                     else:
                         ledger.unlink()
                     dog._pc_big_next = 0
+                    changed.set()
                     dog._thread.join(2)
                     self.assertEqual(killed, [1])
                     self.assertIn("PC-BIG", dog.reason)

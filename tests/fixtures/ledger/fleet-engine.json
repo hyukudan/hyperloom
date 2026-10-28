@@ -4,7 +4,7 @@
  "profile": "mm",
  "port": 18090,
  "replica": "halo-1",
- "outcomes": {"/health": "ok", "/api/status?detail=1": "unavailable: HTTP 404", "/metrics": "ok", "/api/status": "unavailable: HTTP 404"},
+ "outcomes": {"<http-health>": "ok", "<http-status-detail>": "unavailable: HTTP 404", "<http-metrics>": "ok", "<http-status>": "unavailable: HTTP 404"},
  "health": {"status": "ok"},
  "status": null,
  "metrics": {"mm_queued": 0, "mm_running": 1, "mm_completed": 12, "mm_failed": 0, "mm_prompt_tokens": 5120, "mm_generated_tokens": 1536, "mm_busy_seconds": 42.125},

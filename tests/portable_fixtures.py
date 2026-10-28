@@ -6,6 +6,8 @@ import uuid
 
 def replacements():
     replacements = {"<posix>": "", "<drive-c>": "C:", "<drive-d>": "D:",
+                    "<acpi-root>": r"\\\\_SB_", "<http-health>": "/health", "<http-status-detail>": "/api/status?detail=1",
+                    "<http-status>": "/api/status", "<http-metrics>": "/metrics",
                     "<node-1>": "halo-" + str(1), "<node-2>": "halo-" + str(2),
                     "<gpu-g6>": "GPU-" + str(uuid.UUID(int=1)),
                     "<gpu-pro>": "GPU-" + str(uuid.UUID(fields=(0xa0b1c2d3, 0, 0x4000, 0x80, 0, 1))),

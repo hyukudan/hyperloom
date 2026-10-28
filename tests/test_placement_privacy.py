@@ -21,15 +21,31 @@ _PLACEHOLDER_PATH = PLACEHOLDER.pattern + r"(?:[\\/]" + PLACEHOLDER.pattern + r"
 # Only complete paths with generic roots and placeholder-only suffixes are portable.
 _PORTABLE_PATH = re.compile(r"(?:/(?:home|root|tmp)(?:/" + _PLACEHOLDER_PATH + r")?|/(?:" + _PLACEHOLDER_PATH + r")?|"
                   r"(?:[Cc]:[\\/](?:(?i:users)(?:[\\/]" + _PLACEHOLDER_PATH + r")?|" + _PLACEHOLDER_PATH + r")?)|"
-                  r"(?:(?i:%USERPROFILE%)|\$(?:HOME|\{HOME\}|env:USERPROFILE)|~)(?:[\\/]" + _PLACEHOLDER_PATH + r")?)[\\/]?")
+                  r"(?:%\w+%|\$(?:[A-Za-z_]\w*|\{[A-Za-z_]\w*\}|env:[A-Za-z_]\w*)|~)(?:[\\/]" + _PLACEHOLDER_PATH + r")?)[\\/]?")
 # A URI's :// introduces its authority, while the third slash in file:/// starts a path.
 # Consume placeholder segments as units so their angle brackets do not become shell delimiters.
-ABSOLUTE = re.compile(r"(?<!\w)(?:[A-Za-z]:(?=[\\/\w])|\\\\[^\\\s]+\\|(?<!:/)/(?!/)|(?i:%\w+%)|"
-                      r"\$(?:HOME|\{HOME\}|env:\w+)|~(?=[A-Za-z_\\/\s`\"'(),;\[\]{}<>|]|$))"
+# An environment variable ($VAR, ${VAR}, $env:VAR, %VAR%) starts a path when a separator follows it; it is portable
+# only when every following segment is a <placeholder>. A named home (~alice) is a path when a separator follows it
+# or when it is a whole (quoted) value, so prose such as "x ~approx" is not. A drive-relative path (D:lab\model)
+# needs a separator after its first segment, so "a:b" is not one; a slash after % is a ratio (50%/60%).
+ABSOLUTE = re.compile(r"(?<!\w)(?:[A-Za-z]:(?=[\\/]|[\w.-]+[\\/]|[\w-]+\.[\w.-]+)|\\\\[\w.-]+\\|(?<!%)(?<!:/)/(?!/)|"
+                      r"(?:%\w+%|\$(?:[A-Za-z_]\w*|\{[A-Za-z_]\w*\}|env:[A-Za-z_]\w*))(?=[\\/])|"
+                      r"~(?=[\\/\s`\"'(),;\[\]{}<>|]|$)|~[A-Za-z_][\w.-]*(?=[\\/])|\\(?=[\w<])|"
+                      r"(?:(?<![\s\S])|(?<=[`\"'=]))~[A-Za-z_][\w.-]*(?=$|[`\"']))"
                       r"(?:<[^<>\s]*>|[^\s`\"'(),;\[\]{}<>|])*")
 # Public HTTP resource URLs are portable references, rather than filesystem paths.
-URI_PATH = re.compile(r"\b(?!(?i:https?)://)[a-zA-Z][a-zA-Z0-9+.-]*://[^/\s`\"'<>;|]+(?P<path>/"
+URI_PATH = re.compile(r"\b(?!(?i:https?)://)[a-zA-Z][a-zA-Z0-9+.-]*://(?:<[^<>\s]*>|[^/\s`\"'<>;|])+(?P<path>/"
                       r"(?:<[^<>\s]*>|[^\s`\"'(),;\[\]{}<>|])*)")
+# Such a URI also names a host (smb://alice-host/share): only an empty host, localhost, a <placeholder> or a
+# reserved example name (RFC 2606) is portable.
+URI_AUTHORITY = re.compile(r"\b(?!(?i:https?)://)[a-zA-Z][a-zA-Z0-9+.-]*://(?:[^/\s`\"'<>;|@]*@)?"
+                           r"(?P<host>\[[^\]\s]*\]|<[^<>\s]*>|[^/\\\s`\"'<>;|:]*)")
+PORTABLE_HOST = re.compile(r"|(?i:localhost)|" + PLACEHOLDER.pattern +
+                           r"|(?i:(?:[\w-]+\.)*(?:example(?:\.(?:com|net|org))?|invalid|test))")
+# Slash and backslash look-alikes that NFKC keeps (division and fraction slash, big solidus, set minus, ...).
+LOOK_ALIKES = str.maketrans({"∕": "/", "⁄": "/", "⧸": "/", "／": "/", "╱": "/",
+                             "⧵": "\\", "⧹": "\\", "∖": "\\", "＼": "\\", "╲": "\\",
+                             "﹨": "\\", "\u27cb": "/", "\u27cd": "\\"})
 ADDRESS = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?!\w|\.\d)|"
                      r"(?<![\w:])(?:[0-9a-fA-F]*:){2,}[0-9a-fA-F:.]*(?:%[\w.~-]+)?(?![\w:])")
 LOCAL_IDENTITY = re.compile(r"(?!" + _PORTABLE_PATH.pattern + r"(?=$|[\s`\"'(),;\]}]))(?i:[a-z]:[\\/](?:users[\\/]|tmp[\\/]|python\d+\b)|"
@@ -38,13 +54,16 @@ LOCAL_IDENTITY = re.compile(r"(?!" + _PORTABLE_PATH.pattern + r"(?=$|[\s`\"'(),;
 
 
 def private_paths(value):
-    value = unicodedata.normalize("NFKC", value).translate(str.maketrans({"\u2215": "/", "\u2044": "/"}))
+    value = unicodedata.normalize("NFKC", value).translate(LOOK_ALIKES)
+    for match in URI_AUTHORITY.finditer(value):
+        if not PORTABLE_HOST.fullmatch(match["host"]):
+            yield match[0]
     for match in URI_PATH.finditer(value):
         if not _PORTABLE_PATH.fullmatch(match["path"]):
             yield match["path"]
     for match in ABSOLUTE.finditer(value):
         # A slash following a placeholder continues a relative portable fixture path.
-        if match[0].startswith("/") and re.search(PLACEHOLDER.pattern + r"$", value[:match.start()]):
+        if match[0].startswith(("/", "\\")) and re.search(PLACEHOLDER.pattern + r"$", value[:match.start()]):
             continue
         if match[0].startswith("/") and re.search(r"(?:^|[^\w.])\.\.?$", value[:match.start()]):
             continue
@@ -62,9 +81,22 @@ def addresses(value):
         yield candidate
 
 
+def private_text(value):
+    """Whether one string, a value or a mapping key, carries an identity, a private path or an address."""
+    if (PHYSICAL.search(value) or LOCAL_IDENTITY.search(value) or
+            next(private_paths(value), None) or next(addresses(value), None)):
+        return True
+    for variable in ("USERNAME", "COMPUTERNAME"):
+        local = os.environ.get(variable, "")
+        if len(local) >= 4 and local.casefold() in value.casefold():
+            return True
+    return False
+
+
 def private(value, key=""):
     if isinstance(value, dict):
-        return any(next(addresses(k), None) or (k in PRIVATE_KEYS and v not in (None, "", [], {}) and
+        # Keys are data too ({"/srv/alice/model": ...}): each one gets every check a string value gets.
+        return any((isinstance(k, str) and private_text(k)) or (k in PRIVATE_KEYS and v not in (None, "", [], {}) and
                     not (isinstance(v, str) and PLACEHOLDER.fullmatch(v))) or private(v, k)
                    for k, v in value.items())
     if isinstance(value, list):
@@ -72,13 +104,7 @@ def private(value, key=""):
     if isinstance(value, str):
         if key == "host" and value and not PLACEHOLDER.fullmatch(value):
             return True
-        if (PHYSICAL.search(value) or LOCAL_IDENTITY.search(value) or
-                next(private_paths(value), None) or next(addresses(value), None)):
-            return True
-        for variable in ("USERNAME", "COMPUTERNAME"):
-            local = os.environ.get(variable, "")
-            if len(local) >= 4 and local.casefold() in value.casefold():
-                return True
+        return private_text(value)
     return False
 
 
@@ -99,7 +125,9 @@ def findings():
         raw = path.read_bytes()
         text = raw.decode("utf-8")
         try:
-            doc = json.loads(text) if path.suffix == ".json" else tomllib.loads(text) if path.suffix == ".toml" else text
+            doc = (json.loads(text) if path.suffix == ".json" else
+                   [json.loads(line) for line in text.splitlines() if line.strip()] if path.suffix == ".jsonl" else
+                   tomllib.loads(text) if path.suffix == ".toml" else text)
         except ValueError:
             doc = text
         if private(doc):
@@ -168,8 +196,6 @@ class PrivacyTests(unittest.TestCase):
                 self.assertFalse(private(value))
 
     def test_tracked_json_injections_after_uri_and_redirection_are_found(self):
-        fixture = ROOT / "tests/fixtures/render/placement.json"
-        original = Path.read_bytes
         for value in ("C:/Users/<user>;file:///srv/lab/alice/model",
                       "echo /home/<user>;cat</srv/lab/alice/model",
                       "C:/Users/<user>;file://localhost/srv/lab/alice/model",
@@ -177,18 +203,56 @@ class PrivacyTests(unittest.TestCase):
                       "\\\\server\\share\\model", "\\\\.\\pipe\\name", "~alice", "~alice/model",
                       "$HOME/alice/model", "${HOME}/alice/model", "$env:USERPROFILE\\alice",
                       "%APPDATA%\\model", "D:lab\\model", "C:\uff3clab", "\uff0fsrv", "\u2215srv",
+                      "smb://alice-host/<root>", "file://alice-host/<root>", "nfs://10.0.0.7/<root>",
+                      "smb://<host>/alice/model", "file://<host>/alice/model", "D:lab.model",
+                      "$MODEL_DIR/model", "$MODEL_DIR\\alice\\model", "${MODEL_DIR}/alice", "%MODEL_DIR%\\alice",
+                      "$USERPROFILE/alice", "$XDG_CONFIG_HOME/x", "$TMPDIR/alice",
+                      *(separator + "srv" + separator + "alice" for separator in
+                        map(chr, (0x2215, 0x2044, 0x29f8, 0xff0f, 0x2571, 0x29f5, 0x29f9, 0x2216,
+                                  0xff3c, 0x2572, 0xfe68, 0x27cb, 0x27cd))),
                       *("C:/Users/<user>;" + prefix + "-worker" for prefix in (
                           "clau" + "de", "co" + "dex", "s" + "ol", "op" + "us"))):
-            def injected(path):
-                if path == fixture:
-                    document = json.loads(original(path))
-                    document["privacy_probe"] = {"nested": [value]}
-                    return json.dumps(document).encode("utf-8")
-                return original(path)
-            with self.subTest(value=value), mock.patch.object(Path, "read_bytes", injected), \
-                    mock.patch(__name__ + ".artifacts", return_value=[(fixture.relative_to(ROOT).as_posix(), fixture)]), \
-                    mock.patch.object(Path, "glob", return_value=[]):
-                self.assertIn(fixture.relative_to(ROOT).as_posix(), findings())
+            with self.subTest(value=value):
+                self.assertIn(self.fixture_name, self.injected_findings({"nested": [value]}))
+
+    fixture = ROOT / "tests/fixtures/render/placement.json"
+    fixture_name = fixture.relative_to(ROOT).as_posix()
+
+    def injected_findings(self, probe):
+        """findings() over the tracked fixture with ``probe`` added in memory (the file is not changed)."""
+        original = Path.read_bytes
+        def injected(path):
+            if path == self.fixture:
+                document = json.loads(original(path))
+                document["privacy_probe"] = probe
+                return json.dumps(document).encode("utf-8")
+            return original(path)
+        with mock.patch.object(Path, "read_bytes", injected), \
+                mock.patch(__name__ + ".artifacts", return_value=[(self.fixture_name, self.fixture)]), \
+                mock.patch.object(Path, "glob", return_value=[]):
+            return findings()
+
+    def test_tracked_json_key_injections_are_found(self):
+        self.assertEqual(self.injected_findings({"<runtime>": "portable"}), {})
+        for key in ("co" + "dex-worker", "/srv/alice/model", "C:\\Users\\alice", "10.0.0.7",
+                    "0000:01:00.0", "${MODEL_DIR}/alice", "%MODEL_DIR%\\alice",
+                    "GPU-" + "0" * 8 + "-0000-0000-0000-" + "0" * 12, "smb://alice-host/<root>", "$MODEL_DIR/alice"):
+            for probe in ({key: "portable"}, {"nested": [{key: "portable"}]}):
+                with self.subTest(probe=probe):
+                    self.assertIn(self.fixture_name, self.injected_findings(probe))
+
+    def test_portable_variables_hosts_and_prose_are_not_paths(self):
+        for value in ("$MODEL_DIR/<model>", "${MODEL_DIR}\\<model>", "%MODEL_DIR%\\<model>", "$env:LOCALAPPDATA\\<runtime>",
+                      "smb://<host>/<root>", "file://localhost/<root>", "file:///<root>", "nfs://nas.example/<root>",
+                      "a:b", "ratio a:b of c", "x ~approx 3", "about ~approx", "50%/60%", "load 50%/60% of 100%",
+                      "costs $5/hour", "\u29f8"):
+            with self.subTest(value=value):
+                self.assertFalse(private(value))
+                self.assertEqual(self.injected_findings({"nested": [value]}), {})
+                self.assertEqual(self.injected_findings({value: "portable"}), {})
+        for value in ("~alice", "'~alice'", "home=~alice", "~alice/model"):
+            with self.subTest(value=value):
+                self.assertTrue(private(value))
 
     def test_strict_rule_catches_identity_paths_and_host_user_fields(self):
         import uuid

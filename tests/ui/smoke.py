@@ -420,9 +420,10 @@ def check_tokens(css, theme):
 
 
 def find_chrome():
-    candidates = [os.environ.get("CHROME")]
+    candidates = [os.environ.get("CHROME"), os.environ.get("HYPERLOOM_TEST_CHROME")]
     candidates += [shutil.which(name) for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome")]
-    for variable in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+    # The test package moves LOCALAPPDATA into its sandbox and keeps the original for per-user browser installs.
+    for variable in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA", "HYPERLOOM_TEST_ORIGINAL_LOCALAPPDATA"):
         if os.environ.get(variable):
             candidates.append(str(Path(os.environ[variable]) / "Google/Chrome/Application/chrome.exe"))
     candidates += ["/opt/google/chrome/chrome", "/usr/bin/google-chrome", "/usr/bin/chromium"]

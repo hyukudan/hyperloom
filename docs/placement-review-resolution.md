@@ -475,7 +475,7 @@ outside git; TEMP/TMP are unchanged. UTF-8/LF and `git diff --check` pass.
 
 | Finding | Resolution | Regression coverage | Remaining work |
 |---|---|---|---|
-| One redaction policy | Placement uses `hyperloom.web.api.redact`. The separate placement redactor, copied node patterns, drift assertions and redactor-selection helpers are removed. The shared implementation will come from `hl/features-nits` in `hyperloom/redaction.py`. | Each of 16 credential forms has an active shared-redactor call assertion at each of 26 boundaries. Supported masks are asserted; missing shared masks are explicitly skipped. | `pending hl/features-nits hyperloom/redaction.py`. No placement matching rules are added. |
+| One redaction policy | Placement uses `hyperloom.web.api.redact`. The separate placement redactor, copied node patterns, drift assertions and redactor-selection helpers are removed. The shared implementation is now `hyperloom/redaction.py`. | Each of 16 credential forms has an active shared-redactor call assertion at each of 26 boundaries. All supported masks are asserted; the current round removes pending skips. | No placement matching rules are added. See the current round below for shared-rule coverage and remaining requests. |
 | Text boundaries and legacy equality | Preflight audit errors explicitly call `api.redact`; `_audit` applies the same shared rules to the stored document. Successful logs, public log-read errors, launch job errors/results, completion audits and worker-start job errors use the existing portal/HTTP redaction boundaries. | Real GET exception mapping, feed/process/cached logs, four log-read exception types and direct/input/deploy launch failures are covered. Log responses/exceptions, launch responses, job errors and completion audit bytes are compared with executable base `2a7c803` functions. No assertion freezes the shared redactor implementation. | Shared internal exceptions retain base behavior as described below. |
 | Redactor identity plumbing | The recovered launch flag and snapshot return change are removed. Saved-state redactor selection is removed, so unavailable state cannot select different rules. Existing `_prepared_selection` carry remains: admission and execution need the same prepared selection to prevent changing the admitted launch. | Existing admission-selection tests and direct/input/deploy boundary coverage remain. | No redactor identity or placement-only redaction scope remains. |
 | Per-occurrence artifact privacy | The committed-artifact scanner stays in placement. It checks each path after URI/redirection delimiters, authority-bearing filesystem/custom URIs, nested artifact agent handles, UNC paths, named homes, environment variables, drive-relative paths and Unicode slash look-alikes. | In-memory tracked JSON injections cover each added form; the whole-tree scan checks for false positives. | Relative fixture paths and public HTTP references remain portable. This scanner is independent of runtime credential masking. |
@@ -493,10 +493,8 @@ can contain raw text when calling the internal API directly; their HTTP response
 handler. Placement does not change these shared legacy exception interfaces or invent identity plumbing
 to select special rules. The public log-error tests exercise the actual GET handler.
 
-Missing masks include the four requested credential forms, blank-separated quoted values, empty-user URL
-authentication, curl short-option credentials and bare provider tokens. The shared case table records every
-form, boundary and expected masked output. All pending mask assertions use the exact reason
-`pending hl/features-nits hyperloom/redaction.py`; active call assertions continue to run for those cases.
+The formerly pending masks are resolved by the integrated shared rule set. The current round below replaces
+pending activation with unconditional assertions and records unsupported forms as shared-rule requests.
 
 Final validation: Python 3.13.7 / pytest 8.4.2 reports **47 failed, 4391 passed, 426 skipped** in
 528.32 s, with **zero setup/teardown errors**. Failing IDs and occurrence counts exactly equal the supplied
@@ -511,3 +509,50 @@ The traced full run finds no remaining default-audit writers after the explicit 
 run confirms unchanged file sizes/mtimes in the real per-user configuration, audit and runtime directories.
 Evidence and the shared redaction-case handoff remain outside git. UTF-8/LF and `git diff --check` pass;
 TEMP/TMP are unchanged. No commit or push was made.
+
+## Shared rule assertions, test isolation and privacy scan after integration
+
+The shared redactor is present. All 16 supported synthetic credential forms run through all 26 placement
+boundaries, without pending-mask skips. Expected routing output is `api.redact` of the complete emitted text,
+including prefixes and suffixes. Independent expected masks and secret-absence assertions make a redactor
+regression fail; a deliberate identity-redactor injection verifies that failure for every form. Both realistic
+provider-token forms are supported by the integrated rules. Short ambiguous tokens and other documented
+unmasked forms are follow-up requests, outside the asserted case table. Historical-base comparisons skip
+only when the historical commit is unavailable, so copied trees and shallow checkouts remain discoverable.
+
+Windows configuration roots come from `SHGetKnownFolderPath`, unioned with environment/profile roots and
+canonical filesystem spellings, and are exported once for nested runs. The guard resolves junctions, extended
+paths and available short-name aliases, and decodes SQLite file URIs before checking. A dedicated
+`BaseException` prevents ordinary application handlers from swallowing guard trips; a recorded trip also fails
+the process at exit, including after a bare catch. The hook is defence in depth for in-process writes. Native
+children and fresh interpreters rely on the inherited redirected configuration environment.
+
+Windows HOME and Git's global configuration selection are preserved. `PYTHONUSERBASE` preserves user-installed
+tools. Browser discovery saves the executable before redirecting local application data and keeps its profile
+temporary. An outer admission database override is retained with `setdefault`, unless its canonical target is
+inside a real configuration directory. Regressions exercise redirected environments, nested roots, alternate
+filesystem spellings, swallowed trips, inherited CLI defaults, database overrides and per-user browser discovery.
+
+The privacy scanner applies identical path, physical-identity, address and handle checks to mapping keys and
+values. Filesystem URI authorities must be placeholders, localhost or reserved example hosts. Generic shell
+and Windows environment-variable paths are portable only with placeholder suffix segments. Separator
+normalization covers the slash and reverse-slash look-alikes, including the big solidus variants. Drive-relative
+paths require path-like syntax; ratios and approximation prose remain readable. In-memory tracked-fixture
+injections exercise each addition, with portable counterparts checked for false positives.
+
+JSONL is parsed before scanning, avoiding escaped-string false positives. Existing protocol-route fixture keys
+and synthetic corpus separators use portable placeholders expanded in memory. All 3,702 restored redaction
+corpus entries are identical to the integrated main inputs; rule comparisons and secret markers are unchanged.
+The USB fixture's misplaced root placeholder is corrected without changing its expanded parser input. The
+legacy render oracle remains unchanged. Focused validation passes all boundary assertions, deliberate redactor-regression injections, isolation and
+privacy checks. Full-suite baseline comparisons and runner logs are retained outside the repository.
+
+Focused verification: **832 boundary assertions** plus the legacy response/audit comparisons and the deliberate
+redactor-regression test pass. The final isolation/privacy/browser/USB/G6 check reports **34 passed, 2 skipped**;
+the two skips are platform-specific USB checks. All **21 G6 rows** remain byte-identical. Corpus comparison tests
+pass with the original 3,702 decoded entries; no runtime redaction rule is changed by this round.
+
+The first full comparison exposed a Windows-only race in the existing live-ledger watchdog regression:
+unlinking the temporary ledger could overlap the reader's open handle. The test now verifies an initial clear
+sample, starts the watchdog behind an event, installs each real live signal, and releases the reader. This
+preserves every shutdown assertion while making the signal transition deterministic; production code is unchanged.

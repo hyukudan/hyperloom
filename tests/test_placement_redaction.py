@@ -1,4 +1,4 @@
-"""Placement uses the portal redactor; missing shared masks wait for the shared feature branch."""
+"""Placement boundaries use the shared portal rules and fail on masking regressions."""
 import ast
 from contextlib import ExitStack
 import json
@@ -9,29 +9,32 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
+from hyperloom import redaction
 from hyperloom.recipes import preflight, reader
 from hyperloom.web import api as portal, server
 
 
-PENDING = "pending hl/features-nits hyperloom/redaction.py"
-# Synthetic values only. This table specifies outputs, never matching rules.
+# Synthetic values only. This table specifies outputs, never matching rules. A probe value is not shaped like a
+# credential name (no snake case ending in key/token/pass...), so the rules mask it only because of the name,
+# option or client before it, and the masked text does not depend on the words around the case.
 CASES = (
-    ("hf_env", "HF_TOKEN hf_probe_secret", "HF_TOKEN [redacted]"),
-    ("pass_assignment", "PASS=pass_probe_secret", "PASS=[redacted]"),
-    ("mysql_short", "mysql -pmysql_probe_secret", "mysql -p[redacted]"),
-    ("sshpass_short", "sshpass -p ssh_probe_secret", "sshpass -p [redacted]"),
-    ("hf_quoted", 'HF_TOKEN "two word secret"', "HF_TOKEN [redacted]"),
-    ("pass_quoted", 'PASS="two word secret"', "PASS=[redacted]"),
-    ("mysql_quoted", 'mysql -p"two word secret"', "mysql -p[redacted]"),
-    ("sshpass_quoted", 'sshpass -p "two word secret"', "sshpass -p [redacted]"),
-    ("sshpass_single_quoted", "sshpass -p 'two word secret'", "sshpass -p [redacted]"),
-    ("password_option_quoted", '--password "two word secret"', "--password [redacted]"),
-    ("password_word_quoted", 'password "two word secret"', "password [redacted]"),
-    ("password_assignment_quoted", 'password="two word secret"', "password=[redacted]"),
-    ("empty_url_user", "https://:url_probe_secret@example.invalid", "https://[redacted]@example.invalid"),
-    ("curl_user", "curl -u user:curl_probe_secret", "curl -u [redacted]"),
-    ("bare_hf", "hf_probe_secret", "[redacted]"),
-    ("bare_ghp", "ghp_probe_secret", "[redacted]"),
+    ("hf_env", "HF_TOKEN zz9plural7", "HF_TOKEN [redacted]"),
+    ("pass_assignment", "PASS=zz9plural7", "PASS=[redacted]"),
+    ("mysql_short", "mysql -pzz9plural7", "mysql -p[redacted]"),
+    ("sshpass_short", "sshpass -p zz9plural7", "sshpass -p [redacted]"),
+    ("hf_quoted", 'HF_TOKEN "zz9 plural7 qx"', "HF_TOKEN [redacted]"),
+    ("pass_quoted", 'PASS="zz9 plural7 qx"', "PASS=[redacted]"),
+    ("mysql_quoted", 'mysql -p"zz9 plural7 qx"', "mysql -p[redacted]"),
+    ("sshpass_quoted", 'sshpass -p "zz9 plural7 qx"', "sshpass -p [redacted]"),
+    ("sshpass_single_quoted", "sshpass -p 'zz9 plural7 qx'", "sshpass -p [redacted]"),
+    ("password_option_quoted", '--password "zz9 plural7 qx"', "--password [redacted]"),
+    ("password_word_quoted", 'password "zz9 plural7 qx"', "password [redacted]"),
+    ("password_assignment_quoted", 'password="zz9 plural7 qx"', "password=[redacted]"),
+    ("empty_url_user", "https://:zz9plural7@example.invalid", "https://[redacted]@example.invalid"),
+    ("curl_user", "curl -u user:zz9plural7", "curl -u [redacted]"),
+    # Bare access tokens use realistic lengths without credential-shaped names.
+    ("bare_hf", "hf_" + "Zz9plural7Qx" * 3, "[redacted]"),
+    ("bare_ghp", "ghp_" + "Zz9plural7Qx" * 4, "[redacted]"),
 )
 LAUNCHES = {
     "up": ("up", {"profile": "test", "recipe": "test"}, ["up", "test", "--recipe", "test"]),
@@ -53,6 +56,20 @@ BOUNDARIES = (
 
 
 class PlacementBoundaryTests(unittest.TestCase):
+    def base_source(self):
+        available = subprocess.run(["git", "cat-file", "-e", "2a7c803^{commit}"], cwd=Path(__file__).resolve().parents[1],
+                                   capture_output=True)
+        if available.returncode:
+            self.skipTest("legacy comparison requires the historical base commit")
+        return subprocess.check_output(["git", "show", "2a7c803:hyperloom/web/api.py"],
+                                       cwd=Path(__file__).resolve().parents[1], text=True, encoding="utf-8")
+
+    def test_masking_regressions_fail_instead_of_skipping(self):
+        for case in CASES:
+            with self.subTest(case=case[0]), mock.patch.object(redaction, "redact_text", side_effect=lambda text: text):
+                with self.assertRaises(AssertionError):
+                    _boundary_test(case, "logs_feed", True)(self)
+
     def exercise(self, text, boundary):
         """Run a real API boundary and observe the shared redactor, including HTTP exception transport."""
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
@@ -146,7 +163,7 @@ class PlacementBoundaryTests(unittest.TestCase):
             return actual, prefix, suffix
 
     def test_legacy_log_responses_match_base_bytes(self):
-        source = subprocess.check_output(["git", "show", "2a7c803:hyperloom/web/api.py"], text=True, encoding="utf-8")
+        source = self.base_source()
         namespace = dict(vars(portal))
         for name in ("_logs", "_process_logs"):
             definition = next(node for node in ast.walk(ast.parse(source))
@@ -174,7 +191,7 @@ class PlacementBoundaryTests(unittest.TestCase):
                         self.assertEqual(responses[0], responses[1])
 
     def test_legacy_launch_error_and_completion_match_base_bytes(self):
-        source = subprocess.check_output(["git", "show", "2a7c803:hyperloom/web/api.py"], text=True, encoding="utf-8")
+        source = self.base_source()
         definition = next(node for node in ast.walk(ast.parse(source))
                           if isinstance(node, ast.FunctionDef) and node.name == "mutate")
         namespace = dict(vars(portal))
@@ -203,12 +220,16 @@ class PlacementBoundaryTests(unittest.TestCase):
 
 
 def _boundary_test(case, boundary, masking):
-    _, text, expected = case
+    _, text, masked = case
     def test(self):
         actual, prefix, suffix = self.exercise(text, boundary)
-        self.assertEqual(actual, prefix + (expected if masking else portal.redact(text)) + suffix)
-    if masking and portal.redact(text) != expected:
-        test = unittest.skip(PENDING)(test)
+        expected = portal.redact(prefix + text + suffix)
+        self.assertEqual(actual, expected)
+        if masking:
+            # Independent expected masks and absence checks make a shared-rule regression fail too.
+            self.assertEqual(redaction.redact_text(text), masked)
+            self.assertEqual(portal.redact(text), masked)
+            self.assertNotIn("plural7", actual)
     return test
 
 
