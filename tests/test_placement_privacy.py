@@ -73,7 +73,7 @@ def private_paths(value):
         if not _PORTABLE_PATH.fullmatch(match["path"]):
             yield match["path"]
     for match in ABSOLUTE.finditer(value):
-        if match[0].startswith("/") and value[:match.start()].endswith("$"):
+        if re.fullmatch(r"/[A-Za-z]{1,12}", match[0]) and value[:match.start()].endswith("$"):
             continue  # Currency/unit prose such as $/hour is not a variable path.
         # A slash following a placeholder continues a relative portable fixture path.
         if match[0].startswith(("/", "\\")) and re.search(PLACEHOLDER.pattern + r"$", value[:match.start()]):
@@ -257,6 +257,8 @@ class PrivacyTests(unittest.TestCase):
                       "http://alice-pc:8080/x", "https://alice-pc/x", "http://alice.local/x",
                       "https://nas.lan/x", "https://nas.internal/x", "https://nas.home.arpa/x",
                       "https://nas.localdomain/x", "http://nas.corp/x", "https://nas.intranet/x", "https://nas.private/x",
+                      "$/srv/alice", "x$/Users/alice/m", "costs $/srv/alice/models",
+                      "$/hour/model", "$/hour\\model", "$/hour/", "$/abcdefghijklm", "$/GB2",
                       *("C:/Users/<user>;" + prefix + "-worker" for prefix in (
                           "clau" + "de", "co" + "dex", "s" + "ol", "op" + "us"))):
             with self.subTest(value=value):
@@ -292,7 +294,8 @@ class PrivacyTests(unittest.TestCase):
         for value in ("$MODEL_DIR/<model>", "${MODEL_DIR}\\<model>", "%MODEL_DIR%\\<model>", "$env:LOCALAPPDATA\\<runtime>",
                       "smb://<host>/<root>", "file://localhost/<root>", "file:///<root>", "nfs://nas.example/<root>",
                       "a:b", "ratio a:b of c", "x ~approx 3", "about ~approx", "50%/60%", "load 50%/60% of 100%",
-                      "costs $5/hour", "$/hour", "costs $/hour", "https://github.com/project/repo", "\u29f8"):
+                      "costs $5/hour", "$/hour", "costs $/hour", "$/month", "$/GB", "$/abcdefghijkl",
+                      "https://github.com/project/repo", "\u29f8"):
             with self.subTest(value=value):
                 self.assertFalse(private(value))
                 self.assertEqual(self.injected_findings({"nested": [value]}), {})

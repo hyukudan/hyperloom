@@ -39,7 +39,9 @@ signed operational document is rewritten for publication. Both web device views 
 legacy exclusion and cannot inherit another 4090's flags through its name.
 
 `tests/test_placement_privacy.py` scans tracked and newly added recipe/profile/receipt/fixture data for UUIDs, PCI,
-host/user fields, local host/user names and absolute paths. No artifact is exempt. The 22 historical fixtures,
+host/user fields, local host/user names and absolute paths. The 22 historical portable fixtures remain unexempted.
+Main's adversarial redaction corpus has the single reviewed path-and-SHA-256 exemption documented in
+[placement-review-resolution.md](placement-review-resolution.md#integrated-base-review-resolutions). The 22 fixtures,
 including the frozen eb9ae96 G6 oracle, use portable placeholders. Tests reconstruct their original values in
 memory; all 22 retain their original byte hashes after reconstruction. The historical allowlist has been removed.
 The same gate also scans top-level documentation Markdown and shipped Python string literals for local user,

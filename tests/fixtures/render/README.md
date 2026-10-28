@@ -59,8 +59,10 @@ reconstructed frozen file; it never regenerates the oracle. Any difference needs
 and product review, not an automatic golden update. A second independent
 generation at eb9ae96 was byte-identical; the integrated branch matched all
 21 cases when this oracle was introduced. Paths and identities here are
-portable fixture data. The privacy gate has no historical exemptions; all 22
-previously exempt fixtures reconstruct their original bytes in memory.
+portable fixture data. All 22 previously exempt portable fixtures remain unexempted
+and reconstruct their original bytes in memory. Main's adversarial redaction corpus
+has the single reviewed path-and-SHA-256 exemption documented in
+[placement-review-resolution.md](../../../docs/placement-review-resolution.md#integrated-base-review-resolutions).
 IPv4 and IPv6 literals, including documentation and loopback addresses, also use portable placeholders. The
 privacy gate validates address candidates in values and mapping keys with `ipaddress`; documentation ranges have
 no exemption. Address substitutions expand only in memory before parser or byte comparisons.
