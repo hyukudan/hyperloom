@@ -44,13 +44,14 @@ READS = {"recipes": ("list", {"model": "model"}), "recipes/active": ("active", {
          "recipes/matrix": ("matrix", {})}
 # POST recipes/<op>: synchronous answers (never jobs). WRITES are audited.
 QUERIES = frozenset(("recipes/validate", "recipes/explain", "recipes/check", "recipes/diff", "recipes/pick",
-                     "recipes/select", "recipes/plan", "recipes/ready"))
+                     "recipes/select", "recipes/plan", "recipes/export", "recipes/ready"))
 WRITES = frozenset(("recipes/save", "recipes/delete", "recipes/save-layer", "recipes/delete-layer",
-                    "recipes/save-receipt"))
+                    "recipes/save-receipt", "recipes/import"))
 # Jobs (one mutating job at a time, like up/down): probes that may write, and the server-side switch.
 JOBS = frozenset(("recipes/probe", "recipes/deploy"))
 POSTS = QUERIES | WRITES
-LARGE_BODY = frozenset(("recipes/save", "recipes/check", "recipes/save-layer"))   # recipe text (<= 256 KiB)
+LARGE_BODY = frozenset(("recipes/save", "recipes/check", "recipes/save-layer",   # recipe text (<= 256 KiB)
+                        "recipes/import"))                                          # a bundle (<= 500 KiB)
 LARGE_BODY_BYTES = 1024 * 1024
 # Exit codes of `hyperloom recipe` -> HTTP status of the answer (the body is the same document in every case).
 STATUS = {0: 200, 1: 200, 2: 400, 3: 404, 4: 409}
@@ -373,6 +374,12 @@ class Request:
             text = arguments.pop("text")
             if not isinstance(text, str) or not text:
                 raise ValueError("text must be a nonempty document")
+            self.stdin = text.encode("utf-8")
+        elif operation == "import":
+            # The bundle's text goes on stdin (`hyperloom recipe import -`); a path is never taken from the client.
+            text = arguments.pop("text", None)
+            if not isinstance(text, str) or not text:
+                raise ValueError("text (the bundle) is required")
             self.stdin = text.encode("utf-8")
         edits = arguments.pop("edits", None)
         self.operation = operation

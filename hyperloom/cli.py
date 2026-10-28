@@ -653,6 +653,18 @@ def build_parser(parser_class=argparse.ArgumentParser):
     recipe_matrix = recipe_commands.add_parser("matrix", help="which recipe covers each model x hardware class")
     recipe_matrix.add_argument("--format", choices=("json", "text"), default="json")
     recipe_matrix.add_argument("--config", type=Path, default=config_path())
+    recipe_export = recipe_commands.add_parser("export", help="a recipe and its layers as one data-only bundle")
+    recipe_export.add_argument("recipe", help="a recipe id or file")
+    recipe_export.add_argument("--layer", action="append", metavar="NAME",
+                               help="a user layer (file name in the layers directory) to include (repeatable)")
+    recipe_export.add_argument("--out", type=Path, help="write the bundle to this file instead of printing it")
+    recipe_export.add_argument("--config", type=Path, default=config_path())
+    recipe_import = recipe_commands.add_parser("import", help="write a bundle's recipe and layers into the user "
+                                               "directories (checked first; nothing runs)")
+    recipe_import.add_argument("bundle", help="the bundle file (- = stdin)")
+    recipe_import.add_argument("--id", help="the recipe id to save it as (default: the bundle's)")
+    recipe_import.add_argument("--replace", metavar="SHA256", help="replace the user recipe that has this sha256")
+    recipe_import.add_argument("--config", type=Path, default=config_path())
     recipe_show = recipe_commands.add_parser("show", help="one recipe: text, routes, settable fields")
     recipe_show.add_argument("recipe", help="a recipe id or file")
     recipe_show.add_argument("--config", type=Path, default=config_path())

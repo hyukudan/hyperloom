@@ -25,6 +25,8 @@ hyperloom recipe diff     A B [--a-set PATH=VALUE]... [--b-set PATH=VALUE]...
 hyperloom recipe pick     <profile> [--dir DIR]... [--facts FACTS.json] [layers]
 hyperloom recipe ready    ID|FILE [<profile>] [--facts NAME|FILE] [--format json|text]
 hyperloom recipe matrix   [--format json|text]
+hyperloom recipe export   ID|FILE [--layer NAME]... [--out BUNDLE.json]
+hyperloom recipe import   BUNDLE.json|- [--id ID] [--replace SHA256]
 ```
 
 - **ready** is the place to start. It lists, in order, what `up --recipe` needs and whether this machine has it: the
@@ -45,6 +47,20 @@ hyperloom recipe matrix   [--format json|text]
 `--format text` prints `ready` and `matrix` as plain text; JSON stays the default. `ready` and `matrix` are reserved
 ids (like `list` or `plan`): a user recipe saved under one of them before is listed with that error and must be
 renamed.
+
+- **export / import** share a recipe with its overrides layers as one data-only bundle (`hyperloom/recipe-bundle-v1`):
+  the recipe text and the chosen layers' texts, each with its sha256. A bundle carries no hardware facts, disk
+  receipts, host names, device ids or paths, and nothing that runs; tuning profiles, which carry one machine's
+  identity, are not bundled. It is at most 500 KiB with at most 16 layers (export refuses what import would). Import
+  checks the whole bundle first (exact structure, digests, the recipe resolved with every layer, each layer checked
+  as `save-layer` checks it), then writes into the user directories only, under the writers' lock with `save`'s id,
+  name and replace checks: a refusal writes nothing. A recipe whose exact text is already in the catalog (a built-in,
+  for example) is not copied; a layer file that already holds the same text is kept. A replacement keeps the
+  recipe's format (TOML stays TOML, JSON stays JSON). Export checks the same bytes it bundles, as import would:
+  a layer of another version of the recipe, a tuning profile or a file name that is not a recipe id is refused. Each file is written atomically:
+  if an import stops part-way, what it wrote is valid (the layers are written in an order in which the recipe with
+  the bundle's layers on disk, kept ones included, resolves after every write; an import with no such order is
+  refused), and running the same import again completes it.
 
 - **validate** checks the recipe and its layers, and with a profile also the hardware match and what `up` would
   decide. It exits with 1 and lists every reason when something is refused.

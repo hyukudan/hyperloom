@@ -690,6 +690,10 @@ def recipes_walkthrough(client, server, output=None):
                     "document.getElementById('copy-name').value = 'qwen-walk'")
     click("#recipe-dialog-confirm")
     wait("!!document.querySelector('[data-recipe-action=open][data-id=\"qwen3.8-flash-next.walk\"]')")
+    # Export: the copy (now selected) as a bundle file, through `hyperloom recipe export`.
+    wait("!!document.querySelector('[data-recipe-action=export]')")
+    click('[data-recipe-action="export"]')
+    wait("/Exported qwen3.8-flash-next.walk/.test(document.body.innerText)")
     # A recipe that fits the fixture: the preview passes, Deploy is enabled and its job runs to the end.
     client.evaluate("(() => { const el = document.getElementById('recipe-profile'); el.value = 'qwen-two'; "
                     "el.dispatchEvent(new Event('change', {bubbles: true})); })()")

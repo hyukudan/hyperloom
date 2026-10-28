@@ -108,6 +108,8 @@ hardware refuses the recipe in `result.hardware`.
 | `GET recipes[?model=M]` | `hyperloom recipe list [--model M]` | the catalog, models and the deployment profiles serving each, layers, receipts, saved facts |
 | `GET recipes/<id>` | `hyperloom recipe show ID` | one recipe: text, structure, every settable field with its type, range and default |
 | `POST recipes/ready` `{recipe, profile?, facts?}` | `hyperloom recipe ready ID [P] [--facts F]` | what is still missing before `up` can run the recipe on the profile, step by step, each with the next command (offline) |
+| `POST recipes/export` `{recipe, layer?}` | `hyperloom recipe export ID [--layer NAME]...` | the recipe and those user layers as one data-only bundle |
+| `POST recipes/import` `{text, id?, replace?}` | `hyperloom recipe import - [--id ID] [--replace SHA256]` | write a bundle's recipe and layers into the user directories (checked first; audited) |
 | `GET recipes/matrix` | `hyperloom recipe matrix` | every recipe by model x hardware class, with its status, headline figures and their sources, and the command that runs it |
 | `POST recipes/validate` | `hyperloom recipe validate ID [PROFILE]` | schema and layers; with a profile also the hardware match and the `up` decision |
 | `POST recipes/explain` | `hyperloom recipe explain ID [PROFILE]` | each field's value, layer and origin; with a profile the decision, a simulated request and what-ifs |
