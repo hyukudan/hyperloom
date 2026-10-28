@@ -1,0 +1,1179 @@
+{
+ "schema": "tensormeld/hetero-plan-v1",
+ "model": "qwen3.8-flash-next",
+ "model_fingerprint": "9636c1c7235d5ab1aebde618aa6b1e2c3522154310a8cfec291159d4c9c5f6c4",
+ "hardware_fingerprint": "9b99145ce0e01f4ca16ecc182dc17a0d9fba322c1d9702b7dab399c6e06695a7",
+ "request": {
+  "prompt_tokens": 8192,
+  "context_tokens": 8448,
+  "output_tokens": 256,
+  "decode_rows": 1,
+  "slots": 1,
+  "prefill_chunk_rows": 4096,
+  "with_draft": false,
+  "objective": "latency",
+  "prefill_local_max_tokens": null
+ },
+ "status": "OK",
+ "best": {
+  "name": "parts:workstation.rtx-pro+workstation.host:density-greedy",
+  "mode": "single",
+  "feasible": true,
+  "problems": [],
+  "devices": [
+   "workstation.host",
+   "workstation.rtx-pro"
+  ],
+  "uses_preemptible": [
+   "workstation.rtx-pro"
+  ],
+  "decode": {
+   "rows": 1,
+   "step_ms": 6.562,
+   "tokens_per_s": 152.39,
+   "wire_ms": 0.0,
+   "wire_share": 0.0,
+   "crossings_per_step": 0,
+   "link_bytes_per_step": {},
+   "link_bytes_prefetchable": {},
+   "device_busy_ms": {
+    "workstation.host": 0.583,
+    "workstation.rtx-pro": 6.562
+   }
+  },
+  "prefill": {
+   "prompt_tokens": 8192,
+   "seconds": 0.639,
+   "tokens_per_s": 12812.8,
+   "wire_s": 0.0,
+   "link_bytes": {},
+   "device_busy_s": {
+    "workstation.host": 0.001,
+    "workstation.rtx-pro": 0.638
+   }
+  },
+  "handoff": {
+   "state_bytes": 0,
+   "seconds": 0.0,
+   "link_bytes": {}
+  },
+  "ttft_s": 0.639,
+  "request_s": 2.319,
+  "memory_gib": {
+   "workstation.host": 26.8,
+   "workstation.rtx-pro": 77.79
+  },
+  "placement": {
+   "workstation.host": {
+    "parts": 1,
+    "weight_bytes": 28776280883,
+    "kinds": {
+     "per-layer-embedding": "2"
+    }
+   },
+   "workstation.rtx-pro": {
+    "parts": 194,
+    "weight_bytes": 83177598368,
+    "kinds": {
+     "embedding": "-1",
+     "full-attention": "3,7,11,15,19,23,27,31,35,39,43,47",
+     "linear-attention": "0-2,4-6,8-10,12-14,16-18,20-22,24-26,28-30,32-34,36-38,40-42,44-46",
+     "lm-head": "48",
+     "routed-experts": "0-47",
+     "router-mix": "0-47",
+     "shared-expert": "0-47"
+    }
+   }
+  },
+  "prefill_placement": null,
+  "sets": {
+   "workstation.host": [
+    "workstation.host"
+   ],
+   "workstation.rtx-pro": [
+    "workstation.rtx-pro"
+   ]
+  },
+  "layout": null
+ },
+ "best_by_mode": {
+  "single": {
+   "name": "parts:workstation.rtx-pro+workstation.host:density-greedy",
+   "mode": "single",
+   "feasible": true,
+   "problems": [],
+   "devices": [
+    "workstation.host",
+    "workstation.rtx-pro"
+   ],
+   "uses_preemptible": [
+    "workstation.rtx-pro"
+   ],
+   "decode": {
+    "rows": 1,
+    "step_ms": 6.562,
+    "tokens_per_s": 152.39,
+    "wire_ms": 0.0,
+    "wire_share": 0.0,
+    "crossings_per_step": 0,
+    "link_bytes_per_step": {},
+    "link_bytes_prefetchable": {},
+    "device_busy_ms": {
+     "workstation.host": 0.583,
+     "workstation.rtx-pro": 6.562
+    }
+   },
+   "prefill": {
+    "prompt_tokens": 8192,
+    "seconds": 0.639,
+    "tokens_per_s": 12812.8,
+    "wire_s": 0.0,
+    "link_bytes": {},
+    "device_busy_s": {
+     "workstation.host": 0.001,
+     "workstation.rtx-pro": 0.638
+    }
+   },
+   "handoff": {
+    "state_bytes": 0,
+    "seconds": 0.0,
+    "link_bytes": {}
+   },
+   "ttft_s": 0.639,
+   "request_s": 2.319,
+   "memory_gib": {
+    "workstation.host": 26.8,
+    "workstation.rtx-pro": 77.79
+   },
+   "placement": {
+    "workstation.host": {
+     "parts": 1,
+     "weight_bytes": 28776280883,
+     "kinds": {
+      "per-layer-embedding": "2"
+     }
+    },
+    "workstation.rtx-pro": {
+     "parts": 194,
+     "weight_bytes": 83177598368,
+     "kinds": {
+      "embedding": "-1",
+      "full-attention": "3,7,11,15,19,23,27,31,35,39,43,47",
+      "linear-attention": "0-2,4-6,8-10,12-14,16-18,20-22,24-26,28-30,32-34,36-38,40-42,44-46",
+      "lm-head": "48",
+      "routed-experts": "0-47",
+      "router-mix": "0-47",
+      "shared-expert": "0-47"
+     }
+    }
+   },
+   "prefill_placement": null,
+   "sets": {
+    "workstation.host": [
+     "workstation.host"
+    ],
+    "workstation.rtx-pro": [
+     "workstation.rtx-pro"
+    ]
+   },
+   "layout": null
+  },
+  "replicas": {
+   "name": "replicas:halo-1.gpu+halo-2.gpu+workstation.rtx-pro+workstation.host:density-greedy",
+   "mode": "replicas",
+   "feasible": true,
+   "problems": [],
+   "devices": [
+    "halo-1.gpu",
+    "halo-2.gpu",
+    "workstation.host",
+    "workstation.rtx-pro"
+   ],
+   "uses_preemptible": [
+    "workstation.rtx-pro"
+   ],
+   "decode": {
+    "rows": 1,
+    "step_ms": 6.562,
+    "tokens_per_s": 152.39,
+    "wire_ms": 0.0,
+    "wire_share": 0.0,
+    "crossings_per_step": 0,
+    "link_bytes_per_step": {},
+    "link_bytes_prefetchable": {},
+    "device_busy_ms": {
+     "workstation.host": 0.583,
+     "workstation.rtx-pro": 6.562
+    }
+   },
+   "prefill": {
+    "prompt_tokens": 8192,
+    "seconds": 0.639,
+    "tokens_per_s": 12812.8,
+    "wire_s": 0.0,
+    "link_bytes": {},
+    "device_busy_s": {
+     "workstation.host": 0.001,
+     "workstation.rtx-pro": 0.638
+    }
+   },
+   "handoff": {
+    "state_bytes": 0,
+    "seconds": 0.0,
+    "link_bytes": {}
+   },
+   "ttft_s": 0.639,
+   "request_s": 2.319,
+   "memory_gib": {
+    "workstation.host": 26.8,
+    "workstation.rtx-pro": 77.79
+   },
+   "placement": {
+    "workstation.host": {
+     "parts": 1,
+     "weight_bytes": 28776280883,
+     "kinds": {
+      "per-layer-embedding": "2"
+     }
+    },
+    "workstation.rtx-pro": {
+     "parts": 194,
+     "weight_bytes": 83177598368,
+     "kinds": {
+      "embedding": "-1",
+      "full-attention": "3,7,11,15,19,23,27,31,35,39,43,47",
+      "linear-attention": "0-2,4-6,8-10,12-14,16-18,20-22,24-26,28-30,32-34,36-38,40-42,44-46",
+      "lm-head": "48",
+      "routed-experts": "0-47",
+      "router-mix": "0-47",
+      "shared-expert": "0-47"
+     }
+    }
+   },
+   "prefill_placement": null,
+   "sets": {
+    "workstation.host": [
+     "workstation.host"
+    ],
+    "workstation.rtx-pro": [
+     "workstation.rtx-pro"
+    ]
+   },
+   "layout": null,
+   "aggregate_tokens_per_s": 197.49,
+   "replicas": [
+    "whole:halo-1.gpu",
+    "whole:halo-2.gpu",
+    "parts:workstation.rtx-pro+workstation.host:density-greedy"
+   ]
+  },
+  "prefill-decode": {
+   "name": "pd:whole:workstation.rtx-pro+host-lookups=>parts:workstation.rtx-pro+halo-1.gpu:density-greedy",
+   "mode": "prefill-decode(single -> single)",
+   "feasible": true,
+   "problems": [],
+   "devices": [
+    "halo-1.gpu",
+    "workstation.host",
+    "workstation.rtx-pro"
+   ],
+   "uses_preemptible": [
+    "workstation.rtx-pro"
+   ],
+   "decode": {
+    "rows": 1,
+    "step_ms": 6.562,
+    "tokens_per_s": 152.39,
+    "wire_ms": 0.0,
+    "wire_share": 0.0,
+    "crossings_per_step": 0,
+    "link_bytes_per_step": {
+     "eth-workstation-halo-1": 10240
+    },
+    "link_bytes_prefetchable": {
+     "eth-workstation-halo-1": 10240
+    },
+    "device_busy_ms": {
+     "halo-1.gpu": 0.212,
+     "workstation.rtx-pro": 6.562
+    }
+   },
+   "prefill": {
+    "prompt_tokens": 8192,
+    "seconds": 0.639,
+    "tokens_per_s": 12812.8,
+    "wire_s": 0.0,
+    "link_bytes": {},
+    "device_busy_s": {
+     "workstation.host": 0.001,
+     "workstation.rtx-pro": 0.638
+    }
+   },
+   "handoff": {
+    "state_bytes": 0,
+    "seconds": 0.0,
+    "link_bytes": {}
+   },
+   "ttft_s": 0.639,
+   "request_s": 2.319,
+   "memory_gib": {
+    "halo-1.gpu": 26.8,
+    "workstation.host": 27.98,
+    "workstation.rtx-pro": 77.79
+   },
+   "placement": {
+    "halo-1.gpu": {
+     "parts": 1,
+     "weight_bytes": 28776280883,
+     "kinds": {
+      "per-layer-embedding": "2"
+     }
+    },
+    "workstation.rtx-pro": {
+     "parts": 194,
+     "weight_bytes": 83177598368,
+     "kinds": {
+      "embedding": "-1",
+      "full-attention": "3,7,11,15,19,23,27,31,35,39,43,47",
+      "linear-attention": "0-2,4-6,8-10,12-14,16-18,20-22,24-26,28-30,32-34,36-38,40-42,44-46",
+      "lm-head": "48",
+      "routed-experts": "0-47",
+      "router-mix": "0-47",
+      "shared-expert": "0-47"
+     }
+    }
+   },
+   "prefill_placement": {
+    "workstation.host": {
+     "parts": 2,
+     "weight_bytes": 30047679283,
+     "kinds": {
+      "embedding": "-1",
+      "per-layer-embedding": "2"
+     }
+    },
+    "workstation.rtx-pro": {
+     "parts": 193,
+     "weight_bytes": 81906199968,
+     "kinds": {
+      "full-attention": "3,7,11,15,19,23,27,31,35,39,43,47",
+      "linear-attention": "0-2,4-6,8-10,12-14,16-18,20-22,24-26,28-30,32-34,36-38,40-42,44-46",
+      "lm-head": "48",
+      "routed-experts": "0-47",
+      "router-mix": "0-47",
+      "shared-expert": "0-47"
+     }
+    }
+   },
+   "sets": {
+    "halo-1.gpu": [
+     "halo-1.gpu"
+    ],
+    "workstation.host": [
+     "workstation.host"
+    ],
+    "workstation.rtx-pro": [
+     "workstation.rtx-pro"
+    ]
+   },
+   "layout": null
+  },
+  "hetero-parts": {
+   "name": "parts:workstation.rtx-pro+halo-1.gpu:hot+branches[0..46]",
+   "mode": "hetero-parts",
+   "feasible": true,
+   "problems": [],
+   "devices": [
+    "halo-1.gpu",
+    "workstation.rtx-pro"
+   ],
+   "uses_preemptible": [
+    "workstation.rtx-pro"
+   ],
+   "decode": {
+    "rows": 1,
+    "step_ms": 7.061,
+    "tokens_per_s": 141.63,
+    "wire_ms": 0.22,
+    "wire_share": 0.031,
+    "crossings_per_step": 1,
+    "link_bytes_per_step": {
+     "eth-workstation-halo-1": 23180
+    },
+    "link_bytes_prefetchable": {
+     "eth-workstation-halo-1": 10240
+    },
+    "device_busy_ms": {
+     "halo-1.gpu": 0.517,
+     "workstation.rtx-pro": 6.54
+    }
+   },
+   "prefill": {
+    "prompt_tokens": 8192,
+    "seconds": 1.308,
+    "tokens_per_s": 6262.0,
+    "wire_s": 0.34,
+    "link_bytes": {
+     "eth-workstation-halo-1": 189890560
+    },
+    "device_busy_s": {
+     "halo-1.gpu": 0.675,
+     "workstation.rtx-pro": 0.632
+    }
+   },
+   "handoff": {
+    "state_bytes": 0,
+    "seconds": 0.0,
+    "link_bytes": {}
+   },
+   "ttft_s": 1.308,
+   "request_s": 3.116,
+   "memory_gib": {
+    "halo-1.gpu": 28.29,
+    "workstation.rtx-pro": 76.3
+   },
+   "placement": {
+    "halo-1.gpu": {
+     "parts": 2,
+     "weight_bytes": 30380447549,
+     "kinds": {
+      "per-layer-embedding": "2",
+      "routed-experts": "47"
+     }
+    },
+    "workstation.rtx-pro": {
+     "parts": 193,
+     "weight_bytes": 81573431702,
+     "kinds": {
+      "embedding": "-1",
+      "full-attention": "3,7,11,15,19,23,27,31,35,39,43,47",
+      "linear-attention": "0-2,4-6,8-10,12-14,16-18,20-22,24-26,28-30,32-34,36-38,40-42,44-46",
+      "lm-head": "48",
+      "routed-experts": "0-46",
+      "router-mix": "0-47",
+      "shared-expert": "0-47"
+     }
+    }
+   },
+   "prefill_placement": null,
+   "sets": {
+    "halo-1.gpu": [
+     "halo-1.gpu"
+    ],
+    "workstation.rtx-pro": [
+     "workstation.rtx-pro"
+    ]
+   },
+   "layout": null
+  },
+  "hetero-pipeline": {
+   "name": "pipeline:halo-1.gpu[0..2]>workstation.rtx-pro",
+   "mode": "hetero-pipeline",
+   "feasible": true,
+   "problems": [],
+   "devices": [
+    "halo-1.gpu",
+    "workstation.rtx-pro"
+   ],
+   "uses_preemptible": [
+    "workstation.rtx-pro"
+   ],
+   "decode": {
+    "rows": 1,
+    "step_ms": 9.141,
+    "tokens_per_s": 109.39,
+    "wire_ms": 0.405,
+    "wire_share": 0.044,
+    "crossings_per_step": 2,
+    "link_bytes_per_step": {
+     "eth-workstation-halo-1": 40964
+    },
+    "link_bytes_prefetchable": {},
+    "device_busy_ms": {
+     "halo-1.gpu": 2.771,
+     "workstation.rtx-pro": 6.178
+    }
+   },
+   "prefill": {
+    "prompt_tokens": 8192,
+    "seconds": 2.15,
+    "tokens_per_s": 3810.8,
+    "wire_s": 1.074,
+    "link_bytes": {
+     "eth-workstation-halo-1": 335544320
+    },
+    "device_busy_s": {
+     "halo-1.gpu": 0.476,
+     "workstation.rtx-pro": 0.599
+    }
+   },
+   "handoff": {
+    "state_bytes": 0,
+    "seconds": 0.0,
+    "link_bytes": {}
+   },
+   "ttft_s": 2.15,
+   "request_s": 4.49,
+   "memory_gib": {
+    "halo-1.gpu": 32.73,
+    "workstation.rtx-pro": 71.87
+   },
+   "placement": {
+    "halo-1.gpu": {
+     "parts": 14,
+     "weight_bytes": 35131679281,
+     "kinds": {
+      "embedding": "-1",
+      "linear-attention": "0-2",
+      "per-layer-embedding": "2",
+      "routed-experts": "0-2",
+      "router-mix": "0-2",
+      "shared-expert": "0-2"
+     }
+    },
+    "workstation.rtx-pro": {
+     "parts": 181,
+     "weight_bytes": 76822199970,
+     "kinds": {
+      "full-attention": "3,7,11,15,19,23,27,31,35,39,43,47",
+      "linear-attention": "4-6,8-10,12-14,16-18,20-22,24-26,28-30,32-34,36-38,40-42,44-46",
+      "lm-head": "48",
+      "routed-experts": "3-47",
+      "router-mix": "3-47",
+      "shared-expert": "3-47"
+     }
+    }
+   },
+   "prefill_placement": null,
+   "sets": {
+    "halo-1.gpu": [
+     "halo-1.gpu"
+    ],
+    "workstation.rtx-pro": [
+     "workstation.rtx-pro"
+    ]
+   },
+   "layout": {
+    "stages": [
+     {
+      "set": "halo-1.gpu",
+      "devices": [
+       "halo-1.gpu"
+      ],
+      "layers": [
+       0,
+       3
+      ],
+      "has_embedding": true,
+      "has_head": false,
+      "parts": [
+       "L0.experts",
+       "L0.gdn",
+       "L0.mix",
+       "L0.shared",
+       "L1.experts",
+       "L1.gdn",
+       "L1.mix",
+       "L1.shared",
+       "L2.experts",
+       "L2.gdn",
+       "L2.mix",
+       "L2.ple",
+       "L2.shared",
+       "embed"
+      ],
+      "remote_parts": [],
+      "serves_parts": []
+     },
+     {
+      "set": "workstation.rtx-pro",
+      "devices": [
+       "workstation.rtx-pro"
+      ],
+      "layers": [
+       3,
+       48
+      ],
+      "has_embedding": false,
+      "has_head": true,
+      "parts": [
+       "L10.experts",
+       "L10.gdn",
+       "L10.mix",
+       "L10.shared",
+       "L11.attn",
+       "L11.experts",
+       "L11.mix",
+       "L11.shared",
+       "L12.experts",
+       "L12.gdn",
+       "L12.mix",
+       "L12.shared",
+       "L13.experts",
+       "L13.gdn",
+       "L13.mix",
+       "L13.shared",
+       "L14.experts",
+       "L14.gdn",
+       "L14.mix",
+       "L14.shared",
+       "L15.attn",
+       "L15.experts",
+       "L15.mix",
+       "L15.shared",
+       "L16.experts",
+       "L16.gdn",
+       "L16.mix",
+       "L16.shared",
+       "L17.experts",
+       "L17.gdn",
+       "L17.mix",
+       "L17.shared",
+       "L18.experts",
+       "L18.gdn",
+       "L18.mix",
+       "L18.shared",
+       "L19.attn",
+       "L19.experts",
+       "L19.mix",
+       "L19.shared",
+       "L20.experts",
+       "L20.gdn",
+       "L20.mix",
+       "L20.shared",
+       "L21.experts",
+       "L21.gdn",
+       "L21.mix",
+       "L21.shared",
+       "L22.experts",
+       "L22.gdn",
+       "L22.mix",
+       "L22.shared",
+       "L23.attn",
+       "L23.experts",
+       "L23.mix",
+       "L23.shared",
+       "L24.experts",
+       "L24.gdn",
+       "L24.mix",
+       "L24.shared",
+       "L25.experts",
+       "L25.gdn",
+       "L25.mix",
+       "L25.shared",
+       "L26.experts",
+       "L26.gdn",
+       "L26.mix",
+       "L26.shared",
+       "L27.attn",
+       "L27.experts",
+       "L27.mix",
+       "L27.shared",
+       "L28.experts",
+       "L28.gdn",
+       "L28.mix",
+       "L28.shared",
+       "L29.experts",
+       "L29.gdn",
+       "L29.mix",
+       "L29.shared",
+       "L3.attn",
+       "L3.experts",
+       "L3.mix",
+       "L3.shared",
+       "L30.experts",
+       "L30.gdn",
+       "L30.mix",
+       "L30.shared",
+       "L31.attn",
+       "L31.experts",
+       "L31.mix",
+       "L31.shared",
+       "L32.experts",
+       "L32.gdn",
+       "L32.mix",
+       "L32.shared",
+       "L33.experts",
+       "L33.gdn",
+       "L33.mix",
+       "L33.shared",
+       "L34.experts",
+       "L34.gdn",
+       "L34.mix",
+       "L34.shared",
+       "L35.attn",
+       "L35.experts",
+       "L35.mix",
+       "L35.shared",
+       "L36.experts",
+       "L36.gdn",
+       "L36.mix",
+       "L36.shared",
+       "L37.experts",
+       "L37.gdn",
+       "L37.mix",
+       "L37.shared",
+       "L38.experts",
+       "L38.gdn",
+       "L38.mix",
+       "L38.shared",
+       "L39.attn",
+       "L39.experts",
+       "L39.mix",
+       "L39.shared",
+       "L4.experts",
+       "L4.gdn",
+       "L4.mix",
+       "L4.shared",
+       "L40.experts",
+       "L40.gdn",
+       "L40.mix",
+       "L40.shared",
+       "L41.experts",
+       "L41.gdn",
+       "L41.mix",
+       "L41.shared",
+       "L42.experts",
+       "L42.gdn",
+       "L42.mix",
+       "L42.shared",
+       "L43.attn",
+       "L43.experts",
+       "L43.mix",
+       "L43.shared",
+       "L44.experts",
+       "L44.gdn",
+       "L44.mix",
+       "L44.shared",
+       "L45.experts",
+       "L45.gdn",
+       "L45.mix",
+       "L45.shared",
+       "L46.experts",
+       "L46.gdn",
+       "L46.mix",
+       "L46.shared",
+       "L47.attn",
+       "L47.experts",
+       "L47.mix",
+       "L47.shared",
+       "L5.experts",
+       "L5.gdn",
+       "L5.mix",
+       "L5.shared",
+       "L6.experts",
+       "L6.gdn",
+       "L6.mix",
+       "L6.shared",
+       "L7.attn",
+       "L7.experts",
+       "L7.mix",
+       "L7.shared",
+       "L8.experts",
+       "L8.gdn",
+       "L8.mix",
+       "L8.shared",
+       "L9.experts",
+       "L9.gdn",
+       "L9.mix",
+       "L9.shared",
+       "head"
+      ],
+      "remote_parts": [],
+      "serves_parts": []
+     }
+    ],
+    "cuts_after_layer": [
+     2
+    ]
+   }
+  }
+ },
+ "candidates": [
+  {
+   "name": "parts:workstation.rtx-pro+workstation.host:density-greedy",
+   "mode": "single",
+   "feasible": true,
+   "problems": [],
+   "devices": [
+    "workstation.host",
+    "workstation.rtx-pro"
+   ],
+   "uses_preemptible": [
+    "workstation.rtx-pro"
+   ],
+   "decode": {
+    "rows": 1,
+    "step_ms": 6.562,
+    "tokens_per_s": 152.39,
+    "wire_ms": 0.0,
+    "wire_share": 0.0,
+    "crossings_per_step": 0,
+    "link_bytes_per_step": {},
+    "link_bytes_prefetchable": {},
+    "device_busy_ms": {
+     "workstation.host": 0.583,
+     "workstation.rtx-pro": 6.562
+    }
+   },
+   "prefill": {
+    "prompt_tokens": 8192,
+    "seconds": 0.639,
+    "tokens_per_s": 12812.8,
+    "wire_s": 0.0,
+    "link_bytes": {},
+    "device_busy_s": {
+     "workstation.host": 0.001,
+     "workstation.rtx-pro": 0.638
+    }
+   },
+   "handoff": {
+    "state_bytes": 0,
+    "seconds": 0.0,
+    "link_bytes": {}
+   },
+   "ttft_s": 0.639,
+   "request_s": 2.319,
+   "memory_gib": {
+    "workstation.host": 26.8,
+    "workstation.rtx-pro": 77.79
+   },
+   "placement": {
+    "workstation.host": {
+     "parts": 1,
+     "weight_bytes": 28776280883,
+     "kinds": {
+      "per-layer-embedding": "2"
+     }
+    },
+    "workstation.rtx-pro": {
+     "parts": 194,
+     "weight_bytes": 83177598368,
+     "kinds": {
+      "embedding": "-1",
+      "full-attention": "3,7,11,15,19,23,27,31,35,39,43,47",
+      "linear-attention": "0-2,4-6,8-10,12-14,16-18,20-22,24-26,28-30,32-34,36-38,40-42,44-46",
+      "lm-head": "48",
+      "routed-experts": "0-47",
+      "router-mix": "0-47",
+      "shared-expert": "0-47"
+     }
+    }
+   },
+   "prefill_placement": null,
+   "sets": {
+    "workstation.host": [
+     "workstation.host"
+    ],
+    "workstation.rtx-pro": [
+     "workstation.rtx-pro"
+    ]
+   },
+   "layout": null
+  },
+  {
+   "name": "parts:workstation.rtx-pro+workstation.host:hot+branches[0..47]",
+   "mode": "single",
+   "feasible": true,
+   "problems": [],
+   "devices": [
+    "workstation.host",
+    "workstation.rtx-pro"
+   ],
+   "uses_preemptible": [
+    "workstation.rtx-pro"
+   ],
+   "decode": {
+    "rows": 1,
+    "step_ms": 6.562,
+    "tokens_per_s": 152.39,
+    "wire_ms": 0.0,
+    "wire_share": 0.0,
+    "crossings_per_step": 0,
+    "link_bytes_per_step": {},
+    "link_bytes_prefetchable": {},
+    "device_busy_ms": {
+     "workstation.host": 0.583,
+     "workstation.rtx-pro": 6.562
+    }
+   },
+   "prefill": {
+    "prompt_tokens": 8192,
+    "seconds": 0.639,
+    "tokens_per_s": 12812.8,
+    "wire_s": 0.0,
+    "link_bytes": {},
+    "device_busy_s": {
+     "workstation.host": 0.001,
+     "workstation.rtx-pro": 0.638
+    }
+   },
+   "handoff": {
+    "state_bytes": 0,
+    "seconds": 0.0,
+    "link_bytes": {}
+   },
+   "ttft_s": 0.639,
+   "request_s": 2.319,
+   "memory_gib": {
+    "workstation.host": 26.8,
+    "workstation.rtx-pro": 77.79
+   },
+   "placement": {
+    "workstation.host": {
+     "parts": 1,
+     "weight_bytes": 28776280883,
+     "kinds": {
+      "per-layer-embedding": "2"
+     }
+    },
+    "workstation.rtx-pro": {
+     "parts": 194,
+     "weight_bytes": 83177598368,
+     "kinds": {
+      "embedding": "-1",
+      "full-attention": "3,7,11,15,19,23,27,31,35,39,43,47",
+      "linear-attention": "0-2,4-6,8-10,12-14,16-18,20-22,24-26,28-30,32-34,36-38,40-42,44-46",
+      "lm-head": "48",
+      "routed-experts": "0-47",
+      "router-mix": "0-47",
+      "shared-expert": "0-47"
+     }
+    }
+   },
+   "prefill_placement": null,
+   "sets": {
+    "workstation.host": [
+     "workstation.host"
+    ],
+    "workstation.rtx-pro": [
+     "workstation.rtx-pro"
+    ]
+   },
+   "layout": null
+  },
+  {
+   "name": "replicas:halo-1.gpu+halo-2.gpu+workstation.rtx-pro+workstation.host:density-greedy",
+   "mode": "replicas",
+   "feasible": true,
+   "problems": [],
+   "devices": [
+    "halo-1.gpu",
+    "halo-2.gpu",
+    "workstation.host",
+    "workstation.rtx-pro"
+   ],
+   "uses_preemptible": [
+    "workstation.rtx-pro"
+   ],
+   "decode": {
+    "rows": 1,
+    "step_ms": 6.562,
+    "tokens_per_s": 152.39,
+    "wire_ms": 0.0,
+    "wire_share": 0.0,
+    "crossings_per_step": 0,
+    "link_bytes_per_step": {},
+    "link_bytes_prefetchable": {},
+    "device_busy_ms": {
+     "workstation.host": 0.583,
+     "workstation.rtx-pro": 6.562
+    }
+   },
+   "prefill": {
+    "prompt_tokens": 8192,
+    "seconds": 0.639,
+    "tokens_per_s": 12812.8,
+    "wire_s": 0.0,
+    "link_bytes": {},
+    "device_busy_s": {
+     "workstation.host": 0.001,
+     "workstation.rtx-pro": 0.638
+    }
+   },
+   "handoff": {
+    "state_bytes": 0,
+    "seconds": 0.0,
+    "link_bytes": {}
+   },
+   "ttft_s": 0.639,
+   "request_s": 2.319,
+   "memory_gib": {
+    "workstation.host": 26.8,
+    "workstation.rtx-pro": 77.79
+   },
+   "placement": {
+    "workstation.host": {
+     "parts": 1,
+     "weight_bytes": 28776280883,
+     "kinds": {
+      "per-layer-embedding": "2"
+     }
+    },
+    "workstation.rtx-pro": {
+     "parts": 194,
+     "weight_bytes": 83177598368,
+     "kinds": {
+      "embedding": "-1",
+      "full-attention": "3,7,11,15,19,23,27,31,35,39,43,47",
+      "linear-attention": "0-2,4-6,8-10,12-14,16-18,20-22,24-26,28-30,32-34,36-38,40-42,44-46",
+      "lm-head": "48",
+      "routed-experts": "0-47",
+      "router-mix": "0-47",
+      "shared-expert": "0-47"
+     }
+    }
+   },
+   "prefill_placement": null,
+   "sets": {
+    "workstation.host": [
+     "workstation.host"
+    ],
+    "workstation.rtx-pro": [
+     "workstation.rtx-pro"
+    ]
+   },
+   "layout": null,
+   "aggregate_tokens_per_s": 197.49,
+   "replicas": [
+    "whole:halo-1.gpu",
+    "whole:halo-2.gpu",
+    "parts:workstation.rtx-pro+workstation.host:density-greedy"
+   ]
+  }
+ ],
+ "infeasible": [
+  {
+   "name": "whole:workstation.rtx-pro",
+   "problems": [
+    "workstation.rtx-pro: needs 104.6 GiB > usable 90.0 GiB"
+   ]
+  },
+  {
+   "name": "whole:workstation.host",
+   "problems": [
+    "workstation.host lacks qwen.attention (full-attention)",
+    "workstation.host lacks qwen.core (lm-head)",
+    "workstation.host lacks qwen.core (router-mix)",
+    "workstation.host lacks qwen.gdn (linear-attention)"
+   ]
+  },
+  {
+   "name": "whole:workstation.host+host-lookups",
+   "problems": [
+    "workstation.host lacks qwen.attention (full-attention)",
+    "workstation.host lacks qwen.core (lm-head)",
+    "workstation.host lacks qwen.core (router-mix)",
+    "workstation.host lacks qwen.gdn (linear-attention)"
+   ]
+  }
+ ],
+ "fallback": {
+  "without": [
+   "workstation.rtx-pro"
+  ],
+  "best": {
+   "name": "whole:halo-1.gpu",
+   "mode": "single",
+   "feasible": true,
+   "problems": [],
+   "devices": [
+    "halo-1.gpu"
+   ],
+   "uses_preemptible": [],
+   "decode": {
+    "rows": 1,
+    "step_ms": 44.345,
+    "tokens_per_s": 22.55,
+    "wire_ms": 0.0,
+    "wire_share": 0.0,
+    "crossings_per_step": 0,
+    "link_bytes_per_step": {},
+    "link_bytes_prefetchable": {},
+    "device_busy_ms": {
+     "halo-1.gpu": 44.558
+    }
+   },
+   "prefill": {
+    "prompt_tokens": 8192,
+    "seconds": 7.939,
+    "tokens_per_s": 1031.9,
+    "wire_s": 0.0,
+    "link_bytes": {},
+    "device_busy_s": {
+     "halo-1.gpu": 7.935
+    }
+   },
+   "handoff": {
+    "state_bytes": 0,
+    "seconds": 0.0,
+    "link_bytes": {}
+   },
+   "ttft_s": 7.939,
+   "request_s": 19.291,
+   "memory_gib": {
+    "halo-1.gpu": 104.59
+   },
+   "placement": {
+    "halo-1.gpu": {
+     "parts": 195,
+     "weight_bytes": 111953879251,
+     "kinds": {
+      "embedding": "-1",
+      "full-attention": "3,7,11,15,19,23,27,31,35,39,43,47",
+      "linear-attention": "0-2,4-6,8-10,12-14,16-18,20-22,24-26,28-30,32-34,36-38,40-42,44-46",
+      "lm-head": "48",
+      "per-layer-embedding": "2",
+      "routed-experts": "0-47",
+      "router-mix": "0-47",
+      "shared-expert": "0-47"
+     }
+    }
+   },
+   "prefill_placement": null,
+   "sets": {
+    "halo-1.gpu": [
+     "halo-1.gpu"
+    ]
+   },
+   "layout": null
+  },
+  "co_resident": {
+   "fits": true,
+   "problems": [],
+   "memory_gib": {
+    "halo-1.gpu": 104.59,
+    "workstation.host": 26.8,
+    "workstation.rtx-pro": 77.79
+   },
+   "meaning": "fallback weights stay loaded next to the hetero plan: losing the preemptible device costs a drain and a state move, not a reload"
+  }
+ },
+ "dense_hot": null,
+ "prefill_route": {
+  "schema": "tensormeld/prefill-route-v1",
+  "local": "parts:workstation.rtx-pro+workstation.host:density-greedy",
+  "offload": "whole:workstation.rtx-pro+host-lookups",
+  "local_max_tokens": 1048576,
+  "source": "model",
+  "model_crossover_tokens": 1048576,
+  "measured_crossover_tokens": null,
+  "measured_provenance": null,
+  "receipt_routes": null,
+  "effective_tokens": "prompt_tokens - prefix_cache_hit_tokens (hit on the decode placement)",
+  "rule": "offload when the offload placement is up and: no hit -> effective_tokens > local_max_tokens; hit + curves -> offload(prompt) < local(effective) + cached_s_per_token * cached; hit without curves -> effective_tokens > local_max_tokens",
+  "curves": null
+ },
+ "evaluated": 366,
+ "unmeasured_inputs": [
+  "device:halo-1.gpu",
+  "device:halo-2.gpu",
+  "device:workstation.host",
+  "device:workstation.rtx-pro",
+  "link:eth-workstation-halo-1",
+  "link:eth-workstation-halo-2",
+  "link:usb4-halo-1-halo-2"
+ ],
+ "qualified": false,
+ "executable": false
+}

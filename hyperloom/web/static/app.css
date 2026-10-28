@@ -232,3 +232,134 @@ dialog h2{font-size:18px;margin:0}
 }
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 
+/* Recipes & profiles (recipes.js) */
+.recipe-cards .recipe-card{display:flex;flex-direction:column;gap:8px}
+.recipe-card.sel{outline:2px solid var(--accent);outline-offset:-2px}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{display:inline-flex;align-items:center;gap:4px;font-size:12px;padding:2px 8px;border-radius:999px;background:var(--surface-2);border:1px solid var(--border);font-variant-numeric:tabular-nums}
+.chip .lbl{color:var(--text-3)}
+.tag.basis-measured{background:var(--ok-soft);color:var(--text);border-color:transparent}
+.tag.basis-projected,.tag.basis-target,.tag.basis-upper_bound,.tag.basis-lower_bound{background:var(--warn-soft);color:var(--text);border-color:transparent}
+.tag.basis-derived{background:var(--info-soft);color:var(--text);border-color:transparent}
+.split{height:10px;border-radius:999px;background:var(--s2);overflow:hidden;margin:6px 0}
+.split i{display:block;height:100%;width:0;background:var(--s1)}
+h2.section{font-size:15px;margin:22px 0 10px}
+h2.section .sub{font-weight:500;color:var(--text-3);font-size:12.5px;margin-left:8px}
+.cli code{white-space:pre-wrap;word-break:break-all}
+.recipe-actions{margin:0 0 14px}
+fieldset.checks{border:1px solid var(--border);border-radius:var(--r);padding:8px 12px}
+#recipe-source{width:100%;font-size:12.5px;min-height:240px}
+#recipe-dialog textarea{width:100%}
+/* Feature pages: sidebar groups (pages may add their own stylesheet in static/pages/). */
+.nav-group{margin:12px 8px 4px;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3,var(--text-2))}
+
+/* ---- Portal shell (UI-SPEC section 12) ---- */
+/* True black: a shade of the dark theme, so every dark-theme rule keeps applying. */
+:root[data-theme="dark"][data-shade="black"]{
+  --bg:#000000; --surface:#0b0b0d; --surface-2:#151519; --border:#24242a; --border-strong:#34343c;
+  --text:#ececf1; --text-2:#b0b3bd; --text-3:#9095a1;
+  --accent:#5b93f0; --accent-soft:#14213a; --accent-text:#93b8f7;
+  --ok:#3cc483; --ok-soft:#0e2618; --warn:#e6a23c; --warn-soft:#2a1f0c; --err:#f06c6c; --err-soft:#2e1212; --info:#8f9af1; --info-soft:#191c3a;
+  --grid:#1b1b21; --shadow:none; --on-accent:#0b1220; color-scheme:dark;
+}
+/* Density: compact keeps every target at 32 px (44 px narrow). */
+:root[data-density="compact"] body{font-size:13.5px}
+:root[data-density="compact"] .content{padding:14px 20px 28px;gap:12px}
+:root[data-density="compact"] .grid{gap:10px}
+:root[data-density="compact"] .card{padding:11px 13px}
+:root[data-density="compact"] .card h2{margin-bottom:8px}
+:root[data-density="compact"] .top{padding:8px 20px;min-height:52px}
+:root[data-density="compact"] .nav a{min-height:32px;padding:5px 10px}
+:root[data-density="compact"] td{padding:5px 8px}
+:root[data-density="compact"] th{padding:4px 8px}
+:root[data-density="compact"] .kpi{min-height:104px}
+:root[data-density="compact"] .kpi .val{font-size:22px}
+:root[data-density="compact"] .side{padding:12px 10px}
+/* Sidebar: brand row, search, collapsible groups, machines, collapse to an icon rail. */
+.brand .lbl{flex:1}
+.icon-btn{display:inline-grid;place-items:center;width:32px;height:32px;min-height:32px;border-radius:8px;border:1px solid transparent;background:transparent;color:var(--text-2);cursor:pointer;padding:0}
+.icon-btn:hover{background:var(--surface-2)}
+.icon-btn svg{width:18px;height:18px}
+.search-btn{display:flex;align-items:center;gap:8px;width:100%;min-height:36px;margin:0 0 10px;padding:6px 10px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface-2);color:var(--text-2);font:500 13px var(--f);cursor:pointer;text-align:left}
+.search-btn svg{width:16px;height:16px;flex:none}
+.search-btn .lbl{flex:1}
+kbd{font:600 11px var(--mono);border:1px solid var(--border-strong);border-bottom-width:2px;border-radius:5px;padding:1px 5px;color:var(--text-3);background:var(--surface)}
+button.nav-group{display:flex;align-items:center;width:100%;border:0;background:none;cursor:pointer;padding:6px 8px;margin:10px 0 2px;min-height:32px;border-radius:6px;text-align:left;font:600 11px var(--f)}
+button.nav-group .lbl{flex:1}
+button.nav-group .chev{width:7px;height:7px;margin-right:4px;border-right:1.6px solid currentColor;border-bottom:1.6px solid currentColor;transform:rotate(45deg);transition:transform .15s}
+button.nav-group[aria-expanded="false"] .chev{transform:rotate(-45deg)}
+button.nav-group:hover{background:var(--surface-2)}
+.nav-section:first-child button.nav-group{margin-top:0}
+.nav-machines{margin-top:10px;border-top:1px solid var(--border);padding-top:8px}
+.nav-machines:empty{display:none}
+.nav-title{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3);margin:4px 8px 4px}
+.nav a.nav-machine{align-items:flex-start;padding:6px 10px}
+.nav-machine .lbl{display:flex;flex-direction:column;min-width:0}
+.nav-machine .nm{color:var(--text);font-weight:550;overflow-wrap:anywhere}
+.nav-machine .hint{color:var(--text-3)}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;flex:none;margin-top:5px;background:var(--text-3)}
+.dot-ok{background:var(--ok)} .dot-warn{background:var(--warn)} .dot-err{background:var(--err)}
+.app.collapsed{grid-template-columns:68px 1fr}
+.app.collapsed .side{padding:14px 8px;align-items:center}
+.app.collapsed .side .lbl,.app.collapsed .nav-title,.app.collapsed button.nav-group{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.app.collapsed .side .foot{display:none}
+.app.collapsed .nav-links[hidden]{display:block!important}
+.app.collapsed .brand{flex-direction:column;padding:4px 0 12px}
+.app.collapsed .search-btn{justify-content:center;width:44px;padding:6px}
+.app.collapsed .nav,.app.collapsed .nav-machines{width:100%}
+.app.collapsed .nav a{justify-content:center;padding:8px}
+.app.collapsed .nav a.nav-machine{align-items:center}
+.app.collapsed .nav-machine .dot{margin-top:0}
+/* Heartbeat pill and the exceptions strip / throttle banner. */
+.heartbeat{font-variant-numeric:tabular-nums}
+.throttle-banner{margin:16px 28px 0;padding:12px 16px;border-radius:10px;background:var(--err-soft);color:var(--err);font-weight:650;border:1px solid var(--err)}
+.exceptions{margin:16px 28px 0;padding:10px 16px;border:1px solid var(--border);border-radius:10px;background:var(--surface)}
+.exception-list{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:6px}
+.exception{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.exception .ex-title{font-weight:550}
+.exceptions p{margin:6px 0 0}
+/* Command palette. */
+dialog.palette{width:min(640px,calc(100% - 32px));padding:14px;margin:12vh auto auto}
+.palette-label{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+#palette-input{width:100%;font-size:15px;padding:10px 12px;min-height:44px}
+#palette-list{list-style:none;margin:10px 0 0;padding:0;max-height:min(52vh,460px);overflow:auto}
+#palette-list li{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;cursor:pointer;min-height:40px}
+#palette-list li .pl{flex:1;font-weight:550;overflow-wrap:anywhere}
+#palette-list li .hint{text-align:right;max-width:45%;overflow-wrap:anywhere}
+#palette-list li.on{background:var(--accent-soft);color:var(--accent-text);outline:2px solid var(--accent);outline-offset:-2px}
+#palette-list li[aria-disabled="true"] .pl{color:var(--text-3)}
+#palette-keys{margin:8px 2px 0}
+#palette-status:empty{display:none}
+/* Info tooltips (F53). */
+.info{position:relative;display:inline-flex;vertical-align:middle;margin-left:6px}
+.info-btn{display:inline-grid;place-items:center;width:32px;height:32px;min-height:32px;margin:-6px -6px -6px -4px;padding:0;border:0;border-radius:50%;background:none;color:var(--text-2);cursor:help}
+.info-btn span{display:grid;place-items:center;width:20px;height:20px;border-radius:50%;border:1px solid var(--text-3);background:var(--surface);font:700 11px/1 var(--f)}
+.info-btn:hover span,.info.open .info-btn span{border-color:var(--accent);color:var(--accent-text)}
+.info-tip{display:none;position:absolute;z-index:30;left:0;top:calc(100% + 6px);width:max-content;max-width:min(280px,70vw);padding:8px 10px;border-radius:8px;background:var(--text);color:var(--surface);font:400 12px/1.45 var(--f);text-transform:none;letter-spacing:0;box-shadow:0 4px 16px #0003;white-space:normal}
+.info-tip::before{content:"";position:absolute;left:0;right:0;top:-8px;height:8px}
+.info:hover .info-tip,.info:focus-within .info-tip,.info.open .info-tip{display:block}
+.info.dismissed .info-tip{display:none}
+.kpi .lbl{display:flex;align-items:center}
+/* Settings: preferences and filters. */
+.prefs .field{max-width:360px}
+ul.related{margin:0;padding-left:18px;line-height:1.9}
+.filter-box{align-items:flex-end}
+.filter-box .field{margin-bottom:0}
+.problem .row{margin-top:10px}
+/* Bottom tab bar (F49): narrow screens only. */
+.tabbar{display:none}
+@media (max-width:760px){
+  .tabbar{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));position:fixed;left:0;right:0;bottom:0;z-index:6;background:var(--surface);border-top:1px solid var(--border);padding:4px 4px calc(4px + env(safe-area-inset-bottom))}
+  .tabbar a{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;min-height:52px;color:var(--text-2);text-decoration:none;font-size:11.5px;font-weight:550;border-radius:8px}
+  .tabbar a .ic{width:20px;height:20px}
+  .tabbar a.on{color:var(--accent-text);background:var(--accent-soft)}
+  .main{padding-bottom:calc(64px + env(safe-area-inset-bottom))}
+  .side.open{bottom:calc(61px + env(safe-area-inset-bottom))}
+  .throttle-banner,.exceptions{margin:12px 16px 0}
+  .heartbeat{display:none}
+  .app.collapsed{grid-template-columns:1fr}
+  .mtop .icon-btn{width:44px;height:44px}
+  .info-btn{width:44px;height:44px;min-height:44px;margin:-12px -10px -12px -8px}
+  .info-btn span{width:24px;height:24px}
+  dialog.palette{margin-top:4vh}
+}

@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 from pathlib import Path, PurePosixPath
 import platform
 import re
@@ -12,14 +13,27 @@ import shutil
 import subprocess
 import sys
 
+# Nothing is written beside the node tool: no bytecode cache for its extension modules, in this process or in the
+# Python processes it starts (the node verbs are read-only unless a verb's own contract says otherwise).
+sys.dont_write_bytecode = True
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+
 
 VERSION = "0.1.0"
 MAX_JSON = 256 * 1024
 MAX_FILE = 1024 * 1024
-VERBS = {"version", "doctor", "gpu"}
+VERBS = {"version", "doctor", "gpu", "poll"}
+# ``poll``: the portal's one read per node and cycle. It runs several read-only verbs in this one process (one ssh
+# session, one Python start) and answers each part on its own; a part that fails, or that does not fit the reply or
+# the deadline, says so without hiding the others. Only these verbs can be parts; none of them writes on the node.
+POLL_PARTS = ("version", "doctor", "gpu", "host", "usb4", "turns", "status", "logs")
+POLL_MAX_PARTS = 32
+POLL_DEADLINE_S = 20.0
+POLL_REPLY = 1024 * 1024
 # Extension modules shipped beside this file (copied together by bootstrap). Each exposes
 # VERBS (set of names) and run(verb, payload: dict) -> dict; they get the raw JSON payload.
-EXTENSIONS = ("hyperloom_install", "hyperloom_lease", "hyperloom_download", "hyperloom_service")
+EXTENSIONS = ("hyperloom_install", "hyperloom_lease", "hyperloom_download", "hyperloom_service",
+              "hyperloom_observe", "hyperloom_usb4", "hyperloom_turns", "hyperloom_models", "hyperloom_logsearch")
 
 
 def extension_for(verb):
@@ -377,14 +391,79 @@ def tool_digest(directory):
     return digest.hexdigest()
 
 
+def core_inputs(payload, root=None, lab_dir=None):
+    """(root, lab_dir) of a core verb's payload (only those two keys), validated."""
+    if not isinstance(payload, dict) or set(payload) - {"root", "lab_dir"}:
+        raise ValueError("payload must be an object with only root and lab_dir")
+    root = root if root is not None else payload.get("root")
+    lab_dir = lab_dir if lab_dir is not None else payload.get("lab_dir")
+    for name, value in (("root", payload.get("root")), ("lab_dir", payload.get("lab_dir")),
+                        ("root", root), ("lab_dir", lab_dir)):
+        if value is not None and (not isinstance(value, str) or not value
+                                  or any(ord(c) < 32 for c in value)):
+            raise ValueError(name + " must be a path string")
+    if lab_dir is not None and (not PurePosixPath(lab_dir).is_absolute()
+                                or ".." in PurePosixPath(lab_dir).parts):
+        raise ValueError("lab_dir must be an absolute path without parent traversal")
+    return root, lab_dir
+
+
+def poll(payload, clock=None):
+    """Run each part ({"key", "verb", "payload"}) in this process; {"parts": {key: the verb's own answer}}."""
+    import time
+    clock = clock or time.monotonic
+    parts = payload.get("parts") if isinstance(payload, dict) and set(payload) == {"parts"} else None
+    if not isinstance(parts, list) or not 1 <= len(parts) <= POLL_MAX_PARTS:
+        raise ValueError(f"poll takes {{\"parts\": [...]}} with 1..{POLL_MAX_PARTS} parts")
+    deadline, used, answers, keys = clock() + POLL_DEADLINE_S, 0, {}, set()
+    for part in parts:
+        if (not isinstance(part, dict) or set(part) != {"key", "verb", "payload"} or not isinstance(part["key"], str)
+                or not 1 <= len(part["key"]) <= 256 or part["key"] in keys or part["verb"] not in POLL_PARTS
+                or not isinstance(part["payload"], dict)):
+            raise ValueError("each poll part is {key (unique), verb (" + ", ".join(POLL_PARTS) + "), payload}")
+        keys.add(part["key"])
+    for part in parts:
+        key, verb = part["key"], part["verb"]
+        if clock() >= deadline:
+            answers[key] = {"schema": "hyperloom/node-v1", "verb": verb, "error": "not run: the poll's deadline passed"}
+            continue
+        try:
+            if verb in ("version", "doctor", "gpu"):
+                answer = Inspector(*core_inputs(part["payload"])).inspect(verb)
+            else:
+                body = dict(part["payload"])
+                if verb in ("status", "logs"):
+                    body["observe"] = True      # read only: no missing run/log/etc made, no dead waiter settled
+                answer = extension_for(verb).run(verb, body)
+        except (ValueError, OSError, UnicodeError, RecursionError, AttributeError) as exc:
+            answer = {"schema": "hyperloom/node-v1", "verb": verb, "error": str(exc)[:300]}
+        size = len(json.dumps(answer, ensure_ascii=True, allow_nan=False))
+        if used + size > POLL_REPLY:
+            answer = {"schema": "hyperloom/node-v1", "verb": verb, "error": "not included: the poll reply is full"}
+            size = 200
+        used += size
+        answers[key] = answer
+    return {"schema": "hyperloom/node-v1", "verb": "poll", "parts": answers}
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] == "poll":
+        try:
+            raw = b"" if sys.stdin.isatty() else sys.stdin.buffer.read(MAX_JSON + 1)
+            if len(raw) > MAX_JSON:
+                raise ValueError("payload exceeds the size limit")
+            result, exit_code = poll(decode_json(raw.decode("utf-8")) if raw else {}), 0
+        except (ValueError, OSError, UnicodeError, RecursionError) as exc:
+            result, exit_code = {"schema": "hyperloom/node-v1", "verb": "poll", "error": str(exc)}, 2
+        sys.stdout.write(json.dumps(result, ensure_ascii=True, allow_nan=False) + "\n")
+        return exit_code
     if argv and argv[0] not in VERBS:
         module = extension_for(argv[0])
         if module is not None:
             return run_extension(module, argv[0])
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("verb", choices=sorted(VERBS))
+    parser.add_argument("verb", choices=sorted(VERBS - {"poll"}))
     parser.add_argument("--root", help="redirect absolute filesystem reads into a fixture tree")
     parser.add_argument("--lab-dir", help="absolute lab directory (read-only)")
     args = parser.parse_args(argv)
@@ -394,18 +473,7 @@ def main(argv=None):
         if len(raw) > MAX_JSON:
             raise ValueError("payload exceeds the size limit")
         payload = decode_json(raw.decode("utf-8")) if raw else {}
-        if not isinstance(payload, dict) or set(payload) - {"root", "lab_dir"}:
-            raise ValueError("payload must be an object with only root and lab_dir")
-        root = args.root if args.root is not None else payload.get("root")
-        lab_dir = args.lab_dir if args.lab_dir is not None else payload.get("lab_dir")
-        for name, value in (("root", payload.get("root")), ("lab_dir", payload.get("lab_dir")),
-                            ("root", root), ("lab_dir", lab_dir)):
-            if value is not None and (not isinstance(value, str) or not value
-                                      or any(ord(c) < 32 for c in value)):
-                raise ValueError(name + " must be a path string")
-        if lab_dir is not None and (not PurePosixPath(lab_dir).is_absolute()
-                                    or ".." in PurePosixPath(lab_dir).parts):
-            raise ValueError("lab_dir must be an absolute path without parent traversal")
+        root, lab_dir = core_inputs(payload, args.root, args.lab_dir)
         inspector = Inspector(root, lab_dir)
         result = inspector.inspect(args.verb)
         exit_code = 0

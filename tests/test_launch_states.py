@@ -1,0 +1,221 @@
+"""Launch states belong to the configuration they were launched from: a portal or a command on another configuration
+never lists or polls them (orchestrate.launch_states and its readers)."""
+
+import json
+import os
+from pathlib import Path
+import tempfile
+from types import SimpleNamespace
+import unittest
+from unittest import mock
+
+from hyperloom import orchestrate, secrets
+from hyperloom.web.features import ledger, logsearch, machines, observe
+
+
+class LaunchStatesTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="hyperloom-launch-states-")
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name)
+        self.run = self.directory / "run"
+        self.run.mkdir()
+        self.config_a = self.directory / "a" / "cluster.json"
+        self.config_b = self.directory / "b" / "cluster.json"
+        for path, text in ((self.config_a, '{"a": 1}'), (self.config_b, '{"b": 2}')):
+            path.parent.mkdir()
+            path.write_text(text, encoding="utf-8")
+        patcher = mock.patch.object(secrets, "runtime_dir", lambda: self.run)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def state(self, profile, config=None, port=18600, **extra):
+        state = {"profile": profile, "machines": {}, "known_hosts": str(self.directory / "known_hosts"),
+                 "router": {"machine": "local", "directory": str(self.directory / ("router-" + profile)),
+                            "endpoint": {"address": "127.0.0.1", "port": port}},
+                 "rendered_router": {"replicas": [{"id": profile + "-r", "node": "node-" + profile,
+                                                   "address": "127.0.0.1", "port": port + 1}]},
+                 "launch": {"family": "qwen-replicas"}, **extra}
+        if config is not None:
+            state["config"] = orchestrate.config_record(config)
+        (self.run / ("up-" + profile + ".json")).write_text(json.dumps(state), encoding="utf-8")
+        return state
+
+    def api(self, config):
+        return SimpleNamespace(config_path=config, orchestrate=orchestrate)
+
+    def test_config_record_is_the_resolved_path_and_the_bytes_at_launch(self):
+        record = orchestrate.config_record(self.config_a.parent / "." / ".." / "a" / "cluster.json")
+        self.assertEqual(record["path"], str(self.config_a.resolve()))
+        self.assertEqual(len(record["sha256"]), 64)
+        self.assertNotEqual(record["sha256"], orchestrate.config_record(self.config_b)["sha256"])
+        self.assertIsNone(orchestrate.config_record(self.directory / "missing.json")["sha256"])
+
+    def test_only_the_states_of_this_configuration(self):
+        a = self.state("prof-a", self.config_a)
+        b = self.state("prof-b", self.config_b)
+        self.state("legacy")                                   # written before states recorded their configuration
+        (self.run / "up-broken.json").write_text("{", encoding="utf-8")
+        (self.run / "up-list.json").write_text("[]", encoding="utf-8")
+        self.assertEqual(orchestrate.launch_states(self.config_a), {"prof-a": a})
+        self.assertEqual(orchestrate.launch_states(self.config_b), {"prof-b": b})
+        self.assertEqual(orchestrate.launch_states(self.directory / "c" / "cluster.json"), {})
+
+    def test_the_same_file_by_another_spelling_and_after_an_edit(self):
+        a = self.state("prof-a", self.config_a)
+        spelled = self.config_a.parent / ".." / "a" / "cluster.json"
+        self.assertEqual(orchestrate.launch_states(spelled), {"prof-a": a})
+        if os.name == "nt":
+            self.assertEqual(orchestrate.launch_states(str(self.config_a).upper()), {"prof-a": a})
+        self.config_a.write_text('{"a": 3}', encoding="utf-8")   # an edit never hides the profiles it launched
+        self.assertEqual(orchestrate.launch_states(self.config_a), {"prof-a": a})
+
+    def test_a_record_without_a_path_is_polled_by_no_reader_but_listed_as_unknown(self):
+        for index, record in enumerate(({}, {"sha256": "0" * 64}, {"path": 7}, "text", None)):
+            state = dict(self.state(f"odd-{index}"), config=record)
+            (self.run / f"up-odd-{index}.json").write_text(json.dumps(state), encoding="utf-8")
+        self.state("prof-b", self.config_b)
+        self.assertEqual(orchestrate.launch_states(self.config_a), {})
+        self.assertEqual(sorted(orchestrate.launch_states(self.config_a, unknown=True)),
+                         [f"odd-{index}" for index in range(5)])                 # never another configuration's
+        self.assertEqual(orchestrate.ownership({"config": {"path": 7}}, self.config_a), "unknown")
+        self.assertEqual(orchestrate.ownership(self.state("prof-a", self.config_a), self.config_a), "own")
+        self.assertEqual(orchestrate.ownership(self.state("prof-a", self.config_a), self.config_b), "other")
+
+    def test_portal_readers_on_b_never_see_a(self):
+        self.state("prof-a", self.config_a, port=18600)
+        self.state("prof-b", self.config_b, port=18700)
+        self.state("legacy", port=18800)
+        api = self.api(self.config_b)
+        rows, omitted = observe.launches(api)
+        self.assertEqual([row["profile"] for row in rows], ["prof-b"])
+        self.assertEqual(omitted["profiles"], 0)
+        self.assertEqual(list(machines.launch_records(api)), ["prof-b"])
+        self.assertEqual(list(machines.loopback_engines(machines.launch_records(api))), ["node-prof-b"])
+        self.assertEqual([state["profile"] for state in ledger._states(api)], ["prof-b"])
+        self.assertEqual([label for label, _ in logsearch.owned_directories(api)], ["prof-b router"])
+        self.assertEqual([row["profile"] for row in observe.launches(self.api(self.config_a))[0]], ["prof-a"])
+
+    def test_observe_counts_only_this_configurations_profiles_beyond_the_cap(self):
+        for index in range(observe.MAX_PROFILES + 2):
+            self.state(f"b-{index:02d}", self.config_b, port=18600 + 2 * index)
+        for index in range(5):
+            self.state(f"a-{index:02d}", self.config_a, port=19600 + 2 * index)
+        rows, omitted = observe.launches(self.api(self.config_b))
+        self.assertEqual(len(rows), observe.MAX_PROFILES)
+        self.assertTrue(all(row["profile"].startswith("b-") for row in rows))
+        self.assertEqual(omitted["profiles"], 2)
+
+    def test_status_on_b_never_polls_the_profiles_of_a(self):
+        self.state("prof-a", self.config_a, machines={"node-a": {"install_root": "/opt/a"}})
+        self.state("prof-b", self.config_b, machines={"node-b": {"install_root": "/opt/b"}})
+        self.state("legacy", machines={"node-legacy": {"install_root": "/opt/legacy"}})
+        polled = []
+
+        def call(client, verb, payload, timeout=60):
+            polled.append(payload["root"])
+            return {"leases": []}
+        with mock.patch.object(orchestrate, "_client", lambda machine, known=None: machine), \
+                mock.patch.object(orchestrate, "_call", call), \
+                mock.patch.object(orchestrate, "_http_json", side_effect=OSError("no router here")):
+            result = orchestrate.status(config_path=self.config_b)
+            # The legacy launch (no configuration record) is shown, marked unknown, never hidden; prof-a never.
+            self.assertEqual(list(result), ["legacy", "prof-b"])
+            self.assertEqual(sorted(polled), ["/opt/b", "/opt/legacy"])
+            self.assertEqual(result["legacy"]["config_identity"], "unknown")
+            self.assertIn("unknown configuration", result["legacy"]["why_config"])
+            self.assertNotIn("config_identity", result["prof-b"])
+            polled.clear()
+            self.assertEqual(sorted(orchestrate.status()), ["legacy", "prof-a", "prof-b"])   # no configuration: all
+            self.assertEqual(sorted(polled), ["/opt/a", "/opt/b", "/opt/legacy"])
+
+    def test_status_skips_what_the_caller_says_and_names_the_router_machine(self):
+        state = self.state("prof-b", self.config_b, machines={"node-b": {"install_root": "/opt/b"}})
+        state["router"]["machine"] = "node-b"
+        (self.run / "up-prof-b.json").write_text(json.dumps(state), encoding="utf-8")
+        asked = []
+
+        def skip(machine, kind, profile):
+            asked.append((machine, kind, profile))
+            return "paused: a GPU turn holds node-b"
+        with mock.patch.object(orchestrate, "_call", side_effect=AssertionError("node read")), \
+                mock.patch.object(orchestrate, "_http_json", side_effect=AssertionError("router read")):
+            result = orchestrate.status("prof-b", config_path=self.config_b, skip=skip)
+        self.assertEqual(asked, [("node-b", "node", "prof-b"), ("node-b", "router", "prof-b")])
+        self.assertEqual(result["router_machine"], "node-b")
+        self.assertIn("paused", result["router"]["error"])
+        self.assertIn("paused", result["nodes"]["node-b"]["error"])
+
+    def test_status_retries_never_repeat_the_router_or_prefill_reads(self):
+        """A node read the 5 s spacing refused is retried at the next snapshot; the profile's local router and prefill
+        service are still read at most once per 30 s (real orchestrator status, mocked transports)."""
+        from hyperloom import pollbudget
+        from hyperloom.web.api import API
+        self.state("prof-b", self.config_b, machines={"node-b": {"install_root": "/opt/b"}},
+                   prefill_service={"port": 18890})
+        now = [1000.0]
+        api = API(self.config_b, orchestrator=orchestrate, remote_module=mock.Mock(), clock=lambda: now[0],
+                  audit_path=self.directory / "audit.jsonl")
+        http, nodes = [], []
+
+        def fetch(endpoint, path="/api/status"):
+            http.append((path, now[0]))
+            return {"status": "ok"}
+        with mock.patch.object(orchestrate, "_client", lambda machine, known=None: machine), \
+                mock.patch.object(orchestrate, "_call", lambda client, verb, payload, timeout=60: (
+                    nodes.append(now[0]) or {"leases": []})), \
+                mock.patch.object(orchestrate, "_http_json", fetch), \
+                mock.patch.object(pollbudget, "NODE_SPACING_S", 5.0):
+            budget = pollbudget.for_api(api)
+            for step in range(60):                                        # two minutes of 2 s snapshots
+                if step % 15 == 0 and step:
+                    budget.node("node-b", "turns", now=now[0] - 1)       # the turn check, 1 s before each cycle
+                if step == 15:
+                    api._status_stale = True                              # and a portal job finishes then
+                api._statuses()
+                now[0] += 2
+        self.assertGreaterEqual(len(nodes), 4)                            # the node keeps being read
+        for path in {path for path, _ in http}:
+            times = [at for p, at in http if p == path]
+            self.assertTrue(all(b - a >= 30 for a, b in zip(times, times[1:])), (path, times))
+        self.assertEqual(len({path for path, _ in http}), 2)              # router status and prefill health
+
+    def test_status_by_name_on_b_never_polls_a_launch_of_a(self):
+        self.state("prof-a", self.config_a, machines={"node-a": {"install_root": "/opt/a"}})
+        with mock.patch.object(orchestrate, "_call", side_effect=AssertionError("polled")), \
+                mock.patch.object(orchestrate, "_http_json", side_effect=AssertionError("polled")):
+            answer = orchestrate.status("prof-a", config_path=self.config_b)
+            self.assertEqual((answer["state"], answer["why"]), ("stopped", "launched from another configuration"))
+
+    def test_logs_on_b_refuse_a_launch_of_a_before_any_read_or_call(self):
+        self.state("prof-a", self.config_a, machines={"node-a": {"install_root": "/opt/a"}})
+        self.state("legacy", machines={"node-legacy": {"install_root": "/opt/legacy"}})
+        with mock.patch.object(orchestrate, "_call", side_effect=AssertionError("polled")), \
+                mock.patch.object(orchestrate, "_client", side_effect=AssertionError("polled")):
+            for name in ("prof-a", "legacy"):
+                for process in ("router", "node-a", "node-legacy"):
+                    with self.assertRaisesRegex(orchestrate.OrchestrationError, "another configuration"):
+                        orchestrate.logs(name, process, 10, config_path=self.config_b)
+
+    def test_endpoint_on_b_refuses_a_launch_of_a(self):
+        self.state("prof-a", self.config_a)
+        self.state("legacy")
+        for name in ("prof-a", "legacy"):
+            with self.assertRaisesRegex(orchestrate.OrchestrationError, "another configuration"):
+                orchestrate.endpoint(name, config_path=self.config_b)
+        self.assertEqual(orchestrate.endpoint("prof-a", config_path=self.config_a)["url"], "http://127.0.0.1:18600")
+
+    def test_cli_up_records_its_own_config_even_inside_another(self):
+        from hyperloom import cli
+        from hyperloom.recipes import service
+        seen = []
+        fake = SimpleNamespace(up=lambda *a, **kw: seen.append(service.configured_file()) or {"state": "running"})
+        args = cli.build_parser().parse_args(["up", "prof-b", "--config", str(self.config_b)])
+        cli.up_command(args, orchestrate=fake, load_cluster=lambda path: None)
+        with service.configured(self.config_a):                 # an ambient configuration never wins over --config
+            cli.up_command(args, orchestrate=fake, load_cluster=lambda path: None)
+        self.assertEqual(seen, [self.config_b.absolute()] * 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

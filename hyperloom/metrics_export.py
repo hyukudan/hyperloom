@@ -1,8 +1,14 @@
-"""Prometheus re-export of router and engine telemetry (text format 0.0.4).
+"""Prometheus re-export of router, engine and lab telemetry (text format 0.0.4).
 
 Only values the pinned adapters parse are exported; unavailable values are
 omitted, never written as zero. Each source reports hyperloom_source_up and its
 scrape duration. The listener is loopback-only: LAN exposure is a later phase.
+
+Besides the router and engine documents, a scrape reads the portal's telemetry
+store read-only (never creating it): the latest fresh sample of every node and
+USB4 series, the token ledger totals and the standing health findings. Router
+and engine histograms (and the router's per-caller series) are passed through
+from their own /metrics when the components export them.
 """
 
 from http.client import HTTPException
@@ -10,19 +16,26 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import ipaddress
 import json
 import math
+from pathlib import Path
+import re
 import socket
+import sqlite3
 import threading
 import time
 from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, build_opener
 
 from . import __version__, secrets
-from .adapters import engine, router
+from .adapters import AdapterError, engine, prom, router
 from .config import listen as parse_listen
 from .paths import repo_root
 
 
 CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
+# Family name spaces hyperloom itself fills (store series, ledger, findings, router/engine documents, sources): a
+# passed-through family can never take a name in them, whatever this scrape happens to contain.
+OWNED_PREFIXES = ("hyperloom_node_", "hyperloom_usb4_", "hyperloom_health_", "hyperloom_ledger_", "hyperloom_finding",
+                  "hyperloom_engine_", "hyperloom_router_", "hyperloom_source_", "hyperloom_build_")
 MAX_RESPONSE = 1024 * 1024
 TIMEOUT_S = 2
 # Whole-scrape budget, below Prometheus' default 10 s scrape timeout. A source still running at the
@@ -44,7 +57,8 @@ _SLOT_COUNTS = ("total", "busy", "free")
 _SLOT_POSITIONS = ("context_tokens", "pool_positions", "pool_largest_free")
 _HELP = {
     "hyperloom_build_info": "hyperloom version and component commits (a running launch's release, else versions.lock).",
-    "hyperloom_source_up": "1 when the telemetry source answered with a supported document.",
+    "hyperloom_source_up": "1 when the telemetry source answered with a supported document (source=telemetry: the "
+                           "portal's telemetry store was readable).",
     "hyperloom_source_scrape_seconds": "Time taken to fetch and parse the source.",
     "hyperloom_router_waiting": "Requests waiting in the router queue.",
     "hyperloom_router_rejected_total": "Requests rejected by the router.",
@@ -109,6 +123,10 @@ def _escape(value):
     return str(value).replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
 
 
+def _help(text):
+    return str(text).replace("\\", "\\\\").replace("\n", "\\n")
+
+
 def _value(value):
     if isinstance(value, bool):
         return 1 if value else 0
@@ -118,25 +136,78 @@ def _value(value):
 
 
 class Exposition:
+    """Families by name. A sample name belongs to one family only (the first that uses it), so a passed-through or
+    generated family can never mix into, or overwrite, another one."""
+
     def __init__(self):
         self.families = {}
+        self.help = {}
+        self.ordered = set()     # passthrough families keep their sample order (histogram buckets by le)
+        self.owner = {}          # sample name -> family name
+        # Names a passed-through family may never take: every family hyperloom defines (also when it has no sample
+        # in this scrape) and every store series name (fresh or not).
+        self.reserved = set(_HELP)
 
-    def add(self, name, kind, labels, value):
+    def _claim(self, name, sample):
+        return self.owner.setdefault(sample, name) == name
+
+    def add(self, name, kind, labels, value, sample=None):
         value = _value(value)
-        if value is None:
+        sample = sample or name
+        if value is None or name in self.ordered or (name in self.families and self.families[name][0] != kind):
             return
-        family = self.families.setdefault(name, (kind, {}))
+        if not self._claim(name, sample):
+            return
         key = tuple(sorted((k, str(v)) for k, v in labels.items() if v is not None))
-        family[1][key] = value
+        self.families.setdefault(name, (kind, {}))[1][(sample, key)] = value
+
+    def passthrough_instance(self, name, kind, rows, help_text):
+        """Add one passed-through instance [(sample, labels, value)] whole, or nothing when the family or a sample
+        name is taken by another family, the kind differs, or a sample with the same labels already exists."""
+        if name in self.families and (name not in self.ordered or self.families[name][0] != kind):
+            return False
+        if (name in self.reserved or name.startswith(OWNED_PREFIXES)
+                or any(sample in self.reserved for sample, _, _ in rows)):
+            return False
+        keys = []
+        for sample, labels, value in rows:
+            if _value(value) is None or self.owner.get(sample, name) != name:
+                return False
+            key = (sample, tuple(sorted((k, str(v)) for k, v in labels.items() if v is not None)))
+            if key in self.families.get(name, (kind, {}))[1] or key in keys:
+                return False
+            keys.append(key)
+        family = self.families.setdefault(name, (kind, {}))[1]
+        self.ordered.add(name)
+        self.help.setdefault(name, help_text)
+        for (sample, labels, value), key in zip(rows, keys):
+            self.owner.setdefault(sample, name)
+            family[key] = _value(value)
+        return True
+
+    def merge(self, other):
+        self.reserved |= other.reserved
+        for name, (kind, samples) in other.families.items():
+            if name in self.ordered or (name in self.families and self.families[name][0] != kind):
+                continue
+            for (sample, labels), value in samples.items():
+                if self._claim(name, sample):
+                    self.families.setdefault(name, (kind, {}))[1][(sample, labels)] = value
+            if name in other.help:
+                self.help.setdefault(name, other.help[name])
 
     def text(self):
         lines = []
         for name in sorted(self.families):
             kind, samples = self.families[name]
-            lines += [f"# HELP {name} {_HELP.get(name, name)}", f"# TYPE {name} {kind}"]
-            for labels, value in sorted(samples.items()):
+            if not samples:
+                continue
+            text = self.help.get(name) or _HELP.get(name, name)
+            lines += [f"# HELP {name} {_help(text)}", f"# TYPE {name} {kind}"]
+            items = samples.items() if name in self.ordered else sorted(samples.items())
+            for (sample, labels), value in items:
                 body = ",".join(f'{k}="{_escape(v)}"' for k, v in labels)
-                lines.append(f"{name}{{{body}}} {value!r}" if body else f"{name} {value!r}")
+                lines.append(f"{sample}{{{body}}} {value!r}" if body else f"{sample} {value!r}")
         return "\n".join(lines) + "\n"
 
 
@@ -252,6 +323,7 @@ def _engine_metrics(out, labels, text):
         counter = field in _ENGINE_COUNTERS
         out.add("hyperloom_engine_" + field + ("_total" if counter else ""),
                 "counter" if counter else "gauge", labels, getattr(parsed, field))
+    passthrough(out, text, labels, "engine")
 
 
 def _engine_status(out, labels, raw):
@@ -274,6 +346,338 @@ def _engine_status(out, labels, raw):
     group = parsed.group or {}
     out.add("hyperloom_engine_group_bytes_sent_total", "counter", labels, group.get("bytes_sent"))
     out.add("hyperloom_engine_group_exchange_seconds_total", "counter", labels, group.get("exchange_seconds"))
+
+
+PASSTHROUGH_LIMIT = 2000
+_TYPE_LINE = re.compile(r"#\s*TYPE\s+([a-zA-Z_:][a-zA-Z0-9_:]*)\s+(counter|gauge|histogram|summary|untyped)\s*$")
+_HISTOGRAM_SUFFIXES = ("_bucket", "_sum", "_count")
+
+
+def _types(text):
+    """{family: type} from the TYPE comments of a text exposition."""
+    found = {}
+    for line in text.splitlines():
+        match = _TYPE_LINE.match(line.strip())
+        if match:
+            found.setdefault(match[1], match[2])
+    return found
+
+
+def _rename(labels, added):
+    """Upstream labels with the added ones; an upstream label named like an added one becomes exported_<name>.
+    None when that would collide with another upstream label."""
+    names = {key for key, _ in labels}
+    merged = {}
+    for key, value in labels:
+        if key in added:
+            key = "exported_" + key
+            if key in names:
+                return None
+        merged[key] = value
+    merged.update(added)
+    return merged
+
+
+def _le(value):
+    try:
+        bound = float(value)
+    except ValueError:
+        return None
+    return bound if not math.isnan(bound) else None
+
+
+def _histograms(samples, histograms):
+    """{(family, labels without le): {"buckets": [(le, text, value)], "sum", "count"}} of every histogram instance."""
+    instances = {}
+    for (name, labels), value in samples.items():
+        for suffix in _HISTOGRAM_SUFFIXES:
+            family = name[:-len(suffix)]
+            if name.endswith(suffix) and family in histograms:
+                break
+        else:
+            continue
+        rest = tuple((k, v) for k, v in labels if not (suffix == "_bucket" and k == "le"))
+        instance = instances.setdefault((family, rest), {"buckets": [], "sum": None, "count": None, "bad": False})
+        if suffix == "_bucket":
+            le = dict(labels).get("le")
+            bound = _le(le) if le is not None else None
+            if bound is None:
+                instance["bad"] = True
+            else:
+                instance["buckets"].append((bound, le, value))
+        else:
+            instance[suffix[1:]] = value
+    return instances
+
+
+def _valid(instance):
+    """Complete and consistent: finite values, a +Inf bucket equal to _count, counts non-decreasing by le."""
+    buckets = sorted(instance["buckets"])
+    if instance["bad"] or not buckets or instance["sum"] is None or instance["count"] is None:
+        return None
+    values = [value for _, _, value in buckets] + [instance["sum"], instance["count"]]
+    if not all(math.isfinite(value) for value in values) or buckets[-1][0] != math.inf:
+        return None
+    if instance["count"] < 0 or any(value < 0 for _, _, value in buckets):
+        return None
+    if len({bound for bound, _, _ in buckets}) != len(buckets):
+        return None
+    counts = [value for _, _, value in buckets]
+    if any(later < earlier for earlier, later in zip(counts, counts[1:])) or counts[-1] != instance["count"]:
+        return None
+    return buckets
+
+
+def passthrough(out, text, added, observer, callers=False):
+    """Copy a component's complete histogram instances (and, with ``callers``, its counter/gauge samples labelled
+    by caller) as ``hyperloom_<name>`` with the ``added`` labels. An invalid or incomplete histogram instance, or
+    one beyond the sample budget, is left out whole. Returns the number of samples copied."""
+    types = _types(text)
+    samples = prom.parse(text)
+    histograms = {name for name, kind in types.items() if kind == "histogram"}
+    budget = PASSTHROUGH_LIMIT
+    for (family, rest), instance in _histograms(samples, histograms).items():
+        buckets = _valid(instance)
+        labels = _rename(rest, added)
+        if buckets is None or labels is None or len(buckets) + 2 > budget:
+            continue
+        target = "hyperloom_" + family
+        help_text = f"{family} passed through from the {observer}'s /metrics."
+        rows = [(target + "_bucket", {**labels, "le": text_le}, value) for _, text_le, value in buckets]
+        rows += [(target + "_sum", labels, instance["sum"]), (target + "_count", labels, instance["count"])]
+        if out.passthrough_instance(target, "histogram", rows, help_text):
+            budget -= len(rows)
+    if callers:
+        for (name, labels), value in samples.items():
+            kind = types.get(name)
+            if kind not in ("counter", "gauge") or not any(key == "caller" for key, _ in labels):
+                continue
+            merged = _rename(labels, added)
+            if merged is None or not math.isfinite(value) or budget <= 0:
+                continue
+            target = "hyperloom_" + name
+            if out.passthrough_instance(target, kind, [(target, merged, value)],
+                                        f"{name} passed through from the {observer}'s /metrics."):
+                budget -= 1
+    return PASSTHROUGH_LIMIT - budget
+
+
+def _router_metrics(out, labels, text):
+    passthrough(out, text, {"profile": labels["profile"]}, "router", callers=True)
+
+
+# -- telemetry store (read-only) -------------------------------------------------------------------------------------
+STORE_PREFIXES = ("node_", "usb4_")
+STORE_EXTRA = ("health_findings_active",)
+STORE_SERIES_LIMIT = 4000
+STORE_READ_S = 2.0
+LEDGER_LIMIT = 2000
+FINDINGS_LIMIT = 500
+DOC_MAX_BYTES = 64 * 1024
+LABELS_MAX_BYTES = 4096
+LABEL_VALUE_MAX = 128
+HEALTH_STALE_S = 60.0              # three evaluations of the health collector (10 s) plus slack
+LEDGER_LABELS = ("model", "machine", "profile", "kind")
+SEVERITIES = ("info", "warning", "critical")
+STANDING = ("firing", "clearing")
+_LABEL_NAME = re.compile(r"[a-zA-Z_][a-zA-Z0-9_]*")
+_SERIES_NAME = re.compile(r"[a-z][a-z0-9_]*")
+STORE_MISSING = "telemetry store not found"
+
+
+def telemetry_path():
+    """The portal's telemetry store next to the configuration (the exporter never creates it)."""
+    from .cli import config_path
+    return config_path().parent / "telemetry.sqlite3"
+
+
+def fresh_age(interval):
+    """Samples older than three intervals (at least 10 s) are stale and left out."""
+    return max(3 * interval, 10.0) if isinstance(interval, (int, float)) and interval > 0 else 10.0
+
+
+def open_readonly(path, deadline=None):
+    """A read-only connection (mode=ro, query_only) that aborts any statement running past ``deadline``."""
+    db = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=1, check_same_thread=False)
+    db.execute("PRAGMA query_only=1")
+    if deadline is not None:
+        db.set_progress_handler(lambda: 1 if time.monotonic() >= deadline else 0, 1000)
+    return db
+
+
+def exported_series(name):
+    return bool(_SERIES_NAME.fullmatch(name)) and (name.startswith(STORE_PREFIXES) or name in STORE_EXTRA)
+
+
+# SQL filter matching exported_series (the name regex is applied again in Python).
+_EXPORTED_SQL = "(name LIKE 'node\\_%' ESCAPE '\\' OR name LIKE 'usb4\\_%' ESCAPE '\\' OR name = 'health_findings_active')"
+
+
+def _labels(raw):
+    if not isinstance(raw, str) or len(raw) > LABELS_MAX_BYTES:
+        return None
+    try:
+        labels = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(labels, dict) or any(
+            not isinstance(k, str) or not _LABEL_NAME.fullmatch(k) or k.startswith("__") or not isinstance(v, str)
+            or len(v) > LABEL_VALUE_MAX for k, v in labels.items()):
+        return None
+    return labels
+
+
+def _check(deadline):
+    if deadline is not None and time.monotonic() >= deadline:
+        raise TimeoutError("telemetry store read exceeded its deadline")
+
+
+def latest_series(db, now, deadline=None):
+    """[(name, kind, unit, interval, labels, ts, value)] of the newest fresh raw sample of every exported gauge or
+    state series. Rows, label bytes and time are bounded in the query and while processing."""
+    result = []
+    # Each series with its own descriptor (a series without one is left out, never assumed to be a gauge).
+    rows = db.execute("SELECT s.id, s.name, s.labels, m.kind, m.unit, m.interval_s FROM series s JOIN metrics m "
+                      f"ON m.name = s.name WHERE {_EXPORTED_SQL.replace('(name', '(s.name').replace('OR name', 'OR s.name')} "
+                      "AND length(s.labels) <= ? ORDER BY s.name, s.id LIMIT ?",
+                      (LABELS_MAX_BYTES, STORE_SERIES_LIMIT)).fetchall()
+    for sid, name, raw, kind, unit, interval in rows:
+        _check(deadline)
+        if not exported_series(name):
+            continue
+        if kind not in ("gauge", "state"):
+            continue        # counters arrive as deltas whose span the store does not record: no rate is derived
+        sample = db.execute("SELECT ts, value FROM raw WHERE series=? ORDER BY ts DESC LIMIT 1", (sid,)).fetchone()
+        if sample is None or now - sample[0] > fresh_age(interval) or not math.isfinite(sample[1]):
+            continue
+        labels = _labels(raw)
+        if labels is not None:
+            result.append((name, kind, unit, interval, labels, sample[0], sample[1]))
+    return result
+
+
+def _store_series(out, db, now, deadline=None):
+    for name, kind, unit, interval, labels, _, value in latest_series(db, now, deadline):
+        target = "hyperloom_" + name
+        unit_text = f" ({unit})" if unit else ""
+        what = "state code" if kind == "state" else "latest sample"
+        out.help.setdefault(target, f"{name}{unit_text} from the hyperloom telemetry store ({what} within 3 intervals).")
+        out.add(target, "gauge", labels, value)
+
+
+def _tables(db):
+    return {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+
+
+def _ledger(out, db, tables):
+    if "ledger" not in tables:
+        return
+    columns = {row[1] for row in db.execute("PRAGMA table_info(ledger)")}
+    if not {"kind", "tokens"} <= columns:
+        return
+    groups = [name for name in LEDGER_LABELS if name in columns]
+    select = ", ".join(groups)      # fixed column names from LEDGER_LABELS only
+    out.help.setdefault("hyperloom_ledger_tokens_total", "Tokens in the hyperloom token ledger (every recorded hour) "
+                                                         "by model, machine, profile and kind.")
+    for row in db.execute(f"SELECT {select}, SUM(tokens) FROM ledger GROUP BY {select} LIMIT ?", (LEDGER_LIMIT,)):
+        labels = {name: str(value) for name, value in zip(groups, row[:-1]) if value is not None}
+        if all(len(value) <= LABEL_VALUE_MAX for value in labels.values()):
+            out.add("hyperloom_ledger_tokens_total", "counter", labels, row[-1])
+
+
+def _doc(db, namespace, key):
+    row = db.execute("SELECT value FROM docs WHERE namespace=? AND key=? AND length(value)<=?",
+                     (namespace, key, DOC_MAX_BYTES)).fetchone()
+    try:
+        return json.loads(row[0]) if row else None
+    except ValueError:
+        return None
+
+
+def standing_findings(db, tables, now, deadline=None):
+    """(findings, why): {(rule, severity, machine, subject): count} of the standing (firing or clearing) health
+    findings; None with a reason when health is absent or its last evaluation is stale."""
+    if "docs" not in tables:
+        return None, None
+    meta = _doc(db, "health/meta", "meta")
+    if meta is None:
+        row = db.execute("SELECT key FROM docs WHERE namespace='health/meta' LIMIT 1").fetchone()
+        meta = _doc(db, "health/meta", row[0]) if row else None
+    if not isinstance(meta, dict):
+        return None, None              # health is not part of this portal
+    evaluated = meta.get("evaluated_at")
+    if type(evaluated) not in (int, float) or not math.isfinite(evaluated) or now - evaluated > HEALTH_STALE_S:
+        return None, "health evaluation stale"
+    found = {}
+    for _, raw in db.execute("SELECT key, value FROM docs WHERE namespace='health/state' AND length(value)<=? "
+                             "ORDER BY key LIMIT ?", (DOC_MAX_BYTES, FINDINGS_LIMIT)).fetchall():
+        _check(deadline)
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(value, dict) or value.get("state") not in STANDING:
+            continue
+        rule, severity = value.get("rule"), value.get("severity")
+        if not isinstance(rule, str) or not rule or len(rule) > LABEL_VALUE_MAX or severity not in SEVERITIES:
+            continue
+        labels = (rule, severity, *(item if isinstance(item, str) and len(item) <= LABEL_VALUE_MAX else None
+                                    for item in (value.get("machine"), value.get("subject"))))
+        found[labels] = found.get(labels, 0) + 1
+    return found, None
+
+
+def _findings(out, db, tables, now, deadline=None):
+    found, why = standing_findings(db, tables, now, deadline)
+    if why is not None:
+        _source(out, {"source": "health", "reason": why}, False, None)
+    if found is None:
+        return
+    _source(out, {"source": "health"}, True, None)
+    out.help.setdefault("hyperloom_finding", "Standing health findings (firing or clearing) by rule, severity, machine "
+                                             "and subject; the value counts findings sharing those labels.")
+    for (rule, severity, machine, subject), count in sorted(found.items(), key=lambda item: tuple(map(str, item[0]))):
+        out.add("hyperloom_finding", "gauge", {"rule": rule, "severity": severity, "machine": machine,
+                                              "subject": subject}, count)
+
+
+REQUIRED_TABLES = {"metrics", "series", "raw", "docs"}
+
+
+def _telemetry(out, path, now=None, deadline=None):
+    if path is None:
+        return
+    labels = {"source": "telemetry"}
+    started = time.monotonic()
+    if not Path(path).is_file():
+        _source(out, {**labels, "reason": STORE_MISSING}, False, None)
+        return
+    now = time.time() if now is None else now
+    deadline = started + STORE_READ_S if deadline is None else min(deadline, started + STORE_READ_S)
+    part = Exposition()        # merged only when the whole read succeeded
+    reason = None
+    try:
+        _check(deadline)
+        db = open_readonly(path, deadline)
+        try:
+            tables = _tables(db)
+            if not REQUIRED_TABLES <= tables:
+                reason = "telemetry store has an unsupported schema"
+            else:
+                _store_series(part, db, now, deadline)
+                _ledger(part, db, tables)
+                _findings(part, db, tables, now, deadline)
+                _check(deadline)
+        finally:
+            db.close()
+    except (sqlite3.Error, OSError, ValueError) as exc:
+        reason = "telemetry store read exceeded its deadline" if time.monotonic() >= deadline else \
+            f"telemetry store unreadable ({type(exc).__name__})"
+    if reason is not None:
+        _source(out, {**labels, "reason": reason}, False, time.monotonic() - started)
+        return
+    out.merge(part)
+    _source(out, labels, True, time.monotonic() - started)
 
 
 def _lock_commits():
@@ -313,8 +717,20 @@ def launch_families(launches=None):
     return result
 
 
-def _loopback(family):
+def launch_presets(launches=None):
+    """{profile: preset} of each saved launch that records its preset (the release whose bind decides probing)."""
+    return {name: launch["preset"] for name, launch in (_launches() if launches is None else launches).items()
+            if isinstance(launch.get("preset"), str)}
+
+
+def _loopback(family, preset=None):
+    """The launched release's bind (a key-file release binds the LAN), else its family's."""
     from . import engines
+    if preset is not None:
+        try:
+            return engines.release_adapter(preset).bind == "loopback"
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
     try:
         return engines.adapter(family).bind == "loopback"
     except (ValueError, KeyError):
@@ -370,16 +786,24 @@ def _apply(out, apply, labels, outcome):
 LOOPBACK_UNAVAILABLE = "unavailable: engine bound to loopback on its node"
 
 
-def collect(routers=None, fetch=_get, profile=None, deadline_s=SCRAPE_DEADLINE_S, launches=None, families=None):
+DEFAULT_STORE = object()
+
+
+def collect(routers=None, fetch=_get, profile=None, deadline_s=SCRAPE_DEADLINE_S, launches=None, families=None,
+            telemetry=DEFAULT_STORE, now=None):
     """Return the exposition text for {profile: router endpoint or None}.
 
     Routers, then every replica's engine sources, are fetched in parallel against one overall deadline. ``launches``
     ({profile: commits}) and ``families`` ({profile: engine family}) default to the saved launch states. Replicas of
-    a loopback-bound family are never probed: their address is 127.0.0.1 on their node, not on this machine."""
+    a loopback-bound family are never probed: their address is 127.0.0.1 on their node, not on this machine.
+    ``telemetry`` is the store path (default: the portal's, next to the configuration; None skips it); it is read
+    while the network fetches run."""
     routers = running_routers() if routers is None else routers
+    presets = {}
     if families is None:
         try:
-            families = launch_families()
+            saved = _launches()
+            families, presets = launch_families(saved), launch_presets(saved)
         except (OSError, RuntimeError):
             families = {}
     if profile is not None:
@@ -393,16 +817,26 @@ def collect(routers=None, fetch=_get, profile=None, deadline_s=SCRAPE_DEADLINE_S
         if not isinstance(endpoint, dict):
             _source(out, labels, False, None)
         else:
-            jobs.append((name, labels, fetches.submit(endpoint, "/api/status")))
+            jobs.append((name, labels, fetches.submit(endpoint, "/api/status"),
+                         fetches.submit(endpoint, "/metrics", True)))
+    if telemetry is DEFAULT_STORE:
+        try:
+            telemetry = telemetry_path()
+        except (OSError, RuntimeError):
+            telemetry = None
+    _telemetry(out, telemetry, now, fetches.deadline)
     replicas = []
-    for name, labels, job in jobs:
+    for name, labels, job, metrics_job in jobs:
         rows, error, elapsed = _apply(out, lambda o, _labels, raw: _router(o, name, raw), labels, fetches.result(job))
         replicas += [(name, *row) for row in rows or []]
         _source(out, labels, error is None, elapsed)
+        metrics_labels = {"source": "router_metrics", "profile": name}
+        _, error, elapsed = _apply(out, _router_metrics, metrics_labels, fetches.result(metrics_job))
+        _source(out, metrics_labels, error is None, elapsed)
     jobs = []
     for name, rid, node, raw_endpoint in replicas:
         labels = {"profile": name, "replica": rid, "machine": node}
-        if _loopback(families.get(name)):
+        if _loopback(families.get(name), presets.get(name)):
             for source in ("engine_metrics", "engine_status"):
                 _source(out, {**labels, "source": source, "reason": LOOPBACK_UNAVAILABLE}, False, None)
             continue

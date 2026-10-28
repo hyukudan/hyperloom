@@ -1,0 +1,33 @@
+/* Token ledger, hardware ceiling, RTX prefill and token value pages (tokens.js, ceiling.js, rtx.js, value.js). */
+.lg-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
+.lg-kpis .kpi .val{font-variant-numeric:tabular-nums}
+.lg-controls{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;justify-content:space-between}
+.lg-controls .row{flex-wrap:wrap}
+.lg-bars svg{display:block;max-width:100%;height:auto;overflow:visible}
+.lg-bars .lg-ax{font-size:10px;fill:var(--text-3)}
+.lg-bars .lg-none{fill:url(#lg-hatch)}
+.lg-legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--text-2);margin:4px 0}
+.lg-legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+.lg-sort{background:none;border:0;padding:0;font:inherit;color:inherit;cursor:pointer;text-align:left}
+.lg-sort:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.lg-num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.lg-insights{margin:0;padding-left:18px}
+.lg-insights li{margin:4px 0}
+.lg-tag{display:inline-block;font-size:11px;line-height:1.4;padding:0 6px;border-radius:9px;border:1px solid var(--border-strong);color:var(--text-2);margin-left:6px;white-space:nowrap}
+.lg-tag.m{border-color:var(--ok);color:var(--ok)}
+.lg-tag.e{border-color:var(--warn);color:var(--warn)}
+.lg-tag.nd{border-color:var(--text-3);color:var(--text-3)}
+.lg-confirm{border:1px solid var(--err);background:var(--err-soft);border-radius:var(--r-sm);padding:10px 12px;margin-top:8px}
+.lg-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px 12px;align-items:end}
+.lg-form .inp{width:100%;box-sizing:border-box}
+.lg-strip{display:flex;gap:1px;height:22px;margin:6px 0}
+.lg-strip span{flex:1 1 0;min-width:2px;border-radius:1px}
+.lg-wrap{overflow-wrap:anywhere}
+.lg-error{color:var(--err)}
+.lg-day{font-size:20px;white-space:nowrap}
+.lg-cells{min-width:960px}
+.lg-cells td:first-child{min-width:170px}
+.lg-cells td:last-child{min-width:240px}
+.lg-num .hint{white-space:normal;text-align:left;min-width:200px;max-width:280px}
+.lg-value{min-width:1080px}
+.lg-hatch-key{background:repeating-linear-gradient(45deg,var(--text-3) 0 1px,transparent 1px 4px)!important;border:1px solid var(--border)}

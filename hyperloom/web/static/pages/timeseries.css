@@ -1,0 +1,9 @@
+/* Shared time-series chart styles (timeseries.js). */
+.ts{margin:0}
+.ts figcaption{font-weight:600;margin-bottom:4px}
+.ts svg{max-width:100%;height:auto;display:block;overflow:visible}
+.ts-ax{font-size:10px;fill:var(--text-3)}
+.ts-legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--text-2);margin-bottom:4px}
+.ts-key i{display:inline-block;width:10px;height:3px;border-radius:2px;margin-right:6px;vertical-align:middle}
+.ts-readout{min-height:1.3em;font-size:12px;color:var(--text-2);font-variant-numeric:tabular-nums}
+.ts-empty .muted{color:var(--text-3)}

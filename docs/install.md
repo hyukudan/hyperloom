@@ -163,8 +163,10 @@ hloom doctor halo-1
 hloom doctor halo-2
 ```
 
-On a node without the node tool, the first call copies it to `~/.hyperloom-boot` (fixed commands: `mkdir`, `scp`,
-`chmod`); after that `doctor` changes nothing on the node. It runs the read-only checks: each is `ok` or `unavailable`
+`doctor` changes nothing on a node. On a node without the node tool it says so (`node_tool.status: absent`) and
+stops: the tool reaches a node only through `hloom nodes update <profile> --machine <machine>`, which copies it to
+`~/.hyperloom-boot` (fixed commands: `mkdir`, `scp`, `chmod`); a machine without the tool has no lease, so no
+`--force` is needed there. With the tool in place, `doctor` runs the read-only checks: each is `ok` or `unavailable`
 with the reason, and `commands` lists everything that ran. `node_tool` compares the deployed node tool with this
 release's: `stale` means it came from another release; `doctor` does not replace it (a lease may be running on it), so
 run `hloom nodes update <profile> --machine <machine>`, which refuses while a lease is live.
@@ -227,6 +229,6 @@ On 2026-10-23, with release `hyperloom-0.1.0-ga937c4c7c82b`:
   `--version`, `config validate`.
 - **Node first contact** against a fresh Debian 12 container with only `openssh-server`, `git` and Python 3.11:
   `hosts scan` (this found the Windows `ssh-keyscan` failure handled under Troubleshooting), fingerprint compared
-  with `ssh-keygen -lf` on the machine, `hosts pin`, `doctor` (this found that `doctor` did not bootstrap a fresh node; it does now);
+  with `ssh-keygen -lf` on the machine, `hosts pin`, `nodes update` (the node tool reaches a node only that way), `doctor`;
   doctor then reported the missing node toolchain as `unavailable` with reasons.
 - Section 7 needs the real nodes and GPU turns; it follows the Phase 1a acceptance runs in `docs/acceptance-1a.md`.

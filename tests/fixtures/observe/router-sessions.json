@@ -1,0 +1,43 @@
+{
+ "schema": "tensormeld/router-sessions-v1",
+ "instance": "9f1c0a5b2d3e4f60",
+ "idle_s": 1800,
+ "armed": true,
+ "count": 1,
+ "sessions": [
+  {
+   "key": "5e55a0b1c2d3e4f5",
+   "kind": "prefix",
+   "path": "/v1/chat/completions",
+   "first_seen": 1800000000.0,
+   "last_seen": 1800000005.0,
+   "turns": 2,
+   "replica": "halo-1",
+   "replicas": {
+    "halo-1": 2
+   },
+   "recent": [
+    {
+     "at": 1800000000.0,
+     "id": "0123456789abcdef",
+     "replica": "halo-1",
+     "outcome": "served",
+     "prompt_tokens": 8192,
+     "cached_tokens": 1024,
+     "imported_tokens": 7168,
+     "uncached_tokens": 0
+    },
+    {
+     "at": 1800000005.0,
+     "id": "aabbccddeeff0011",
+     "replica": "halo-1",
+     "outcome": "served",
+     "prompt_tokens": 9000,
+     "cached_tokens": 8192,
+     "imported_tokens": 0,
+     "uncached_tokens": 808
+    }
+   ]
+  }
+ ]
+}

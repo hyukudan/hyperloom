@@ -1,0 +1,7 @@
+mm_queued 0
+mm_running 1
+mm_completed 12
+mm_failed 0
+mm_prompt_tokens 4096
+mm_generated_tokens 2048
+mm_busy_seconds 101.250

@@ -19,6 +19,7 @@ import uuid
 
 from .winproc import no_window
 from . import assets, bundles, engines, procs, remote, render, rtx, secrets
+from .config import ConfigError
 from .paths import repo_root
 
 
@@ -52,6 +53,68 @@ def _write(path, value):
 
 def _read(path):
     return rtx._retry(lambda: json.loads(path.read_text(encoding="utf-8")))
+
+
+def config_record(config_path):
+    """What a launch state records about the configuration it was launched from: the resolved absolute path (its
+    identity, the one `launch_states` compares) and the file's sha256 at launch (for the record only, never compared:
+    an edit of the configuration does not hide the profiles it launched)."""
+    import hashlib
+    path = Path(config_path).resolve()
+    try:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        digest = None
+    return {"path": str(path), "sha256": digest}
+
+
+def _config_key(path):
+    try:
+        return os.path.normcase(str(Path(path).resolve()))
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None
+
+
+def owns(state, config_path):
+    """Whether a launch state was launched from the configuration at ``config_path`` (its recorded path is the same
+    file); a state without the record, or not a state, belongs to none."""
+    record = state.get("config") if isinstance(state, dict) else None
+    recorded = record.get("path") if isinstance(record, dict) else None
+    wanted = _config_key(config_path)
+    return wanted is not None and isinstance(recorded, str) and _config_key(recorded) == wanted
+
+
+UNKNOWN_CONFIG = ("launched before launch states recorded their configuration: shown with an unknown "
+                  "configuration (it can be stopped here)")
+
+
+def ownership(state, config_path):
+    """"own" (launched from the configuration at ``config_path``), "other" (it records another one) or "unknown" (a
+    state written before launch states recorded their configuration)."""
+    record = state.get("config") if isinstance(state, dict) else None
+    if not isinstance(record, dict) or not isinstance(record.get("path"), str):
+        return "unknown"
+    return "own" if owns(state, config_path) else "other"
+
+
+def launch_states(config_path, read=None, unknown=False):
+    """{profile: state} of the saved launch states (the up-*.json files) launched from the configuration at
+    ``config_path``, in profile order. A state that records another configuration is left out: a portal or a command
+    on one configuration never shows or polls the profiles of another. A state without the record (written before
+    launch states recorded it) belongs to no known configuration: the readers that poll leave it out; ``unknown``
+    (the status listing) includes it, so it is shown, marked, and can be stopped. ``read``: the state reader (default
+    `_read`); an unreadable state is skipped."""
+    read = read or _read
+    found = {}
+    for path in sorted(secrets.runtime_dir().glob("up-*.json")):
+        try:
+            state = read(path)
+        except (OSError, ValueError):
+            continue
+        kind = ownership(state, config_path)
+        if kind == "own" or (unknown and kind == "unknown"):
+            found[path.stem[3:]] = state
+    return found
 
 
 def _known_hosts():
@@ -367,7 +430,8 @@ def install(cluster, build_machine, targets=None, *, profile=None, sources=None)
     clients = {mid: _client(cluster.machines[mid]) for mid in mids}
     for mid in mids:
         _lab(cluster, mid)
-        clients[mid].bootstrap()
+    # The node tool reaches the nodes only through `hyperloom nodes update`: an absent or different one is refused.
+    _check_tools(clients, mids, profile)
     # Resolve all peer routes before starting any build.
     peers = {mid: _peer(cluster, build_machine, mid) for mid in mids if mid != build_machine}
     versions = _versions()
@@ -519,14 +583,24 @@ def _tool(client):
     return ((reply.get("checks") or {}).get("tool") or {}).get("value")
 
 
+def _absent(client):
+    """True when the node has no node tool at all (a read-only test; a client without the test: unknown, False)."""
+    check = getattr(client, "has_tool", None)
+    return check is not None and not check()
+
+
 def _check_tools(clients, mids, profile):
-    """Refuse to start work with a node tool that differs from this checkout's (it may lack checks up relies on)."""
+    """Refuse to start work with a node tool that is absent or differs from this checkout's (it may lack checks up
+    relies on); the message names the command that deploys it."""
     expected = remote.tool_digest()
     for mid in mids:
+        if _absent(clients[mid]):
+            raise OrchestrationError(f"{mid}: no node tool on this machine yet; run 'hyperloom nodes update "
+                                     f"{profile or '<profile>'} --machine {mid}' first")
         deployed = _tool(clients[mid])
         if deployed != expected:
             raise OrchestrationError(f"{mid}: node tool differs from this checkout (deployed {str(deployed)[:12]}, "
-                                     f"expected {expected[:12]}); run 'hyperloom nodes update {profile}'")
+                                     f"expected {expected[:12]}); run 'hyperloom nodes update {profile or '<profile>'}'")
 
 
 def nodes_update(cluster, profile, machine=None, force=False):
@@ -539,7 +613,8 @@ def nodes_update(cluster, profile, machine=None, force=False):
     result = {}
     for mid in mids:
         client = _client(cluster.machines[mid])
-        if not force:
+        # A machine without the node tool has no lease records either (leases run through it): nothing to check.
+        if not force and not _absent(client):
             live = [row for row in _call(client, "status", {"root": cluster.machines[mid].install_root}).get("leases", [])
                     if row.get("state") not in ("stopped", "failed", "aborted", "cancelled", "canceled", "finished")]
             if live:
@@ -574,7 +649,7 @@ def prelaunch(cluster, profile, settings, kind, clients, mids):
                                  + ", ".join(f"{mid} {rid}" for mid, rid in releases.items()))
     node_values, node_paths = {}, {}
     # Engines without an API key option (MiniMax serve) bind loopback instead; they get no key file.
-    for mid in (mids if engines.adapter(kind).key_file else ()):
+    for mid in (mids if engines.release_adapter(_preset_name(cluster, profile)).key_file else ()):
         secret = _secret_name(profile, mid)
         node_values[mid] = secrets.ensure(secret)
         node_paths[mid] = _put(clients[mid], cluster.machines[mid], secret, node_values[mid])
@@ -582,14 +657,11 @@ def prelaunch(cluster, profile, settings, kind, clients, mids):
             "node_paths": node_paths, "release_rows": release_rows}
 
 
-def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s=1140, approval=None, queue_timeout_s=3600,
-       diagnostics=None, vram_cap_gib=None):
-    _approval(deadline_s, approval)
-    if type(queue_timeout_s) is not int or not 60 <= queue_timeout_s <= MAX_QUEUE_S:
-        raise ValueError(f"queue timeout must be 60..{MAX_QUEUE_S} seconds")
+def check_launch(cluster, profile, router="local", nodes=None, *, diagnostics=None, recipe=False):
+    """The profile, node and router checks up makes before any I/O (also `hyperloom recipe plan`'s preflight)."""
     settings, kind, defaults = _profile(cluster, profile)
-    engine = engines.adapter(kind)
     name = _preset_name(cluster, profile)
+    engine = engines.release_adapter(name)
     pair = engine.topology == "pair"
     diagnostics = list(dict.fromkeys(diagnostics or ()))
     unknown = set(diagnostics) - set(render.preset(name).get("diagnostics", {}))
@@ -603,11 +675,37 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
         raise ValueError("declared nodes must be distinct machines of the profile")
     if pair and mids != defaults:
         raise ValueError("pair requires both rank machines in rank order")
+    if recipe and engine.bind == "loopback":
+        raise ValueError(f"--recipe needs the router on this machine, and {kind} engines bind loopback on their node "
+                         "(only a router on rank 0 reaches them): this profile does not run with a recipe yet")
     if engine.bind == "loopback" and router != mids[0]:
         raise ValueError(f"{kind} engines bind loopback only (no API key support): "
                          f"run the router on rank 0 with --router {mids[0]}")
+    if recipe:
+        if mids != list(defaults):
+            raise ValueError("--recipe binds the profile's own nodes: drop --node")
+        if router != "local":
+            # The router reads the route state hyperloom writes on this machine every second.
+            raise ValueError("--recipe runs the router locally (it reads the route state written here): use --router local")
+    return settings, kind, defaults, engine, name, pair, diagnostics, mids
+
+
+def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s=1140, approval=None, queue_timeout_s=3600,
+       diagnostics=None, vram_cap_gib=None, recipe=None, cancelled=None):
+    _approval(deadline_s, approval)
+    if type(queue_timeout_s) is not int or not 60 <= queue_timeout_s <= MAX_QUEUE_S:
+        raise ValueError(f"queue timeout must be 60..{MAX_QUEUE_S} seconds")
+    settings, kind, defaults, engine, name, pair, diagnostics, mids = check_launch(
+        cluster, profile, router, nodes, diagnostics=diagnostics, recipe=recipe is not None)
     declared = list(mids)
     service = settings.get("prefill_service")
+    launch = None
+    if recipe is not None:
+        from .recipes import launch as recipe_launch
+        launch = recipe_launch.prepare(cluster, profile, recipe, router=router, vram_cap_gib=vram_cap_gib,
+                                       state_dir=_state_path(profile).parent)
+        if not launch.service_start:
+            service = None  # every prefill stays on the nodes (the why is recorded); no PRO lease, no start
     if service is not None and router != "local":
         raise ValueError("the RTX prefill service is loopback-only: use --router local")
     if vram_cap_gib is not None and service is None:
@@ -633,7 +731,14 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
     state = {"profile": profile, "leases": [], "router": None,
              "known_hosts": str(_known_hosts()), "machines": {},
              "token": uuid.uuid4().hex, "phase": "starting", "keys": [],
-             "production": not diagnostics, "diagnostic": diagnostics}
+             "production": not diagnostics and (launch is None or launch.production), "diagnostic": diagnostics}
+    from .recipes import service as recipe_service
+    if recipe_service.configured_file() is not None:
+        # The configuration this launch belongs to (the portal and the CLI set it for the call): only a portal or a
+        # command on the same configuration lists or polls it.
+        state["config"] = config_record(recipe_service.configured_file())
+    if launch is not None:
+        state["recipe"] = launch.record()
     keys = []
     local_values = {}
     owned = False
@@ -642,6 +747,9 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
         if path.exists():
             raise OrchestrationError("profile has saved running state; run down before up")
         path.with_suffix(".stop").unlink(missing_ok=True)
+        if cancelled is not None and cancelled():
+            # A portal job (an up or a recipe deploy) cancelled while this launch was being handed over: start nothing.
+            raise OrchestrationError("profile stop requested")
         owned = True
         handlers.enter_context(_up_handlers(path))
         _write(path, state)
@@ -661,6 +769,8 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
         selected = deepcopy(cluster)
         if not pair:
             selected.profiles[profile]["nodes"] = mids
+        if launch is not None and service is None:
+            selected.profiles[profile].pop("prefill_service", None)
         prepared = prelaunch(cluster, profile, settings, kind, clients, mids)
         state["assets"] = prepared["assets"]
         state["asset_cache_note"] = assets.CACHE_NOTE
@@ -699,6 +809,10 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
         processes = render.render_processes(selected, profile, **(
             {"diagnostics": diagnostics, "run": state["token"][:12]} if diagnostics else {}))
         rendered = render.render_router(selected, profile)
+        if launch is not None:
+            recipe_launch.verify_launch(launch, selected, profile, processes, release_rows)
+            key_file = selected.router["replica_api_key_files"].get(service["machine"]) if service else None
+            rendered["prefill"] = recipe_launch.router_prefill(launch, selected, profile, key_file)
         state.update(release_id=prepared["release_id"], nodes=mids, devices=list(devices or []),
                      started_at=time.time(), process_specs=[asdict(spec) for spec in processes],
                      rendered_router=rendered, launch=render.launch_summary(selected, profile))
@@ -715,7 +829,7 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
         def start(mid, payload, role):
             _check_stop(path)
             result = _call(clients[mid], "lease", payload)
-            record = {"machine": mid, "lease": result["lease"], "role": role,
+            record = {"machine": mid, "lease": result["lease"], "role": role, "label": payload.get("label"),
                       "processes": [proc["name"] for proc in payload["processes"]],
                       "process_machines": {proc["name"]: mid if proc["machine"] == "local" else mids[1]
                                            for proc in payload["processes"]}}
@@ -758,12 +872,43 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
             deadlines.append(ready.get("deadline") or time.time() + deadline_s)
         state["deadline"] = min(deadlines)
         _check_stop(path)
-        if service is not None:
+        node_ram = {}
+        if launch is not None:
+            # The node engines' allocations are done: every node keeps the recipe's free-RAM floor (Sol-5 #4).
+            def read_ram(mid):
+                try:
+                    node_ram[mid] = {"free_ram_gib": recipe_launch.node_ram(
+                        _call(clients[mid], "gpu", {"lab_dir": _lab(cluster, mid)}, timeout=60)), "at": time.time()}
+                except (remote.RemoteError, OrchestrationError):
+                    return None
+                return node_ram[mid]["free_ram_gib"]
+            low = recipe_launch.node_floors(launch, read_ram)
+            if low is not None:
+                raise OrchestrationError("recipe: " + low)
+        skip = None
+        if service is not None and launch is not None:
+            skip = recipe_launch.recheck_before_service(launch, selected)
+            if skip is not None:
+                state["recipe"]["service"].update(start=False, why="at launch: " + skip)
+                _write(path, state)
+        if service is not None and skip is None:
             # After the decode side is READY (its import route is the handoff), before the router admits.
-            spec = rtx.render_service(selected, profile, api_key=secrets.ensure(_secret_name(profile, "prefill")),
-                                      handoff_api_key=node_values[mids[0]],
-                                      free_physical_gib=rtx.memory_status()["free_physical_gib"],
-                                      vram_cap_gib=vram_cap_gib)
+            try:
+                with recipe_launch.planning(selected) if launch is not None else ExitStack():
+                    spec = rtx.render_service(
+                        selected, profile, api_key=secrets.ensure(_secret_name(profile, "prefill")),
+                        handoff_api_key=node_values[mids[0]],
+                        free_physical_gib=rtx.memory_status()["free_physical_gib"],
+                        vram_cap_gib=launch.vram_cap_gib if launch is not None else vram_cap_gib,
+                        host_gib_exact=launch.host_gib if launch is not None else None)
+            except (ConfigError, recipe_launch.descriptors.DescriptorError) as exc:
+                if launch is None:
+                    raise
+                # The recipe's budget no longer fits this start (memory moved since up began): skip, never clamp.
+                skip = "at launch: " + str(exc)
+                state["recipe"]["service"].update(start=False, why=skip)
+                _write(path, state)
+        if service is not None and skip is None:
             spec = rtx.ServiceSpec(**dict(spec.__dict__, deadline=min(spec.deadline, state["deadline"])))
             # Recorded before the helper exists, so down (or the watchdog) can always find and stop it.
             state["prefill_service"] = rtx.prepare_service(spec)
@@ -773,11 +918,28 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
                                check=lambda: _check_stop(path))
             _write(path, state)
             _check_stop(path)
+            low = recipe_launch.recheck_after_ready(launch, selected) if launch is not None else None
+            if low is not None:
+                # Allocations done but memory below its floors: stop the service; the nodes keep every prefill.
+                rtx.stop_service(state["prefill_service"])
+                state["recipe"]["service"].update(start=False, why="after READY: " + low)
+                _write(path, state)
         if router == "local":
             for key, value in local_values.items():
                 secrets._write(Path(key), value.encode("ascii"))
             render.validate_router(rendered)
-            state["router"] = _start_local_router(profile, rendered, keys, ownership=state)
+            route_state = None
+            if launch is not None:
+                reservation = cluster.pc.get("cuda", {}).get("reservation")
+                route_state = recipe_launch.route_state_spec(
+                    launch, state.get("prefill_service") if state["recipe"]["service"]["start"] else None,
+                    rtx.reservation_end(reservation, time.time()) if reservation else None, state)
+                route_state["initial_nodes"] = node_ram
+                if route_state["disk"] and service is not None:
+                    data = rtx._service(selected, profile)[1]
+                    asset = selected.assets.get(service["machine"], {}).get((data.get("placement") or {}).get("model_asset"))
+                    route_state["disk"] = {m: (asset or {}).get("path") for m in route_state["disk"]}
+            state["router"] = _start_local_router(profile, rendered, keys, ownership=state, route_state=route_state)
         else:
             machine = cluster.machines[router]
             commit = _versions()["components"]["tensormeld"]["commit"]
@@ -836,8 +998,11 @@ def export_key(profile, destination):
     return {"key_name": name, "out": str(destination)}
 
 
-def endpoint(profile):
+def endpoint(profile, config_path=None):
+    """The profile's router URL and key name; with ``config_path``, only of a launch of that configuration (`owns`)."""
     state = _read(_state_path(profile))
+    if config_path is not None and not owns(state, config_path):
+        raise OrchestrationError(f"{profile}: launched from another configuration")
     if not state.get("router"):
         raise OrchestrationError("profile router has not started")
     return {"url": _url(state["router"]["endpoint"], ""),
@@ -851,11 +1016,17 @@ def _node_name(mid):
     return re.sub(r"[^a-z0-9-]", "-", mid.lower())[:20] + "-" + hashlib.sha256(mid.encode()).hexdigest()[:8]
 
 
-def _start_local_router(profile, rendered, keys, *, ownership=None):
+def _start_local_router(profile, rendered, keys, *, ownership=None, route_state=None):
     directory = secrets.runtime_dir() / ("router-" + uuid.uuid4().hex)
     directory.mkdir(parents=True)
     spec = directory / "spec.json"
-    _write(spec, {"rendered": rendered, "keys": keys, "profile": profile,
+    if route_state is not None:
+        # Fresh before the router's first request (the nodes as measured after their engines loaded; the replicas
+        # assumed up until the router reports them); the helper refreshes it every second.
+        from .recipes import launch as recipe_launch
+        recipe_launch.write_route_state(route_state, nodes=route_state.get("initial_nodes"),
+                                        replicas={mid: "up" for mid in route_state["nodes"]})
+    _write(spec, {"rendered": rendered, "keys": keys, "profile": profile, "route_state": route_state,
                   "ownership": ownership, "deadline": (ownership or {}).get("deadline", time.time() + 1140)})
     record = {"machine": "local", "directory": str(directory), "endpoint": rendered["listen"]}
     if ownership is not None:
@@ -885,6 +1056,18 @@ def _start_local_router(profile, rendered, keys, *, ownership=None):
         raise
 
 
+def poll_nodes_once(route_state, polled):
+    """Free RAM of every node over ssh (the node tool's read-only `gpu` verb) into ``polled``. Any failure or bad
+    answer leaves that node's last reading, which ages out (fail closed); it never raises."""
+    from .recipes import launch as recipe_launch
+    for mid, machine in route_state["machines"].items():
+        try:
+            result = _call(_client(SimpleNamespace(**machine), route_state["known_hosts"]), "gpu", {}, timeout=5)
+            polled[mid] = {"free_ram_gib": recipe_launch.node_ram(result), "at": time.time()}
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def local_router_run(spec_path):
     """Persistent CLI helper owns LocalChild's Job Object and plaintext keys."""
     path = Path(spec_path)
@@ -910,14 +1093,38 @@ def local_router_run(spec_path):
     for name in ("SIGTERM", "SIGINT", "SIGBREAK"):
         if hasattr(signal, name):
             signal.signal(getattr(signal, name), interrupt)
+    route_state = spec.get("route_state")
+    next_state = 0
+    polled = dict((route_state or {}).get("initial_nodes") or {})
+    replicas = {}
+    halt = threading.Event()
+
+    def poll_nodes():
+        from .recipes import launch as recipe_launch
+        while not halt.wait(recipe_launch.NODE_POLL_S):
+            poll_nodes_once(route_state, polled)
+
+    poller = threading.Thread(target=poll_nodes, daemon=True) if route_state else None
     try:
         child.start()
+        if poller is not None:
+            poller.start()
         end = time.monotonic() + 15
         ready = False
         next_check = 0
         while child.alive() and not interrupted and not (directory / "stop").exists():
             if time.time() >= spec["deadline"]:
                 break
+            if route_state is not None and time.monotonic() >= next_state:
+                from .recipes import launch as recipe_launch
+                try:
+                    if ready:
+                        status = _http_json(rendered["listen"])
+                        replicas = {r.get("node"): r.get("state") for r in status.get("replicas", [])}
+                    recipe_launch.write_route_state(route_state, nodes=dict(polled), replicas=replicas)
+                except (OSError, ValueError):
+                    pass  # a missed write ages the state; the router fails closed when it goes stale
+                next_state = time.monotonic() + 1
             if spec.get("ownership") and time.monotonic() >= next_check:
                 if _replicas_stopped(spec["ownership"]):
                     break
@@ -938,6 +1145,7 @@ def local_router_run(spec_path):
         except (OSError, ValueError):
             pass
     finally:
+        halt.set()
         try:
             child.stop(5)
         finally:
@@ -1069,39 +1277,101 @@ def down(profile, force=False):
         lock.close()
 
 
-def status(profile=None):
+def _node_read(read, mid, verb, payload):
+    """One read-only verb of a launch's node through ``read(mid, verb, payload)`` (the portal's node poll)."""
+    result = read(mid, verb, payload)
+    if result.get("error"):
+        raise OrchestrationError(f"{mid}: {verb}: {result['error']}")
+    return result
+
+
+def status(profile=None, config_path=None, skip=None, read=None):
+    """One profile's status, or every saved launch's ({profile: status}); with ``config_path``, only the launches of
+    that configuration (`owns`): another configuration's launch is neither listed nor polled, and asked by name it
+    answers stopped, with the reason. A launch without the record (written before launch states recorded it) is
+    listed and read, marked ``config_identity: unknown`` with the reason: shown, never hidden, and stoppable.
+    ``skip(machine id or "local", kind, profile)``: a reason not to read that node ("node"), the profile's router
+    ("router", on that machine or this one) or its prefill service ("prefill", this machine) now (the portal's
+    polling budget), or None. ``read(machine id, verb, payload)``: how a node is read (the portal's node poll); by
+    default one ssh call."""
     if profile is None:
-        return {path.stem[3:]: status(path.stem[3:]) for path in secrets.runtime_dir().glob("up-*.json")}
+        names = (list(launch_states(config_path, unknown=True)) if config_path is not None
+                 else [path.stem[3:] for path in secrets.runtime_dir().glob("up-*.json")])
+        return {name: status(name, config_path, skip, read) for name in names}
     path = _state_path(profile)
     if not path.exists():
         return {"profile": profile, "state": "stopped"}
     state = _read(path)
+    kind = ownership(state, config_path) if config_path is not None else None
+    if kind == "other":
+        return {"profile": profile, "state": "stopped", "why": "launched from another configuration"}
     result = {"profile": profile, "nodes": {}, "router": None,
               "assets": state.get("assets", []), "asset_cache_note": assets.CACHE_NOTE, "launch": state.get("launch"),
               "unpublished_sources": (state.get("launch") or {}).get("unpublished_sources", []),
               "production": state.get("production", True), "diagnostic": state.get("diagnostic", [])}
+    if "recipe" in state:
+        result["recipe"] = state["recipe"]
+    if kind == "unknown":
+        result["config_identity"], result["why_config"] = "unknown", UNKNOWN_CONFIG
     for mid, machine in state["machines"].items():
+        why = skip(mid, "node", profile) if skip is not None else None
+        if why:
+            result["nodes"][mid] = {"error": why}       # not read (the caller's polling budget: a GPU turn holds it)
+            continue
         try:
-            result["nodes"][mid] = _call(_client(SimpleNamespace(**machine), state["known_hosts"]), "status", {"root": machine["install_root"]})
+            payload = {"root": machine["install_root"]}
+            result["nodes"][mid] = (_node_read(read, mid, "status", payload) if read is not None else
+                                    _call(_client(SimpleNamespace(**machine), state["known_hosts"]), "status", payload))
         except (remote.RemoteError, OrchestrationError) as exc:
             result["nodes"][mid] = {"error": str(exc)}
     if state.get("router"):
-        try:
-            result["router"] = _http_json(state["router"]["endpoint"])
-        except (OSError, ValueError) as exc:
-            result["router"] = {"error": str(exc)}
+        router_machine = state["router"].get("machine")
+        result["router_machine"] = router_machine
+        why = skip(router_machine or "local", "router", profile) if skip is not None else None
+        if why:
+            result["router"] = {"error": why}
+        else:
+            try:
+                result["router"] = _http_json(state["router"]["endpoint"])
+            except (OSError, ValueError) as exc:
+                result["router"] = {"error": str(exc)}
     if (state.get("prefill_service") or {}).get("port"):
-        try:
-            result["prefill_service"] = _http_json({"address": "127.0.0.1", "port": state["prefill_service"]["port"]}, "/health")
-        except (OSError, ValueError) as exc:
-            result["prefill_service"] = {"error": str(exc)}
+        why = skip("local", "prefill", profile) if skip is not None else None
+        if why:
+            result["prefill_service"] = {"error": why}
+        else:
+            try:
+                result["prefill_service"] = _http_json({"address": "127.0.0.1", "port": state["prefill_service"]["port"]}, "/health")
+            except (OSError, ValueError) as exc:
+                result["prefill_service"] = {"error": str(exc)}
     return result
 
 
-def logs(profile, process, tail=100):
+def log_machine(profile, process, read=None):
+    """Where ``logs`` reads a process's output, without reading it: "local" (the control machine's files), a machine
+    id (an ssh call to that node), or None (not a process of this launch)."""
+    state = (read or _read)(_state_path(profile))
+    local = {"router": state.get("router") or {}, "prefill": state.get("prefill_service") or {}}.get(process, {})
+    if local.get("directory") and (process == "prefill" or local.get("machine") == "local"):
+        return "local"
+    matches = [row for row in state.get("leases") or [] if row["role"] == "router" and process == "router"
+               or row["role"] == "engine" and (row["machine"] == process or process in ("rank0", "rank1"))]
+    if len(matches) != 1:
+        return None
+    lease = matches[0]
+    name = _node_name(process) if process == lease["machine"] else process
+    return lease.get("process_machines", {}).get(name, lease["machine"])
+
+
+def logs(profile, process, tail=100, config_path=None, read=None):
+    """A process's recent output; with ``config_path``, only of a launch of that configuration (`owns`): another
+    configuration's launch (or one without the record) is refused before any read or call. ``read``: as in
+    ``status``."""
     if type(tail) is not int or not 1 <= tail <= 65536:
         raise ValueError("tail must be in 1..65536")
     state = _read(_state_path(profile))
+    if config_path is not None and not owns(state, config_path):
+        raise OrchestrationError(f"{profile}: launched from another configuration")
     local = {"router": state.get("router") or {}, "prefill": state.get("prefill_service") or {}}.get(process, {})
     if local.get("directory") and (process == "prefill" or local.get("machine") == "local"):
         directory = Path(local["directory"])
@@ -1126,5 +1396,7 @@ def logs(profile, process, tail=100):
     name = _node_name(process) if process == lease["machine"] else process
     mid = lease.get("process_machines", {}).get(name, lease["machine"])
     machine = state["machines"][mid]
-    return _call(_client(SimpleNamespace(**machine), state["known_hosts"]), "logs",
-                 {"root": machine["install_root"], "lease": lease["lease"], "name": name, "tail": tail})
+    payload = {"root": machine["install_root"], "lease": lease["lease"], "name": name, "tail": tail}
+    if read is not None:
+        return _node_read(read, mid, "logs", payload)
+    return _call(_client(SimpleNamespace(**machine), state["known_hosts"]), "logs", payload)

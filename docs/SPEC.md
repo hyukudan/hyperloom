@@ -32,6 +32,8 @@ Always **the simplest way that works**.
 
 ### 1.1 TensorMeld (`hyukudan/tensormeld`, public; pin `7165e98`, 0.2.0a2)
 
+Two pins, kept apart on purpose: `versions.lock` (`7165e98`) is the TensorMeld every node release installs and that node-hosted routers run, so it is part of every release id; the `third_party/tensormeld` submodule (`409003a`, public main with the prefill `routes` policy) is the copy the local router and the router-config parser run on the control machine. Moving the node pin changes every release id and needs a reinstall and requalification; moving the submodule does not.
+
 **Package**
 - Pure Python ≥ 3.11 with **zero runtime dependencies**. Building it needs `setuptools>=68`.
 - One console script, `tensormeld` (also `python -m tensormeld`). It runs on Windows and Linux. Tests: about 800 stdlib unittest tests; CI covers Ubuntu and Windows.
@@ -291,8 +293,8 @@ hyperloom/
 
 **Bootstrap** (fixed commands, no free-form shell)
 - `ssh -T -o BatchMode=yes -o ConnectTimeout=10 -- <target> 'mkdir -p -- "$HOME/.hyperloom-boot"'`, then `scp` of `hyperloom-node`.
-- After that, every call is `ssh … -- <target> '"$HOME/.hyperloom-boot/hyperloom-node" <verb>'`, with a **fixed verb** from an allow-list and **arguments sent as bounded UTF-8 JSON on stdin**.
-- The remote home is expanded once at bootstrap; absolute paths are used afterwards.
+- After that, every call is `ssh … -- <target> '<absolute path>/.hyperloom-boot/hyperloom-node <verb>'`, with a **fixed verb** from an allow-list and **arguments sent as bounded UTF-8 JSON on stdin**.
+- The remote home is expanded once per process and node (at bootstrap, or by one read-only `printf` lookup before the first call); the absolute path is used afterwards, one ssh session per call.
 - `ssh_target` is validated: no leading `-`, no whitespace or control characters.
 - Host-key, scp and `ssh.exe` prerequisites are checked by `hyperloom doctor`.
 - Tested against a real OpenSSH server in a local test VM/container (Windows `ssh.exe` client) with spaces, quotes, Unicode, EOF and cancellation, plus fake ssh for unit tests.
@@ -552,11 +554,7 @@ It starts only when the engine ships a CUDA FRONT with an HTTP serving API, `/he
 ## 8. Conventions
 - **Repo:** `hyukudan/hyperloom` (private). Package and CLI: `hyperloom`. Node tool: `hyperloom-node`.
 - **Python:** stdlib only (PC ≥ 3.11, node system python3 ≥ 3.10); `unittest`.
-- **Commit author** `hyukudan <19479239+hyukudan@users.noreply.github.com>`, with these trailers:
-  ```
-  Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
-  Claude-Session: https://claude.ai/code/session_01YQhXyYBxNnjq4twCoox8bT
-  ```
+- **Commit author** `hyukudan <19479239+hyukudan@users.noreply.github.com>`, with no trailers (no co-author or session lines).
 - **License:** proprietary/private for now; the `NOTICE` file preserves component licenses.
 
 ## 9. Build process with Sol (after main's OK)

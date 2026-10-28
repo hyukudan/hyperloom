@@ -1,0 +1,87 @@
+# HELP tensormeld_router_ttft_seconds Router-observed time from arrival to the first delivered data event (streams).
+# TYPE tensormeld_router_ttft_seconds histogram
+tensormeld_router_ttft_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="0.005"} 0
+tensormeld_router_ttft_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="0.01"} 0
+tensormeld_router_ttft_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="0.025"} 0
+tensormeld_router_ttft_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="0.05"} 0
+tensormeld_router_ttft_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="0.1"} 0
+tensormeld_router_ttft_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="0.25"} 0
+tensormeld_router_ttft_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="0.5"} 0
+tensormeld_router_ttft_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="1"} 1
+tensormeld_router_ttft_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="2.5"} 1
+tensormeld_router_ttft_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="5"} 1
+tensormeld_router_ttft_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="10"} 1
+tensormeld_router_ttft_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="25"} 1
+tensormeld_router_ttft_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="60"} 1
+tensormeld_router_ttft_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="120"} 1
+tensormeld_router_ttft_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="300"} 1
+tensormeld_router_ttft_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="600"} 1
+tensormeld_router_ttft_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="+Inf"} 1
+tensormeld_router_ttft_seconds_sum{model="qwen3.8-flash-next",route="rtx-long",caller="default"} 0.845000
+tensormeld_router_ttft_seconds_count{model="qwen3.8-flash-next",route="rtx-long",caller="default"} 1
+# HELP tensormeld_router_request_seconds Router-observed time from arrival to the last delivered byte.
+# TYPE tensormeld_router_request_seconds histogram
+tensormeld_router_request_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="0.005"} 0
+tensormeld_router_request_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="0.01"} 0
+tensormeld_router_request_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="0.025"} 0
+tensormeld_router_request_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="0.05"} 0
+tensormeld_router_request_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="0.1"} 0
+tensormeld_router_request_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="0.25"} 0
+tensormeld_router_request_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="0.5"} 0
+tensormeld_router_request_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="1"} 0
+tensormeld_router_request_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="2.5"} 0
+tensormeld_router_request_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="5"} 0
+tensormeld_router_request_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="10"} 1
+tensormeld_router_request_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="25"} 1
+tensormeld_router_request_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="60"} 1
+tensormeld_router_request_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="120"} 1
+tensormeld_router_request_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="300"} 1
+tensormeld_router_request_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="600"} 1
+tensormeld_router_request_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="+Inf"} 1
+tensormeld_router_request_seconds_sum{model="qwen3.8-flash-next",route="rtx-long",caller="default"} 5.845000
+tensormeld_router_request_seconds_count{model="qwen3.8-flash-next",route="rtx-long",caller="default"} 1
+# HELP tensormeld_router_queue_wait_seconds Router-observed wait for a replica slot.
+# TYPE tensormeld_router_queue_wait_seconds histogram
+tensormeld_router_queue_wait_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="0.005"} 1
+tensormeld_router_queue_wait_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="0.01"} 1
+tensormeld_router_queue_wait_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="0.025"} 1
+tensormeld_router_queue_wait_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="0.05"} 1
+tensormeld_router_queue_wait_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="0.1"} 1
+tensormeld_router_queue_wait_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="0.25"} 1
+tensormeld_router_queue_wait_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="0.5"} 1
+tensormeld_router_queue_wait_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="1"} 1
+tensormeld_router_queue_wait_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="2.5"} 1
+tensormeld_router_queue_wait_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="5"} 1
+tensormeld_router_queue_wait_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="10"} 1
+tensormeld_router_queue_wait_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="25"} 1
+tensormeld_router_queue_wait_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="60"} 1
+tensormeld_router_queue_wait_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="120"} 1
+tensormeld_router_queue_wait_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="300"} 1
+tensormeld_router_queue_wait_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="600"} 1
+tensormeld_router_queue_wait_seconds_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="+Inf"} 1
+tensormeld_router_queue_wait_seconds_sum{model="qwen3.8-flash-next",route="rtx-long",caller="default"} 0.000200
+tensormeld_router_queue_wait_seconds_count{model="qwen3.8-flash-next",route="rtx-long",caller="default"} 1
+# HELP tensormeld_router_delivery_gap_seconds Router-observed gap between delivered chunks that carry data events (a delivery gap, not a per-token latency).
+# TYPE tensormeld_router_delivery_gap_seconds histogram
+# HELP tensormeld_router_decode_tokens_per_second Engine-reported completion tokens after the first over the router-observed time from the first data event to the last byte.
+# TYPE tensormeld_router_decode_tokens_per_second histogram
+tensormeld_router_decode_tokens_per_second_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="1"} 0
+tensormeld_router_decode_tokens_per_second_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="2"} 0
+tensormeld_router_decode_tokens_per_second_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="5"} 0
+tensormeld_router_decode_tokens_per_second_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="10"} 0
+tensormeld_router_decode_tokens_per_second_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="15"} 0
+tensormeld_router_decode_tokens_per_second_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="20"} 1
+tensormeld_router_decode_tokens_per_second_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="30"} 1
+tensormeld_router_decode_tokens_per_second_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="40"} 1
+tensormeld_router_decode_tokens_per_second_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="60"} 1
+tensormeld_router_decode_tokens_per_second_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="80"} 1
+tensormeld_router_decode_tokens_per_second_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="120"} 1
+tensormeld_router_decode_tokens_per_second_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="200"} 1
+tensormeld_router_decode_tokens_per_second_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="400"} 1
+tensormeld_router_decode_tokens_per_second_bucket{model="qwen3.8-flash-next",route="rtx-long",caller="default",le="+Inf"} 1
+tensormeld_router_decode_tokens_per_second_sum{model="qwen3.8-flash-next",route="rtx-long",caller="default"} 19.800000
+tensormeld_router_decode_tokens_per_second_count{model="qwen3.8-flash-next",route="rtx-long",caller="default"} 1
+# HELP tensormeld_router_requests_total Generation requests by outcome (router-observed, counted from arming).
+# TYPE tensormeld_router_requests_total counter
+tensormeld_router_requests_total{model="qwen3.8-flash-next",route="rtx-long",caller="default",outcome="served"} 1
+tensormeld_router_requests_total{model="unknown",route="direct",caller="bench",outcome="no_replica"} 1

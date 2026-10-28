@@ -42,6 +42,10 @@ class FakeRemote:
     def bootstrap(self):
         self.calls.append((self.machine.id, "bootstrap", {}))
 
+    def has_tool(self):
+        self.calls.append((self.machine.id, "has-tool", {}))
+        return self.machine.id not in getattr(self, "absent", ())
+
     def call(self, verb, payload, timeout=60):
         self.calls.append((self.machine.id, verb, deepcopy(payload)))
         if (self.machine.id, verb) in self.fail:
@@ -177,6 +181,20 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
         self.assertEqual(orch._read(orch._state_path("qwen-replicas")), state)
 
+    def test_up_records_the_configuration_of_the_call(self):
+        from hyperloom.recipes import service
+        config = self.directory / "cluster.json"
+        config.write_text('{"fixture": true}', encoding="utf-8")
+        with service.configured(config):
+            state = orch.up(self.cluster, "qwen-replicas")
+        self.assertEqual(state["config"], orch.config_record(config))
+        self.assertEqual(orch._read(orch._state_path("qwen-replicas"))["config"]["path"], str(config.resolve()))
+        self.assertEqual(list(orch.launch_states(config)), ["qwen-replicas"])
+        orch.down("qwen-replicas")
+        state = orch.up(self.cluster, "qwen-replicas")             # no configuration set for the call: none recorded
+        self.assertNotIn("config", state)
+        self.assertEqual(orch.launch_states(config), {})
+
     def test_failed_rollback_keeps_state_for_down_retry(self):
         self.fail.update({("halo-2", "lease"), ("halo-1", "stop")})
         with self.assertRaises(orch.OrchestrationError):
@@ -222,6 +240,26 @@ class OrchestrationTests(unittest.TestCase):
         result = orch.nodes_update(self.cluster, "qwen-replicas")
         self.assertTrue(all(row["tool"] == row["expected"] for row in result.values()))
         self.assertEqual([mid for mid, verb, _ in self.calls if verb == "bootstrap"], ["halo-1", "halo-1", "halo-2"])
+
+    def test_fresh_node_updates_without_force_and_names_the_command(self):
+        # A fresh machine has no node tool, so it cannot hold a lease: `nodes update` needs no --force there and
+        # never asks the missing tool for its status. install and up name the command instead of a bare exit 127.
+        with patch.object(FakeRemote, "absent", {"halo-2"}, create=True):
+            for action in (lambda: orch.install(self.cluster, "halo-1", ["strix-hip-decode-token"], profile="qwen-replicas"),
+                           lambda: orch.up(self.cluster, "qwen-replicas")):
+                self.calls.clear()
+                with self.assertRaisesRegex(orch.OrchestrationError, "halo-2: no node tool.*"
+                                            "'hyperloom nodes update qwen-replicas --machine halo-2'"):
+                    action()
+                self.assertFalse({"bootstrap", "lease", "install"} & {verb for _, verb, _ in self.calls})
+            self.calls.clear()
+            result = orch.nodes_update(self.cluster, "qwen-replicas", machine="halo-2")
+        self.assertEqual(list(result), ["halo-2"])
+        self.assertEqual([verb for _, verb, _ in self.calls], ["has-tool", "bootstrap", "version"])
+        # A machine with the tool still has its leases checked.
+        self.leases["lease-x"] = {"lease": "lease-x", "state": "ready"}
+        with self.assertRaisesRegex(orch.OrchestrationError, "lease is live"):
+            orch.nodes_update(self.cluster, "qwen-replicas", machine="halo-2")
 
     def test_control_and_node_tool_digests_agree(self):
         import importlib.machinery, importlib.util
@@ -437,11 +475,12 @@ class OrchestrationTests(unittest.TestCase):
             if verb == "lease":
                 self.assertEqual(payload["approval"], approval)
 
-    def test_install_bootstraps_builds_polls_copies_then_activates(self):
+    def test_install_checks_the_tool_builds_polls_copies_then_activates(self):
         release = orch.install(self.cluster, "halo-1", ["strix-hip-decode-token"], profile="qwen-replicas")
         self.assertEqual(release, RELEASE)
         verbs = [verb for _, verb, _ in self.calls]
-        self.assertEqual(verbs[:2], ["bootstrap", "bootstrap"])
+        self.assertEqual(verbs[:4], ["has-tool", "version", "has-tool", "version"])  # checked, never deployed (only nodes update)
+        self.assertNotIn("bootstrap", verbs)
         self.assertLess(verbs.index("install"), verbs.index("job"))
         self.assertLess(verbs.index("push-release"), verbs.index("activate"))
         recipe = next(payload["recipe"] for _, verb, payload in self.calls if verb == "install")
@@ -450,6 +489,12 @@ class OrchestrationTests(unittest.TestCase):
         components = next(payload["components"] for _, verb, payload in self.calls if verb == "install")
         self.assertEqual(components["tensormeld"], {key: orch._versions()["components"]["tensormeld"][key]
                                                   for key in ("repo", "commit")})
+
+    def test_install_never_deploys_the_node_tool(self):
+        with patch.object(FakeRemote, "tool", "0" * 64, create=True):
+            with self.assertRaisesRegex(orch.OrchestrationError, "hyperloom nodes update qwen-replicas"):
+                orch.install(self.cluster, "halo-1", ["strix-hip-decode-token"], profile="qwen-replicas")
+        self.assertEqual({verb for _, verb, _ in self.calls}, {"has-tool", "version"})
 
     def test_build_failure_and_copy_failure_never_activate(self):
         self.fail.add(("halo-1", "push-release"))

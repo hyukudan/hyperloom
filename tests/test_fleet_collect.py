@@ -1,0 +1,492 @@
+"""Fleet collectors: node answers -> shared series, counters through baselines, one node call per machine, loopback
+engines (C4), the control machine (C6) and the CLI."""
+
+import copy
+import io
+import json
+import tempfile
+import threading
+import time
+import unittest
+from contextlib import redirect_stdout
+from types import SimpleNamespace
+from unittest import mock
+
+from hyperloom import procs
+from hyperloom.cliext import telemetry as cli_telemetry
+from hyperloom.telemetry.store import BASELINES
+from hyperloom.web.features import machines
+
+from tests.test_fleet_support import FakeAPI, bump, host, lab, machine, nvidia_csv, pair_records, replica_records
+
+
+def series(points):
+    return {(name, tuple(sorted(labels.items()))): value for name, labels, value, *_ in points}
+
+
+class HostPointsTests(unittest.TestCase):
+    def test_recorded_answer_maps_to_the_shared_names(self):
+        gauges, counters = machines.host_points("halo-1", host("halo-1"))
+        found = series(gauges)
+        names = {name for name, _ in found}
+        self.assertEqual(names, {"node_cpu_busy_percent", "node_load1", "node_mem_available_bytes", "node_mem_total_bytes",
+                                 "node_gpu_busy_percent", "node_gpu_temp_celsius", "node_gpu_power_watts",
+                                 "node_gpu_clock_mhz", "node_gpu_mem_used_bytes", "node_gpu_mem_total_bytes",
+                                 "node_cpu_temp_celsius", "node_sensor_temp_celsius", "node_disk_used_bytes",
+                                 "node_disk_total_bytes"})
+        self.assertNotIn("node_gpu_power_limit_watts", names)            # the APU reports no readable cap
+        key = lambda name, **labels: (name, tuple(sorted({"machine": "halo-1", **labels}.items())))
+        self.assertIn(key("node_gpu_power_watts", device="card0", sensor="PPT"), found)
+        self.assertIn(key("node_gpu_temp_celsius", device="card0", sensor="amdgpu/edge"), found)
+        self.assertIn(key("node_cpu_temp_celsius", sensor="k10temp/Tctl"), found)
+        self.assertIn(key("node_sensor_temp_celsius", sensor="nvme/Composite"), found)
+        self.assertIn(key("node_gpu_mem_used_bytes", device="card0", domain="gtt"), found)
+        sensors = {dict(labels).get("sensor") for name, labels in found if name == "node_sensor_temp_celsius"}
+        self.assertFalse(any(s.startswith("amdgpu") for s in sensors))   # GPU sensors are GPU series only
+        self.assertEqual({name for name, *_ in counters}, {"node_disk_read_bytes", "node_disk_write_bytes",
+                                                           "node_net_rx_bytes", "node_net_tx_bytes"})
+        self.assertEqual({labels["iface"] for name, labels, *_ in counters if name == "node_net_rx_bytes"}, {"eno1", "wlp195s0"})
+
+    def test_sensor_identity_is_device_qualified_and_never_joins_unstable_ones(self):
+        chips = [{"hwmon": "hwmon1", "name": "nvme", "device": "nvme0", "temps": [{"sensor": "Composite", "input": "temp1", "celsius": 50}]},
+                 {"hwmon": "hwmon2", "name": "nvme", "device": "nvme1", "temps": [{"sensor": "Composite", "input": "temp1", "celsius": 51}]},
+                 {"hwmon": "hwmon3", "name": "acpitz", "device": None, "temps": [{"sensor": "temp1", "input": "temp1", "celsius": 60}]},
+                 {"hwmon": "hwmon4", "name": "acpitz", "device": None, "temps": [{"sensor": "temp1", "input": "temp1", "celsius": 61}]},
+                 {"hwmon": "hwmon5", "name": "k10temp", "device": "x", "temps": [{"sensor": "Tccd", "input": "temp3", "celsius": 70},
+                                                                                  {"sensor": "Tccd", "input": "temp4", "celsius": 71}],
+                  "power": [{"sensor": "SVI2_P_Core", "input": "power1", "field": "input", "watts": 30.0}]}]
+        answer = {"checks": {"sensors": {"status": "ok", "value": chips}}}
+        found = series(machines.host_points("m", answer)[0])
+        sensors = sorted(dict(labels)["sensor"] for name, labels in found)
+        self.assertEqual(sensors, ["k10temp/SVI2_P_Core", "k10temp/Tccd#temp3", "k10temp/Tccd#temp4",
+                                   "nvme@nvme0/Composite", "nvme@nvme1/Composite"])     # acpitz@hwmonN: not recorded
+        self.assertIn(("node_cpu_power_watts", (("machine", "m"), ("sensor", "k10temp/SVI2_P_Core"))), found)
+
+
+class CollectorTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.api = FakeAPI(self.dir.name)
+        self.store = self.api.telemetry
+        self.records = {}
+        patcher = mock.patch.object(machines, "launch_records", lambda api: self.records)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def round(self, now):
+        self.api.clock.now = now
+        return machines.sample_nodes(self.api, now)
+
+    def test_counters_become_deltas_with_rates_bound_to_the_boot(self):
+        first = host("halo-1")
+        self.api.answers = {"halo-1": first, "halo-2": host("halo-2")}
+        points = self.round(1_800_000_000.0)
+        self.assertIn(("node_up", {"machine": "halo-1"}, 1), points)
+        self.assertFalse(any(name.startswith("node_net") for name, *_ in points))       # deltas never go back to the sampler
+        self.store.record(points, ts=1_800_000_000.0, interval=5)
+        self.assertEqual(self.store.query("node_net_rx_bytes", 1_799_999_000, 1_800_000_100)["lines"], [])
+        self.api.answers["halo-1"] = bump(first, rx=5000, tx=500, read=1000)
+        self.round(1_800_000_005.0)
+        lines = self.store.query("node_net_rx_bytes", 1_799_999_000, 1_800_000_100, labels={"machine": "halo-1", "iface": "eno1"}, tier="raw")["lines"]
+        self.assertEqual([p[1] for p in lines[0]["points"]], [5000.0])
+        doc = machines.machine_document(self.api, "halo-1", {})
+        eno = next(n for n in doc["net"] if n["iface"] == "eno1")
+        self.assertAlmostEqual(eno["rx_bytes_per_s"], 1000.0)
+        self.assertAlmostEqual(eno["tx_bytes_per_s"], 100.0)
+        self.assertAlmostEqual(doc["disk_io"][0]["read_bytes_per_s"], 200.0)
+        # A reboot: a new instance, no negative or invented delta, and the old boot's rate is gone.
+        self.api.answers["halo-1"] = bump(first, rx=-1000, boot="0000000f-0000-4000-8000-00000000000f")
+        self.round(1_800_000_010.0)
+        lines = self.store.query("node_net_rx_bytes", 1_799_999_000, 1_800_000_100, labels={"machine": "halo-1", "iface": "eno1"}, tier="raw")["lines"]
+        self.assertEqual([p[1] for p in lines[0]["points"]], [5000.0])
+        doc = machines.machine_document(self.api, "halo-1", {})
+        self.assertIsNone(next(n for n in doc["net"] if n["iface"] == "eno1")["rx_bytes_per_s"])
+
+    def test_cpu_baseline_goes_back_to_the_node(self):
+        self.api.answers = {"halo-1": host("halo-1"), "halo-2": host("halo-2")}
+        self.round(1_800_000_000.0)
+        self.round(1_800_000_005.0)
+        payloads = [payload for mid, verb, payload in self.api.calls if mid == "halo-1"]
+        self.assertEqual(payloads[0], {})
+        cpu = host("halo-1")["checks"]["cpu"]["value"]
+        self.assertEqual(payloads[1], {"cpu": {"boot_id": host("halo-1")["checks"]["boot_id"]["value"],
+                                               "total": cpu["total"], "idle": cpu["idle"]}})
+
+    def test_failure_is_an_outcome_of_that_machine(self):
+        self.api.answers = {"halo-1": RuntimeError("ssh: connection refused"), "halo-2": host("halo-2")}
+        points = self.round(1_800_000_000.0)
+        self.assertIn(("node_up", {"machine": "halo-1"}, 0), points)
+        self.assertIn(("node_up", {"machine": "halo-2"}, 1), points)
+        entry = self.store.get(machines.HOSTS, "halo-1")
+        self.assertEqual((entry["ok"], entry["failures"]), (False, 1))
+        self.assertIn("connection refused", entry["error"])
+        self.api.answers["halo-1"] = {"schema": "hyperloom/node-v1", "verb": "host", "error": "not implemented in this node tool"}
+        self.round(1_800_000_005.0)
+        self.assertIn("not implemented", self.store.get(machines.HOSTS, "halo-1")["error"])
+
+    def test_one_call_in_flight_per_machine(self):
+        release, entered = threading.Event(), threading.Event()
+
+        def slow(payload):
+            entered.set()
+            release.wait(10)
+            return host("halo-1")
+
+        self.api.answers = {"halo-1": slow, "halo-2": host("halo-2")}
+        with mock.patch.object(machines, "ROUND_S", 0.3):
+            self.round(1_800_000_000.0)            # halo-1 does not finish within the round
+            self.assertTrue(entered.is_set())
+            self.round(1_800_000_005.0)            # its call is still in flight: not called again
+        calls = [mid for mid, verb, _ in self.api.calls]
+        self.assertEqual(calls.count("halo-1"), 1)
+        self.assertEqual(calls.count("halo-2"), 2)
+        entry = self.store.get(machines.HOSTS, "halo-1")
+        self.assertEqual(entry["skip_why"], "previous node call still in flight")
+        release.set()
+        for _ in range(100):
+            free = machines.node_gate(self.api, "halo-1")
+            if free:
+                free()
+                break
+            time.sleep(0.02)
+        # Another process holding the machine's gate also keeps this collector away.
+        gate = procs.InstanceLock(machines.gate_path(self.api, "halo-2")).acquire()
+        try:
+            self.round(1_800_000_010.0)
+        finally:
+            gate.close()
+        self.assertEqual([mid for mid, verb, _ in self.api.calls].count("halo-2"), 2)
+        self.assertEqual(self.store.get(machines.HOSTS, "halo-2")["skip_why"], "previous node call still in flight")
+
+    def test_a_worker_that_cannot_start_gives_the_gate_back(self):
+        self.api.answers = {"halo-1": host("halo-1"), "halo-2": host("halo-2")}
+        real = threading.Thread
+
+        class NoThread(real):
+            def start(self):
+                raise RuntimeError("can't start new thread")
+        with mock.patch.object(machines.threading, "Thread", NoThread):
+            self.round(1_800_000_000.0)
+        self.assertEqual(self.api.calls, [])
+        self.assertIn("could not start", self.store.get(machines.HOSTS, "halo-1")["skip_why"])
+        for mid in ("halo-1", "halo-2"):                    # the gates are free again: not leaked
+            free = machines.node_gate(self.api, mid)
+            self.assertIsNotNone(free)
+            free()
+
+    def test_loopback_engines_rank_zero_only_with_identity(self):
+        self.records = pair_records()
+        self.records.update(replica_records())
+        targets = machines.loopback_engines(self.records)
+        self.assertEqual(list(targets), ["halo-1"])                 # LAN replicas are not this package's to read
+        self.assertEqual(targets["halo-1"][0]["port"], 18441)
+        bodies = {"uptime": 100.0, "tokens": 1000, "start": 1_799_999_900.0}
+
+        def answer(payload):
+            self.assertEqual(payload["engine_status"], [{"port": 18441, "paths": machines.ENGINE_PATHS}])
+            result = host("halo-1")
+            status = json.dumps({"model": "mm-model", "context_tokens": 65536, "uptime_seconds": bodies["uptime"],
+                                 "start_time": bodies["start"],
+                                 "queue": {"queued": 1, "running": 2}})
+            metrics = f"strix_generated_tokens_total {bodies['tokens']}\nstrix_queue_waiting 1\n"
+            ok = lambda body, a, b: {"status": "ok", "value": {"http_status": 200, "content_type": "", "body": body},
+                                     "timing": {"start_s": a, "end_s": b}}
+            after = json.dumps({"start_time": bodies.get("after", bodies["start"])})
+            result["checks"]["engine_status"] = {"status": "ok", "value": [{"port": 18441, "wall_s": self.api.clock.now + 0.5, "paths": {
+                "/health": ok("ok", 0.08, 0.10), "/api/status?detail=1": ok(status, 0.10, 0.12),
+                "/metrics": ok(metrics, 0.12, 0.14), "/api/status": ok(after, 0.14, 0.16)}}]}
+            return result
+
+        self.api.answers = {"halo-1": answer, "halo-2": host("halo-2")}
+        self.round(1_800_000_000.0)
+        halo2 = [payload for mid, verb, payload in self.api.calls if mid == "halo-2"]
+        self.assertNotIn("engine_status", halo2[0])                 # rank 1 is never polled
+        bodies.update(uptime=105.0, tokens=1500)
+        self.round(1_800_000_005.0)
+        key = machines.engine_key("halo-1", "mm", 18441)
+        doc = self.store.get(machines.ENGINES, key)
+        self.assertEqual((doc["replica"], doc["profile"], doc["health"]), ("halo-1", "mm", "ok"))
+        self.assertTrue(doc["instance"].endswith("/start_time:1799999900.0"))
+        rows = machines.engine_rows(self.store, "halo-1", self.records, "workstation", 1_800_000_005.0)
+        self.assertEqual(rows[0]["throughput"], 100.0)              # 500 tokens over 5 s
+        self.assertEqual((rows[0]["model"], rows[0]["context_length"], rows[0]["running"], rows[0]["queued"]),
+                         ("mm-model", 65536, 2, 1))
+        follower = machines.engine_rows(self.store, "halo-2", self.records, "workstation", 1_800_000_005.0)
+        rank1 = next(r for r in follower if r["profile"] == "mm")
+        self.assertEqual((rank1["role"], rank1["follower_of"], rank1["throughput"]), ("rank 1", "halo-1", None))
+        # A replacement between the status read and the metrics read: the bracket read shows a fresh process.
+        bodies.update(uptime=110.0, tokens=99000, after=1_800_000_006.5)
+        self.round(1_800_000_007.0)
+        self.assertIsNone(self.store.get(machines.ENGINES, key)["instance"])
+        self.assertIsNone(machines.engine_rows(self.store, "halo-1", self.records, "workstation", 1_800_000_007.0)[0]["throughput"])
+        bodies.pop("after")
+        # A replacement engine on the same port (a new start time): a new instance, no false delta.
+        bodies.update(uptime=4.0, tokens=9000, start=1_800_000_006.0)
+        self.round(1_800_000_010.0)
+        rows = machines.engine_rows(self.store, "halo-1", self.records, "workstation", 1_800_000_010.0)
+        self.assertIsNone(rows[0]["throughput"])
+        # The engine stopped: its document and rate go away.
+        self.records = {}
+        self.round(1_800_000_015.0)
+        self.assertIsNone(self.store.get(machines.ENGINES, key))
+        self.assertEqual(self.store.execute("SELECT key FROM fleet_rates WHERE key LIKE 'engine|%'"), [])
+
+
+class EngineIdentityTests(unittest.TestCase):
+    def test_identity_is_reported_by_the_engine_never_inferred(self):
+        self.assertEqual(machines._instance({"instance_id": "abc", "uptime_seconds": 5}, "L1"), "L1/id:abc")
+        self.assertEqual(machines._instance({"start_time": 1700.5}, "L1"), "L1/start_time:1700.5")
+        # Never truncated or rounded: distinct values stay distinct, oversized ones are refused.
+        self.assertNotEqual(machines.engine_identity({"start_time": 1700.0000001}), machines.engine_identity({"start_time": 1700.0000002}))
+        self.assertNotEqual(machines.engine_identity({"instance_id": "x" * 100 + "A"}), machines.engine_identity({"instance_id": "x" * 100 + "B"}))
+        self.assertIsNone(machines.engine_identity({"instance_id": "x" * 129}))
+        self.assertFalse(machines.bracketed({"start_time": 1700.0000001}, {"start_time": 1700.0000002}))
+        # Numbers as the engine wrote them: two start times a float cannot tell apart stay distinct.
+        parse = lambda text: json.loads(text, parse_float=machines.RawFloat)
+        first, second = parse('{"start_time": 1700000000.0000002}'), parse('{"start_time": 1700000000.0000003}')
+        self.assertEqual(float(first["start_time"]), float(second["start_time"]))
+        self.assertFalse(machines.bracketed(first, second))
+        self.assertNotEqual(machines._instance(first, "L1"), machines._instance(second, "L1"))
+        self.assertIsNone(machines._instance({"uptime_seconds": 500.0}, "L1"))     # an uptime alone is not an identity
+        self.assertIsNone(machines._instance({"instance_id": "abc"}, None))
+        self.assertTrue(machines.bracketed({"start_time": 10.0}, {"start_time": 10.0}))
+        self.assertFalse(machines.bracketed({"start_time": 10.0}, {"start_time": 11.0}))     # replaced in between
+        self.assertFalse(machines.bracketed({"instance_id": "a"}, None))
+        self.assertFalse(machines.bracketed({"uptime_seconds": 1.0}, {"uptime_seconds": 1.1}))
+
+
+class ControlTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.api = FakeAPI(self.dir.name)
+
+    def test_nvidia_parsing_and_throttle_states(self):
+        gpus, apps = nvidia_csv()
+        cards = machines.parse_nvidia(gpus, apps)
+        self.assertEqual([c["device"] for c in cards], ["GPU-a0b1c2d3", "GPU-d4e5f6a7"])
+        pro, consumer = cards
+        self.assertEqual((pro["power_w"], pro["power_limit_w"], pro["temperature_c"], pro["clock_mhz"]), (132.58, 498.0, 53.0, 2842.0))
+        self.assertEqual(pro["memory_total_bytes"], 97887 * 1024 * 1024)
+        self.assertEqual((pro["throttle"], pro["throttle_reasons"]), (3, ["reason bit 0x400"]))
+        self.assertEqual((consumer["throttle"], consumer["throttle_reasons"]), (0, ["idle"]))
+        self.assertEqual([p["comm"] for p in pro["processes"]], ["tool.exe", "engine.exe"])   # file names only
+        self.assertIsNone(pro["processes"][0]["vram_bytes"])
+        self.assertEqual(machines.throttle_state(0x20)[0], 2)
+        self.assertEqual(machines.throttle_state(0x4 | 0x1)[0], 1)
+        self.assertEqual(machines.throttle_state(0x40 | 0x4)[0], 2)
+        self.assertEqual(machines.throttle_state(None), (None, None))
+        broken = gpus.replace("132.58", "[N/A]").replace("P1", "[Not Supported]")
+        card = machines.parse_nvidia(broken)[0]
+        self.assertIsNone(card["power_w"])
+        self.assertIn("power_w", card["why"])
+        self.assertEqual(machines.parse_nvidia("garbage,1\n"), [])
+
+    def test_nvidia_sample_failures_are_unavailable(self):
+        def missing(arguments):
+            raise FileNotFoundError("nvidia-smi not found")
+        self.assertEqual(machines.nvidia_sample(missing)["status"], "unavailable")
+        runs = []
+        gpus, apps = nvidia_csv()
+        sample = machines.nvidia_sample(lambda arguments: runs.append(arguments) or (gpus if "--query-gpu" in arguments[0] else apps))
+        self.assertEqual(sample["status"], "ok")
+        self.assertTrue(all(a[-1] == "--format=csv,noheader,nounits" for a in runs))
+
+    def test_windows_answer_and_counter_cadence(self):
+        class System:
+            def __init__(self):
+                self.ticks = [(1000, 2000), (1500, 3000)]
+                self.rx = 1000
+
+            def uptime(self):
+                return 3600.0 + self.now - 1_800_000_000.0      # a running clock since the same boot
+
+            def memory(self):
+                return {"MemTotal": 128 * 2 ** 30, "MemAvailable": 64 * 2 ** 30, "CommitTotal": 100 * 2 ** 30,
+                        "CommitLimit": 160 * 2 ** 30, "CommitAvailable": 60 * 2 ** 30}
+
+            def cpu_times(self):
+                return self.ticks.pop(0) if self.ticks else (1500, 3000)
+
+            def cores(self):
+                return 32
+
+            def disks(self):
+                return [{"mount": "C:", "fstype": None, "total_bytes": 100, "used_bytes": 40, "free_bytes": 60}]
+
+            def interfaces(self):
+                self.rx += 2000
+                return [{"iface": "Ethernet", "luid": 1, "rx_bytes": self.rx, "tx_bytes": 10, "physical": True, "operstate": "up"}]
+
+        system = System()
+        state = machines._state(self.api)
+        state.windows["system"] = system
+        gpus, apps = nvidia_csv()
+        with mock.patch.object(machines, "_windows", lambda: True), \
+                mock.patch.object(machines, "_control_nvidia", lambda: {"status": "ok", "value": machines.parse_nvidia(gpus, apps)}):
+            system.now = 1_800_000_000.0
+            first = machines.sample_control(self.api, system.now)
+            system.now = 1_800_000_002.0
+            second = machines.sample_control(self.api, system.now)
+            system.now = 1_800_000_006.0
+            third = machines.sample_control(self.api, system.now)
+        found = series(second)
+        self.assertEqual(found[("node_commit_available_bytes", (("machine", "workstation"),))], 60 * 2 ** 30)
+        self.assertAlmostEqual(found[("node_cpu_busy_percent", (("machine", "workstation"),))], 50.0)
+        self.assertNotIn(("node_cpu_busy_percent", (("machine", "workstation"),)), series(first))
+        self.assertEqual(found[("node_gpu_throttled", (("device", "GPU-a0b1c2d3"), ("machine", "workstation")))], 3)
+        self.assertIn(("node_gpu_mem_used_bytes", (("device", "GPU-d4e5f6a7"), ("domain", "vram"), ("machine", "workstation"))), found)
+        # Counters are committed at most once per node interval (first round, then the round 6 s later).
+        raw = self.api.telemetry.query("node_net_rx_bytes", 1_799_999_000, 1_800_000_100, tier="raw")["lines"]
+        self.assertEqual([p[1] for p in raw[0]["points"]], [4000.0])         # 3000 -> 7000 bytes
+        entry = self.api.telemetry.get(machines.HOSTS, "workstation")
+        self.assertEqual(entry["access"], "local")
+        self.assertEqual(len(entry["host"]["checks"]["nvidia"]["value"]), 2)
+        self.assertTrue(third)
+
+
+class CLITests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.api = FakeAPI(self.dir.name)
+        self.api.answers = {"halo-1": host("halo-1"), "halo-2": host("halo-2")}
+        patches = [mock.patch.object(cli_telemetry, "_api", lambda args: self.api),
+                   mock.patch.object(machines, "launch_records", lambda api: {})]
+        for patcher in patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def run_cli(self, *argv):
+        from hyperloom import cli
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = cli.main(["telemetry", *argv])
+        return code, json.loads(out.getvalue())
+
+    def test_dry_run_sample_writes_nothing(self):
+        machines.sample_nodes(self.api, 1_800_000_000.0)        # an existing portal state
+        before = {ns: self.api.telemetry.items(ns) for ns in (machines.HOSTS, BASELINES)}
+        with mock.patch.object(cli_telemetry, "_existing", lambda api: api.telemetry):
+            self.api.answers["halo-1"] = bump(host("halo-1"), rx=100)
+            code, out = self.run_cli("sample", "--collector", "fleet-nodes")
+        self.assertEqual(code, 0)
+        self.assertFalse(out["recorded"])
+        self.assertIn({"series": "node_up", "labels": {"machine": "halo-1"}, "value": 1}, out["collectors"]["fleet-nodes"]["points"])
+        self.assertEqual({ns: self.api.telemetry.items(ns) for ns in before}, before)
+
+    def test_record_status_query_and_thresholds(self):
+        with mock.patch.object(cli_telemetry, "_existing", lambda api: api.telemetry), \
+                mock.patch("hyperloom.telemetry.open_store", lambda api: api.telemetry):
+            code, out = self.run_cli("sample", "--collector", "fleet-nodes", "--record")
+            self.assertEqual((code, out["recorded"]), (0, True))
+            self.assertGreater(out["collectors"]["fleet-nodes"]["recorded"], 10)
+            code, out = self.run_cli("status")
+            self.assertEqual(out["machines"]["halo-1"]["status"], "online")
+            self.assertIn("node_up", out["series"])
+            code, out = self.run_cli("query", "node_up", "--range", "600", "--label", "machine=halo-1")
+            self.assertEqual(out["series"], "node_up")
+            self.assertEqual(len(out["lines"]), 1)
+            code, out = self.run_cli("thresholds", "--set", '{"rtx": {"amber_gib": 3}}')
+            self.assertEqual(out["thresholds"]["rtx"], {"amber_gib": 3.0, "red_gib": 1.0})
+            self.assertIn(("audit", "fleet/thresholds/set", "succeeded"), self.api.calls)
+            with self.assertRaises(ValueError):
+                self.run_cli("thresholds", "--set", '{"rtx": {"red_gib": 9}}')
+            self.assertIn(("audit", "fleet/thresholds/set", "refused"), self.api.calls)
+
+    def test_status_without_a_store_says_so(self):
+        with mock.patch.object(cli_telemetry, "_existing", lambda api: None):
+            code, out = self.run_cli("status")
+        self.assertEqual(code, 1)
+        self.assertIsNone(out["store"])
+
+
+# These tests drive the collectors with their own clock to check accounting, not pacing: the polling budget
+# (hyperloom.pollbudget, tested in tests/test_pollbudget.py) grants every read here.
+_unpaced = None
+
+
+def setUpModule():
+    global _unpaced
+    from unittest import mock as _mock
+    from hyperloom import pollbudget as _pollbudget
+    _unpaced = _mock.patch.multiple(_pollbudget, CYCLE_S=0.0, NODE_SPACING_S=0.0, ENGINE_CYCLE_S=0.0, TURN_CHECK_S=0.0)
+    _unpaced.start()
+
+
+def tearDownModule():
+    _unpaced.stop()
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class SourceIdentityTests(unittest.TestCase):
+    """Counters are never joined across devices, boots or launches, and never committed too often."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.api = FakeAPI(self.dir.name)
+        self.records = {}
+        patcher = mock.patch.object(machines, "launch_records", lambda api: self.records)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def rx(self, now):
+        lines = self.api.telemetry.query("node_net_rx_bytes", now - 100, now + 1, labels={"machine": "halo-1", "iface": "eno1"}, tier="raw")["lines"]
+        return [p[1] for p in lines[0]["points"]] if lines else []
+
+    def test_a_replaced_interface_is_a_new_counter(self):
+        first = host("halo-1")
+        self.api.answers = {"halo-1": first, "halo-2": host("halo-2")}
+        machines.sample_nodes(self.api, 1_800_000_000.0)
+        replaced = bump(first, rx=900)
+        next(r for r in replaced["checks"]["net"]["value"] if r["iface"] == "eno1")["ifindex"] = 9
+        self.api.answers["halo-1"] = replaced
+        machines.sample_nodes(self.api, 1_800_000_005.0)
+        self.assertEqual(self.rx(1_800_000_005.0), [])
+
+    def test_commits_keep_their_spacing_whoever_records(self):
+        store = self.api.telemetry
+        machines.describe(self.api, store)
+        key, rate_key = "fleet/halo-1/x", "halo-1|x"
+        self.assertIsNone(machines.account(store, key, "halo-1", "b/s", 100, 1000.0, rate_key))
+        self.assertIsNone(machines.account(store, key, "halo-1", "b/s", 200, 1001.0, rate_key))     # 1 s later: waits
+        self.assertEqual(machines.account(store, key, "halo-1", "b/s", 600, 1005.0, rate_key), 500)
+        self.assertEqual(machines.rates(store, "halo-1", 1005.0, 60)[rate_key][:2], (100.0, 5.0))
+
+    def test_windows_boot_identity_never_joins_two_boots(self):
+        answer = lambda uptime: {"checks": {"uptime_s": {"status": "ok", "value": uptime}}}
+        one = machines._entry(None, "workstation", "local", answer(100.0), None, 1_800_000_000.0)["instance"]
+        same = machines._entry(None, "workstation", "local", answer(105.0), None, 1_800_000_005.0)["instance"]
+        rebooted = machines._entry(None, "workstation", "local", answer(20.0), None, 1_800_000_010.0)["instance"]
+        self.assertEqual(one, same)
+        self.assertNotEqual(one, rebooted)
+
+    def test_another_launch_never_shows_the_previous_engine(self):
+        self.records = pair_records()
+        key = machines.engine_key("halo-1", "mm", 18441)
+        store = self.api.telemetry
+        machines.describe(self.api, store)
+        store.put(machines.ENGINES, key, {"ts": 1_800_000_000.0, "machine": "halo-1", "profile": "mm", "port": 18441,
+                                          "launch": "old-launch", "status": {"model": "old"}, "instance": "x", "why": {}})
+        rows = machines.engine_rows(store, "halo-1", self.records, "workstation", 1_800_000_001.0)
+        self.assertIsNone(rows[0]["model"])
+        self.assertIsNone(rows[0]["observer"])
+
+    def test_a_failed_process_query_is_unavailable_not_empty(self):
+        gpus, _ = nvidia_csv()
+
+        def run(arguments):
+            if "--query-compute-apps" in arguments[0]:
+                raise RuntimeError("nvidia-smi exited with 6")
+            return gpus
+
+        cards = machines.nvidia_sample(run)["value"]
+        self.assertTrue(all(card["processes"] is None for card in cards))
+        self.assertIn("exited with 6", cards[0]["why"]["processes"])
+        ok = machines.parse_nvidia(gpus, "")
+        self.assertEqual([card["processes"] for card in ok], [[], []])     # a query that found nothing

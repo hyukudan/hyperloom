@@ -1,0 +1,41 @@
+/* Benchmark pages (bench-*.js, demo.js). Colours come from the shell's tokens, so both themes keep their contrast. */
+.bench{display:grid;gap:16px;min-width:0}
+.bench .grid{min-width:0}
+.bench fieldset{border:1px solid var(--border);border-radius:var(--r-sm);padding:8px 12px;margin:8px 0}
+.bench-caps{list-style:none;padding:0;margin:8px 0;display:flex;flex-wrap:wrap;gap:6px 16px;font-size:13px}
+.bench-switches{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:flex-start;margin:6px 0}
+.bench-switches .field{margin:0}
+.bench-cli{margin-top:10px;overflow-wrap:anywhere}
+.bench-cli code{font-family:var(--mono);font-size:12.5px;background:var(--surface-2);padding:2px 6px;border-radius:var(--r-sm);display:inline-block;max-width:100%;white-space:pre-wrap;word-break:break-all}
+.bench-notes{margin:8px 0 0;padding-left:18px}
+.bench-big{font-size:32px;font-weight:650;margin:4px 0}
+.bench-h3{font-size:14px;margin:4px 0 8px}
+.bench-excerpt{font-size:12px;white-space:pre-wrap;word-break:break-word}
+.bench-wide{grid-column:1/-1}
+.bench-wide textarea{width:100%;font-family:var(--mono);font-size:12.5px}
+.bench-bars{margin:0;display:grid;gap:6px}
+.bench-bars figcaption{font-weight:600;margin-bottom:4px}
+.bench-bar{display:grid;grid-template-columns:48px 1fr minmax(90px,auto);gap:10px;align-items:center;font-size:13px}
+.bench-bar-l{color:var(--text-2);text-align:right;font-variant-numeric:tabular-nums}
+.bench-bar-t{height:14px;background:var(--surface-2);border-radius:var(--r-sm);overflow:hidden}
+.bench-bar-t i{display:block;height:100%;background:var(--accent)}
+.bench-bar-v{font-variant-numeric:tabular-nums}
+.bench-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;margin-top:10px}
+.bench-tile{border:1px solid var(--border);border-radius:var(--r);padding:10px;background:var(--surface);min-width:0;display:flex;flex-direction:column;gap:6px}
+.bench-prompt{margin:0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.bench-rate{font-size:12.5px;font-variant-numeric:tabular-nums}
+.bench-term{margin:0;font-family:var(--mono);font-size:12px;line-height:1.45;background:var(--surface-2);color:var(--text);border-radius:var(--r-sm);padding:8px;height:180px;overflow:auto;white-space:pre-wrap;word-break:break-word}
+.bench-reasoning{height:90px;color:var(--text-2)}
+.bench-spark{max-width:600px}
+.bench-share{font-family:var(--mono);font-size:12.5px;background:var(--surface-2);padding:10px;border-radius:var(--r-sm);white-space:pre-wrap;word-break:break-word;margin:0}
+.bench-canvas{width:100%;height:auto;border-radius:var(--r);border:1px solid var(--border)}
+@media (max-width:760px){
+  .bench-bar{grid-template-columns:40px 1fr auto}
+  .bench-tiles{grid-template-columns:1fr}
+  .bench .row{flex-wrap:wrap}
+}
+.bench-top{display:grid;grid-template-columns:minmax(0,2fr) minmax(260px,1fr);gap:16px;align-items:start}
+.bench-fields{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:4px 14px}
+.bench fieldset{min-width:0}
+.bench .inp{max-width:100%;min-width:0}
+@media (max-width:1100px){.bench-top{grid-template-columns:minmax(0,1fr)}}

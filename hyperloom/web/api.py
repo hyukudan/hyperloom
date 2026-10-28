@@ -8,6 +8,9 @@ logs.entries/failures, settings.trusted_machines. Missing sources are null.
 POST arguments use CLI names (hyphens become underscores); replies contain
 job/id, state, action, arguments, result, error. Poll /jobs or /jobs/<id>.
 GET logs accepts profile/process/tail. POST cancel accepts job or profile.
+Recipes (web/recipes.py, docs/api.md): GET recipes, recipes/<id>, recipes/active, recipes/routes; synchronous POST
+recipes/{validate,explain,check,diff,pick,select,plan} and recipes/{save,delete,save-layer,delete-layer,save-receipt};
+jobs recipes/probe and recipes/deploy. Each one runs the `hyperloom recipe ...` command line.
 """
 
 from collections import deque
@@ -27,18 +30,25 @@ import time
 import uuid
 from urllib.request import ProxyHandler, Request, build_opener
 
-from hyperloom import __version__, cli, config, engines, orchestrate, remote, render, secrets
+from hyperloom import __version__, admission, cli, config, engines, nodegate, nodepoll, orchestrate, pollbudget, remote, render, secrets
 from hyperloom.adapters import engine, router
 from hyperloom.paths import repo_root
 from hyperloom.stats import Window
 from hyperloom.winproc import no_window
+from hyperloom.web import recipes as recipe_web
+from hyperloom.web import features as feature_registry
 
 
+# Token counts (a recipe's prompt_tokens_min, max_copies_per_token) are measurements; a key that also names a secret
+# (password, secret, authorization, api key, private key) is redacted whatever its value.
+MEASUREMENT = re.compile(r"(?i)[a-z0-9_]*(?:tokens|per_token)[a-z0-9_]*")
+SECRET_NAME = re.compile(r"(?i)password|secret|authorization|api[_-]?key|private[_-]?key")
+IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")      # profile and machine ids (orchestrate._identifier)
 SCREENS = frozenset(("devices", "topology", "models", "profiles", "stats", "logs", "settings"))
-MUTATIONS = frozenset(("up", "down", "install", "hosts/pin", "doctor", "keys/rotate", "cancel"))
+MUTATIONS = frozenset(("up", "down", "install", "hosts/pin", "doctor", "keys/rotate", "cancel")) | recipe_web.JOBS
 POLL_INTERVAL = 2
 CAPABILITIES = {
-    "up": {"enabled": True, "why": "Qwen replicas only"},
+    "up": {"enabled": True, "why": "Qwen replicas; any model with a recipe"},
     "down": {"enabled": True}, "install": {"enabled": True},
     "hosts/pin": {"enabled": True}, "doctor": {"enabled": True},
     "keys/rotate": {"enabled": True, "why": "engine keys; restart required"},
@@ -58,39 +68,158 @@ class APIError(ValueError):
         self.status = status
 
 
+class JobFailed(Exception):
+    """Raised by a feature job whose failure is definite (or whose outcome is unresolved): the job ends "failed"
+    even when a cancel was requested meanwhile, and `outcome` (a short word such as "unresolved", matching
+    JOB_OUTCOME; anything else is recorded as "invalid") is kept on the job and its audit line, so the job, the
+    audit log and the feature's own records agree."""
+
+    def __init__(self, message, outcome=None):
+        super().__init__(message)
+        self.outcome = outcome
+
+
+JOB_OUTCOME = re.compile(r"[a-z][a-z0-9_-]{0,39}")
 LOOPBACK_UNAVAILABLE = "unavailable: engine bound to loopback on its node"
+OWNER_LEASE_S = 120.0       # a portal-started benchmark is abandoned when its page stops renewing it this long
+HOLD_RENEW_S = 30.0
+
+
+class JobContext:
+    """Passed to feature jobs: ctx(text) reports progress; ctx.cancelled() is true after a cancel request, a stop
+    of an overlapping profile (from any portal or CLI process, through the shared admission database), the
+    deadline, or, for a job started from a portal page, when that page stopped renewing it (abandoned).
+    ctx.reason says which; ctx.deadline is a monotonic time."""
+
+    def __init__(self, deadline_s, admission_db=None, hold=None, owned=False):
+        self.deadline = time.monotonic() + deadline_s
+        self.reason = None
+        self.report = lambda text: None
+        self.hold = hold
+        self._admission = admission_db
+        self._event = threading.Event()
+        self._owner_expires = time.monotonic() + OWNER_LEASE_S if owned else None
+        self._checked = 0.0
+
+    def __call__(self, text):
+        self.report(text)
+
+    def cancel(self, reason):
+        if not self._event.is_set():
+            self.reason = reason
+            self._event.set()
+
+    def renew_owner(self):
+        if self._owner_expires is not None:
+            self._owner_expires = time.monotonic() + OWNER_LEASE_S
+
+    def owner_fresh(self):
+        return self._owner_expires is None or time.monotonic() < self._owner_expires
+
+    def cancelled(self):
+        if not self._event.is_set():
+            now = time.monotonic()
+            if now >= self.deadline:
+                self.cancel("deadline reached")
+            elif not self.owner_fresh():
+                self.cancel("abandoned: the portal page that started it stopped renewing it")
+            elif self._admission is not None and self.hold and now - self._checked >= 1.0:
+                self._checked = now
+                try:
+                    reason = self._admission.cancelled(self.hold)
+                except Exception:  # noqa: BLE001 - unreadable now: checked again at the next call
+                    reason = None
+                if reason:
+                    self.cancel(reason)
+        return self._event.is_set()
+
+    def wait(self, seconds):
+        """Sleep up to `seconds`, waking early on cancellation; True when cancelled."""
+        end = time.monotonic() + max(0.0, seconds)
+        while not self.cancelled():
+            left = min(end, self.deadline) - time.monotonic()
+            if left <= 0:
+                return self.cancelled()
+            self._event.wait(min(left, 1.0))
+        return True
 
 
 def _binds_loopback(profile, status, cluster):
-    """True when the profile's engine family binds 127.0.0.1 on its node (no LAN listener to poll)."""
-    family = ((status or {}).get("launch") or {}).get("family")
+    """True when the profile's engine binds 127.0.0.1 on its node (no LAN listener to poll): the launched release's
+    bind (a key-file release binds the LAN), else its family's."""
+    launch = (status or {}).get("launch") or {}
+    family, preset = launch.get("family"), launch.get("preset")
     try:
-        if family is None and cluster is not None and profile in cluster.profiles:
-            family = config.family(cluster.profiles[profile].get("preset", profile))
+        if preset is None and family is None and cluster is not None and profile in cluster.profiles:
+            preset = cluster.profiles[profile].get("preset", profile)
+        if isinstance(preset, str):
+            try:
+                return engines.release_adapter(preset).bind == "loopback"
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+            if family is None:
+                family = config.family(preset)
         return family is not None and engines.adapter(family).bind == "loopback"
     except (OSError, ValueError, KeyError):
         return False
 
 
-def redact(value):
-    """Redact structured secrets and command/log representations of them."""
+# Keys that hold token counts, token-id arrays or tokenizer identities (data, not credentials). Anything else whose
+# name looks like a credential ("token", "access_token", "csrf_token", api keys, passwords...) is redacted whatever
+# its type.
+DATA_TOKEN_KEY = re.compile(r"(?:[a-z0-9_]*_)?tokens(?:_[a-z0-9_]+)?|(?:[a-z0-9_]*_)?token_(?:ids|count|counts|budget)"
+                            r"|tokenizer(?:_[a-z0-9_]+)?", re.I)
+COMPRESSED_IDS = re.compile(r"gz:b64:[A-Za-z0-9+/]+={0,2}")
+
+
+def _token_data(key, item):
+    if not DATA_TOKEN_KEY.fullmatch(key) or re.search(r"password|secret|authorization|api[_-]?key|private|bearer|csrf", key, re.I):
+        return False
+    number = lambda v: type(v) in (int, float)
+    if key.lower().startswith("tokenizer"):
+        return isinstance(item, str) and len(item) <= 200 and not re.search(r"(?i)bearer\s|\s", item)
+    ids = re.fullmatch(r"(?:[a-z0-9_]*_)?token_ids|tokens", key, re.I)      # token-id arrays, not *_tokens
+    return (number(item) or (ids and isinstance(item, list) and all(type(v) is int for v in item))
+            or (isinstance(item, dict) and bool(item)          # a counter's accounting: numbers, flags, unknowns
+                and all(number(v) or v is None or type(v) is bool for v in item.values()))
+            or (isinstance(item, str) and key.lower().endswith("token_ids") and bool(COMPRESSED_IDS.fullmatch(item))))
+
+
+def redact(value, text=True):
+    """Redact structured secrets and command/log representations of them. ``text=False``: keys and argv only, free
+    text kept as it is (recipe documents: their prose would otherwise be rewritten, "per token: an upper bound")."""
     if isinstance(value, dict):
         result = {}
         for key, item in value.items():
+            if key in ("why", "series") and isinstance(item, dict):
+                # A map keyed by field or series names (why a field has no value; a series' history link): a string
+                # under a token-data name such as "computed_tokens" goes through the text rules (a credential in it
+                # is still redacted); every other entry, a credential-named key above all, is redacted as usual.
+                result[key] = {k: redact(v, text) if isinstance(v, str) and DATA_TOKEN_KEY.fullmatch(k) and not
+                               re.search(r"password|secret|authorization|api[_-]?key|private|bearer|csrf", k, re.I)
+                               else redact({k: v}, text)[k] for k, v in item.items()}
+                continue
             metadata = key == "secrets" and isinstance(item, dict) and item in (
                 {"storage": "DPAPI", "values": "never shown"},
                 {"storage": "0600 files", "values": "never shown"})
             sensitive = re.search(r"password|secret|token|authorization|api[_-]?key|private[_-]?key", key, re.I)
-            result[key] = "[redacted]" if sensitive and not metadata and not key.endswith(
-                ("_file", "_path", "_tokens")) else redact(item)
+            counts = sensitive and _token_data(key, item)
+            credential = re.search(r"password|secret|authorization|api[_-]?key|private[_-]?key|bearer|csrf", key, re.I)
+            # Token counts are measurements (a recipe's prompt_tokens_min, max_copies_per_token), not secrets.
+            number = item is None or isinstance(item, (int, float)) and not isinstance(item, bool)
+            measurement = number and MEASUREMENT.fullmatch(key) and not SECRET_NAME.search(key) and not credential
+            # A *_tokens key keeps a number only (never a string); token-id arrays and the like are `counts`.
+            exempt = key.endswith(("_file", "_path")) or (number and key.endswith("_tokens") and not credential)
+            result[key] = "[redacted]" if sensitive and not counts and not measurement and not metadata and \
+                not exempt else redact(item, text)
         return result
     if isinstance(value, (list, tuple)):
         result, hide = [], False
         for item in value:
-            result.append("[redacted]" if hide else redact(item))
+            result.append("[redacted]" if hide else redact(item, text))
             hide = isinstance(item, str) and item in ("--api-key", "--handoff-api-key", "--password", "--token")
         return result
-    if isinstance(value, str):
+    if isinstance(value, str) and text:
         value = re.sub(r"(?i)(Bearer\s+)\S+", r"\1[redacted]", value)
         return re.sub(r'''(?ix)((?:["']?(?:api[_-]?key|handoff[_-]?api[_-]?key|password|secret|token)["']?)\s*[:=]\s*|--(?:api-key|handoff-api-key|password|token)\s+)(?:"[^"]*"|'[^']*'|[^\s,;}]+)''',
                       r"\1[redacted]", value)
@@ -297,6 +426,15 @@ class API:
         self._audit_lock = threading.Lock()
         self._cached = None
         self._expires = 0
+        self._inspections = {}          # (machine, verb) -> {"value", "error", "at"}: the inventory's last node reads
+        self._status_cache = None       # (read at, statuses, error): launch status, read at most once per cycle
+        self._status_stale = False      # a job finished: the next snapshot reads the launch status again
+        self._stats_cache = None        # the stats document of the last status read
+        self._last_status = {}          # (profile, machine or "router") -> its last status answer (paced reads)
+        self._last_logs = {}            # (profile, process) -> its last log entries (paced reads)
+        self._last_process_logs = {}    # (profile, process, tail) -> the Logs page's last document of it
+        self._status_retry = False      # a status read refused for spacing: the next snapshot tries it again
+        self._status_poller = "status"  # the budget bucket of the current status cycle (its retries keep it)
         self._jobs = {}
         self._active = None
         self._seen = {}
@@ -304,6 +442,57 @@ class API:
         self._history = deque(maxlen=1800)
         self._counters = {}
         self._recent = {}
+        self._features_running = {}     # job id -> JobContext of every running feature job
+        self.admission_db = None        # tests inject one; else the configuration's shared database (C11)
+        self._holds = {}                # job id -> admission hold id (core, stop and admitted feature jobs)
+        self._hold_resources = {}       # job id -> the resources of its hold (a stop without admission uses them)
+        self._heartbeat = None
+        self._heartbeat_lock = threading.Lock()     # a hold is published only once the renewal thread runs
+        self.recipes = recipe_web.Runner()
+
+    def _recipe_loader(self, path):
+        return self.orchestrate.load_cluster(path, config)
+
+    def recipe_get(self, endpoint, query):
+        """GET recipes, recipes/<id>, recipes/active, recipes/routes: (status, document); the CLI's own parser and
+        commands.run, in process (they only read files)."""
+        if endpoint in recipe_web.POSTS or endpoint in recipe_web.JOBS:
+            raise APIError(endpoint + " requires POST", 405)
+        from hyperloom.recipes import service
+        with service.configured(self.config_path):
+            try:
+                operation, argv = recipe_web.read_request(endpoint, query, config=self.config_path)
+            except ValueError as exc:
+                raise APIError(str(exc)) from exc
+            status, document = recipe_web.document(operation, argv, recipe_web.in_process(argv, self._recipe_loader),
+                                                   now=self.clock())
+        return status, recipe_web.redacted(document, redact)
+
+    def recipe_post(self, action, arguments, cancelled=lambda: False):
+        """POST recipes/<query or write>: (status, document) of the CLI child; writes are audited."""
+        from hyperloom.recipes import service
+        try:
+            with service.configured(self.config_path):
+                request = recipe_web.Request(action, arguments, config=self.config_path)
+        except ValueError as exc:
+            if action in recipe_web.WRITES:
+                self._audit(action, recipe_web.audit_arguments(arguments), {"state": "refused", "error": str(exc)})
+            raise APIError(str(exc)) from exc
+        try:
+            try:
+                result = self.recipes.run(request.argv, stdin=request.stdin, deadline_s=request.deadline_s,
+                                          cancelled=cancelled)
+            except recipe_web.Busy as exc:
+                raise APIError(str(exc), 503) from exc
+            status, document = recipe_web.document(request.operation, request.command_line_argv(), result,
+                                                   now=self.clock(), cli_files=request.cli_files)
+        finally:
+            request.close()
+        if action in recipe_web.WRITES:
+            self._audit(action, recipe_web.audit_arguments(arguments),
+                        {"state": "succeeded" if document["ok"] else "refused", "exit_code": document["exit_code"],
+                         "error": document["error"], "result": document["result"]})
+        return status, recipe_web.redacted(document, redact)
 
     def _cluster(self):
         return self.orchestrate.load_cluster(self.config_path, config)
@@ -312,10 +501,18 @@ class API:
         return {"schema": f"hyperloom/ui-{screen}-v1", "server_time": self.clock(),
                 "poll_interval_s": POLL_INTERVAL, "why": {}, **fields}
 
-    def _node(self, machine, verb, payload=None):
+    def _node(self, machine, verb, payload=None, gated=False):
+        """A node verb. The core's own calls (``gated`` False) never wait on the node gate: a collector's hung call
+        cannot turn them into a timeout. Feature calls (``node``) take the gate, reentrant for a collector that
+        adopted it."""
         payload = payload or {}
         if machine.access == "ssh":
-            return self.remote.Remote(machine, self.orchestrate._known_hosts()).call(verb, payload, timeout=10)
+            call = lambda: self.remote.Remote(machine, self.orchestrate._known_hosts()).call(verb, payload, timeout=10)
+            if not gated:
+                return call()
+            # One feature node call per machine at a time across portal processes and the CLI.
+            with nodegate.hold(self.config_path, machine.id, wait=15.0):
+                return call()
         if machine.access != "local":
             raise ValueError("later phase · TensorMeld agent")
         result = subprocess.run([str(Path(sys.executable).absolute()),
@@ -379,6 +576,138 @@ class API:
             pass
         return data
 
+    def _inspect(self, machine):
+        """The inventory's node reads of one machine, paced by the polling budget: each verb is its own poller (one
+        grant, one node call: doctor and gpu at most once per cycle each, spaced like every other poll of the node),
+        none while a GPU turn holds the node. A read not due keeps the last answer. Returns the verbs to show."""
+        verbs = ("doctor", "gpu")
+        now = self.clock()
+        paused = None
+        poll = nodepoll.of(self) if machine.access == "ssh" else None
+        for verb in verbs:
+            if poll is not None:
+                # The portal's node poll reads the node (one session per cycle for every reader): its latest answer.
+                value, error, at = poll.read(machine.id, verb, verb, {}, now=now)
+                if value is None and (error == nodepoll.NOT_YET or error.startswith("paused")):
+                    paused = error if error.startswith("paused") else paused
+                    continue
+                if value is not None and value.get("schema") == "hyperloom/node-v1" and not value.get("error"):
+                    self._inspections[(machine.id, verb)] = {"value": value, "error": None, "at": at}
+                    if verb == "doctor":
+                        self._note_turn(machine, value, now)
+                else:
+                    self._inspections[(machine.id, verb)] = {
+                        "value": None, "error": str(error or (value or {}).get("error") or "unknown node schema"), "at": at}
+                continue
+            if machine.access == "ssh":
+                why = pollbudget.for_api(self).node(machine.id, "inventory-" + verb, now=now)
+            else:
+                last = (self._inspections.get((machine.id, verb)) or {}).get("at")
+                why = "read less than a cycle ago" if last is not None and now - last < pollbudget.CYCLE_S else None
+            if why is not None:
+                if why.startswith("paused"):
+                    paused = why
+                continue
+            try:
+                value = self._node(machine, verb)
+                if not isinstance(value, dict):
+                    raise ValueError("node response must be an object")
+                if value.get("error"):
+                    raise ValueError(value["error"])
+                if value.get("schema") != "hyperloom/node-v1":
+                    raise ValueError("unknown node schema")
+                self._inspections[(machine.id, verb)] = {"value": value, "error": None, "at": now}
+                if verb == "doctor":
+                    self._note_turn(machine, value, now)
+            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+                self._inspections[(machine.id, verb)] = {"value": None, "error": str(exc), "at": now}
+        self._inspections[(machine.id, "paused")] = paused
+        return verbs
+
+    def _note_turn(self, machine, doctor, now):
+        """The doctor's lab check names the node's GPU turn holder: a turn reading for the polling budget."""
+        lab = ((doctor.get("checks") or {}).get("lab")) or {}
+        if lab.get("status") != "ok":
+            return
+        holder = (lab.get("value") or {}).get("holder") or {}
+        if holder.get("status") == "ok":
+            pollbudget.note_holder(self, machine.id, pollbudget.holder_label(holder.get("value")), now=now)
+        elif "no holder" in str(holder.get("why") or "") or "empty" in str(holder.get("why") or ""):
+            pollbudget.note_holder(self, machine.id, None, now=now)
+
+    def _statuses(self):
+        """The launch statuses of this configuration (one status node call per launched node): read at most once
+        per polling cycle, and again right after a job of this portal finished. (statuses, error, fresh)."""
+        now = self.clock()
+        cached = self._status_cache
+        within = cached is not None and not self._status_stale and 0 <= now - cached[0] < pollbudget.CYCLE_S
+        if within and not self._status_retry:
+            return cached[1], cached[2], False
+        retrying = within             # only the nodes the spacing refused are read now; the cycle keeps its start
+        after_job, self._status_stale = self._status_stale, False
+        # The budget bucket of this cycle's reads: a retry keeps the bucket of the read it completes (a read right
+        # after a job uses its own, so it is not refused by the cycle's earlier reads; its retries never repeat it).
+        if not retrying:
+            self._status_poller = "status-job" if after_job else "status"
+        poller = self._status_poller
+        budget = pollbudget.for_api(self)
+        poll = nodepoll.of(self)
+        denied = {}
+
+        def skip(machine_id, kind="node", profile=None):
+            # Every read takes a grant of the polling budget like any poller (a GPU turn pauses a node read; the
+            # node's spacing bounds it; a router or prefill service on this machine or a node is read at most once
+            # per 30 s, so a retry of a refused node read never repeats them); a refused read keeps the last answer.
+            if kind in ("router", "prefill"):
+                host = None if machine_id == "local" else machine_id
+                why = budget.engine(host, f"{kind}-status:{profile}:{machine_id}",
+                                    poller, now=now)
+            elif poll is not None:
+                why = poll.paused(machine_id, now)      # the node poll paces the read itself
+            else:
+                why = budget.node(machine_id, poller, now=now)
+            if why is not None:
+                denied[(profile, machine_id, kind)] = why
+            return why
+        try:
+            # This configuration's launches, read at the polling budget's pace.
+            statuses, error = self.orchestrate.status(config_path=self.config_path, skip=skip,
+                                                      **({"read": nodepoll.reader(self, now)} if poll else {})), None
+        except (OSError, ValueError, RuntimeError) as exc:
+            statuses, error = None, str(exc)
+        if isinstance(statuses, dict):
+            self._keep_last(statuses, denied)
+        # A node only the 5 s spacing kept from being read (another poller had just read it) is tried again at the
+        # next snapshot, without advancing its cadence; one read within this cycle or held by a turn waits.
+        self._status_retry = any(not why.startswith(("paused", "polled", "read ")) for why in denied.values())
+        # The cycle starts at the last complete read: a retry that read everything restarts it there (so the node's
+        # own 30 s cadence and the cycle stay aligned), a partial one keeps the start.
+        start = cached[0] if retrying and self._status_retry else now
+        self._status_cache = (start, statuses, error)
+        return statuses, error, not retrying
+
+    def _keep_last(self, statuses, denied):
+        """A node or router read the budget refused for pacing keeps its last answer (a held turn is shown as
+        paused); every answer read now becomes the last one."""
+        for profile, status in statuses.items():
+            if not isinstance(status, dict):
+                continue
+            for mid, node in list((status.get("nodes") or {}).items()):
+                why = denied.get((profile, mid, "node"))
+                if why is None:
+                    if isinstance(node, dict) and not node.get("error"):
+                        self._last_status[(profile, mid)] = node
+                elif not why.startswith("paused") and (profile, mid) in self._last_status:
+                    status["nodes"][mid] = self._last_status[(profile, mid)]
+            for field, kind, machine in (("router", "router", status.get("router_machine") or "local"),
+                                         ("prefill_service", "prefill", "local")):
+                why = denied.get((profile, machine, kind))
+                if why is None:
+                    if isinstance(status.get(field), dict) and not status[field].get("error"):
+                        self._last_status[(profile, kind)] = status[field]
+                elif not why.startswith("paused") and (profile, kind) in self._last_status:
+                    status[field] = self._last_status[(profile, kind)]
+
     def _inventory(self, cluster, statuses):
         machines = []
         for mid, machine in cluster.machines.items():
@@ -387,18 +716,20 @@ class API:
                    "ram": None, "nics": None, "disk_free_bytes": None, "accelerators": None,
                    "doctor": None, "gpu": None, "probe": None, "roles": [], "leases": [],
                    "last_seen": self._seen.get(mid), "health": "offline", "why": {}}
-            for verb in ("doctor", "gpu"):
-                try:
-                    value = self._node(machine, verb)
-                    if not isinstance(value, dict):
-                        raise ValueError("node response must be an object")
-                    if value.get("error"):
-                        raise ValueError(value["error"])
-                    if value.get("schema") != "hyperloom/node-v1":
-                        raise ValueError("unknown node schema")
-                    row[verb] = value
-                except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
-                    row["why"][verb] = str(exc)
+            reads = {verb: self._inspections.get((mid, verb)) for verb in self._inspect(machine)}
+            latest = max((read for read in reads.values() if read), key=lambda read: read["at"], default=None)
+            for verb, inspection in reads.items():
+                if inspection is None:
+                    row["why"][verb] = "not read yet (node polls are paced: once per 30 s per node)"
+                elif latest is not None and latest["error"] is not None:
+                    row["why"][verb] = latest["error"]      # the latest read failed: no older answer is shown
+                elif inspection["error"] is not None:
+                    row["why"][verb] = inspection["error"]
+                else:
+                    row[verb] = inspection["value"]
+            row["inspected_at"] = {verb: (self._inspections.get((mid, verb)) or {}).get("at") for verb in ("doctor", "gpu")}
+            if self._inspections.get((mid, "paused")):
+                row["why"]["inspection"] = self._inspections[(mid, "paused")]
             try:
                 row["probe"] = self._probe(machine)
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
@@ -406,6 +737,10 @@ class API:
             if row["doctor"] or row["gpu"] or row["probe"]:
                 row["health"] = "online"
                 self._seen[mid] = row["last_seen"] = self.clock()
+            elif self._inspections.get((mid, "paused")) and pollbudget.for_api(self).turn(mid, now=self.clock()):
+                # Not read because a GPU turn holds it: the turn check that saw the holder is a fresh answer of the
+                # node, so it is online (busy), not offline; its details wait for the turn's end.
+                row["health"] = "online"
             elif any("unknown host key" in why for why in row["why"].values()):
                 row["health"] = "unpaired"
             doctor = (row["doctor"] or {}).get("checks", {})
@@ -502,7 +837,15 @@ class API:
             row["started_at"] = min((item["start_time"] for item in row["leases"] + row["processes"] if _finite(item.get("start_time"))), default=None)
             owned = {}
             try:
-                owned = self.orchestrate._read(self.orchestrate._state_path(name))
+                saved = self.orchestrate._read(self.orchestrate._state_path(name))
+                kind = orchestrate.ownership(saved, self.config_path)
+                if kind == "other":
+                    raise KeyError("launched from another configuration")    # not this portal's launch: none of it
+                if kind == "unknown":
+                    # Written before launch states recorded their configuration: shown, marked, stoppable.
+                    row["config_identity"] = "unknown"
+                    row["why"]["configuration_identity"] = orchestrate.UNKNOWN_CONFIG
+                owned = saved
                 # Ownership records are authoritative for router placement.
                 row["launch"] = redact({key: owned[key] for key in ("router", "leases", "release_id") if key in owned})
                 row["router"] = (owned.get("router") or {}).get("machine")
@@ -627,6 +970,14 @@ class API:
                     from urllib.parse import urlsplit
                     url = urlsplit(replica["endpoint"] if "://" in replica["endpoint"] else "http://" + replica["endpoint"])
                     endpoint = {"address": url.hostname, "port": url.port}
+                    paused = pollbudget.for_api(self).engine_paused(
+                        pollbudget.machine_of_address(cluster, url.hostname) if cluster is not None else None)
+                    if paused:
+                        for key in ("status", "metrics", "throughput", "ttft_p50", "ttft_p95", "draft_acceptance",
+                                    "usb4_exchange_mean_us"):
+                            item["why"][key] = paused
+                        engines.append(item)
+                        continue
                     metrics = engine.parse_metrics(_http(endpoint, "/metrics", text=True))
                     item["metrics"] = asdict(metrics)
                     # Keep the baseline for ten seconds, even though the UI polls every two.
@@ -702,15 +1053,12 @@ class API:
                 for field in fields:
                     documents[name][field] = None
                     documents[name]["why"][field] = "configuration unavailable: " + str(exc)
-            documents["settings"]["capabilities"] = CAPABILITIES
+            documents["settings"]["capabilities"] = {**CAPABILITIES, **feature_registry.registry().capabilities}
             return documents
-        status_error = None
-        try:
-            statuses = self.orchestrate.status()
-        except (OSError, ValueError, RuntimeError) as exc:
-            status_error = str(exc)
+        statuses, status_error, fresh = self._statuses()       # this configuration's launches only, paced
+        if status_error is not None:
             statuses = {name: {"error": status_error} for name in cluster.profiles}
-            documents["profiles"]["why"]["status"] = str(exc)
+            documents["profiles"]["why"]["status"] = status_error
         machines = self._inventory(cluster, statuses)
         if status_error:
             for machine in machines:
@@ -776,7 +1124,11 @@ class API:
             _missing(asset, ("verification", "revision", "quant"), "verification or manifest field unavailable")
         documents["models"]["why"]["proposals"] = "later phase 2.5 · R17 / TM-R15"
         documents["profiles"]["profiles"] = self._profiles(cluster, statuses)
-        documents["stats"] = self._statistics(statuses, cluster)
+        if fresh or self._stats_cache is None:
+            # Engine and router reads follow the launch status: at most once per cycle (none for an engine whose
+            # node a GPU turn of another holder holds).
+            self._stats_cache = self._statistics(statuses, cluster)
+        documents["stats"] = deepcopy(self._stats_cache)
         for profile in documents["profiles"]["profiles"]:
             trellis = list(dict.fromkeys(((item.get("status") or {}).get("memory") or {}).get("trellis_identity")
                                         for item in documents["stats"]["engines"] if item["profile"] == profile["id"]
@@ -814,8 +1166,10 @@ class API:
             documents["settings"]["why"]["trusted_machines"] = str(exc)
             trusted = None
         documents["settings"].update(trusted_machines=trusted, configuration=redact(cluster.raw), version=__version__,
-                                       config_path=str(self.config_path), capabilities=CAPABILITIES,
+                                       config_path=str(self.config_path), capabilities={**CAPABILITIES, **feature_registry.registry().capabilities},
                                        secrets={"storage": "DPAPI" if os.name == "nt" else "0600 files", "values": "never shown"},
+                                       features={"loaded": list(feature_registry.registry().loaded),
+                                                 "failed": dict(feature_registry.registry().failed)},
                                        lab_rules={"label_prefix": "hl-", "turn_cap_s": 1200, "drain_margin_s": 60,
                                                   "usb4_layout": 1, "excluded": "RTX 4090", "extended_turn": "explicit approver ACK required"})
         return documents
@@ -827,13 +1181,30 @@ class API:
                      "reason": action["result"].get("error"), "bundle": action}
                     for action in actions if isinstance(action.get("result"), dict) and action["result"].get("state") == "failed"]
         reasons = {}
+        budget = pollbudget.for_api(self)
+        poll = nodepoll.of(self)
         for profile, status in statuses.items():
             processes = list((status.get("nodes") or {}).keys())
             if status.get("router"):
                 processes.append("router")
             for process in processes:
+                # A node's log (and a router hosted on a node) is one ssh session: it takes a budget grant; a paced
+                # read keeps the last entries, a held turn reads nothing.
+                host = status.get("router_machine") if process == "router" else process
+                why = None
+                if host not in (None, "local"):
+                    why = (poll.paused(host) if poll is not None
+                           else budget.node(host, f"logs-{profile}-{process}", now=self.clock()))
+                if why is not None:
+                    if why.startswith("paused"):
+                        reasons[profile + "/" + process] = why + "; not read"
+                    else:
+                        entries.extend(self._last_logs.get((profile, process), []))
+                    continue
+                mark = len(entries)
                 try:
-                    logs = self.orchestrate.logs(profile, process, 100)
+                    logs = self.orchestrate.logs(profile, process, 100, config_path=self.config_path,
+                                                 **({"read": nodepoll.reader(self)} if poll else {}))
                     for stream in ("stdout", "stderr"):
                         for line in str(logs.get(stream) or "").splitlines():
                             message = redact(line)
@@ -841,6 +1212,11 @@ class API:
                             entries.append({"profile": profile, "process": process, "stream": stream,
                                             "message": message, "event": event, "when": None,
                                             "why": {"when": "timestamp unavailable unless present in captured output"}})
+                    self._last_logs[(profile, process)] = entries[mark:]
+                except nodepoll.NotRead as exc:
+                    entries.extend(self._last_logs.get((profile, process), []))
+                    if (profile, process) not in self._last_logs:
+                        reasons[profile + "/" + process] = str(exc)
                 except (OSError, ValueError, RuntimeError) as exc:
                     reasons[profile + "/" + process] = str(exc)
         return self._document("logs", entries=entries[-1000:], failures=failures,
@@ -850,15 +1226,18 @@ class API:
         query = query or {}
         if screen == "jobs":
             with self._job_lock:
-                return self._document("jobs", jobs=[dict(job) for job in self._jobs.values()], active=self._active)
+                return redact(self._document("jobs", jobs=[dict(job) for job in self._jobs.values()], active=self._active))
         if screen.startswith("jobs/"):
             with self._job_lock:
                 job = self._jobs.get(screen[5:])
                 if job is None:
                     raise APIError("unknown job", 404)
-                return dict(job)
+                return redact(dict(job))
         if screen not in SCREENS:
-            raise APIError("unknown endpoint", 404)
+            handler, rest = feature_registry.registry().find_get(screen)
+            if handler is None:
+                raise APIError("unknown endpoint", 404)
+            return redact(self._feature_call(handler, *(() if rest is None else (rest,)), query))
         # One shared snapshot for every screen and every concurrent tab.
         with self._poll_lock:
             if self._cached is None or self.clock() >= self._expires:
@@ -871,10 +1250,297 @@ class API:
                     raise APIError("tail must be in 1..65536")
                 cache_key = "logs/" + repr(key)
                 if cache_key not in self._cached:
-                    self._cached[cache_key] = self._document("logs", entries=redact(self.orchestrate.logs(*key)), failures=None,
-                                                           why={"failures": "persistent process failure index unavailable"})
+                    self._cached[cache_key] = self._process_logs(key)
                 document = self._cached[cache_key]
             return redact(document)
+
+    def _process_logs(self, key):
+        """One process's log for the Logs page (refreshed by the page): a node's log is one ssh session, so it takes
+        the polling budget's grant of that node like every other read (once per 30 s per process and tail, spaced
+        with every other poll of the node); a paced read keeps the last answer, a held GPU turn reads nothing."""
+        profile, process, tail = key
+        try:
+            host = orchestrate.log_machine(profile, process, read=self.orchestrate._read)
+        except Exception:  # noqa: BLE001 - no readable launch state: the process names its machine, or nothing
+            host = None
+        if host is None:
+            try:
+                host = process if process in self._cluster().machines else None
+            except Exception:  # noqa: BLE001
+                host = None
+        why = None
+        poll = nodepoll.of(self) if host != "local" else None
+        if host != "local":
+            why = ((poll.paused(host) if poll is not None
+                    else pollbudget.for_api(self).node(host, f"page-logs-{profile}-{process}-{tail}", now=self.clock()))
+                   if host else "the machine of this process is not known: not read")
+        if why is None:
+            try:
+                entries = self.orchestrate.logs(*key, config_path=self.config_path,
+                                                **({"read": nodepoll.reader(self)} if poll is not None else {}))
+            except nodepoll.NotRead as exc:
+                why = str(exc)
+            else:
+                document = self._document("logs", entries=redact(entries), failures=None,
+                                          why={"failures": "persistent process failure index unavailable"})
+                self._last_process_logs[key] = document
+                return document
+        last = self._last_process_logs.get(key)
+        if last is not None and not why.startswith("paused"):
+            return last
+        return self._document("logs", entries=[], failures=None,
+                              why={"entries": why + ("; not read" if why.startswith("paused") else ""),
+                                   "failures": "persistent process failure index unavailable"})
+
+    # Feature modules (hyperloom/web/features): helpers they use and the dispatch of their endpoints.
+    def document(self, name, **fields):
+        return self._document(name, **fields)
+
+    def snapshot(self):
+        """The shared 2 s snapshot of the core screens (the same one every core GET reads)."""
+        with self._poll_lock:
+            if self._cached is None or self.clock() >= self._expires:
+                self._cached = self._snapshot()
+                self._expires = self.clock() + POLL_INTERVAL
+            return self._cached
+
+    def cached_snapshot(self):
+        """The last core snapshot if one exists (never builds one: no node calls); None otherwise."""
+        with self._poll_lock:
+            return self._cached
+
+    def cluster(self):
+        return self._cluster()
+
+    def node(self, machine, verb, payload=None):
+        """Run a node verb on a configured machine (id or Machine)."""
+        if isinstance(machine, str):
+            machines = self._cluster().machines
+            if not isinstance(machines, dict):
+                machines = {m.id: m for m in machines}
+            if machine not in machines:
+                raise LookupError("unknown machine " + machine)
+            machine = machines[machine]
+        return self._node(machine, verb, payload, gated=True)
+
+    def audit(self, action, arguments, result):
+        self._audit(action, arguments, result)
+
+    def _feature_call(self, handler, *args):
+        try:
+            return handler(self, *args)
+        except APIError:
+            raise
+        except LookupError as exc:
+            raise APIError(str(exc).strip("'\""), 404) from exc
+        except PermissionError as exc:
+            raise APIError(str(exc), 409) from exc
+        except ValueError as exc:
+            raise APIError(str(exc)) from exc
+
+    def feature_post(self, action, arguments):
+        """Synchronous feature POST: (status, document)."""
+        registry = feature_registry.registry()
+        handler = registry.posts.get(action)
+        if handler is None:
+            raise APIError("unknown mutation", 404)
+        try:
+            document = self._feature_call(handler, arguments)
+        except APIError as exc:
+            if action in registry.audited:
+                self._audit(action, arguments, {"state": "refused", "error": str(exc)})
+            raise
+        if action in registry.audited:
+            self._audit(action, arguments, {"state": "succeeded", "result": document})
+        return 200, redact(document)
+
+    def _admission(self):
+        if self.admission_db is None:
+            self.admission_db = admission.for_config(self.config_path)
+        return self.admission_db
+
+    def _resources_of_profile(self, profile, router=None):
+        """Resource ids a profile occupies (its nodes, its prefill service's machine and its router); everything
+        ("*") when unknown."""
+        try:
+            return admission.profile_resources(self._cluster(), profile, self.orchestrate, router)
+        except Exception:
+            return {"*"}
+
+    def _renew_holds(self):
+        """Heartbeat: renew the admission hold of every job of this process until the job releases it after its
+        own cleanup (cancelled or abandoned jobs included: their resources stay owned while they clean up).
+        Abandonment is detected by the job context, separately; it cancels the job, it never drops the hold."""
+        while True:
+            time.sleep(HOLD_RENEW_S)
+            with self._job_lock:
+                holds = dict(self._holds)
+                contexts = dict(self._features_running)
+            for jid, hold in holds.items():
+                try:
+                    context = contexts.get(jid)
+                    if context is not None:
+                        context.cancelled()     # notices abandonment / stops / deadline promptly
+                except Exception:  # noqa: BLE001 - one failing check never stops the renewals
+                    pass
+                try:
+                    self._admission().renew(hold)
+                except Exception:
+                    pass
+
+    def _hold(self, jid, kind, resources, label):
+        """Register an admission hold for a job (raises APIError 409 when refused)."""
+        try:
+            hold = self._admission().acquire(kind, resources, label=label)
+        except admission.Refused as exc:
+            raise APIError(str(exc), 409) from exc
+        try:
+            with self._heartbeat_lock:
+                if self._heartbeat is None:
+                    heartbeat = threading.Thread(target=self._renew_holds, name="hyperloom-admission", daemon=True)
+                    heartbeat.start()           # raises: nothing published, the next hold tries again
+                    self._heartbeat = heartbeat
+                with self._job_lock:
+                    self._holds[jid] = hold
+                    self._hold_resources[jid] = set(resources)
+        except Exception:
+            try:
+                self._admission().release(hold)
+            except Exception:  # noqa: BLE001 - its lease then lapses: nobody renews it
+                pass
+            raise
+        return hold
+
+    def _unhold(self, jid):
+        with self._job_lock:
+            hold = self._holds.pop(jid, None)
+            self._hold_resources.pop(jid, None)
+        if hold:
+            try:
+                self._admission().release(hold)
+            except Exception:
+                pass
+
+    def renew_jobs(self, arguments):
+        """POST jobs/renew {jobs: [id, ...]}: the portal page that started these jobs is still open."""
+        ids = arguments.get("jobs") if isinstance(arguments, dict) and set(arguments) == {"jobs"} else None
+        if not isinstance(ids, list) or len(ids) > 32 or any(not isinstance(i, str) for i in ids):
+            raise APIError("jobs must be a list of at most 32 job ids")
+        renewed, finished = [], []
+        with self._job_lock:
+            for jid in ids:
+                context = self._features_running.get(jid)
+                if context is not None:
+                    context.renew_owner()
+                    renewed.append(jid)
+                else:
+                    finished.append(jid)    # unknown or no longer running: the page may stop renewing it
+        return 200, {"renewed": renewed, "not_running": finished}
+
+    def _feature_job(self, action, arguments):
+        spec = feature_registry.registry().jobs[action]
+        validated = None     # the validated arguments: only these are ever rolled back (never the client's own)
+        try:
+            if spec.validate is not None:
+                arguments = validated = self._feature_call(spec.validate, arguments)
+            resources = set()
+            if spec.admission or (spec.exclusive and spec.resources is not None):
+                resources = {str(r) for r in self._feature_call(spec.resources, arguments)}
+                if not resources:
+                    raise APIError("an admitted job must name the resources it uses")
+            elif spec.exclusive:
+                resources = {"*"}
+        except APIError as exc:
+            self._rollback(spec, validated)
+            self._audit(action, arguments, {"state": "refused", "error": str(exc)})
+            raise
+        except Exception:
+            self._rollback(spec, validated)
+            raise
+        jid = uuid.uuid4().hex
+        with self._job_lock:
+            refusal = None
+            if spec.exclusive and self._active:
+                refusal = "another mutating job is running"
+            elif spec.admission and self._active:
+                # The slot may be reserved by a job not yet listed (its admission is being decided).
+                running = (self._jobs.get(self._active) or {}).get("action") or "starting"
+                refusal = "a deploy, stop or install job is running (" + str(running) + ")"
+            if not refusal and spec.exclusive:
+                self._active = jid      # reserve the slot while the shared admission decides
+        if refusal:
+            self._rollback(spec, validated)
+            self._audit(action, arguments, {"state": "refused", "error": refusal})
+            raise APIError(refusal, 409)
+        hold = None
+        try:
+            if spec.admission or spec.exclusive:
+                hold = self._hold(jid, "bench" if spec.admission else "core", resources, action + " " + jid[:8])
+            context = JobContext(spec.deadline_s, self._admission() if hold else None, hold,
+                                 owned=bool(spec.admission))
+        except Exception as exc:
+            self._unhold(jid)
+            with self._job_lock:
+                if self._active == jid:
+                    self._active = None
+            self._rollback(spec, validated)
+            error = exc if isinstance(exc, APIError) else APIError(f"admission unavailable: {exc}", 503)
+            self._audit(action, arguments, {"state": "refused", "error": str(error)})
+            raise error from exc
+        with self._job_lock:
+            job = {"job": jid, "id": jid, "action": action, "arguments": redact(arguments),
+                   "state": "running", "started_at": self.clock(), "finished_at": None,
+                   "result": None, "error": None, "progress": "starting",
+                   "resources": sorted(resources) if hold else None,
+                   "renew": "POST jobs/renew while the page is open" if spec.admission else None}
+            accepted = self._accepted(action, arguments, jid)
+            if accepted is None:
+                self._jobs[jid] = job
+                self._features_running[jid] = context
+            for old in list(self._jobs):
+                if len(self._jobs) <= 100:
+                    break
+                if self._jobs[old]["state"] != "running":
+                    del self._jobs[old]
+            response = dict(job)
+        if accepted is not None:
+            self._rollback(spec, validated)
+            self._unaccept(jid, accepted)
+
+        def progress(text):
+            with self._job_lock:
+                job["progress"] = redact(str(text))[:500]
+        context.report = progress
+
+        def run():
+            try:
+                result = spec.run(self, arguments, context)
+                update = {"state": "cancelled" if context.cancelled() and result is None else "succeeded",
+                          "result": redact(result), "error": redact(context.reason) if context.cancelled() else None}
+            except JobFailed as exc:
+                update = {"state": "failed", "result": None, "error": redact(str(exc))}
+                if exc.outcome is not None:
+                    outcome = exc.outcome if isinstance(exc.outcome, str) else ""
+                    update["outcome"] = outcome if JOB_OUTCOME.fullmatch(outcome) else "invalid"
+            except Exception as exc:
+                update = {"state": "cancelled" if context.cancelled() else "failed", "result": None,
+                          "error": redact(str(exc))}
+            # The hold is released only after the job's own cleanup returned.
+            self._unhold(jid)
+            try:
+                self._audit(action, arguments, {"job": jid, **update})
+            except OSError as exc:
+                update = {"state": "failed", "result": update["result"],
+                          "error": redact("audit write failed: " + str(exc)),
+                          **({"outcome": update["outcome"]} if "outcome" in update else {})}
+            with self._job_lock:
+                job.update(update, finished_at=self.clock(), progress="finished")
+                if self._active == jid:
+                    self._active = None
+                self._features_running.pop(jid, None)
+        self._start_worker(run, "hyperloom-feature-" + jid[:8], jid, job, action, arguments,
+                           lambda: self._rollback(spec, validated))
+        return response
 
     def _action_log(self):
         try:
@@ -898,7 +1564,10 @@ class API:
                 stream.write(json.dumps(entry, ensure_ascii=True, allow_nan=False) + "\n")
 
     def _arguments(self, action, arguments):
-        allowed = {"up": {"profile", "config", "router", "node", "device", "deadline", "approval_ref", "approval_lease", "approval_end"},
+        if action in recipe_web.JOBS:
+            return self._recipe_job_arguments(action, arguments)
+        allowed = {"up": {"profile", "config", "router", "node", "device", "deadline", "approval_ref", "approval_lease", "approval_end",
+                          "recipe", "recipe_set", "recipe_workload", "recipe_overrides", "recipe_profile", "recipe_inputs"},
                    "down": {"profile", "force"}, "install": {"profile", "config", "build_on"},
                    "hosts/pin": {"machine", "config", "fingerprint"}, "doctor": {"machine", "config"},
                    "keys/rotate": {"name"}, "cancel": {"job", "profile"}}
@@ -907,12 +1576,14 @@ class API:
         if not isinstance(arguments, dict) or set(arguments) - allowed[action]:
             raise APIError("unknown arguments")
         arguments = dict(arguments)
-        required = {"up": "profile", "down": "profile", "install": "profile", "hosts/pin": "machine", "keys/rotate": "name"}.get(action)
+        required = {"up": None if arguments.get("recipe") or arguments.get("recipe_inputs") else "profile",
+                    "down": "profile", "install": "profile", "hosts/pin": "machine", "keys/rotate": "name"}.get(action)
         if required and (not isinstance(arguments.get(required), str) or not arguments[required]):
             raise APIError(required + " is required")
         for key, value in arguments.items():
-            if key in ("node", "device"):
-                if not isinstance(value, list) or not value or any(not isinstance(item, str) or not item for item in value):
+            if key in ("node", "device", "recipe_set", "recipe_overrides"):
+                if not isinstance(value, list) or not value or len(value) > 256 or any(
+                        not isinstance(item, str) or not item or item.startswith("-") for item in value):
                     raise APIError(key + " must be a nonempty array of strings")
             elif key == "force":
                 if type(value) is not bool:
@@ -920,18 +1591,140 @@ class API:
             elif key in ("deadline", "approval_lease"):
                 if type(value) is not int or value <= 0:
                     raise APIError(key + " must be a positive integer")
-            elif not isinstance(value, str) or not value:
-                raise APIError(key + " must be a nonempty string")
+            elif not isinstance(value, str) or not value or value.startswith("-"):
+                # Every string becomes a CLI argument: one starting with '-' would be read as an option.
+                raise APIError(key + " must be a nonempty string not starting with '-'")
+            elif key in ("profile", "machine", "build_on", "router") and not IDENTIFIER.fullmatch(value):
+                raise APIError(f"{key} must be an id ([A-Za-z0-9][A-Za-z0-9_.-]{{0,63}})")
+        if "config" in arguments:
+            # Every mutation runs on the portal's own configuration: a configuration file is never named by the
+            # client (any local user can read the CSRF token from the page; a named file could send node keys to the
+            # machines it lists, or pin and probe them).
+            if Path(arguments["config"]).absolute() != Path(self.config_path).absolute():
+                raise APIError(f"{action} runs on the portal's configuration: drop config")
+            del arguments["config"]
         if action == "hosts/pin" and not arguments.get("fingerprint"):
             raise APIError("fingerprint is required; compare on the machine")
         if action == "cancel" and not (arguments.get("job") or arguments.get("profile")):
             raise APIError("cancel requires job or profile")
+        if action == "cancel" and arguments.get("job") and arguments.get("profile"):
+            # The job names what is stopped (and so the stop's admission resources): never a second profile.
+            raise APIError("cancel takes job or profile, not both")
+        if action == "cancel" and arguments.get("job"):
+            with self._job_lock:
+                job = self._jobs.get(arguments["job"])
+                job = dict(job) if job else None
+                feature = arguments["job"] in self._features_running     # a running feature job: its context
+            launch = bool(job) and job["action"] in ("up", "recipes/deploy")
+            if job and job["state"] != "running" and (launch or job["action"] in feature_registry.registry().jobs):
+                # A known job that finished (a launch, or a feature job whose context is gone): 409 at once.
+                raise APIError(f"job {job['job']} has already {job['state']}" +
+                               (": use down with a profile" if launch else ""), 409)
+            if not job or (not launch and not feature):
+                raise APIError("only an up or a recipes/deploy job can be cancelled; use down with a profile")
+        if action == "up" and (arguments.get("recipe") or arguments.get("recipe_inputs")):
+            try:
+                self._recipe_up_argv(arguments)
+                if not arguments.get("profile"):
+                    # Bound now, so the job names the profile it launches (its cancel stops that profile).
+                    profile = self._recipe_up_profile(arguments)
+                    if profile:
+                        arguments["profile"] = profile
+            except (ValueError, OSError) as exc:
+                raise APIError(str(exc)) from exc
         return arguments
 
+    def _recipe_up_profile(self, args):
+        """The profile an up with a recipe and no profile launches: the snapshot's, or the only profile serving the
+        recipe's model (as `hyperloom up --recipe ID` decides it); None for auto (the CLI asks for a profile)."""
+        from hyperloom.recipes import service
+        path = Path(self.config_path)
+        with service.configured(path):
+            if args.get("recipe_inputs"):
+                return service.load_inputs(args["recipe_inputs"])[1]["intent"]["profile"]
+            if args.get("recipe") == "auto":
+                return None
+            cluster = self.orchestrate.load_cluster(path, config)
+            return service.deployment_profile(cluster, service.locate(args["recipe"], cluster, for_up=True))
+
+    def _recipe_job_arguments(self, action, arguments):
+        from hyperloom.recipes import service
+        try:
+            with service.configured(self.config_path):
+                if action == "recipes/probe":
+                    service.argv("probe", arguments, config=self.config_path)
+                elif "_job" in arguments:
+                    raise ValueError("unknown arguments: _job")
+                else:
+                    self._deploy_argv(arguments)
+        except ValueError as exc:
+            raise APIError(str(exc)) from exc
+        return dict(arguments)
+
+    def _deploy_argv(self, args, job=None):
+        from hyperloom.recipes import service
+        allowed = {"inputs", "stop", "approval_ref", "approval_lease", "approval_end", "_job"}   # _job: set by mutate
+        if not isinstance(args, dict) or set(args) - allowed:
+            raise ValueError("unknown arguments")
+        argv = service.argv("deploy", {**{k: args[k] for k in ("inputs", "stop") if k in args},
+                                       **({"job": job} if job else {})}, config=self.config_path)
+        for key, flag in (("approval_ref", "--approval-ref"), ("approval_lease", "--approval-lease"),
+                          ("approval_end", "--approval-end")):
+            if key in args:
+                if key == "approval_lease" and (type(args[key]) is not int or args[key] <= 0):
+                    raise ValueError("approval_lease must be a positive integer")
+                if key != "approval_lease" and (not isinstance(args[key], str) or not args[key] or args[key].startswith("-")):
+                    raise ValueError(key + " must be a nonempty string")
+                argv[-2:-2] = [flag, str(args[key])]
+        return argv
+
+    def _recipe_up_argv(self, args):
+        """The `hyperloom up` argv of an API up with a recipe (layer files are names in the user layers directory)."""
+        from hyperloom.recipes import service
+        with service.configured(Path(self.config_path)):    # the layers of the config up uses
+            return self._recipe_up_argv_in(args, service)
+
+    def _recipe_up_argv_in(self, args, service):
+        argv = ["up"] + ([args["profile"]] if args.get("profile") else [])
+        argv += ["--config", str(Path(self.config_path)), "--router", args.get("router", "local"),
+                 "--deadline", str(args.get("deadline", 1140))]
+        # Every accepted argument goes to the CLI, which refuses the combinations it does not allow.
+        for key, flag in (("node", "--node"), ("device", "--device")):
+            if args.get(key):
+                argv += [flag, *args[key]]
+        # Recipe references are ids (or auto) and snapshot digests: never a path from the client.
+        if args.get("recipe_inputs"):
+            if not service.DIGEST.fullmatch(str(args["recipe_inputs"])):
+                raise ValueError("recipe_inputs must be a 64-hex snapshot digest")
+            argv += ["--recipe-inputs", args["recipe_inputs"]]
+        if args.get("recipe"):
+            argv += ["--recipe", service.recipe_ref("recipe", args["recipe"], auto=True)]
+        for item in args.get("recipe_set") or []:
+            argv += ["--recipe-set", item]
+        for item in args.get("recipe_overrides") or []:
+            argv += ["--recipe-overrides", str(service._named("recipe_overrides", item, service.layers_dir(),
+                                                              service._suffix_of(item)))]
+        if args.get("recipe_profile"):
+            argv += ["--recipe-profile", str(service._named("recipe_profile", args["recipe_profile"],
+                                                            service.layers_dir(), service._suffix_of(args["recipe_profile"])))]
+        if args.get("recipe_workload"):
+            argv += ["--recipe-workload", args["recipe_workload"]]
+        for key, flag in (("approval_ref", "--approval-ref"), ("approval_lease", "--approval-lease"),
+                          ("approval_end", "--approval-end")):
+            if key in args:
+                argv += [flag, str(args[key])]
+        if args.get("_job"):
+            argv += ["--job", args["_job"]]            # set by mutate: the job's cancel marker
+        return argv
+
     def _cli_argv(self, action, args):
+        if action == "up" and (args.get("recipe") or args.get("recipe_inputs")):
+            return [sys.executable, "-m", "hyperloom", *self._recipe_up_argv(args)]
+        if action == "recipes/deploy":
+            return [sys.executable, "-m", "hyperloom", *self._deploy_argv(args, job=args.get("_job"))]
         argv = [sys.executable, "-m", "hyperloom", action, args["profile"]]
-        if action in ("up", "install"):
-            argv += ["--config", str(Path(args.get("config", self.config_path)))]
+        if action in ("up", "install", "down"):
+            argv += ["--config", str(Path(self.config_path))]
         if action == "install" and args.get("build_on"):
             argv += ["--build-on", args["build_on"]]
         if action == "down" and args.get("force"):
@@ -946,6 +1739,8 @@ class API:
                               ("approval_end", "--approval-end")):
                 if key in args:
                     argv += [flag, str(args[key])]
+            if args.get("_job"):
+                argv += ["--job", args["_job"]]        # set by mutate: the job's cancel marker
         return argv
 
     def _run_detached(self, action, args):
@@ -966,16 +1761,65 @@ class API:
                                      stderr=subprocess.PIPE, **flags)
         out, err = child.communicate()
         if child.returncode != 0:
-            raise APIError((err or out).decode("utf-8", "replace").strip()[-400:] or f"{action} failed", 500)
+            # A recipe launch's refusal is the CLI's whole explanation; other actions keep their short tail.
+            tail = 16384 if action == "recipes/deploy" or (action == "up" and (
+                args.get("recipe") or args.get("recipe_inputs"))) else 400
+            raise APIError((err or out).decode("utf-8", "replace").strip()[-tail:] or f"{action} failed", 500)
         try:
             return json.loads(out.decode("utf-8"))
         except ValueError:
             return {"output": out.decode("utf-8", "replace")[-2000:]}
 
     def _execute(self, action, args):
+        if action in ("down", "cancel") and not args.get("job"):
+            # Any stop (detached or in process) while a switch runs cancels the switch too: it would otherwise go
+            # on and launch. So does a stop of the profile an up (with a recipe or without) is launching: up would
+            # otherwise clear the profile's stop marker when it takes the profile. Only their markers: this stop
+            # names its own profile, and a launch's target is stopped only when that is the profile named here (by
+            # this stop itself).
+            with self._job_lock:
+                switches = [dict(j) for j in self._jobs.values() if j["state"] == "running" and (
+                    j["action"] == "recipes/deploy" or j["action"] == "up"
+                    and j["arguments"].get("profile") == args.get("profile"))]
+            cancels = []
+            for switch in switches:
+                try:
+                    cancels.append(self._cancel_deploy(switch, stop_target=False))
+                except (APIError, OSError, ValueError) as exc:         # the stop itself still runs
+                    cancels.append({"cancelled": switch["job"], "error": str(exc)})
+            result = self._execute_action(action, args)
+            return dict(result, cancelled_switches=cancels) if cancels and isinstance(result, dict) else result
+        return self._execute_action(action, args)
+
+    def _execute_action(self, action, args):
+        recipe_up = action == "up" and bool(args.get("recipe") or args.get("recipe_inputs"))
+        if action == "recipes/probe":
+            from hyperloom.recipes import service
+            with service.configured(self.config_path):
+                argv = service.argv("probe", args, config=self.config_path)
+            status, document = recipe_web.document("probe", argv, self.recipes.run(
+                argv, deadline_s=recipe_web.HARDWARE_DEADLINE_S), now=self.clock())
+            if not document["ok"]:
+                raise APIError(document["error"] or "probe failed", status)
+            return document
+        if action == "recipes/deploy" and self.detached:
+            return self._run_detached(action, args)
+        if action == "recipes/deploy" or recipe_up:
+            # In process (tests): the CLI's parser and the very function the CLI runs.
+            argv = (self._deploy_argv(args, job=args.get("_job")) if action == "recipes/deploy"
+                    else self._recipe_up_argv(args))
+            parsed = cli.build_parser(recipe_web.RaisingParser).parse_args(argv)
+            if self.detached:
+                return self._run_detached(action, args)
+            if action == "up":
+                return cli.up_command(parsed, orchestrate=self.orchestrate, load_cluster=self._recipe_loader)
+            from hyperloom.recipes import commands, service
+            with service.configured(parsed.config):
+                return service.deploy(parsed.inputs, parsed.stop, orchestrate=self.orchestrate,
+                                      approval=commands._approval(parsed), job=parsed.job)
         if self.detached and action in ("up", "down", "install"):
             if action in ("up", "install"):
-                cluster = self.orchestrate.load_cluster(Path(args.get("config", self.config_path)), config)
+                cluster = self.orchestrate.load_cluster(Path(self.config_path), config)
                 _, kind, _ = self.orchestrate._profile(cluster, args["profile"])
                 if engines.adapter(kind).topology != "replicas":
                     raise APIError("later phase · only replica profiles are available in Phase 1b")
@@ -985,9 +1829,19 @@ class API:
             if args.get("job"):
                 with self._job_lock:
                     job = self._jobs.get(args["job"])
-                    if not job or job["action"] != "up":
-                        raise APIError("only an up job can be cancelled; use down with a profile")
-                    profile = job["arguments"]["profile"]
+                    context = self._features_running.get(args["job"])
+                    job = dict(job) if job else None
+                if context is not None:
+                    context.cancel("cancelled by request")
+                    return {"cancelled": args["job"]}
+                if job and job["state"] != "running" and job["action"] in feature_registry.registry().jobs:
+                    raise APIError(f"job {job['job']} has already {job['state']}", 409)
+                if not job or job["action"] not in ("up", "recipes/deploy"):
+                    raise APIError("only an up or a recipes/deploy job can be cancelled; use down with a profile")
+                if job["state"] != "running":
+                    raise APIError(f"job {job['job']} has already {job['state']}: use down with a profile", 409)
+                # Every up (with a recipe or without) and every deploy: only what the job did is undone.
+                return self._cancel_deploy(job)
             return self.orchestrate.down(profile)
         if action == "down":
             return self.orchestrate.down(args["profile"], force=args.get("force", False))
@@ -997,7 +1851,7 @@ class API:
         if action == "doctor" and "machine" not in args:
             from types import SimpleNamespace
             return self._node(SimpleNamespace(access="local"), "doctor")
-        cluster = self.orchestrate.load_cluster(Path(args.get("config", self.config_path)), config)
+        cluster = self.orchestrate.load_cluster(Path(self.config_path), config)
         if action in ("up", "install"):
             _, kind, mids = self.orchestrate._profile(cluster, args["profile"])
             if engines.adapter(kind).topology != "replicas":
@@ -1016,9 +1870,20 @@ class API:
                 if end.tzinfo is None:
                     raise APIError("approval_end must include a timezone")
                 approval = {"ref": args["approval_ref"], "lease_s": args["approval_lease"], "end_epoch": end.timestamp()}
-            return self.orchestrate.up(cluster, args["profile"], router=args.get("router", "local"),
-                                       nodes=args.get("node"), devices=args.get("device"),
-                                       deadline_s=args.get("deadline", 1140), approval=approval)
+            launch = lambda cancelled=None: self.orchestrate.up(  # noqa: E731
+                cluster, args["profile"], router=args.get("router", "local"), nodes=args.get("node"),
+                devices=args.get("device"), deadline_s=args.get("deadline", 1140), approval=approval,
+                **({"cancelled": cancelled} if cancelled else {}))
+            if not args.get("_job"):
+                from hyperloom.recipes import service
+                with service.configured(self.config_path):     # the launch state records this configuration
+                    return launch()
+            # The job's cancel marker is checked right after up owns the profile (the hand-over), as `up --job`
+            # does: a cancel before it starts nothing and never stops a profile that was running already.
+            from hyperloom.recipes import service
+            with service.configured(self.config_path), \
+                    service.launch_progress(args["_job"], "up", args["profile"]) as progress:
+                return launch(progress.handoff)
         mid = args.get("machine")
         if action == "doctor":
             if mid not in cluster.machines:
@@ -1034,25 +1899,144 @@ class API:
         self.remote.KnownHosts(self.orchestrate._known_hosts()).pin(mid, machine.http_address, machine.ssh_port, match)
         return {"machine": mid, "pinned": match.sha256_fingerprint, "algorithm": match.algorithm}
 
+    def _cancel_deploy(self, job, *, stop_target=True):
+        """Cancel a launch job (a switch, or an up with a recipe or without), undoing only what it did. The marker is
+        written first; then the job's progress says how far it got. Before the hand-over (checks, stopping) the
+        marker is all: the deploy stops at its next step and up, at the hand-over, starts nothing; the profiles it
+        already stopped stay stopped (the answer names them), and a profile that was running before the job (an up
+        refuses it) is never stopped. Once up owns the target ("launching", "done"), the target is stopped
+        (``stop_target``), as it is the profile this job started."""
+        from hyperloom.recipes import service
+        with service.configured(self.config_path):
+            marker = service.cancel_marker(job["job"])
+            try:
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.touch()
+            except OSError as exc:
+                raise APIError(f"the cancel marker could not be written ({exc}): nothing was cancelled; stop the "
+                               "profile with down", 500) from exc
+            try:
+                progress = service.read_progress(job["job"]) or {"phase": "not started", "profile": None,
+                                                                 "stopped": [], "stopping": None}
+            except service.RecipeError as exc:
+                # Unknown progress: never reported as "nothing to undo". The marker holds the deploy before its next
+                # step and up at the hand-over; a launch already under way is the caller's to stop.
+                raise APIError(f"{exc}. The cancel marker is written: the deploy stops before its next step and "
+                               f"starts nothing after it; if its launch had begun, stop that profile with down", 500)
+        down = None
+        if stop_target and service.launch_began(progress) and progress.get("profile"):
+            down = self.orchestrate.down(progress["profile"])
+        return {"cancelled": job["job"], "phase": progress.get("phase"), "profile": progress.get("profile"),
+                "stopped_by_deploy": progress.get("stopped") or [], "stopping": progress.get("stopping"),
+                "down": down, "summary": service.cancel_summary(progress, down=down)}
+
+    def _rollback(self, spec, arguments):
+        """A validated feature job that does not start: its validation's reservations are undone."""
+        if spec.rollback is not None and isinstance(arguments, dict):    # None: nothing was validated
+            try:
+                self._feature_call(spec.rollback, arguments)
+            except Exception:  # noqa: BLE001 - the refusal is the answer; a failing rollback must not replace it
+                pass
+
+    def _accepted(self, action, arguments, jid):
+        """Write a job's "accepted" audit entry (under the job lock); the error when it could not be written: the job
+        does not start, and the caller releases what it reserved (``_unaccept``) once the lock is released."""
+        try:
+            self._audit(action, arguments, {"job": jid, "state": "accepted"})
+            return None
+        except Exception as exc:  # noqa: BLE001 - re-raised by _unaccept after the cleanup
+            if self._active == jid:
+                self._active = None
+            return exc
+
+    def _unaccept(self, jid, error):
+        """A job whose acceptance could not be audited: its admission hold is released, nothing runs."""
+        self._unhold(jid)
+        raise APIError("audit write failed: " + str(error) + " (the job was not started)", 503) from error
+
     def mutate(self, action, arguments):
+        if action not in MUTATIONS and action in feature_registry.registry().jobs:
+            return self._feature_job(action, arguments)
+        target = None       # a cancel's job, read once: whether the cancel is a stop never changes afterwards
+        if action == "cancel" and isinstance(arguments, dict) and isinstance(arguments.get("job"), str):
+            with self._job_lock:
+                listed = self._jobs.get(arguments["job"])
+                target = None if listed is None else (dict(listed), arguments["job"] in self._features_running or
+                                                      listed["action"] in feature_registry.registry().jobs)
         try:
             arguments = self._arguments(action, arguments)
         except APIError as exc:
             self._audit(action, arguments, {"state": "refused", "error": str(exc)})
             raise
         priority = action in ("down", "cancel")
+        occupying = action in ("up", "install", "recipes/deploy", "recipes/probe")
+        # A stop: down, and every cancel that is not a feature job's (a profile's cancel and an up's or a deploy's
+        # cancel stop a profile, or may).
+        stopping, profile = action == "down", arguments.get("profile")
+        if action == "cancel":
+            # A feature job's cancel (running, finished or since evicted) only cancels its context: never a stop.
+            job, feature = target if target is not None else (None, False)
+            if arguments.get("job") and target is None:
+                feature = True          # not listed when read: nothing to stop (the cancel itself answers why)
+            if job is not None and not profile:
+                profile = job["arguments"].get("profile")
+            stopping = not feature
+        resources = set()
+        if occupying or stopping:
+            resources = self._resources_of_profile(profile, arguments.get("router") if action == "up" else None) \
+                if isinstance(profile, str) and profile else {"*"}
+            if action == "up" and arguments.get("recipe_inputs"):
+                resources = {"*"}       # a snapshot launches with the placement it was planned on: hold everything
+        jid = uuid.uuid4().hex
         with self._job_lock:
             if self._active and not priority:
                 self._audit(action, arguments, {"state": "refused", "error": "another mutating job is running"})
                 raise APIError("another mutating job is running", 409)
-            jid = uuid.uuid4().hex
+            if not priority:
+                self._active = jid      # reserved while the shared admission decides
+        unheld = None       # a stop that goes ahead without the shared admission: why
+        if occupying or stopping:
+            # A stop is never refused: registering it cancels overlapping benchmarks (in every process) and its
+            # hold keeps new ones out until it finishes. A deploy is refused while a benchmark holds its resources.
+            try:
+                self._hold(jid, "stop" if stopping else "core", resources, action + " " + str(profile or ""))
+            except Exception as exc:
+                if stopping and not isinstance(exc, APIError):
+                    # The admission database is unavailable: a stop still goes ahead (it never depends on it). The
+                    # benchmarks of this process that overlap are cancelled here; other processes' see it no more.
+                    unheld = f"admission unavailable ({type(exc).__name__}: {exc}); stopped without its hold"
+                    with self._job_lock:
+                        contexts = [self._features_running[j] for j, held in self._hold_resources.items()
+                                    if j in self._features_running and admission._overlap(held, resources)]
+                    for context in contexts:
+                        try:
+                            context.cancel("stopped: " + action + " " + str(profile or ""))
+                        except Exception:  # noqa: BLE001 - it sees the stop at its own next check, or ends
+                            pass
+                else:
+                    with self._job_lock:
+                        if self._active == jid:
+                            self._active = None
+                    error = exc if isinstance(exc, APIError) else APIError(f"admission unavailable: {exc}", 503)
+                    self._audit(action, arguments, {"state": "refused", "error": str(error)})
+                    raise error from exc
+            if stopping and unheld is None:
+                with self._job_lock:
+                    contexts = [self._features_running[j] for j in self._holds if j in self._features_running]
+                for context in contexts:
+                    try:
+                        context.cancelled()     # observe the stop's cancellation now, not at the next poll
+                    except Exception:  # noqa: BLE001 - the benchmark sees it at its own next check
+                        pass
+        with self._job_lock:
             job = {"job": jid, "id": jid, "action": action, "arguments": redact(arguments),
                    "state": "running", "started_at": self.clock(), "finished_at": None,
                    "result": None, "error": None, "progress": "calling CLI service"}
-            self._audit(action, arguments, {"job": jid, "state": "accepted"})
-            self._jobs[jid] = job
-            if not priority:
-                self._active = jid
+            if unheld is not None:
+                job["warning"] = unheld
+            accepted = self._accepted(action, arguments, jid)
+            if accepted is None:
+                self._jobs[jid] = job
             # Keep completed jobs bounded; never evict an operation still running.
             for old in list(self._jobs):
                 if len(self._jobs) <= 100:
@@ -1060,21 +2044,47 @@ class API:
                 if self._jobs[old]["state"] != "running":
                     del self._jobs[old]
             response = dict(job)
+        if accepted is not None:
+            self._unaccept(jid, accepted)
+        if action in ("recipes/deploy", "up"):
+            arguments = dict(arguments, _job=jid)    # the launch's cancel marker is named by its job
         def run():
             try:
                 result = self._execute(action, arguments)
                 update = {"state": "succeeded", "result": redact(result), "error": None}
             except Exception as exc:
                 update = {"state": "failed", "result": None, "error": redact(str(exc))}
+            self._unhold(jid)
             try:
-                self._audit(action, arguments, {"job": jid, **update})
+                self._audit(action, arguments, {"job": jid, **update, **({"warning": unheld} if unheld else {})})
             except OSError as exc:
-                update = {"state": "failed", "result": update["result"], "error": "audit write failed: " + str(exc)}
+                update = {"state": "failed", "result": update["result"], "error": redact("audit write failed: " + str(exc))}
             with self._job_lock:
                 job.update(update, finished_at=self.clock(), progress="finished")
                 if self._active == jid:
                     self._active = None
             with self._poll_lock:
                 self._expires = 0
-        threading.Thread(target=run, name="hyperloom-ui-" + jid[:8], daemon=True).start()
+                self._status_stale = True
+        self._start_worker(run, "hyperloom-ui-" + jid[:8], jid, job, action, arguments)
         return response
+
+    def _start_worker(self, run, name, jid, job, action, arguments, rollback=lambda: None):
+        """Start an accepted job's worker; when no thread can be started, the job fails at once and everything it
+        reserved (hold, slot, feature context, validation) is released, answered 503."""
+        try:
+            threading.Thread(target=run, name=name, daemon=True).start()
+        except Exception as exc:  # noqa: BLE001 - e.g. RuntimeError: can't start new thread
+            self._unhold(jid)
+            with self._job_lock:
+                job.update(state="failed", error=redact("the job could not start: " + str(exc)),
+                           finished_at=self.clock(), progress="finished")
+                if self._active == jid:
+                    self._active = None
+                self._features_running.pop(jid, None)
+            rollback()
+            try:
+                self._audit(action, arguments, {"job": jid, "state": "failed", "error": "the job could not start"})
+            except OSError:
+                pass
+            raise APIError("the job could not start: " + str(exc), 503) from exc

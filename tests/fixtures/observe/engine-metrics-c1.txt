@@ -1,0 +1,34 @@
+# HELP strix_requests_completed_total Generations completed.
+# TYPE strix_requests_completed_total counter
+strix_requests_completed_total 59
+strix_requests_failed_total 0
+strix_requests_cancelled_total 0
+strix_prompt_tokens_total 12878
+strix_prompt_tokens_cached_total 0
+strix_generated_tokens_total 9910
+strix_engine_busy_seconds_total 473.969
+strix_queue_waiting 0
+strix_queue_running 0
+strix_slots_busy 0
+# HELP strix_prompt_tokens_imported_total Prompt tokens imported from the prefill service.
+# TYPE strix_prompt_tokens_imported_total counter
+strix_prompt_tokens_imported_total 7168
+# HELP strix_engine_info Engine identity.
+# TYPE strix_engine_info gauge
+strix_engine_info{engine="qwen",model="qwen3.8-flash-next",instance="5a5a5a5a5a5a5a5a"} 1
+# HELP strix_engine_start_time_seconds Process start, unix seconds.
+# TYPE strix_engine_start_time_seconds gauge
+strix_engine_start_time_seconds 1799990000
+# HELP strix_instrumentation_armed Instrumentation armed.
+# TYPE strix_instrumentation_armed gauge
+strix_instrumentation_armed 1
+# HELP strix_ttft_seconds Submit to first published token.
+# TYPE strix_ttft_seconds histogram
+strix_ttft_seconds_bucket{le="0.05"} 1
+strix_ttft_seconds_bucket{le="0.1"} 1
+strix_ttft_seconds_bucket{le="0.25"} 1
+strix_ttft_seconds_bucket{le="0.5"} 2
+strix_ttft_seconds_bucket{le="1"} 2
+strix_ttft_seconds_bucket{le="+Inf"} 2
+strix_ttft_seconds_sum 0.316
+strix_ttft_seconds_count 2

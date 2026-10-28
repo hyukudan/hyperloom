@@ -1,0 +1,376 @@
+20:24:08 reap  PAIR job-01 pid 2468786: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+20:24:08 end   PAIR job-01 pid 2468786
+20:24:08 start PAIR job-02 pid 2590414 (after 5 retries)
+20:26:24 wait  job-03 pid 3347555
+20:26:24 REFUSE job-03 pid 3347555 (arrival: pair waiting 9472s)
+20:28:13 wait  PAIR job-04 pid 3354537
+20:31:25 wait  job-03 pid 3364562
+20:31:25 REFUSE job-03 pid 3364562 (arrival: pair waiting 9773s)
+20:34:05 wait  PAIR job-05 pid 3371379
+20:34:05 wait  PAIR job-06 pid 3371385
+20:35:00 reap  PAIR job-02 pid 2590414: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+20:35:00 end   PAIR job-02 pid 2590414
+20:35:00 start PAIR job-07 pid 2647456 (after 20 retries)
+20:36:26 wait  job-03 pid 3386311
+20:36:26 REFUSE job-03 pid 3386311 (arrival: pair waiting 9760s)
+20:40:56 reap  PAIR job-07 pid 2647456: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+20:40:56 end   PAIR job-07 pid 2647456
+20:40:56 start PAIR job-08 pid 2658371 (after 11 retries)
+20:41:26 wait  job-03 pid 3413959
+20:41:26 REFUSE job-03 pid 3413959 (arrival: pair waiting 9545s)
+20:42:10 reap  PAIR job-08 pid 2658371: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+20:42:10 end   PAIR job-08 pid 2658371
+20:42:10 start PAIR job-09 pid 2721670 (after 2 retries)
+20:43:17 wait  PAIR job-10 pid 3426891
+20:44:58 wait  PAIR job-11 pid 3443479
+20:46:27 wait  job-03 pid 3455636
+20:46:27 REFUSE job-03 pid 3455636 (arrival: pair waiting 9845s)
+20:47:00 wait  PAIR job-12 pid 3461424
+20:47:25 reap  PAIR job-09 pid 2721670: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+20:47:25 end   PAIR job-09 pid 2721670
+20:47:27 start PAIR job-13 pid 2721836 (after 10 retries)
+20:48:01 wait  PAIR job-14 pid 3470720
+20:48:02 wait  PAIR job-15 pid 3471087
+20:51:28 wait  job-03 pid 3506435
+20:51:28 REFUSE job-03 pid 3506435 (arrival: pair waiting 8906s)
+20:52:42 reap  PAIR job-13 pid 2721836: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+20:52:42 end   PAIR job-13 pid 2721836
+20:52:42 start PAIR job-16 pid 2779643 (after 9 retries)
+20:56:28 wait  job-03 pid 3537982
+20:56:28 REFUSE job-03 pid 3537982 (arrival: pair waiting 8600s)
+20:56:48 wait  PAIR job-17 pid 3540196
+21:01:29 wait  job-03 pid 3589730
+21:01:29 REFUSE job-03 pid 3589730 (arrival: pair waiting 8901s)
+21:04:50 reap  PAIR job-16 pid 2779643: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+21:04:50 end   PAIR job-16 pid 2779643
+21:06:29 wait  job-03 pid 3629693
+21:06:29 REFUSE job-03 pid 3629693 (arrival: pair waiting 9201s)
+21:07:22 start PAIR job-18 pid 2806844 (after 28 retries)
+21:11:30 wait  job-03 pid 3651554
+21:11:30 REFUSE job-03 pid 3651554 (arrival: pair waiting 8885s)
+21:13:12 reap  PAIR job-18 pid 2806844: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+21:13:12 end   PAIR job-18 pid 2806844
+21:13:12 start PAIR job-19 pid 2874778 (after 11 retries)
+21:15:10 wait  PAIR job-20 pid 3665302
+21:16:30 wait  job-03 pid 3671020
+21:16:30 REFUSE job-03 pid 3671020 (arrival: pair waiting 9075s)
+21:19:36 reap  PAIR job-19 pid 2874778: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+21:19:36 end   PAIR job-19 pid 2874778
+21:19:36 start PAIR job-21 pid 2891023 (after 12 retries)
+21:21:31 wait  job-03 pid 3693585
+21:21:31 REFUSE job-03 pid 3693585 (arrival: pair waiting 9059s)
+21:22:45 reap  PAIR job-21 pid 2891023: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+21:22:45 end   PAIR job-21 pid 2891023
+21:22:45 wait  PAIR job-22 pid 3699830
+21:22:46 start PAIR job-23 pid 2912902 (after 6 retries)
+21:26:31 wait  job-03 pid 3716141
+21:26:31 REFUSE job-03 pid 3716141 (arrival: pair waiting 5691s)
+21:28:46 reap  PAIR job-23 pid 2912902: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+21:28:46 end   PAIR job-23 pid 2912902
+21:28:46 start PAIR job-24 pid 3182260 (after 11 retries)
+21:28:47 reap  PAIR job-24 pid 3182260: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+21:28:47 end   PAIR job-24 pid 3182260
+21:28:47 start PAIR job-25 pid 3224703 (after 0 retries)
+21:28:47 wait  PAIR job-26 pid 3726010
+21:31:32 wait  job-03 pid 3738268
+21:31:32 REFUSE job-03 pid 3738268 (arrival: pair waiting 5346s)
+21:31:38 wait  PAIR job-27 pid 3738885
+21:35:44 reap  PAIR job-25 pid 3224703: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+21:35:44 end   PAIR job-25 pid 3224703
+21:35:44 start PAIR job-28 pid 3226529 (after 13 retries)
+21:36:33 wait  job-03 pid 3759747
+21:36:33 REFUSE job-03 pid 3759747 (arrival: pair waiting 4099s)
+21:39:38 wait  PAIR job-29 pid 3772988
+21:41:33 wait  job-03 pid 3781345
+21:41:33 REFUSE job-03 pid 3781345 (arrival: pair waiting 4399s)
+21:42:17 reap  PAIR job-28 pid 3226529: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+21:42:18 end   PAIR job-28 pid 3226529
+21:42:18 start PAIR job-04 pid 3354537 (after 12 retries)
+21:44:31 reap  PAIR job-04 pid 3354537: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+21:44:31 end   PAIR job-04 pid 3354537
+21:44:31 start PAIR job-05 pid 3371379 (after 4 retries)
+21:45:13 wait  PAIR job-30 pid 3803307
+21:46:34 wait  job-03 pid 3810815
+21:46:34 REFUSE job-03 pid 3810815 (arrival: pair waiting 4349s)
+21:46:52 reap  PAIR job-05 pid 3371379: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+21:46:52 end   PAIR job-05 pid 3371379
+21:46:52 start PAIR job-06 pid 3371385 (after 4 retries)
+21:46:57 wait  job-31 pid 3813758
+21:46:57 REFUSE job-31 pid 3813758 (arrival: pair waiting 3820s)
+21:47:48 reap  PAIR job-06 pid 3371385: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+21:47:48 end   PAIR job-06 pid 3371385
+21:47:48 start PAIR job-10 pid 3426891 (after 1 retries)
+21:51:18 wait  PAIR job-32 pid 3834246
+21:51:34 wait  job-03 pid 3835288
+21:51:34 REFUSE job-03 pid 3835288 (arrival: pair waiting 3996s)
+21:51:54 end   PAIR job-22 pid 3699830 (withdrawn, requeued with priority)
+21:52:00 wait  PAIR job-22 pid 3837289
+21:54:42 reap  PAIR job-10 pid 3426891: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+21:54:42 end   PAIR job-10 pid 3426891
+21:54:42 start PAIR job-22 pid 3837289 (after 5 retries)
+21:56:35 wait  job-03 pid 3860431
+21:56:35 REFUSE job-03 pid 3860431 (arrival: pair waiting 4297s)
+22:01:35 wait  job-03 pid 3889202
+22:01:35 REFUSE job-03 pid 3889202 (arrival: pair waiting 4597s)
+22:01:48 wait  PAIR job-33 pid 3890121
+22:03:04 reap  PAIR job-22 pid 3837289: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+22:03:04 end   PAIR job-22 pid 3837289
+22:03:04 start PAIR job-11 pid 3443479 (after 24 retries)
+22:03:04 wait  PAIR job-34 pid 3895961
+22:04:11 reap  PAIR job-11 pid 3443479: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+22:04:11 end   PAIR job-11 pid 3443479
+22:04:11 start PAIR job-34 pid 3895961 (after 2 retries)
+22:04:20 wait  PAIR job-35 pid 3901465
+22:06:36 wait  job-03 pid 3919838
+22:06:36 REFUSE job-03 pid 3919838 (arrival: pair waiting 4776s)
+22:11:37 wait  job-03 pid 3953340
+22:11:37 REFUSE job-03 pid 3953340 (arrival: pair waiting 5077s)
+22:11:47 reap  PAIR job-34 pid 3895961: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+22:11:47 end   PAIR job-34 pid 3895961
+22:11:47 start PAIR job-12 pid 3461424 (after 14 retries)
+22:11:47 wait  PAIR job-36 pid 3954424
+22:16:17 reap  PAIR job-12 pid 3461424: local: reaped 1 pids [3975348:sleep:turn]; vram 158->158 MiB, gtt 22->22 MiB; 0.1 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+22:16:17 end   PAIR job-12 pid 3461424
+22:16:17 start PAIR job-36 pid 3954424 (after 8 retries)
+22:16:36 wait  PAIR job-12 pid 3977937
+22:16:37 wait  job-03 pid 3978248
+22:16:37 REFUSE job-03 pid 3978248 (arrival: pair waiting 5316s)
+22:19:42 wait  PAIR job-37 pid 3998842
+22:21:16 wait  PAIR job-38 pid 4011796
+22:23:11 reap  PAIR job-36 pid 3954424: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+22:23:11 end   PAIR job-36 pid 3954424
+22:23:11 start PAIR job-14 pid 3470720 (after 13 retries)
+22:23:11 wait  PAIR job-39 pid 4023145
+22:27:24 reap  PAIR job-14 pid 3470720: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+22:27:24 end   PAIR job-14 pid 3470720
+22:27:24 start PAIR job-39 pid 4023145 (after 8 retries)
+22:34:18 reap  PAIR job-39 pid 4023145: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+22:34:18 end   PAIR job-39 pid 4023145
+22:34:18 start PAIR job-15 pid 3471087 (after 13 retries)
+22:34:18 wait  PAIR job-40 pid 4113532
+22:38:30 reap  PAIR job-15 pid 3471087: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+22:38:30 end   PAIR job-15 pid 3471087
+22:38:30 start PAIR job-40 pid 4113532 (after 8 retries)
+22:44:48 reap  PAIR job-40 pid 4113532: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+22:44:48 end   PAIR job-40 pid 4113532
+22:44:48 start PAIR job-17 pid 3540196 (after 12 retries)
+22:44:48 wait  PAIR job-41 pid 20845
+22:48:21 wait  job-42 pid 48559
+22:48:21 REFUSE job-42 pid 48559 (arrival: pair waiting 5591s)
+22:50:22 reap  PAIR job-17 pid 3540196: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+22:50:22 end   PAIR job-17 pid 3540196
+22:50:22 start PAIR job-41 pid 20845 (after 10 retries)
+22:57:33 reap  PAIR job-41 pid 20845: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+22:57:33 end   PAIR job-41 pid 20845
+22:57:33 start PAIR job-20 pid 3665302 (after 13 retries)
+22:57:33 wait  PAIR job-43 pid 106054
+23:00:16 wait  PAIR job-44 pid 117578
+23:03:32 reap  PAIR job-20 pid 3665302: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+23:03:32 end   PAIR job-20 pid 3665302
+23:03:32 start PAIR job-43 pid 106054 (after 11 retries)
+23:06:11 wait  PAIR job-45 pid 149028
+23:11:58 reap  PAIR job-43 pid 106054: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+23:11:58 end   PAIR job-43 pid 106054
+23:11:58 start PAIR job-26 pid 3726010 (after 17 retries)
+23:11:58 wait  PAIR job-46 pid 186008
+23:11:59 reap  PAIR job-26 pid 3726010: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+23:11:59 end   PAIR job-26 pid 3726010
+23:11:59 start PAIR job-46 pid 186008 (after 0 retries)
+23:19:09 reap  PAIR job-46 pid 186008: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+23:19:09 end   PAIR job-46 pid 186008
+23:19:09 start PAIR job-27 pid 3738885 (after 13 retries)
+23:19:09 wait  PAIR job-47 pid 235814
+23:25:12 reap  PAIR job-27 pid 3738885: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+23:25:12 end   PAIR job-27 pid 3738885
+23:25:12 start PAIR job-47 pid 235814 (after 11 retries)
+23:31:09 reap  PAIR job-47 pid 235814: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+23:31:09 end   PAIR job-47 pid 235814
+23:31:09 start PAIR job-29 pid 3772988 (after 11 retries)
+23:31:09 wait  PAIR job-48 pid 310033
+23:38:12 reap  PAIR job-29 pid 3772988: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+23:38:12 end   PAIR job-29 pid 3772988
+23:38:12 start PAIR job-48 pid 310033 (after 13 retries)
+23:44:28 reap  PAIR job-48 pid 310033: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+23:44:28 end   PAIR job-48 pid 310033
+23:44:28 start PAIR job-30 pid 3803307 (after 11 retries)
+23:44:28 wait  PAIR job-49 pid 392563
+23:44:50 wait  job-50 pid 394669
+23:44:50 REFUSE job-50 pid 394669 (arrival: pair waiting 6812s)
+23:49:43 wait  PAIR job-51 pid 422055
+23:49:52 wait  PAIR job-51 pid 423036
+23:50:27 wait  PAIR job-24 pid 426207
+23:53:27 reap  PAIR job-30 pid 3803307: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+23:53:27 end   PAIR job-30 pid 3803307
+23:53:27 LAUNCHER install fair-alternation by job-a (gpu-turn.sh a2adc209 gpu-turn-pair.sh 7dbbc5f3 )
+23:53:27 start PAIR job-49 pid 392563 (after 17 retries)
+23:54:38 wait  job-52 pid 455770
+23:56:18 wait  job-50 pid 474552
+23:59:35 reap  PAIR job-49 pid 392563: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+23:59:36 end   PAIR job-49 pid 392563
+23:59:36 admit job-52 pid 455770 (owed: after PAIR)
+23:59:36 start job-52 pid 455770
+23:59:36 wait  PAIR job-53 pid 507274
+00:00:33 wait  job-54 pid 513953
+00:00:53 wait  job-55 pid 516658
+00:01:06 reap  job-52 pid 455770: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s
+00:01:06 end   job-52 pid 455770
+00:01:06 start PAIR job-53 pid 507274 (after 1 retries)
+00:03:23 wait  job-56 pid 542043
+00:08:01 reap  PAIR job-53 pid 507274: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+00:08:01 end   PAIR job-53 pid 507274
+00:08:01 admit job-50 pid 474552 (owed: after PAIR)
+00:08:01 start job-50 pid 474552
+00:08:01 wait  PAIR job-57 pid 576754
+00:08:29 reap  job-50 pid 474552: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s
+00:08:29 end   job-50 pid 474552
+00:10:14 wait  PAIR job-58 pid 590977
+00:10:15 wait  PAIR job-59 pid 591095
+00:10:16 wait  job-60 pid 591156
+00:11:08 start PAIR job-57 pid 576754 (after 5 retries)
+00:11:49 wait  job-61 pid 606634
+00:12:57 wait  PAIR job-62 pid 613236
+00:14:32 wait  job-63 pid 627282
+00:18:23 wait  PAIR job-12 pid 660918
+00:18:30 reap  PAIR job-57 pid 576754: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+00:18:30 end   PAIR job-57 pid 576754
+00:18:30 admit job-54 pid 513953 (owed: after PAIR)
+00:18:30 start job-54 pid 513953
+00:19:11 wait  PAIR job-64 pid 668365
+00:19:42 reap  job-54 pid 513953: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s
+00:19:42 end   job-54 pid 513953
+00:20:46 start PAIR job-64 pid 668365 (after 3 retries)
+00:22:21 wait  PAIR job-65 pid 693116
+00:23:14 wait  job-66 pid 703204
+00:29:11 reap  PAIR job-64 pid 668365: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+00:29:11 end   PAIR job-64 pid 668365
+00:29:11 admit job-55 pid 516658 (owed: after PAIR)
+00:29:11 start job-55 pid 516658
+00:30:14 wait  job-67 pid 757387
+00:30:20 wait  PAIR job-68 pid 758017
+00:31:50 reap  job-55 pid 516658: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s
+00:31:50 end   job-55 pid 516658
+00:31:50 start PAIR job-32 pid 3834246 (after 6 retries)
+00:34:57 wait  job-69 pid 784955
+00:35:30 wait  job-70 pid 787564
+00:35:38 wait  PAIR job-71 pid 788300
+00:37:21 reap  PAIR job-32 pid 3834246: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+00:37:21 end   PAIR job-32 pid 3834246
+00:37:21 admit job-56 pid 542043 (owed: after PAIR)
+00:37:21 start job-56 pid 542043
+00:38:12 reap  job-56 pid 542043: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s
+00:38:12 end   job-56 pid 542043
+00:38:37 start PAIR job-33 pid 3890121 (after 2 retries)
+00:39:04 wait  PAIR job-72 pid 810185
+00:39:20 wait  job-73 pid 814454
+00:41:01 wait  PAIR job-74 pid 829952
+00:43:06 reap  PAIR job-33 pid 3890121: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+00:43:06 end   PAIR job-33 pid 3890121
+00:43:06 admit job-60 pid 591156 (owed: after PAIR)
+00:43:06 start job-60 pid 591156
+00:49:01 reap  job-60 pid 591156: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s
+00:49:01 end   job-60 pid 591156
+00:49:01 start PAIR job-74 pid 829952 (after 6 retries)
+00:49:41 wait  job-75 pid 898550
+00:50:00 wait  job-42 pid 902360
+00:50:08 wait  job-76 pid 903628
+00:50:20 wait  job-75 pid 904931
+00:50:21 wait  job-77 pid 905046
+00:52:58 wait  PAIR job-78 pid 931547
+00:57:27 reap  PAIR job-74 pid 829952: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+00:57:27 end   PAIR job-74 pid 829952
+00:57:27 admit job-61 pid 606634 (owed: after PAIR)
+00:57:27 start job-61 pid 606634
+00:57:31 reap  job-61 pid 606634: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s
+00:57:31 end   job-61 pid 606634
+00:58:22 wait  PAIR job-79 pid 988121
+00:59:24 wait  job-80 pid 995971
+00:59:36 start PAIR job-79 pid 988121 (after 2 retries)
+01:01:41 wait  PAIR job-81 pid 1021219
+01:03:51 reap  PAIR job-79 pid 988121: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+01:03:51 end   PAIR job-79 pid 988121
+01:03:51 admit job-63 pid 627282 (owed: after PAIR)
+01:03:51 start job-63 pid 627282
+01:08:15 reap  job-63 pid 627282: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s
+01:08:15 end   job-63 pid 627282
+01:08:15 start PAIR job-35 pid 3901465 (after 7 retries)
+01:08:15 wait  job-82 pid 1079945
+01:09:31 reap  PAIR job-35 pid 3901465: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+01:09:31 end   PAIR job-35 pid 3901465
+01:09:31 admit job-66 pid 703204 (owed: after PAIR)
+01:09:31 start job-66 pid 703204
+01:09:44 reap  job-66 pid 703204: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s
+01:09:44 end   job-66 pid 703204
+01:11:43 start PAIR job-37 pid 3998842 (after 4 retries)
+01:14:37 wait  PAIR job-83 pid 1120384
+01:16:28 wait  job-84 pid 1130568
+01:17:13 reap  PAIR job-37 pid 3998842: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+01:17:14 end   PAIR job-37 pid 3998842
+01:17:14 admit job-67 pid 757387 (owed: after PAIR)
+01:17:14 start job-67 pid 757387
+01:20:01 reap  job-67 pid 757387: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s
+01:20:01 end   job-67 pid 757387
+01:20:01 start PAIR job-38 pid 4011796 (after 3 retries)
+01:21:28 wait  PAIR job-85 pid 1164130
+01:24:04 reap  PAIR job-38 pid 4011796: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+01:24:04 end   PAIR job-38 pid 4011796
+01:24:04 admit job-69 pid 784955 (owed: after PAIR)
+01:24:04 start job-69 pid 784955
+01:25:04 reap  job-69 pid 784955: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s
+01:25:04 end   job-69 pid 784955
+01:25:04 start PAIR job-44 pid 117578 (after 0 retries)
+01:33:37 reap  PAIR job-44 pid 117578: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+01:33:37 end   PAIR job-44 pid 117578
+01:33:37 admit job-70 pid 787564 (owed: after PAIR)
+01:33:37 start job-70 pid 787564
+01:34:21 reap  job-70 pid 787564: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s
+01:34:21 end   job-70 pid 787564
+01:34:23 wait  job-86 pid 1259065
+01:34:50 wait  PAIR job-71 pid 1262013
+01:37:31 start PAIR job-45 pid 149028 (after 7 retries)
+01:39:24 wait  PAIR job-87 pid 1289411
+01:43:30 reap  PAIR job-45 pid 149028: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+01:43:30 end   PAIR job-45 pid 149028
+01:43:30 admit job-73 pid 814454 (owed: after PAIR)
+01:43:30 start job-73 pid 814454
+01:45:31 wait  PAIR job-88 pid 1322286
+01:46:07 reap  job-73 pid 814454: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s
+01:46:07 end   job-73 pid 814454
+01:46:07 start PAIR job-51 pid 423036 (after 4 retries)
+01:47:11 reap  PAIR job-51 pid 423036: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+01:47:12 end   PAIR job-51 pid 423036
+01:47:12 admit job-42 pid 902360 (owed: after PAIR)
+01:47:12 start job-42 pid 902360
+01:47:16 reap  job-42 pid 902360: reaped 2 pids [1330894:sleep:turn 1331055:sleep:turn]; vram 158->158 MiB, gtt 22->22 MiB; 0.1 s
+01:47:16 end   job-42 pid 902360
+01:47:17 start PAIR job-24 pid 426207 (after 0 retries)
+01:48:23 wait  job-42 pid 1335759
+01:50:51 wait  job-89 pid 1348114
+01:54:56 reap  PAIR job-24 pid 426207: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+01:54:56 end   PAIR job-24 pid 426207
+01:54:56 wait  PAIR job-26 pid 1368912
+01:54:56 admit job-76 pid 903628 (owed: after PAIR)
+01:54:56 start job-76 pid 903628
+01:55:37 reap  job-76 pid 903628: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s
+01:55:37 end   job-76 pid 903628
+01:55:37 admit job-75 pid 904931 (owed: waited 65 min)
+01:55:37 start job-75 pid 904931
+01:55:40 wait  job-90 pid 1374232
+01:56:14 wait  job-91 pid 1378314
+01:58:17 reap  job-75 pid 904931: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s
+01:58:17 end   job-75 pid 904931
+01:58:17 admit job-77 pid 905046 (owed: waited 67 min)
+01:58:17 start job-77 pid 905046
+01:59:43 wait  job-92 pid 1401394
+02:00:02 reap  job-77 pid 905046: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s
+02:00:02 end   job-77 pid 905046
+02:00:02 admit job-80 pid 995971 (owed: waited 60 min)
+02:00:02 start job-80 pid 995971
+02:01:39 wait  job-93 pid 1414799
+02:02:54 reap  job-80 pid 995971: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s
+02:02:54 end   job-80 pid 995971
+02:02:54 start PAIR job-58 pid 590977 (after 6 retries)
+02:03:25 wait  job-94 pid 1427738
+02:09:06 reap  PAIR job-58 pid 590977: local: reaped 0 pids; vram 158->158 MiB, gtt 22->22 MiB; 0.0 s | halo-2: reaped 0 pids; vram 164->164 MiB, gtt 28->28 MiB; 0.0 s
+02:09:06 end   PAIR job-58 pid 590977
+02:09:06 admit job-82 pid 1079945 (owed: after PAIR)
+02:09:06 start job-82 pid 1079945

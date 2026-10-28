@@ -1,0 +1,9 @@
+/* Model library page (library.js). */
+.lib-root{font-size:13px;font-weight:600;margin:14px 0 6px;display:flex;flex-wrap:wrap;align-items:center;gap:8px;word-break:break-all}
+.lib-actions{flex-wrap:nowrap}
+.lib-unit{white-space:nowrap}
+.lib-roots h3{font-size:13px;margin:0 0 4px}
+.lib-roots textarea{width:100%;resize:vertical}
+@media (max-width:760px){
+  .lib-actions{flex-wrap:wrap}
+}

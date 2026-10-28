@@ -2,17 +2,39 @@
 import ast
 import importlib.util
 from pathlib import Path
+import os
 import runpy
+import shutil
+import subprocess
+import sys
+import tempfile
 import unittest
 
 from hyperloom import orchestrate, remote
 
 
 class VerbContractTests(unittest.TestCase):
+    def test_the_node_tool_writes_no_bytecode_beside_itself(self):
+        """A verb that imports an extension leaves no __pycache__ in the tool's directory (~/.hyperloom-boot)."""
+        node = Path(__file__).resolve().parents[1] / "node"
+        with tempfile.TemporaryDirectory() as directory:
+            for name in os.listdir(node):
+                if name == "hyperloom-node" or name.endswith(".py"):
+                    shutil.copy2(node / name, Path(directory) / name)
+            environment = {key: value for key, value in os.environ.items() if key != "PYTHONDONTWRITEBYTECODE"}
+            subprocess.run([sys.executable, str(Path(directory) / "hyperloom-node"), "turns"], input="{}",
+                           capture_output=True, text=True, timeout=60, env=environment)
+            self.assertEqual(sorted(p.name for p in Path(directory).iterdir() if not p.name.endswith(".py")
+                                    and p.name != "hyperloom-node"), [])
+
+
     def test_orchestrator_transport_and_node_verbs_agree(self):
         node = Path(__file__).resolve().parents[1] / "node"
-        supported = set(runpy.run_path(str(node / "hyperloom-node"))["VERBS"])
-        for name in ("hyperloom_install", "hyperloom_lease", "hyperloom_download", "hyperloom_service"):
+        tool = runpy.run_path(str(node / "hyperloom-node"))
+        supported = set(tool["VERBS"])
+        self.assertTrue({"hyperloom_install", "hyperloom_lease", "hyperloom_download", "hyperloom_service"}
+                        <= set(tool["EXTENSIONS"]))
+        for name in tool["EXTENSIONS"]:
             spec = importlib.util.spec_from_file_location(name + "_contract", node / (name + ".py"))
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)

@@ -229,6 +229,17 @@ def effective_cap(reservation, requested):
     return requested
 
 
+# Service engines whose --host-gib is whole GiB (placement/ds41.py emits it as an integer).
+WHOLE_GIB_HOST = ("ds41-rtx-prefill",)
+
+
+def exact_host(plan, host):
+    """A recipe's host budget reaches the engine exactly: the plan's --host-gib (its own lower estimate) is replaced
+    by the budget the recipe set and admission charged."""
+    if "--host-gib" in plan.flags:
+        plan.flags["--host-gib"] = str(int(host)) if float(host).is_integer() else f"{host:g}"
+
+
 def plan_placement(data, model_path, cap, host, positions):
     """The preset's placement engine planned for this cap (None when the preset has no placement block)."""
     rule = data.get("placement")
@@ -256,7 +267,8 @@ def expand_placement(data, plan):
     return out
 
 
-def render_service(cluster, profile_name, *, api_key, handoff_api_key, free_physical_gib, now=None, vram_cap_gib=None):
+def render_service(cluster, profile_name, *, api_key, handoff_api_key, free_physical_gib, now=None, vram_cap_gib=None,
+                   host_gib_exact=None):
     s, data, kind = _service(cluster, profile_name)
     decode = data["decode_profiles"][kind]
     rule = decode["context"]
@@ -304,15 +316,23 @@ def render_service(cluster, profile_name, *, api_key, handoff_api_key, free_phys
     floor = reservation["free_commit_floor_gib"] if reservation else 4
     cap = effective_cap(reservation, vram_cap_gib)
     host = host_gib(data, reservation or {"host_gib": 4096}, free_physical_gib)
+    if host_gib_exact is not None:
+        # A recipe's pinned host budget is used exactly or refused, never clamped (recipes design 9.7).
+        if host_gib_exact > host:
+            raise ConfigError(f"recipe host_pinned_gib {host_gib_exact:g} is above what this start allows ({host:g} "
+                              "GiB: the preset's maximum, the reservation and free RAM)")
+        host = host_gib_exact
     values = {name: item["path"] for name, item in assets.items()}
     # Planned only when the operator asks for a cap (`up --vram-cap-gib`), on every such start; without it the
     # qualified launch line is unchanged (lead decision, review of d5c3e0f).
     plan = None
     if vram_cap_gib is not None:
         plan = plan_placement(data, values.get(data.get("placement", {}).get("model_asset")), cap, host, positions)
+        if plan is not None and host_gib_exact is not None:
+            exact_host(plan, host_gib_exact)
     values.update(binary=str(binary), port=str(s.get("port", data["port"])),
                   positions=str(positions),
-                  vram_cap_gib=f"{cap:g}", host_gib=str(host),
+                  vram_cap_gib=f"{cap:g}", host_gib=f"{host:g}",
                   commit_floor_gib=f"{floor + 10:g}", api_key=api_key, handoff_api_key=handoff_api_key,
                   pro_uuid=device["uuid"])
     argv = [token.format_map(values) for token in expand_placement(data, plan)]
@@ -994,7 +1014,12 @@ def placement_check(cluster, profile_name, request=_request, health=_health, lon
         return request(endpoint["address"], endpoint["port"], method, path, body, key)
 
     def counts():
-        return ((call("GET", "/api/status", None)[2] or {}).get("prefill") or {}).get("counts", {})
+        # The router reports its prefill placements under /api/status -> prefill -> placements; a missing block is an
+        # error, not zero counts (W3 read a wrong key and saw every delta as 0).
+        placements = ((call("GET", "/api/status", None)[2] or {}).get("prefill") or {}).get("placements")
+        if not isinstance(placements, dict):
+            raise ServiceError("router status has no prefill placements")
+        return placements
 
     rows = []
     for kind, tokens in (("long", long_tokens), ("short", short_tokens)):

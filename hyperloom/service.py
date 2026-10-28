@@ -9,7 +9,7 @@ from copy import deepcopy
 import time
 
 from . import engines, remote, render
-from .orchestrate import OrchestrationError, _call, _client, _node_name, _profile, _url, prelaunch
+from .orchestrate import OrchestrationError, _call, _client, _node_name, _preset_name, _profile, _url, prelaunch
 
 
 OPERATIONS = ("install", "start", "stop", "status", "remove")
@@ -20,7 +20,7 @@ STOPPED = {"inactive", "failed"}
 
 def _machines(cluster, profile):
     settings, kind, mids = _profile(cluster, profile)
-    if "service-unit" not in engines.adapter(kind).capabilities:
+    if "service-unit" not in engines.release_adapter(_preset_name(cluster, profile)).capabilities:
         raise OrchestrationError(f"non-lab service mode supports qwen-replicas only; {kind} needs a peer turn "
                                  "and stays lease-only")
     lab = [mid for mid in mids if cluster.machines[mid].lab_mode]

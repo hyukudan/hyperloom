@@ -1,0 +1,174 @@
+{
+ "schema": "strix-serve-status-v1",
+ "model": "qwen3.8-flash-next",
+ "engine": "native MTP batched decode (8 slots)",
+ "context_tokens": 12288,
+ "uptime_seconds": 241.867795682,
+ "state": "ready",
+ "queue": {
+  "queued": 0,
+  "running": 0,
+  "completed": 59,
+  "failed": 0,
+  "cancelled": 0
+ },
+ "totals": {
+  "requests": 59,
+  "prompt_tokens": 12878,
+  "cached_tokens": 0,
+  "generated_tokens": 9910,
+  "busy_seconds": 473.96902823000005,
+  "imported_tokens": 7168,
+  "computed_tokens": 5710
+ },
+ "requests": [
+  {
+   "id": "0123456789abcdef.2",
+   "request_id": "0123456789abcdef.2",
+   "route": "chat.completions",
+   "time": 1800000000,
+   "status": "done",
+   "stop_reason": "length",
+   "prompt_tokens": 8192,
+   "reused_tokens": 1024,
+   "cached_tokens": 1024,
+   "imported_tokens": 7168,
+   "computed_tokens": 0,
+   "output_tokens": 100,
+   "queue_ms": 1.0,
+   "prefill_ms": 12.0,
+   "decode_ms": 4990.0,
+   "duration_ms": 5003.0,
+   "prefill_tok_s": 0.0,
+   "decode_tok_s": 20.04,
+   "first_token_ms": 15.0,
+   "mtp_cycles": 40,
+   "mtp_accepted": 60,
+   "mtp_proposed": 80
+  },
+  {
+   "id": "aabbccddeeff0011.2",
+   "request_id": "aabbccddeeff0011.2",
+   "route": "chat.completions",
+   "time": 1800000005,
+   "status": "done",
+   "stop_reason": "stop",
+   "prompt_tokens": 9000,
+   "reused_tokens": 8192,
+   "cached_tokens": 8192,
+   "imported_tokens": 0,
+   "computed_tokens": 808,
+   "output_tokens": 40,
+   "queue_ms": 0.5,
+   "prefill_ms": 300.0,
+   "decode_ms": 1180.0,
+   "duration_ms": 1480.5,
+   "prefill_tok_s": 2693.3,
+   "decode_tok_s": 33.9,
+   "first_token_ms": 301.0,
+   "mtp_cycles": 20,
+   "mtp_accepted": 20,
+   "mtp_proposed": 30
+  },
+  {
+   "id": "chatcmpl-77",
+   "route": "completions",
+   "time": 1799999990,
+   "status": "done",
+   "stop_reason": "length",
+   "prompt_tokens": 100,
+   "reused_tokens": 0,
+   "output_tokens": 10,
+   "queue_ms": 0.1,
+   "prefill_ms": 50.0,
+   "decode_ms": 500.0,
+   "duration_ms": 550.1,
+   "prefill_tok_s": 2000.0,
+   "decode_tok_s": 20.0,
+   "mtp_cycles": 5,
+   "mtp_accepted": 4,
+   "mtp_proposed": 5
+  }
+ ],
+ "instance": {
+  "id": "5a5a5a5a5a5a5a5a",
+  "start_time": 1799990000
+ },
+ "armed": true,
+ "armed_since": 1799990100,
+ "observed": {
+  "since": "armed",
+  "requests": 2,
+  "prompt_tokens": 17192,
+  "cached_tokens": 9216,
+  "imported_tokens": 7168,
+  "computed_tokens": 808,
+  "ttft_seconds": {
+   "buckets": [
+    {
+     "le": 0.05,
+     "count": 1
+    },
+    {
+     "le": 0.5,
+     "count": 2
+    },
+    {
+     "le": "+Inf",
+     "count": 2
+    }
+   ],
+   "sum": 0.316,
+   "count": 2
+  }
+ },
+ "speculative": {
+  "method": "mtp",
+  "since": "armed",
+  "requests": 3,
+  "generated_tokens": 150,
+  "cycles": 65,
+  "proposed": 115,
+  "accepted": 84,
+  "acceptance": 0.73,
+  "tokens_per_cycle": 2.3,
+  "verifier_window_rows": [
+   0,
+   10,
+   20,
+   15,
+   10,
+   5,
+   3,
+   1,
+   1
+  ],
+  "ngram": {
+   "rows": 4,
+   "accepted": 2
+  }
+ },
+ "prefill": {
+  "path": "rows",
+  "prefills": 3,
+  "prefill_tokens": 17292,
+  "cached_tokens": 9216,
+  "prefill_seconds": 0.362,
+  "prefix_cache": {
+   "published": true,
+   "age_s": 0.4,
+   "host_budget_bytes": 8589934592,
+   "host_bytes": 1073741824,
+   "lookups": 3,
+   "host_hits": 1,
+   "disk_hits": 0,
+   "misses": 2,
+   "inserted": 2,
+   "evicted": 0,
+   "disk": {
+    "budget_bytes": 0,
+    "writes": 0
+   }
+  }
+ }
+}

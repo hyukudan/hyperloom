@@ -57,14 +57,22 @@ class APITests(unittest.TestCase):
         self.remote = Mock()
         self.calls = []
 
+        self._inventory_times = []
+
         def node(verb, payload, timeout):
             self.calls.append(verb)
+            self._inventory_times.append(self.now)
             checks = {"os": {"status": "ok", "value": "Linux"},
                       "disk": {"status": "ok", "value": {"free_bytes": 1234}}} if verb == "doctor" else {
                           "ram": {"status": "ok", "value": {"total_bytes": 4096}},
                           "amd": {"status": "ok", "value": []}}
             return {"schema": "hyperloom/node-v1", "verb": verb, "checks": checks}
         self.remote.Remote.return_value.call.side_effect = node
+        # The inventory's doctor and gpu reads are separate pollers that the budget spaces 5 s apart; these tests
+        # read both at once (the pacing itself: test_concurrent_tabs... and tests/test_pollbudget.py).
+        spacing = patch("hyperloom.pollbudget.NODE_SPACING_S", 0.0)
+        spacing.start()
+        self.addCleanup(spacing.stop)
         self.api = API(self.directory / "cluster.json", orchestrator=self.orch,
                        remote_module=self.remote, clock=lambda: self.now,
                        audit_path=self.directory / "audit.jsonl")
@@ -91,15 +99,164 @@ class APITests(unittest.TestCase):
             documents = list(pool.map(self.api.read, list(SCREENS) * 2))
         self.assertEqual(len(documents), 14)
         self.assertEqual(self.calls, ["doctor", "gpu"])
-        self.orch.status.assert_called_once_with()
+        self.assertEqual(self.orch.status.call_count, 1)
+        self.assertEqual(self.orch.status.call_args.kwargs["config_path"], self.api.config_path)
+        # The snapshot is rebuilt every 2 s, but node reads are paced: each verb once per 30 s cycle (one ssh each),
+        # the launch status once per cycle.
+        for step in range(14):
+            self.now += 2
+            self.api.read("devices")
+        self.assertEqual(self.calls, ["doctor", "gpu"])
+        self.assertEqual(self.orch.status.call_count, 1)
+        with patch("hyperloom.pollbudget.NODE_SPACING_S", 5.0):           # the real spacing: never a burst
+            self.now += 2
+            self.api.read("devices")
+            self.assertEqual(self.calls, ["doctor", "gpu", "doctor"])
+            self.assertEqual(self.orch.status.call_count, 2)
+            self.now += 2
+            self.api.read("devices")
+            self.assertEqual(self.calls, ["doctor", "gpu", "doctor"])     # gpu waits for the 5 s spacing
+            self.now += 4
+            self.api.read("devices")
+            self.assertEqual(self.calls, ["doctor", "gpu", "doctor", "gpu"])
+
+    def test_status_and_node_logs_skip_a_node_a_gpu_turn_holds(self):
+        from hyperloom import pollbudget
+        self.orch.status.return_value = {"qwen-replicas": {"nodes": {"halo-1": {"leases": []}}}}
+        pollbudget.for_api(self.api).note_turn("halo-1", "someone-bench", now=self.now)
+        document = self.api.read("logs")
+        skip = self.orch.status.call_args.kwargs["skip"]
+        self.assertIn("paused", skip("halo-1"))
+        self.assertIsNone(skip("halo-2"))
+        self.orch.logs.assert_not_called()                                # no node log read during the turn
+        self.assertIn("paused", document["why"]["qwen-replicas/halo-1"])
+        pollbudget.for_api(self.api).note_turn("halo-1", None, now=self.now)
         self.now += 2
+        self.api.read("logs")
+        self.orch.logs.assert_called_once()                               # the GPU is free: read again
+        self.now += 2
+        self.api.read("logs")
+        self.orch.logs.assert_called_once()                               # and then once per 30 s only
+
+    def test_every_core_node_session_is_paced_by_the_budget(self):
+        """Inventory, launch status and node logs together, snapshots every 2 s for five minutes (and a job finishing
+        in between): every ssh session to the node is a budget grant, at least 5 s apart, at most 12 a minute."""
+        from hyperloom import pollbudget
+        sessions = []
+
+        def status(config_path=None, skip=None):
+            if skip("halo-1", "node") is None:
+                sessions.append(("status", self.now))
+            return {"qwen-replicas": {"nodes": {"halo-1": {"leases": []}}}}
+
+        def logs(profile, process, tail, config_path=None):
+            sessions.append(("logs", self.now))
+            return {"stdout": "READY", "stderr": ""}
+        self.orch.status.side_effect = status
+        self.orch.logs.side_effect = logs
+        start = self.now
+        with patch.object(pollbudget, "NODE_SPACING_S", 5.0):
+            for step in range(150):
+                if step == 40:
+                    self.api._status_stale = True                         # a job of this portal just finished
+                self.api.read("logs")
+                self.now += 2
+        sessions += [("inventory", at) for at in self._inventory_times]
+        times = sorted(at for _, at in sessions)
+        self.assertTrue(all(b - a >= 5 for a, b in zip(times, times[1:])), times)
+        for minute in range(5):
+            self.assertLessEqual(sum(1 for at in times if start + 60 * minute <= at < start + 60 * (minute + 1)), 12)
+        self.assertEqual({kind for kind, _ in sessions}, {"status", "logs", "inventory"})
+
+    def test_a_router_on_a_held_node_is_neither_read_nor_its_log_fetched(self):
+        from hyperloom import pollbudget
+        self.orch.status.side_effect = lambda config_path=None, skip=None: {"qwen-replicas": {
+            "nodes": {}, "router": {"error": skip("halo-1", "router")}, "router_machine": "halo-1"}}
+        pollbudget.for_api(self.api).note_turn("halo-1", "someone-bench", now=self.now)
+        document = self.api.read("logs")
+        self.orch.logs.assert_not_called()
+        self.assertIn("paused", document["why"]["qwen-replicas/router"])
+
+    def test_the_logs_page_refresh_of_one_process_is_paced_and_paused(self):
+        """The Logs page asks for one process's log every 2 s: a node's log (and a router hosted on a node) is read
+        through the budget: nothing while a turn holds the node, then at most once per 30 s (the last answer
+        between reads)."""
+        from hyperloom import orchestrate, pollbudget
+        fetched = []
+        self.orch.logs.side_effect = lambda profile, process, tail, config_path=None: (
+            fetched.append((process, self.now)) or {"stdout": f"line {len(fetched)}", "stderr": ""})
+        self.orch.status.return_value = {"qwen-replicas": {"nodes": {"halo-1": {"leases": []}}}}
+        hosts = {"halo-1": "halo-1", "router": "halo-1", "prefill": "local"}
+        with patch.object(orchestrate, "log_machine", lambda profile, process, read=None: hosts[process]), \
+                patch.object(pollbudget, "NODE_SPACING_S", 5.0):
+            pollbudget.for_api(self.api).note_turn("halo-1", "someone-bench", now=self.now)
+            for step in range(30):                                        # one minute of refreshes in a turn
+                for process in ("halo-1", "router"):
+                    document = self.api.read("logs", {"profile": "qwen-replicas", "process": process, "tail": "5"})
+                    self.assertIn("paused", document["why"]["entries"])
+                self.now += 2
+            self.assertEqual(fetched, [])
+            pollbudget.for_api(self.api).note_turn("halo-1", None, now=self.now)
+            for step in range(30):                                        # one minute with the GPU free
+                self.api.read("logs", {"profile": "qwen-replicas", "process": "halo-1", "tail": "5"})
+                self.now += 2
+            reads = [at for process, at in fetched if process == "halo-1"]     # the page's and the snapshot's
+            self.assertLessEqual(len(reads), 4)
+            self.assertTrue(all(b - a >= 5 for a, b in zip(reads, reads[1:])))
+            last = self.api.read("logs", {"profile": "qwen-replicas", "process": "halo-1", "tail": "5"})
+            self.assertTrue(last["entries"], last)                        # between reads: the last answer
+            self.api.read("logs", {"profile": "qwen-replicas", "process": "prefill", "tail": "5"})
+            self.assertEqual(fetched[-1][0], "prefill")                   # a local file: no node, no budget
+
+    def test_a_status_read_the_spacing_refused_is_tried_again(self):
+        """Another poller (the turn check) takes the node just before each status read: the read is retried at the
+        next snapshot instead of waiting a cycle, so the status keeps following the node."""
+        from hyperloom import pollbudget
+        budget = pollbudget.for_api(self.api)
+        served = {"value": 0}
+        reads = []
+
+        def status(config_path=None, skip=None):
+            if skip("halo-1", "node") is None:
+                served["value"] += 1
+                reads.append(self.now)
+            return {"qwen-replicas": {"nodes": {"halo-1": {"leases": [], "generation": served["value"]}}}}
+        self.orch.status.side_effect = status
+        with patch.object(pollbudget, "NODE_SPACING_S", 5.0):
+            for step in range(150):                                       # five minutes of 2 s snapshots
+                if step % 15 == 0 and step:
+                    budget.node("halo-1", "turns", now=self.now - 1)     # the turn check, 1 s before each cycle
+                    budget.note_turn("halo-1", None, now=self.now - 1)
+                self.api.read("profiles")
+                self.now += 2
+        self.assertGreaterEqual(len(reads), 9)                            # about once per 30 s, never stuck
+        self.assertTrue(all(b - a <= 40 for a, b in zip(reads, reads[1:])), reads)
+        status = self.api._status_cache[1]["qwen-replicas"]["nodes"]["halo-1"]
+        self.assertEqual(status["generation"], served["value"])
+
+    def test_the_inventory_pauses_while_a_gpu_turn_holds_the_node(self):
+        from hyperloom import pollbudget
         self.api.read("devices")
-        self.assertEqual(self.calls, ["doctor", "gpu"] * 2)
+        self.assertEqual(self.calls, ["doctor", "gpu"])
+        pollbudget.for_api(self.api).note_turn("halo-1", "someone-bench", now=self.now + 30)
+        self.now += 30
+        row = self.api.read("devices")["machines"][0]
+        self.assertEqual(self.calls, ["doctor", "gpu"])                  # no node call during the turn
+        self.assertIn("paused: a GPU turn holds halo-1", row["why"]["inspection"])
+        self.assertIsNotNone(row["gpu"])                                  # the last answer stays shown
+
+    def test_a_machine_first_seen_in_a_gpu_turn_is_online_not_offline(self):
+        from hyperloom import pollbudget
+        pollbudget.for_api(self.api).note_turn("halo-1", "someone-bench", now=self.now)
+        row = self.api.read("devices")["machines"][0]
+        self.assertEqual(self.calls, [])                                  # no node read during the turn
+        self.assertEqual(row["health"], "online")                         # the turn check answered: busy, not down
+        self.assertIn("paused", row["why"]["inspection"])
 
     def test_offline_keeps_last_seen_without_fake_values(self):
         first = self.api.read("devices")["machines"][0]
         self.remote.Remote.return_value.call.side_effect = RuntimeError("machine offline")
-        self.now += 3
+        self.now += 30                                  # the next paced read
         row = self.api.read("devices")["machines"][0]
         self.assertEqual(row["health"], "offline")
         self.assertEqual(row["last_seen"], first["last_seen"])
@@ -173,12 +330,86 @@ class APITests(unittest.TestCase):
                      "device": ["halo-1:gpu"], "deadline": 1140}
         result = wait_job(self.api, self.api.mutate("up", arguments))
         self.assertEqual(result["state"], "succeeded")
-        self.orch.up.assert_called_once_with(self.cluster, "qwen-replicas", router="halo-1",
-                                             nodes=["halo-1"], devices=["halo-1:gpu"], deadline_s=1140, approval=None)
+        self.orch.up.assert_called_once()
+        kwargs = dict(self.orch.up.call_args.kwargs)
+        cancelled = kwargs.pop("cancelled")                         # the job's hand-over check (its cancel marker)
+        self.assertEqual((self.orch.up.call_args.args, kwargs), ((self.cluster, "qwen-replicas"), dict(
+            router="halo-1", nodes=["halo-1"], devices=["halo-1:gpu"], deadline_s=1140, approval=None)))
+        self.assertFalse(cancelled())
         entries = [json.loads(line) for line in self.api.audit_path.read_text().splitlines()]
         self.assertEqual(len(entries), 2)
         self.assertEqual(entries[-1]["action"], "up")
         self.assertEqual(entries[-1]["result"]["state"], "succeeded")
+
+    def test_up_runs_on_the_portals_configuration_and_lists_only_its_launches(self):
+        from hyperloom.recipes import service
+        seen = []
+        self.orch.up.side_effect = lambda *a, **kw: seen.append(service.configured_file()) or {"state": "running"}
+        self.assertEqual(wait_job(self.api, self.api.mutate("up", {"profile": "qwen-replicas"}))["state"], "succeeded")
+        self.api._execute_action("up", {"profile": "qwen-replicas"})      # in process, without a job
+        self.assertEqual(seen, [Path(self.api.config_path).absolute()] * 2)
+        self.api.read("profiles")
+        self.assertEqual(self.orch.status.call_args.kwargs["config_path"], self.api.config_path)
+        self.assertEqual(set(self.orch.status.call_args.kwargs), {"config_path", "skip"})
+
+    def test_profiles_show_only_this_configurations_launch_of_a_shared_name(self):
+        from hyperloom import orchestrate
+        owned = {"profile": "qwen-replicas", "router": {"machine": "halo-1"}, "release_id": "r" * 12,
+                 "process_specs": [{"machine_id": "halo-1", "role": "replica", "argv": ["/opt/foreign-engine"],
+                                    "env": {"FOREIGN_SETTING": "1"}}],
+                 "rendered_router": {"replicas": [{"id": "foreign-replica", "address": "127.0.0.1", "port": 18999}]}}
+        status = {"qwen-replicas": {"nodes": {}}}
+        self.orch._read.side_effect = lambda path: dict(owned, config=orchestrate.config_record(
+            self.directory / "other" / "cluster.json"))
+        row = self.api._profiles(self.cluster, status)[0]
+        self.assertIsNone(row["launch"])
+        self.assertEqual(row["why"]["launch"], "no owned launch")
+        self.assertNotIn("foreign", json.dumps(row).lower())              # nothing of the other launch shows
+        # A launch written before states recorded their configuration is shown, marked unknown (and stoppable).
+        self.orch._read.side_effect = lambda path: dict(owned)
+        row = self.api._profiles(self.cluster, status)[0]
+        self.assertEqual((row["router"], row["config_identity"]), ("halo-1", "unknown"))
+        self.assertIn("unknown configuration", row["why"]["configuration_identity"])
+        self.orch._read.side_effect = lambda path: dict(owned, config=orchestrate.config_record(self.api.config_path))
+        row = self.api._profiles(self.cluster, status)[0]
+        self.assertEqual(row["router"], "halo-1")
+        self.assertEqual(row["release"], "r" * 12)
+
+    def test_core_node_calls_never_wait_behind_a_collector(self):
+        """A collector's hung ssh call holds the machine's node gate: the core's doctor and gpu reads still answer
+        at once (no TimeoutError after the gate's wait), while a feature call keeps waiting for the gate."""
+        from hyperloom import nodegate
+        held, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+
+        def collector():
+            with nodegate.hold(self.api.config_path, "halo-1", wait=1.0):
+                held.set()
+                release.wait(10)
+        thread = threading.Thread(target=collector, daemon=True)
+        thread.start()
+        self.assertTrue(held.wait(2))
+        started = time.monotonic()
+        document = self.api.read("devices")
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertIn("doctor", self.calls)
+        self.assertIn("gpu", self.calls)
+        row = next(m for m in document["machines"] if m["id"] == "halo-1")
+        self.assertNotIn("busy", json.dumps(row["why"]))
+        with patch.object(nodegate, "hold", side_effect=TimeoutError("node halo-1 is busy with another call")):
+            with self.assertRaises(TimeoutError):
+                self.api.node("halo-1", "host", {})            # a feature call is gated (and skipped when busy)
+        release.set()
+        thread.join(5)
+
+    def test_a_launch_without_a_configuration_record_can_be_stopped_here(self):
+        from hyperloom import orchestrate
+        legacy = {"profile": "qwen-replicas", "router": {"machine": "halo-1"}, "machines": {}}
+        self.orch._read.side_effect = lambda path: dict(legacy)
+        self.assertEqual(orchestrate.ownership(legacy, self.api.config_path), "unknown")
+        job = wait_job(self.api, self.api.mutate("down", {"profile": "qwen-replicas"}))
+        self.assertEqual(job["state"], "succeeded")
+        self.orch.down.assert_called_once_with("qwen-replicas", force=False)
 
     def test_install_down_doctor_rotate_and_host_pin_endpoints(self):
         for action, arguments in (("install", {"profile": "qwen-replicas"}),
@@ -203,6 +434,32 @@ class APITests(unittest.TestCase):
         job = wait_job(self.api, self.api.mutate("hosts/pin", {"machine": "halo-1", "fingerprint": "SHA256:fixture"}))
         self.assertEqual(job["state"], "failed")
         self.remote.KnownHosts.return_value.pin.assert_not_called()
+
+    def test_a_stop_goes_ahead_when_the_admission_database_is_unavailable(self):
+        import sqlite3
+        broken = Mock()
+        broken.acquire.side_effect = sqlite3.DatabaseError("file is not a database")
+        self.api.admission_db = broken
+        self.api._resources_of_profile = lambda profile, router=None: {"halo-1", "router"}
+        bench = Mock()
+        with self.api._job_lock:                  # a benchmark of this process that holds an overlapping machine
+            self.api._features_running["bench-1"] = bench
+            self.api._hold_resources["bench-1"] = {"halo-1"}
+            self.api._features_running["bench-2"] = Mock()
+            self.api._hold_resources["bench-2"] = {"halo-9"}
+        self.addCleanup(lambda: [self.api._features_running.pop(j, None) for j in ("bench-1", "bench-2")])
+        job = wait_job(self.api, self.api.mutate("down", {"profile": "qwen-replicas"}))
+        self.assertEqual(job["state"], "succeeded")
+        self.assertIn("admission unavailable", job["warning"])
+        self.orch.down.assert_called_once_with("qwen-replicas", force=False)
+        bench.cancel.assert_called_once()
+        self.api._features_running["bench-2"].cancel.assert_not_called()
+        audit = [json.loads(line) for line in self.api.audit_path.read_text().splitlines()]
+        self.assertIn("admission unavailable", audit[-1]["result"]["warning"])
+        with self.assertRaises(APIError) as caught:            # a deploy is still refused without it
+            self.api.mutate("up", {"profile": "qwen-replicas"})
+        self.assertEqual(caught.exception.status, 503)
+        self.orch.up.assert_not_called()
 
     def test_failure_audited_and_next_job_allowed(self):
         self.orch.up.side_effect = RuntimeError("api_key=hidden failed")
@@ -230,11 +487,114 @@ class APITests(unittest.TestCase):
         release.set()
         wait_job(self.api, job)
 
+    def plain_up(self, up, stop):
+        """Run a plain up job whose orchestrate.up is ``up(cancelled, cue)``; ``stop()`` runs when up sets ``cue``.
+        Returns (the stop's finished job, the up's finished job)."""
+        cue, resume = threading.Event(), threading.Event()
+        self.addCleanup(resume.set)
+        self.orch.up.side_effect = lambda *a, **kw: up(kw["cancelled"], cue, resume)
+        job = self.api.mutate("up", {"profile": "qwen-replicas"})
+        self.assertTrue(cue.wait(3))
+        stopped = wait_job(self.api, stop(job))
+        resume.set()
+        return stopped, wait_job(self.api, job)
+
+    def test_cancel_of_a_plain_up_before_its_hand_over_starts_nothing_and_stops_nothing(self):
+        # Cancelled while up prepares (before it owns the profile): only the job's marker. The cancel never answers
+        # "stopped" while up goes on: up meets the marker at the hand-over and starts nothing.
+        def up(cancelled, cue, resume):
+            cue.set()
+            resume.wait(3)
+            if cancelled():
+                raise RuntimeError("profile stop requested")
+            return {"state": "running"}
+        cancel, finished = self.plain_up(up, lambda job: self.api.mutate("cancel", {"job": job["job"]}))
+        self.assertEqual(cancel["state"], "succeeded", cancel["error"])
+        self.assertIn(cancel["result"]["phase"], ("not started", "checks"))
+        self.assertIsNone(cancel["result"]["down"])
+        self.assertIn("nothing was started", cancel["result"]["summary"])
+        self.assertEqual((finished["state"], finished["error"]), ("failed", "profile stop requested"))
+        self.orch.down.assert_not_called()
+
+    def test_cancel_of_a_plain_up_never_stops_a_profile_that_was_already_running(self):
+        # The profile ran before this job: up refuses it (before the hand-over). A cancel meanwhile stops nothing.
+        def up(cancelled, cue, resume):
+            cue.set()
+            resume.wait(3)
+            raise RuntimeError("profile has saved running state; run down before up")
+        cancel, finished = self.plain_up(up, lambda job: self.api.mutate("cancel", {"job": job["job"]}))
+        self.assertEqual(cancel["state"], "succeeded", cancel["error"])
+        self.assertIsNone(cancel["result"]["down"])
+        self.assertEqual(finished["state"], "failed")
+        self.orch.down.assert_not_called()
+
+    def test_cancel_of_a_plain_up_after_its_hand_over_stops_the_profile(self):
+        def up(cancelled, cue, resume):
+            self.assertFalse(cancelled())                           # up owns the profile: the launch goes on
+            cue.set()
+            resume.wait(3)
+            return {"state": "running"}
+        cancel, finished = self.plain_up(up, lambda job: self.api.mutate("cancel", {"job": job["job"]}))
+        self.assertEqual(cancel["state"], "succeeded", cancel["error"])
+        self.assertEqual((cancel["result"]["phase"], cancel["result"]["down"]), ("launching", {"state": "stopped"}))
+        self.orch.down.assert_called_once_with("qwen-replicas")
+        self.assertEqual(finished["state"], "succeeded", finished["error"])
+
+    def test_a_stop_of_its_profile_cancels_a_preparing_plain_up(self):
+        # `down P` while a plain up prepares P: up would clear P's stop marker when it takes P and start; the job's
+        # marker is written too, so it starts nothing. A stop of another profile leaves it alone.
+        for profile, stops_it in (("qwen-replicas", True), ("other", False)):
+            with self.subTest(profile=profile):
+                self.orch.down.reset_mock()
+
+                def up(cancelled, cue, resume):
+                    cue.set()
+                    resume.wait(3)
+                    if cancelled():
+                        raise RuntimeError("profile stop requested")
+                    return {"state": "running"}
+                stopped, finished = self.plain_up(up, lambda job: self.api.mutate("down", {"profile": profile}))
+                self.assertEqual(stopped["state"], "succeeded", stopped["error"])
+                self.orch.down.assert_called_once_with(profile, force=False)
+                self.assertEqual(finished["state"], "failed" if stops_it else "succeeded")
+                self.assertEqual("cancelled_switches" in stopped["result"], stops_it)
+
+    def test_every_mutation_runs_on_the_portals_configuration(self):
+        # A configuration file named by the client is refused on every mutation that took one (nothing runs); the
+        # portal's own path is accepted and is what runs.
+        bodies = {"up": {"profile": "qwen-replicas"}, "install": {"profile": "qwen-replicas"},
+                  "doctor": {"machine": "halo-1"}, "hosts/pin": {"machine": "halo-1", "fingerprint": "SHA256:fixture"}}
+        for action, body in bodies.items():
+            for other in ("//pc/share/cluster.json", str(self.directory / "other" / "cluster.json"), "cluster.json"):
+                with self.subTest(action=action, config=other):
+                    with self.assertRaisesRegex(APIError, "portal's configuration: drop config"):
+                        self.api.mutate(action, dict(body, config=other))
+        self.orch.load_cluster.assert_not_called()
+        self.orch.up.assert_not_called()
+        self.orch.install.assert_not_called()
+        self.remote.keyscan.assert_not_called()
+        self.remote.keyscan.return_value = [SimpleNamespace(algorithm="ssh-ed25519", sha256_fingerprint="SHA256:fixture")]
+        for action, body in bodies.items():
+            with self.subTest(action=action, config="the portal's"):
+                job = wait_job(self.api, self.api.mutate(action, dict(body, config=str(self.directory / "cluster.json"))))
+                self.assertEqual(job["state"], "succeeded", job["error"])
+                self.assertNotIn("config", job["arguments"])
+        self.assertEqual({c.args[0] for c in self.orch.load_cluster.call_args_list}, {self.directory / "cluster.json"})
+        # The detached CLI is always given the portal's configuration.
+        for action in ("up", "install", "down"):         # a detached down holds this configuration's admission too
+            argv = self.api._cli_argv(action, {"profile": "qwen-replicas"})
+            self.assertEqual(argv[argv.index("--config") + 1], str(self.directory / "cluster.json"))
+
+    def test_detached_plain_up_carries_its_job(self):
+        argv = self.api._cli_argv("up", {"profile": "qwen-replicas", "_job": "ab12cd34"})
+        self.assertEqual(argv[argv.index("--job") + 1], "ab12cd34")
+        self.assertNotIn("--job", self.api._cli_argv("up", {"profile": "qwen-replicas"}))
+
     def test_logs_query_is_read_only_cached_and_redacted(self):
         query = {"profile": "qwen-replicas", "process": "halo-1", "tail": "5"}
         first = self.api.read("logs", query)
         self.assertEqual(first, self.api.read("logs", query))
-        self.orch.logs.assert_called_once_with("qwen-replicas", "halo-1", 5)
+        self.orch.logs.assert_called_once_with("qwen-replicas", "halo-1", 5, config_path=self.api.config_path)
         self.assertNotIn("hidden", json.dumps(first))
 
     def test_unknown_arguments_and_bad_types_refused(self):
@@ -262,12 +622,12 @@ class APITests(unittest.TestCase):
             self.assertEqual(first["engines"][0]["ttft_p50"]["value"], 30)
             self.assertIsNone(first["recent_requests"][0]["route"])
             count[0] = 200
-            self.now += 10
+            self.now += 30                              # engine reads follow the paced launch status
             second = self.api.read("stats")
-            self.assertEqual(second["engines"][0]["throughput"]["value"], 10)
+            self.assertAlmostEqual(second["engines"][0]["throughput"]["value"], 100 / 30)
             self.assertEqual(second["engines"][0]["ttft_p50"]["n"], 1)
             count[0] = 1
-            self.now += 2
+            self.now += 30
             reset = self.api.read("stats")["engines"][0]["throughput"]
             self.assertIsNone(reset["value"])
             self.assertTrue(reset["reset"])
@@ -310,6 +670,21 @@ class APITests(unittest.TestCase):
         # Only the LAN-bound qwen engine is probed.
         self.assertEqual(fetched, ["/metrics"])
         self.assertEqual(rows["qwen-replicas"]["why"]["status"], "connection refused")
+
+    def test_a_key_file_release_binds_the_lan(self):
+        # The launched release decides the bind, not the family row (a key-file MiniMax release serves the LAN).
+        from hyperloom import engines
+        from hyperloom.web.api import _binds_loopback
+        real = engines.load_preset
+        keyed = dict(real("minimax-pair"), serve_auth="key-file",
+                     argv=real("minimax-pair")["argv"] + ["--api-key-file", "{key_file}"])
+        cluster = deepcopy(self.cluster)
+        cluster.profiles["mm"] = {"preset": "mm-keyed", "rank0": "halo-1", "rank1": "halo-1"}
+        with patch.object(engines, "load_preset", side_effect=lambda n: keyed if n == "mm-keyed" else real(n)):
+            self.assertFalse(_binds_loopback("mm", {"launch": {"family": "minimax-pair", "preset": "mm-keyed"}}, None))
+            self.assertFalse(_binds_loopback("mm", {}, cluster))
+            self.assertTrue(_binds_loopback("mm", {"launch": {"family": "minimax-pair", "preset": "minimax-pair"}},
+                                            None))
 
     def test_redaction_keeps_measurements_and_key_file_paths(self):
         value = redact({"api_key": "hidden", "generated_tokens": 123, "api_key_file": "/opt/key", "argv": ["--api-key", "hidden"]})
@@ -397,5 +772,5 @@ class DetachedCommandLineTests(unittest.TestCase):
         self.assertEqual(up[up.index("--router") + 1], "halo-1")
         self.assertEqual(up[up.index("--deadline") + 1], "600")
         down = api._cli_argv("down", {"profile": "qwen-replicas", "force": True})
-        self.assertEqual(down[3:], ["down", "qwen-replicas", "--force"])
+        self.assertEqual(down[3:], ["down", "qwen-replicas", "--config", str(Path("C:/cfg/cluster.json")), "--force"])
         self.assertFalse(api.detached)

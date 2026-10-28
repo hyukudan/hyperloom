@@ -85,7 +85,7 @@ def diagnostic_env(data, names, values):
 def render_processes(cluster, profile_name, *, diagnostics=(), run=None) -> list[ProcessSpec]:
     """Production render; diagnostics (names from the preset table) add observation-only env under <root>/log."""
     profile, kind, data, mids = _profile(cluster, profile_name)
-    engine = engines.adapter(family(kind))
+    engine = engines.release_adapter(kind)
     replicas = engine.topology == "replicas"
     if diagnostics and (run is None or not re.fullmatch(r"[0-9a-f]{8,32}", run)):
         raise ConfigError("diagnostic runs need a hex run id")
@@ -147,7 +147,7 @@ def launch_summary(cluster, profile_name) -> dict:
 
 def render_router(cluster, profile_name) -> dict:
     profile, kind, data, mids = _profile(cluster, profile_name)
-    engine = engines.adapter(family(kind))
+    engine = engines.release_adapter(kind)
     settings = cluster.router
     host = settings.get("machine", "local")
     default_listen = cluster.pc.get("router_listen", "127.0.0.1:18600")
@@ -198,6 +198,32 @@ def render_router(cluster, profile_name) -> dict:
     if "limits" in settings:
         obj["limits"] = deepcopy(settings["limits"])
     return obj
+
+
+def router_policies():
+    """The prefill policies the pinned TensorMeld router parser accepts (recipes need "routes")."""
+    source = str(repo_root() / "third_party" / "tensormeld" / "src")
+    sys.path.insert(0, source)
+    try:
+        return tuple(importlib.import_module("tensormeld.replica_router").PREFILL_POLICIES)
+    finally:
+        sys.path.remove(source)
+
+
+def check_route_table(table):
+    """None when the pinned TensorMeld parses the prefill route table, else why not (no network or GPU)."""
+    source = str(repo_root() / "third_party" / "tensormeld" / "src")
+    sys.path.insert(0, source)
+    try:
+        routes = importlib.import_module("tensormeld.prefill_routes")
+        schema = importlib.import_module("tensormeld.schema")
+        try:
+            routes.RouteTable.parse(table)
+        except schema.ValidationError as exc:
+            return str(exc)
+        return None
+    finally:
+        sys.path.remove(source)
 
 
 def validate_router(obj):

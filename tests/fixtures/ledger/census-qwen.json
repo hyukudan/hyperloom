@@ -1,0 +1,323 @@
+{
+ "engine": "Qwen",
+ "sha": "0117a140",
+ "binsha": "9cc8e2b058a7f242",
+ "cells": [
+  {
+   "cell": "code1k MTP decode",
+   "tok_s": 57.91,
+   "wall_tag": "M (CT run, campq decode_tok_s; schedule observed)",
+   "tok_s_P_reference": [
+    59.26
+   ],
+   "CT_vs_P_pct": -2.28,
+   "tok_s_CC_counter_run": [
+    55.93
+   ],
+   "positions_consistent": true,
+   "drafts_match": true,
+   "drafts_CT_CC": [
+    274,
+    274
+   ],
+   "tokens_per_cycle": {
+    "CT": [
+     3.51
+    ],
+    "CC": [
+     3.51
+    ]
+   },
+   "cycles": 73,
+   "emitted": 255,
+   "R_hist": {
+    "R1": 2,
+    "R2": 27,
+    "R4": 21,
+    "R8": 23
+   },
+   "schedule": "CT == CC on every cycle (position, R, accepted, emitted ids, drafts)",
+   "rejected_windows": null,
+   "target_floor_ms": 2766.73,
+   "draft_floor_ms": 198.38,
+   "ceiling_tok_s": 86.0,
+   "ceiling_tag": "E bandwidth-only on the CC schedule (target + draft steps x 160 MB + cache rows x 20 MB)",
+   "compatible": true,
+   "pct_ceiling": 67.3
+  },
+  {
+   "cell": "code1k window R2",
+   "rows": 2,
+   "wall_ms": 44.92,
+   "wall_n": 27,
+   "wall_tag": "M (CT interval between cycle ends, incl. draft + host)",
+   "union": 16.45,
+   "union_tag": "M (CC route log, 27 validated windows)",
+   "bytes_gb": 7.522,
+   "floor_ms": 30.49,
+   "pct_ceiling": 67.9
+  },
+  {
+   "cell": "code1k window R4",
+   "rows": 4,
+   "wall_ms": 55.95,
+   "wall_n": 21,
+   "wall_tag": "M (CT interval between cycle ends, incl. draft + host)",
+   "union": 27.34,
+   "union_tag": "M (CC route log, 21 validated windows)",
+   "bytes_gb": 9.162,
+   "floor_ms": 37.14,
+   "pct_ceiling": 66.4
+  },
+  {
+   "cell": "code1k window R8",
+   "rows": 8,
+   "wall_ms": 76.85,
+   "wall_n": 22,
+   "wall_tag": "M (CT interval between cycle ends, incl. draft + host)",
+   "union": 45.57,
+   "union_tag": "M (CC route log, 23 validated windows)",
+   "bytes_gb": 11.911,
+   "floor_ms": 48.28,
+   "pct_ceiling": 62.8
+  },
+  {
+   "cell": "prose1k MTP decode",
+   "tok_s": 55.67,
+   "wall_tag": "M (CT run, campq decode_tok_s; schedule observed)",
+   "tok_s_P_reference": [
+    55.1
+   ],
+   "CT_vs_P_pct": 1.03,
+   "tok_s_CC_counter_run": [
+    51.97
+   ],
+   "positions_consistent": true,
+   "drafts_match": true,
+   "drafts_CT_CC": [
+    253,
+    253
+   ],
+   "tokens_per_cycle": {
+    "CT": [
+     3.01
+    ],
+    "CC": [
+     3.01
+    ]
+   },
+   "cycles": 85,
+   "emitted": 255,
+   "R_hist": {
+    "R1": 2,
+    "R2": 44,
+    "R4": 23,
+    "R8": 16
+   },
+   "schedule": "CT == CC on every cycle (position, R, accepted, emitted ids, drafts)",
+   "rejected_windows": null,
+   "target_floor_ms": 3020.41,
+   "draft_floor_ms": 184.76,
+   "ceiling_tok_s": 79.56,
+   "ceiling_tag": "E bandwidth-only on the CC schedule (target + draft steps x 160 MB + cache rows x 20 MB)",
+   "compatible": true,
+   "pct_ceiling": 70.0
+  },
+  {
+   "cell": "prose1k window R2",
+   "rows": 2,
+   "wall_ms": 44.17,
+   "wall_n": 44,
+   "wall_tag": "M (CT interval between cycle ends, incl. draft + host)",
+   "union": 15.9,
+   "union_tag": "M (CC route log, 44 validated windows)",
+   "bytes_gb": 7.44,
+   "floor_ms": 30.16,
+   "pct_ceiling": 68.3
+  },
+  {
+   "cell": "prose1k window R4",
+   "rows": 4,
+   "wall_ms": 54.48,
+   "wall_n": 23,
+   "wall_tag": "M (CT interval between cycle ends, incl. draft + host)",
+   "union": 25.42,
+   "union_tag": "M (CC route log, 23 validated windows)",
+   "bytes_gb": 8.88,
+   "floor_ms": 35.99,
+   "pct_ceiling": 66.1
+  },
+  {
+   "cell": "prose1k window R8",
+   "rows": 8,
+   "wall_ms": 78.51,
+   "wall_n": 15,
+   "wall_tag": "M (CT interval between cycle ends, incl. draft + host)",
+   "union": 46.95,
+   "union_tag": "M (CC route log, 16 validated windows)",
+   "bytes_gb": 12.119,
+   "floor_ms": 49.13,
+   "pct_ceiling": 62.6
+  },
+  {
+   "cell": "prose8k MTP decode",
+   "tok_s": 33.97,
+   "wall_tag": "M (CT run, campq decode_tok_s; schedule observed)",
+   "tok_s_P_reference": [
+    46.97
+   ],
+   "CT_vs_P_pct": -27.68,
+   "tok_s_CC_counter_run": [
+    44.55
+   ],
+   "positions_consistent": true,
+   "drafts_match": false,
+   "drafts_CT_CC": [
+    291,
+    286
+   ],
+   "tokens_per_cycle": {
+    "CT": [
+     2.84
+    ],
+    "CC": [
+     2.78
+    ]
+   },
+   "cycles": 92,
+   "emitted": 255,
+   "R_hist": {
+    "R1": 2,
+    "R2": 43,
+    "R4": 31,
+    "R8": 16
+   },
+   "schedule": "CT != CC (90 vs 92 cycles): no %",
+   "rejected_windows": null,
+   "target_floor_ms": 3289.3,
+   "draft_floor_ms": 206.16,
+   "ceiling_tok_s": 72.95,
+   "ceiling_tag": "E bandwidth-only on the CC schedule (target + draft steps x 160 MB + cache rows x 20 MB)",
+   "compatible": false,
+   "pct_ceiling": null
+  },
+  {
+   "cell": "prose8k window R2",
+   "rows": 2,
+   "wall_ms": 46.61,
+   "wall_n": 39,
+   "wall_tag": "M (CT interval between cycle ends, incl. draft + host)",
+   "union": 16.21,
+   "union_tag": "M (CC route log, 43 validated windows)",
+   "bytes_gb": 7.562,
+   "floor_ms": 30.65,
+   "pct_ceiling": null
+  },
+  {
+   "cell": "prose8k window R4",
+   "rows": 4,
+   "wall_ms": 59.17,
+   "wall_n": 32,
+   "wall_tag": "M (CT interval between cycle ends, incl. draft + host)",
+   "union": 26.16,
+   "union_tag": "M (CC route log, 31 validated windows)",
+   "bytes_gb": 9.064,
+   "floor_ms": 36.74,
+   "pct_ceiling": null
+  },
+  {
+   "cell": "prose8k window R8",
+   "rows": 8,
+   "wall_ms": 82.84,
+   "wall_n": 16,
+   "wall_tag": "M (CT interval between cycle ends, incl. draft + host)",
+   "union": 45.56,
+   "union_tag": "M (CC route log, 16 validated windows)",
+   "bytes_gb": 12.003,
+   "floor_ms": 48.65,
+   "pct_ceiling": null
+  },
+  {
+   "cell": "code32k MTP decode",
+   "tok_s": 51.39,
+   "wall_tag": "M (CT run, campq decode_tok_s; schedule observed)",
+   "tok_s_P_reference": [
+    49.74
+   ],
+   "CT_vs_P_pct": 3.32,
+   "tok_s_CC_counter_run": [
+    48.41
+   ],
+   "positions_consistent": true,
+   "drafts_match": true,
+   "drafts_CT_CC": [
+    271,
+    271
+   ],
+   "tokens_per_cycle": {
+    "CT": [
+     3.12
+    ],
+    "CC": [
+     3.12
+    ]
+   },
+   "cycles": 82,
+   "emitted": 255,
+   "R_hist": {
+    "R1": 1,
+    "R2": 37,
+    "R4": 27,
+    "R8": 17
+   },
+   "schedule": "CT == CC on every cycle (position, R, accepted, emitted ids, drafts)",
+   "rejected_windows": null,
+   "target_floor_ms": 3001.92,
+   "draft_floor_ms": 196.43,
+   "ceiling_tok_s": 79.73,
+   "ceiling_tag": "E bandwidth-only on the CC schedule (target + draft steps x 160 MB + cache rows x 20 MB)",
+   "compatible": true,
+   "pct_ceiling": 64.5
+  },
+  {
+   "cell": "code32k window R2",
+   "rows": 2,
+   "wall_ms": 47.57,
+   "wall_n": 37,
+   "wall_tag": "M (CT interval between cycle ends, incl. draft + host)",
+   "union": 16.36,
+   "union_tag": "M (CC route log, 37 validated windows)",
+   "bytes_gb": 7.619,
+   "floor_ms": 30.89,
+   "pct_ceiling": 64.9
+  },
+  {
+   "cell": "code32k window R4",
+   "rows": 4,
+   "wall_ms": 59.51,
+   "wall_n": 27,
+   "wall_tag": "M (CT interval between cycle ends, incl. draft + host)",
+   "union": 26.34,
+   "union_tag": "M (CC route log, 27 validated windows)",
+   "bytes_gb": 9.123,
+   "floor_ms": 36.98,
+   "pct_ceiling": 62.1
+  },
+  {
+   "cell": "code32k window R8",
+   "rows": 8,
+   "wall_ms": 81.99,
+   "wall_n": 16,
+   "wall_tag": "M (CT interval between cycle ends, incl. draft + host)",
+   "union": 43.13,
+   "union_tag": "M (CC route log, 17 validated windows)",
+   "bytes_gb": 11.701,
+   "floor_ms": 47.43,
+   "pct_ceiling": 57.8
+  }
+ ],
+ "notes": [
+  "trunk from the GGUF census 4.830 GB per window (indexer query projection 39 MB dropped when ctx <= 2048: scoring skipped)",
+  "forced-R windows not measured: R curve = the auto controller's windows (R in {2,4,8}) + serial R1 steps"
+ ]
+}

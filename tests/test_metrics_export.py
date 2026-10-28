@@ -53,6 +53,10 @@ class ExportTests(unittest.TestCase):
         patcher = mock.patch.object(metrics_export.secrets, "runtime_dir", return_value=self.run_dir)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # ...and never the machine's real telemetry store either.
+        patcher = mock.patch.object(metrics_export, "telemetry_path", return_value=self.run_dir / "telemetry.sqlite3")
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_tests_never_read_the_real_state_directory(self):
         self.assertEqual(metrics_export.secrets.runtime_dir(), self.run_dir)
@@ -63,7 +67,7 @@ class ExportTests(unittest.TestCase):
         documents = healthy()
 
         def fetch(endpoint, suffix, text=False):
-            if suffix != "/api/status" or endpoint != ROUTER:
+            if suffix not in ("/api/status", "/metrics") or endpoint != ROUTER:     # the router's own documents
                 probed.append((endpoint["address"], suffix))
             return fake_fetch(documents)(endpoint, suffix, text)
         reason = "unavailable: engine bound to loopback on its node"
@@ -90,6 +94,25 @@ class ExportTests(unittest.TestCase):
         # A LAN-bound family is still probed.
         probed.clear()
         metrics_export.collect({"qwen": ROUTER}, fetch, launches={}, families={"qwen": "qwen-replicas"})
+        self.assertIn(("192.0.2.1", "/metrics"), probed)
+
+    def test_a_key_file_release_of_a_loopback_family_is_probed(self):
+        # The launched release decides the bind: a key-file MiniMax release serves the LAN, the family row does not.
+        from hyperloom import engines
+        real = engines.load_preset
+        keyed = dict(real("minimax-pair"), serve_auth="key-file",
+                     argv=real("minimax-pair")["argv"] + ["--api-key-file", "{key_file}"])
+        (self.run_dir / "up-mm.json").write_text(json.dumps({"launch": {"family": "minimax-pair", "preset": "mm-keyed"}}),
+                                                 encoding="utf-8")
+        probed = []
+
+        def fetch(endpoint, suffix, text=False):
+            if suffix != "/api/status" or endpoint != ROUTER:
+                probed.append((endpoint["address"], suffix))
+            return fake_fetch(healthy())(endpoint, suffix, text)
+        with mock.patch.object(engines, "load_preset", side_effect=lambda n: keyed if n == "mm-keyed" else real(n)):
+            self.assertEqual(metrics_export.launch_presets(), {"mm": "mm-keyed"})
+            metrics_export.collect({"mm": ROUTER}, fetch, launches={})
         self.assertIn(("192.0.2.1", "/metrics"), probed)
 
     def test_round_trip_through_prometheus_parser(self):
@@ -227,7 +250,8 @@ class ExportTests(unittest.TestCase):
         start = time.monotonic()
         samples = prom.parse(metrics_export.collect(routers, fetch))
         self.assertLess(time.monotonic() - start, 1.5)
-        self.assertEqual(sum(v == 0 for k, v in samples.items() if k[0] == "hyperloom_source_up"), 6)
+        self.assertEqual(sum(v == 0 for k, v in samples.items()
+                             if k[0] == "hyperloom_source_up" and dict(k[1])["source"] == "router"), 6)
 
     def test_slot_units_and_state_are_separate_families(self):
         samples = prom.parse(metrics_export.collect({"ds": ROUTER}, fake_fetch(healthy("deepseek-status.json"))))

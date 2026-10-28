@@ -22,7 +22,7 @@ the run. The contrast check always runs, even when Chrome is absent. Browser
 smoke is a separate command so ordinary unittest discovery needs no browser.
 
 The script prints a retained temporary screenshot directory. `--output PATH`
-selects another directory. There are 28 PNGs: seven hash routes, two themes, and
+selects another directory. There are 32 PNGs: eight hash routes, two themes, and
 1440×1000 / 390×1000 viewports. It uses `--headless=new` and DevTools
 `Emulation.setDeviceMetricsOverride`, then asserts the actual
 `document.documentElement.clientWidth`. The narrow screenshots are real
@@ -158,3 +158,14 @@ USB4 layout, and one cable warning. Smoke assertions reject raw OS/stream
 dumps, unresolved ports, duplicate nav icons, incorrect degradation, and missing
 launch argv/env. ROCm packages start collapsed; the topology map is replaced
 by the link list on narrow screens.
+
+## Recipes & profiles walkthrough
+
+The default run ends with an automated walkthrough of `#/recipes` (desktop): open the built-in Qwen recipe, type an
+out-of-range value (the field shows its inline error and is described by it), make the recipe invalid (the reader's
+refusal is shown), reset and change a value (no error; the explain answer and its CLI line appear), preview the
+placement (the answer and its `hyperloom recipe plan` line appear; Deploy is then either enabled or disabled with the
+preview's refusal as its reason, and an enabled Deploy is confirmed and its job shown), and save a copy into the user
+directory (it appears in the list). In the fixture, recipe requests run the CLI's parser and `commands.run` in the
+fixture process (subprocesses are refused there) on the stub reader; the API tests (`tests/test_web_recipes.py`)
+run the real child processes.

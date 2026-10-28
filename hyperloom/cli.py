@@ -15,6 +15,7 @@ import time
 from urllib.request import ProxyHandler, Request, build_opener
 import uuid
 
+from . import cliext
 from .paths import repo_root
 from .winproc import no_window, retry_sharing
 
@@ -265,12 +266,14 @@ def _doctor(args):
                 raise ValueError("agent access is a later phase")
             remote = _module("hyperloom.remote")
             client = remote.Remote(machine, config_path().parent / "known_hosts")
-            # Read-only: bootstrap only a machine that has no node tool yet (nothing to replace, no lease can
-            # be live). A stale tool is reported, never replaced here: `nodes update` owns the live-lease guard.
-            tool = {"expected": remote.tool_digest(), "bootstrapped": False}
+            # Read-only: the node tool reaches a node only through `hyperloom nodes update` (which owns the
+            # live-lease guard); a machine without it, or with a stale one, is reported here, never changed.
+            tool = {"expected": remote.tool_digest()}
             if not client.has_tool(timeout=60):
-                client.bootstrap(timeout=60)
-                tool["bootstrapped"] = True
+                _json({"node_tool": {**tool, "deployed": None, "status": "absent",
+                                     "hint": f"run 'hyperloom nodes update <profile> --machine {args.machine}' "
+                                             "(a machine without the tool has no lease to protect)"}})
+                return
             version = client.call("version", {}, timeout=60)
             tool["deployed"] = ((version.get("checks") or {}).get("tool") or {}).get("value")
             tool["status"] = "current" if tool["deployed"] == tool["expected"] else "stale"
@@ -372,8 +375,76 @@ def _version():
         return f"hyperloom {__version__} (checkout)"
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(prog="hyperloom")
+def up_command(args, *, orchestrate=None, load_cluster=None):
+    """`hyperloom up PROFILE ...` from its parsed arguments; the portal's in-process path calls this too."""
+    # The launch state's configuration, the recipe directories and a job's cancel files derive from --config for this
+    # call only (the portal runs requests on other threads).
+    with _module("hyperloom.recipes.service").configured(args.config):
+        return _up_command(args, orchestrate, load_cluster)
+
+
+def _up_command(args, orchestrate, load_cluster):
+    orchestrate = orchestrate or _module("hyperloom.orchestrate")
+    supplied = [args.approval_ref is not None, args.approval_lease is not None, args.approval_end is not None]
+    approval = None
+    if any(supplied):
+        if not all(supplied):
+            raise ValueError("approval requires --approval-ref, --approval-lease, and --approval-end")
+        end = datetime.fromisoformat(args.approval_end.replace("Z", "+00:00"))
+        if end.tzinfo is None:
+            raise ValueError("--approval-end must include a timezone")
+        approval = {"ref": args.approval_ref, "lease_s": args.approval_lease, "end_epoch": end.timestamp()}
+    cluster = (load_cluster or _cluster)(args.config)
+    recipe = None
+    if args.recipe_inputs is not None:
+        if args.recipe is not None or any((args.recipe_profile, args.recipe_overrides, args.recipe_set, args.recipe_dir,
+                                           args.recipe_workload, args.node, args.device, args.diagnostic,
+                                           args.vram_cap_gib)) or args.router != "local":
+            raise ValueError("--recipe-inputs launches a planned snapshot as it is: no --recipe*, --node, --device, "
+                             "--diagnostic, --vram-cap-gib or --router")
+        service = _module("hyperloom.recipes.service")
+        pin = service.acquire_pin(args.recipe_inputs)         # before the snapshot is read
+        try:
+            cluster, intent, recipe = service.options_from_inputs(args.recipe_inputs, args.profile)
+        except BaseException:
+            service.release_pin(pin)
+            raise
+        recipe.pin = pin
+        args.profile, args.deadline, args.queue_timeout = intent["profile"], intent["deadline_s"], intent["queue_timeout_s"]
+    elif args.recipe is not None:
+        reader = _module("hyperloom.recipes.reader")
+        layers = _module("hyperloom.recipes.session").Layers(
+            profile=args.recipe_profile, overrides=list(args.recipe_overrides or []),
+            sets=[reader.parse_set(s) for s in args.recipe_set or []],
+            workload=args.recipe_workload or "default")
+        service = _module("hyperloom.recipes.service")
+        cluster, intent, recipe = service.up_options(
+            cluster, args.recipe, args.profile, layers=layers, dirs=list(args.recipe_dir or []),
+            intent={"router": args.router, "deadline_s": args.deadline, "queue_timeout_s": args.queue_timeout})
+        args.profile = intent["profile"]
+    elif any((args.recipe_profile, args.recipe_overrides, args.recipe_set, args.recipe_dir, args.recipe_workload)):
+        raise ValueError("--recipe-profile/--recipe-overrides/--recipe-set/--recipe-dir/--recipe-workload need "
+                         "--recipe")
+    launch = lambda cancelled=None: orchestrate.up(  # noqa: E731
+        cluster, args.profile, router=args.router, nodes=args.node, devices=args.device, deadline_s=args.deadline,
+        approval=approval, queue_timeout_s=args.queue_timeout, diagnostics=args.diagnostic,
+        vram_cap_gib=args.vram_cap_gib, recipe=recipe, **({"cancelled": cancelled} if cancelled else {}))
+    try:
+        if getattr(args, "job", None):
+            # A portal job (with a recipe or without): its cancel marker is checked right after up owns the profile
+            # (the hand-over), and its progress tells the cancel whether the launch had begun (then the cancel stops
+            # the profile).
+            with _module("hyperloom.recipes.service").launch_progress(args.job, "up", args.profile) as progress:
+                return launch(progress.handoff)
+        return launch()
+    finally:
+        if recipe is not None:
+            _module("hyperloom.recipes.service").release_pin(recipe.pin)
+
+
+def build_parser(parser_class=argparse.ArgumentParser):
+    """The command line; the portal API parses its argv with the same parser (one code path)."""
+    parser = parser_class(prog="hyperloom")
     parser.add_argument("--version", action="version", version=_version())
     commands = parser.add_subparsers(dest="command", required=True)
     ui = commands.add_parser("ui", help="open the local portal")
@@ -445,9 +516,22 @@ def main(argv=None):
                          "guard it there")
     up.add_argument("--diagnostic", action="append", default=None,
                     help="non-production diagnostic from the preset (repeatable); output goes to the node log/")
+    up.add_argument("--recipe", help="a recipe id (e.g. qwen3.8-flash-next.lab; then the profile may be omitted), a "
+                                     "recipe file, or auto: the most specific recipe that fits this hardware")
+    up.add_argument("--recipe-profile", type=Path, help="the autotuner's profile for the recipe (refused when stale)")
+    up.add_argument("--recipe-overrides", type=Path, action="append", help="a recipe overrides file (repeatable)")
+    up.add_argument("--recipe-set", action="append", metavar="PATH=VALUE", help="one recipe override (repeatable)")
+    up.add_argument("--recipe-dir", type=Path, action="append", help="--recipe auto: also search this directory")
+    up.add_argument("--recipe-workload", help="the workload class this run serves (default: default)")
+    up.add_argument("--recipe-inputs", metavar="DIGEST",
+                    help="launch exactly a recipe snapshot that `hyperloom recipe plan` made (its `inputs` digest)")
+    up.add_argument("--job", help="a hex id; the file <config dir>/run/deploy-cancel/ID cancels this launch at its "
+                                  "hand-over (the portal's cancel writes it)")
     down = commands.add_parser("down")
     down.add_argument("profile", nargs="?")
     down.add_argument("--force", action="store_true")
+    down.add_argument("--config", type=Path, default=config_path(),
+                      help="the configuration whose admission the stop registers with (as up)")
     commands.add_parser("endpoint").add_argument("profile")
     status = commands.add_parser("status")
     status.add_argument("profile", nargs="?")
@@ -507,6 +591,128 @@ def main(argv=None):
     vplan.add_argument("--ring-slots", type=int, default=0,
                        help="desc-v1: stream slots per ring (0: the descriptor's, else the default)")
     vplan.add_argument("--dynamic-slots", type=int, default=0, help="desc-v1: dynamic slots per layer")
+    recipe = commands.add_parser("recipe", help="recipes: probe the hardware, validate, explain, diff, auto-pick")
+    recipe_commands = recipe.add_subparsers(dest="operation", required=True)
+
+    def layered(command):
+        command.add_argument("--recipe-profile", type=Path, help="the autotuner's profile (refused when stale)")
+        command.add_argument("--recipe-overrides", type=Path, action="append", help="an overrides file (repeatable)")
+        command.add_argument("--recipe-set", action="append", metavar="PATH=VALUE", help="one override (repeatable)")
+        command.add_argument("--recipe-workload", default="default",
+                             help="the workload class this run serves (a profile tuned for another one is stale)")
+        command.add_argument("--config", type=Path, default=config_path())
+
+    recipe_probe = recipe_commands.add_parser("probe", help="the profile's hardware facts (read-only)")
+    recipe_probe.add_argument("profile")
+    recipe_probe.add_argument("--disks", action="store_true",
+                              help="measure the model disk's read bandwidth now (direct I/O, <= 256 MiB, <= 2 s)")
+    recipe_probe.add_argument("--descriptors", action="store_true",
+                              help="read and save the model's file headers for planning (explicit header read)")
+    recipe_probe.add_argument("--evidence", action="append", metavar="NODE=RECEIPT",
+                              help="a node's measured disk bandwidth from a receipt file (repeatable)")
+    recipe_probe.add_argument("--describe-command", action="store_true",
+                              help="print each node's exact engine memory declaration command and launch sha256")
+    recipe_probe.add_argument("--declaration", action="append", metavar="NODE=RECEIPT",
+                              help="store a node's engine memory declaration receipt for its exact launch (repeatable)")
+    recipe_probe.add_argument("--out", type=Path, help="save the facts for offline validate/explain --facts")
+    recipe_probe.add_argument("--config", type=Path, default=config_path())
+    for name, text in (("validate", "schema, hardware match and the up decision"),
+                       ("explain", "every field's value and origin, the routes, and what up would do")):
+        command = recipe_commands.add_parser(name, help=text)
+        command.add_argument("file", type=Path)
+        command.add_argument("profile", nargs="?")
+        command.add_argument("--facts", type=Path, help="a saved `recipe probe --out` file instead of live probes")
+        layered(command)
+        if name == "explain":
+            command.add_argument("--all", action="store_true", help="also the fields left at their defaults")
+            command.add_argument("--prompt-tokens", type=int, help="simulate the route of a request this long")
+            command.add_argument("--unavailable", action="append", metavar="DEVICE_ID", help="what-if: device down")
+            command.add_argument("--link-down", action="append", metavar="LINK_ID", help="what-if: link down")
+            command.add_argument("--free-ram", action="append", metavar="HOST=GIB", help="what-if: host free RAM")
+    recipe_diff = recipe_commands.add_parser("diff", help="field-level difference of two effective recipes")
+    recipe_diff.add_argument("a", type=Path)
+    recipe_diff.add_argument("b", type=Path)
+    recipe_diff.add_argument("--a-set", action="append", metavar="PATH=VALUE")
+    recipe_diff.add_argument("--b-set", action="append", metavar="PATH=VALUE")
+    recipe_diff.add_argument("--config", type=Path, default=config_path())
+    recipe_pick = recipe_commands.add_parser("pick", help="the recipe `up --recipe auto` would choose, and why")
+    recipe_pick.add_argument("profile")
+    recipe_pick.add_argument("--dir", action="append", type=Path, help="also search this directory (repeatable)")
+    recipe_pick.add_argument("--facts", type=Path)
+    layered(recipe_pick)
+    recipe_list = recipe_commands.add_parser("list", help="every recipe: built-in examples, configured and user ones")
+    recipe_list.add_argument("--model", help="only the recipes for this model id")
+    recipe_list.add_argument("--config", type=Path, default=config_path())
+    recipe_ready = recipe_commands.add_parser("ready", help="what is still missing before up can run a recipe, with "
+                                              "the next command (offline: saved state only)")
+    recipe_ready.add_argument("recipe", help="a recipe id or file")
+    recipe_ready.add_argument("profile", nargs="?", help="default: the only profile serving the recipe's model")
+    recipe_ready.add_argument("--facts", help="a saved probe (name or file); default: the profile's newest")
+    recipe_ready.add_argument("--format", choices=("json", "text"), default="json")
+    recipe_ready.add_argument("--config", type=Path, default=config_path())
+    recipe_matrix = recipe_commands.add_parser("matrix", help="which recipe covers each model x hardware class")
+    recipe_matrix.add_argument("--format", choices=("json", "text"), default="json")
+    recipe_matrix.add_argument("--config", type=Path, default=config_path())
+    recipe_show = recipe_commands.add_parser("show", help="one recipe: text, routes, settable fields")
+    recipe_show.add_argument("recipe", help="a recipe id or file")
+    recipe_show.add_argument("--config", type=Path, default=config_path())
+    recipe_select = recipe_commands.add_parser("select", help="the recipe each profile serving MODEL would run, and why")
+    recipe_select.add_argument("model")
+    recipe_select.add_argument("--profile", help="only this profile")
+    recipe_select.add_argument("--facts", type=Path)
+    layered(recipe_select)
+    recipe_plan = recipe_commands.add_parser("plan", help="what up --recipe decides before any lease (dry run)")
+    recipe_plan.add_argument("recipe", help="a recipe id, a file or auto")
+    recipe_plan.add_argument("profile")
+    recipe_plan.add_argument("--facts", type=Path)
+    layered(recipe_plan)
+    for name, text in (("active", "the recipe each running profile was launched with, explained"),
+                       ("routes", "per-request route counts (RTX / nodes) and the route state now")):
+        command = recipe_commands.add_parser(name, help=text)
+        command.add_argument("profile", nargs="?")
+        command.add_argument("--config", type=Path, default=config_path())
+    recipe_save = recipe_commands.add_parser("save", help="write a user recipe (validated; the user directory only)")
+    recipe_save.add_argument("id", help="the new recipe id (file stem), e.g. qwen3.8-flash-next.mine")
+    source = recipe_save.add_mutually_exclusive_group(required=True)
+    source.add_argument("--from", dest="from_file", type=Path, help="the recipe text (TOML or JSON; - = stdin)")
+    source.add_argument("--base", help="a recipe id or file to copy with --set values (saved as JSON)")
+    recipe_save.add_argument("--base-sha256", help="with --base: the sha256 of the base as it was edited (required)")
+    recipe_save.add_argument("--set", action="append", metavar="PATH=VALUE",
+                             help="with --base: one value (repeatable; all of them form one overrides layer)")
+    recipe_save.add_argument("--name", help="with --base: the copy's recipe name (default: the id)")
+    recipe_save.add_argument("--replace", metavar="SHA256", help="replace the user recipe that has this sha256")
+    recipe_save.add_argument("--config", type=Path, default=config_path())
+    recipe_delete = recipe_commands.add_parser("delete", help="remove a user recipe")
+    recipe_delete.add_argument("id")
+    recipe_delete.add_argument("--sha256", required=True, help="the sha256 of the file being removed")
+    recipe_delete.add_argument("--config", type=Path, default=config_path())
+    layer_save = recipe_commands.add_parser("save-layer", help="write an overrides layer into the user layers directory")
+    layer_save.add_argument("name", help="the layer's name (file stem)")
+    layer_source = layer_save.add_mutually_exclusive_group(required=True)
+    layer_source.add_argument("--recipe", help="build an overrides layer from --set values for this recipe (id or file)")
+    layer_source.add_argument("--from", dest="from_file", type=Path,
+                              help="a whole overrides or tuning-profile document (TOML or JSON; - = stdin)")
+    layer_save.add_argument("--set", action="append", metavar="PATH=VALUE", help="with --recipe (repeatable)")
+    layer_save.add_argument("--replace", metavar="SHA256", help="replace the layer that has this sha256")
+    layer_save.add_argument("--config", type=Path, default=config_path())
+    deploy = recipe_commands.add_parser("deploy", help="stop the reviewed profiles and launch a planned snapshot")
+    deploy.add_argument("inputs", help="the `inputs` digest `hyperloom recipe plan` printed")
+    deploy.add_argument("--stop", action="append", default=[], metavar="PROFILE",
+                        help="a running profile to stop first (repeatable; must be exactly the running set)")
+    deploy.add_argument("--job", help="a hex id; the file <config dir>/run/deploy-cancel/ID cancels this deploy")
+    deploy.add_argument("--approval-ref")
+    deploy.add_argument("--approval-lease", type=int)
+    deploy.add_argument("--approval-end")
+    deploy.add_argument("--config", type=Path, default=config_path())
+    receipt = recipe_commands.add_parser("save-receipt", help="store a node disk-read receipt for probe --evidence")
+    receipt.add_argument("name", help="the receipt name (file stem)")
+    receipt.add_argument("--from", dest="from_file", type=Path, required=True, help="the receipt JSON (- = stdin)")
+    receipt.add_argument("--replace", metavar="SHA256", help="replace the receipt that has this sha256")
+    receipt.add_argument("--config", type=Path, default=config_path())
+    layer_delete = recipe_commands.add_parser("delete-layer", help="remove an overrides layer of the user directory")
+    layer_delete.add_argument("name")
+    layer_delete.add_argument("--sha256", required=True, help="the sha256 of the file being removed")
+    layer_delete.add_argument("--config", type=Path, default=config_path())
     # Internal controller entry point; not part of the public interface.
     helper = commands.add_parser("_prefill-run", help=argparse.SUPPRESS)
     helper.add_argument("spec")
@@ -519,13 +725,89 @@ def main(argv=None):
     watch = commands.add_parser("_up-watch", help=argparse.SUPPRESS)
     watch.add_argument("path")
     watch.add_argument("token")
-    args = parser.parse_args(argv)
+    cliext.add_all(commands)
+    return parser
+
+
+def _admission_hold(args):
+    """Contract C11 for direct CLI use: a deploy/start/install takes a "core" hold (refused while a benchmark
+    holds its resources), a stop a "stop" hold (cancels overlapping benchmarks). Returns a release function."""
+    kind = {"up": "core", "install": "core", "down": "stop"}.get(args.command)
+    if args.command == "recipe" and getattr(args, "operation", None) in ("deploy", "probe"):
+        kind = "core"
+    if kind is None or (args.command in ("up", "down") and args.profile is None
+                        and not (getattr(args, "recipe", None) or getattr(args, "recipe_inputs", None))):
+        return lambda: None
+    admission = _module("hyperloom.admission")
+    resources = {"*"}
+    # A snapshot (--recipe-inputs) launches with the placement it was planned on: it holds everything.
+    if getattr(args, "profile", None) and not getattr(args, "recipe_inputs", None):
+        try:
+            cluster = _cluster(getattr(args, "config", None) or config_path())
+            resources = admission.profile_resources(cluster, args.profile, _module("hyperloom.orchestrate"),
+                                                    getattr(args, "router", None) if args.command == "up" else None)
+        except Exception:
+            resources = {"*"}
+    # The hold lives next to the configuration this command executes with (the portal's jobs pass the same one).
     try:
+        database = admission.for_config(getattr(args, "config", None) or config_path())
+        hold = database.acquire(kind, resources, label=f"cli {args.command} {getattr(args, 'profile', '') or ''}".strip())
+    except admission.Refused as exc:
+        raise RuntimeError(str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - sqlite3.Error, OSError: the shared admission cannot be used
+        if kind != "stop":
+            raise RuntimeError(f"admission unavailable ({type(exc).__name__}: {exc}); nothing started") from exc
+        # A stop never depends on the admission: it goes ahead (benchmarks of other processes are not cancelled).
+        print(f"hyperloom: admission unavailable ({type(exc).__name__}: {exc}); stopping without its hold",
+              file=sys.stderr)
+        return lambda: None
+    import threading
+    stop = threading.Event()
+
+    def renew():
+        while not stop.wait(30):
+            try:
+                database.renew(hold)
+            except Exception:  # noqa: BLE001 - a transient database error: retried at the next renewal
+                pass
+    try:
+        threading.Thread(target=renew, name="hyperloom-cli-admission", daemon=True).start()
+    except Exception as exc:  # noqa: BLE001 - e.g. can't start new thread: the hold is given back
+        try:
+            database.release(hold)
+        except Exception:  # noqa: BLE001 - its lease lapses by itself
+            pass
+        if kind != "stop":
+            raise RuntimeError(f"admission hold could not be kept ({type(exc).__name__}: {exc}); nothing started") from exc
+        print(f"hyperloom: the admission hold could not be kept ({type(exc).__name__}: {exc}); stopping without it",
+              file=sys.stderr)
+        return lambda: None
+
+    def release():
+        # Runs in main's finally: a failing release never turns a finished command (a done down) into a failure;
+        # the hold's lease then lapses by itself.
+        stop.set()
+        try:
+            database.release(hold)
+        except Exception as exc:  # noqa: BLE001
+            print(f"hyperloom: the admission hold could not be released ({type(exc).__name__}: {exc}); "
+                  "it lapses with its lease", file=sys.stderr)
+    return release
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    release = lambda: None
+    try:
+        if getattr(args, "ext_run", None) is not None:
+            return args.ext_run(args)
+        release = _admission_hold(args)
         if args.command == "ui":
             if not 0 <= args.port <= 65535:
                 raise ValueError("ui port must be in 0..65535")
             _module("hyperloom.web.server").serve(args.port, no_browser=args.no_browser)
-        elif args.command in ("up", "down") and args.profile is None:
+        elif args.command in ("up", "down") and args.profile is None and not (
+                getattr(args, "recipe", None) or getattr(args, "recipe_inputs", None)):
             print("Phase 1a")
         elif args.command == "install":
             cluster = _cluster(args.config)
@@ -559,19 +841,7 @@ def main(argv=None):
             else:
                 _json(assets.status(cluster, args.profile))
         elif args.command == "up":
-            supplied = [args.approval_ref is not None, args.approval_lease is not None, args.approval_end is not None]
-            approval = None
-            if any(supplied):
-                if not all(supplied):
-                    raise ValueError("approval requires --approval-ref, --approval-lease, and --approval-end")
-                end = datetime.fromisoformat(args.approval_end.replace("Z", "+00:00"))
-                if end.tzinfo is None:
-                    raise ValueError("--approval-end must include a timezone")
-                approval = {"ref": args.approval_ref, "lease_s": args.approval_lease, "end_epoch": end.timestamp()}
-            cluster = _cluster(args.config)
-            _json(_module("hyperloom.orchestrate").up(cluster, args.profile, router=args.router,
-                  nodes=args.node, devices=args.device, deadline_s=args.deadline, approval=approval,
-                  queue_timeout_s=args.queue_timeout, diagnostics=args.diagnostic, vram_cap_gib=args.vram_cap_gib))
+            _json(up_command(args))
         elif args.command == "down":
             _json(_module("hyperloom.orchestrate").down(args.profile, force=args.force))
         elif args.command == "endpoint":
@@ -613,6 +883,20 @@ def main(argv=None):
                                                    vram_cap_gib=args.vram_cap_gib))
         elif args.command == "vramplan":
             _json(_vramplan(args))
+        elif args.command == "recipe":
+            service = _module("hyperloom.recipes.service")
+            try:
+                result, ok = _module("hyperloom.recipes.commands").run(_cluster, args)
+            except (service.NotFound, service.Conflict) as exc:
+                # Own exit codes so callers (the portal) tell "no such recipe" and "changed / taken" apart.
+                print(f"hyperloom: {exc}", file=sys.stderr)
+                return 3 if isinstance(exc, service.NotFound) else 4
+            if getattr(args, "format", "json") == "text":
+                print(_module("hyperloom.recipes.commands").text(args, result))
+            else:
+                _json(result)
+            if not ok:
+                return 1
         elif args.command == "config":
             _cluster(args.path)
             _json({"valid": True})
@@ -643,3 +927,5 @@ def main(argv=None):
     except (OSError, ValueError, RuntimeError, KeyError, subprocess.SubprocessError) as exc:
         print(f"hyperloom: {exc}", file=sys.stderr)
         return 1
+    finally:
+        release()

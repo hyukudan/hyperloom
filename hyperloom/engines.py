@@ -17,11 +17,12 @@ Fields:
 - trellis: how the strix-trellis component is built and linked (None, ``ds41`` or ``minimax``).
 - label: GPU-turn label prefix (always ``hl-``; SPEC §16.4).
 - capabilities: what the control side may use. ``service-unit`` = the family may run as non-lab systemd --user units
-  (one process per node, no peer turn, a key file on a LAN bind; docs/non-lab-mode.md).
+  (one process per node, no peer turn, a key file on a LAN bind; docs/non-lab-mode.md). ``import-state-parked`` = an
+  imported prefill state is parked and used only by a prompt that starts with its tokens (recipe offload routes).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import re
 
 from .config import PRESET_NAMES, ConfigError, preset as load_preset, read_json
@@ -51,7 +52,11 @@ FAMILIES = {
                              ("http-serve", "key-file", "metrics", "api-status", "service-unit")),
     "ds41-pair": Adapter("ds41-pair", "strix-deepseek41-serve", ("strix-deepseek41-serve",), "pair",
                          "ds41-json", "/health", "admin-drain", "lan", True, "ds41", "hl-ds41", "1",
-                         ("http-serve", "key-file", "metrics", "api-status", "admin-drain", "import-state")),
+                         # import-state-parked: an import parks in a free slot and is taken only by a prompt that starts
+                         # with its tokens (apps/deepseek41_serve_main.cpp:61-70 at the pinned engine); recipes need it
+                         # for offload routes.
+                         ("http-serve", "key-file", "metrics", "api-status", "admin-drain", "import-state",
+                          "import-state-parked")),
     "minimax-pair": Adapter("minimax-pair", "strix-minimax-serve", ("strix-minimax-serve",), "pair",
                             "minimax-stdout", "/health", "leader-first", "loopback", False, "minimax", "hl-mm", "1",
                             ("http-serve", "metrics")),
@@ -66,6 +71,34 @@ def adapter(family):
         return FAMILIES[family]
     except KeyError as exc:
         raise ConfigError(f"unknown engine family: {family}") from exc
+
+
+# Families whose serve gained an API key option in some release: a preset of such a release declares
+# `"serve_auth": "key-file"` and binds the LAN with a key file; presets without it keep the family's loopback bind.
+AUTH_BY_RELEASE = ("minimax-pair",)
+# The serve flags that take the node-local key file ({key_file} is the token right after one of them).
+KEY_FILE_FLAGS = ("--http-api-key-file", "--api-key-file")
+
+
+def passes_key_file(argv):
+    """True when the argv hands the serve its key file: "{key_file}" right after a key flag."""
+    return any(token == "{key_file}" and i > 0 and argv[i - 1] in KEY_FILE_FLAGS for i, token in enumerate(argv))
+
+
+def release_adapter(preset_name):
+    """The adapter for one preset (one qualified release): the family's, with the release's serve auth applied."""
+    data = load_preset(preset_name)
+    base = adapter(family_of(data, preset_name))
+    auth = data.get("serve_auth")
+    if auth is None:
+        return base
+    if auth != "key-file" or base.family not in AUTH_BY_RELEASE or base.key_file:
+        raise ConfigError(f"preset {preset_name}: serve_auth {auth!r} is not supported for {base.family}")
+    if not passes_key_file(data.get("argv") or []):
+        # A LAN bind without the key on the command line would serve generation unauthenticated.
+        raise ConfigError(f"preset {preset_name}: serve_auth 'key-file' needs the argv to pass the key file "
+                          f"({' or '.join(KEY_FILE_FLAGS)} {{key_file}})")
+    return replace(base, bind="lan", key_file=True, capabilities=base.capabilities + ("key-file",))
 
 
 def family_of(data, name):
