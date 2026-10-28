@@ -41,3 +41,7 @@ Each row is a form the rules deliberately leave as described.
 - Redact `\`-continued commands across lines on the node (the portal reads whole texts).
 - Certificate options of tools other than curl (`wget --certificate`, `httpie --cert`).
 - Tell a value's trailing parenthesised message from a parenthesised secret (`(the job ...)` vs `(x)`).
+- Hide a short value after `Token`, `Basic`, `Digest` or `Negotiate` when the line otherwise looks like a header.
+- Keep a prose apostrophe (`it's`) from pairing with a later value's opening quote.
+- Read a shell-escaped blank (`\ `) as part of one word without joining the next command into it.
+- Keep a kept value's closing quote in a repr of JSON (`'{"m": "api_key=None"}'` keeps `None"}'`).

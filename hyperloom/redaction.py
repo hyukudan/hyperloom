@@ -474,7 +474,7 @@ _PASSES = (
     ("shorter reading", None, True),
     ("dash value", (
         (re.compile(r"(?i)\b(?:passw(?:or)?d|passwd|passphrase|pwd)\s+(?=--[A-Za-z])" + _START), "", _keep_plain),
-        (re.compile(r"\b(?:" + _ENV_UPPER + "|" + _ENV_LOWER % "s?" + r")\s+(?=--[A-Za-z])" + _START), "",
+        (re.compile(r"\b(?:" + _ENV_UPPER + "|" + _ENV_LOWER % "[a-z0-9]*" + r")\s+(?=--[A-Za-z])" + _START), "",
          _keep_token_value)), False),
     ("glued scheme", (
         (re.compile(r"(?i)(?<=\w)(?P<bearer>Bearer)\s+" + _START), "", _keep_scheme_value),), False),
@@ -504,6 +504,10 @@ _LITERAL = {'"': re.compile(r'"(?:[^"\\\n]|\\.)*"'), "'": re.compile(r"'(?:[^'\\
 _SIMPLE_ESCAPE = {'"': '"', "'": "'", "\\": "\\", "/": "/", "n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f"}
 _HEX = re.compile(r"[0-9A-Fa-f]+")
 _LAYERS = 4
+# What any rule starts from (a credential or scheme word, a URL, a client, a token prefix): a decoded layer without
+# one cannot hide anything itself.
+_TRIGGER = re.compile(r"(?i)key|secret|token|pass|pwd|credential|auth|bearer|basic|digest|negotiate|://|curl|mysql"
+                      r"|mariadb|sshpass|--user|--proxy-user|--cert|hf_|gh[pousr]_|github_pat_")
 
 
 def _decoded(text, start, end):
@@ -537,8 +541,11 @@ def _decoded(text, start, end):
 
 
 def _hidden(text, depth=0):
-    """The spans to hide in ``text``: the rules' own, and what they hide in its escaped string literals, decoded."""
-    spans = _layer_spans(text)
+    """The spans to hide in ``text``: the rules' own, and what they hide in its escaped string literals, decoded. A
+    decoded layer that holds nothing a rule starts from, or that is itself one escaped string literal (JSON of JSON),
+    is only decoded further."""
+    whole = depth and text[:1] in ("'", '"') and _LITERAL[text[0]].fullmatch(text) is not None
+    spans = _layer_spans(text) if not depth or not whole and _TRIGGER.search(text) else []
     if depth >= _LAYERS or "\\" not in text:
         return spans
     pos, failed, size = 0, {"'": -1, '"': -1}, len(text)

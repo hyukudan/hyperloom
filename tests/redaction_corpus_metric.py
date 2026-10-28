@@ -10,7 +10,8 @@ def hidden(value, output):
     if isinstance(value, str):
         if not isinstance(output, str):
             return set(range(len(value)))
-        matcher = difflib.SequenceMatcher(None, value, output, autojunk=False)
+        # Each [redacted] becomes one character no input holds, so a hidden "red" is not aligned with its letters.
+        matcher = difflib.SequenceMatcher(None, value, output.replace("[redacted]", "\x00"), autojunk=False)
         return {at for tag, start, end, _, _ in matcher.get_opcodes() if tag != "equal" for at in range(start, end)}
     return {(index, at) for index, item in enumerate(value) if isinstance(item, str)
             for at in hidden(item, output[index] if index < len(output) else "")}
