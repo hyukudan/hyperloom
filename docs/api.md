@@ -885,6 +885,8 @@ including `pick` which writes a layer through the CLI.
 | `GET planner` | Recipe profiles, saved facts, placement availability and limits | None | Sync; no audit | 400 query |
 | `POST planner/whatif` | Evaluate variants alongside the base, no deployment | `recipe`; `profile?`/`facts?` ids; `vary?` object ≤8 paths to value lists; `variants?` ≤11 objects `{name?,set}` with name ≤64 one-line chars, set 1..256 paths; ≤12 total incl. base/cartesian variants; `prompt_tokens?` int 1..16777216 | Sync; no audit | 400 paths/values/variant cap; shared runner statuses above |
 | `POST planner/placement` | Advisory placements for catalog model | `model` id; `facts?` id; `prompt?` int 1..1048576; `output?` int 1..65536; `slots?` int 1..64; `top_k?` int 1..10; `objective?` latency/decode/prefill/throughput | Sync; no audit | 400 fields/bounds; shared runner statuses above |
+| `POST planner/solve` | Solver table for one route of a recipe (catalog only, no deployment) | `recipe` id; `route` and `bundle` names | Sync; audited | 400 fields; 404 recipe; shared runner statuses above |
+| `POST planner/pick` | Save one solver row of a selection snapshot as an overrides layer | `selection` snapshot SHA-256; `row` and `name` names | Sync; audited (writes the layer) | 400 fields; 404 snapshot; shared runner statuses above |
 
 What-if paths match `[A-Za-z0-9_.-]{1,256}`. Values are finite numbers, booleans, one-line strings
 ≤1024 (no NUL), or recursively arrays ≤256; null and objects are refused. The CLI recipe reader
