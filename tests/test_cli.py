@@ -253,6 +253,9 @@ class StopWithoutAdmissionTests(unittest.TestCase):
         cluster = patch.object(cli, "_cluster", return_value=SimpleNamespace(machines={}, profiles={}))
         cluster.start()
         self.addCleanup(cluster.stop)
+        preflight = patch("hyperloom.recipes.preflight.cli")
+        preflight.start()
+        self.addCleanup(preflight.stop)  # this fixture tests admission failures; launch validation has its own tests
 
     def invoke(self, *args):
         out, err = io.StringIO(), io.StringIO()

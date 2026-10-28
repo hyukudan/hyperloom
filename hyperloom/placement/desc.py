@@ -113,6 +113,15 @@ def load(source):
     return desc
 
 
+def load_inputs(source, *, components, store, selected):
+    """A legacy desc-v1 plus its separately cached components-v1. The reference is never a descriptor field.
+
+    Return the two documents separately, preserving every desc-v1 byte/hash and legacy plan identity. Cache
+    resolution performs stat-only content admission and never runs the engine to obtain a missing descriptor.
+    """
+    return load(source), store.load(components, selected=selected)
+
+
 def _validate(desc):
     _keys(desc, TOP_KEYS, "desc")
     if desc.get("schema") not in SCHEMAS:

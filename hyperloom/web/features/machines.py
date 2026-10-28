@@ -1138,8 +1138,8 @@ RANK = {"red": 3, "amber": 2, "ok": 0}
 
 
 def excluded_card(card, declared):
-    ids = {d.get("id") for d in declared or () if isinstance(d, dict) and d.get("excluded")}
-    return card.get("uuid") in ids or card.get("device") in ids or "4090" in (card.get("name") or "")
+    from ...device_policy import resolve
+    return resolve(card, declared)["excluded"]
 
 
 def memory_domains(machine, entry, limits, fresh=True):

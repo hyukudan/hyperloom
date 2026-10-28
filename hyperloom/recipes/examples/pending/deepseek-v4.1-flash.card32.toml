@@ -11,7 +11,7 @@ schema = "strix-stream/recipe-v1"
 name = "deepseek-v4.1-flash-card32"
 description = "DeepSeek V4.1 Flash: pair TP + a 32 GB card for prompts >= 16K (exact arm, 26 GB base + streamed experts): 32K ~14.5 s vs 39.6 s"
 x-status = "pending: quality receipt (DS RTX exact) and card performance check (H2D minimum)"
-x-schema = "wave4/recipes/core/schema-draft-5.md (Sol GO)"
+x-schema = "wave4/recipes/core/schema-draft-5.md (reviewed)"
 
 [match]
 model = "deepseek-v4.1-flash"

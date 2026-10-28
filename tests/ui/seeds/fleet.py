@@ -2,6 +2,7 @@
 cards, eight hours of history with an offline gap, and a LAN replica on halo-1 as the engine collector records it.
 The portal's own fleet collectors keep running against these answers (node calls and system reads are faked)."""
 
+from tests.portable_fixtures import read_fixture
 import copy
 import ipaddress
 import itertools
@@ -13,12 +14,12 @@ FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "fleet"
 
 
 def _host(name):
-    return json.loads((FIXTURES / f"host-{name}.json").read_text(encoding="utf-8"))
+    return json.loads(read_fixture(FIXTURES / f"host-{name}.json"))
 
 
 def _control(machines):
-    gpus = (FIXTURES / "nvidia-gpus.csv").read_text(encoding="utf-8")
-    apps = (FIXTURES / "nvidia-apps.csv").read_text(encoding="utf-8")
+    gpus = read_fixture(FIXTURES / "nvidia-gpus.csv")
+    apps = read_fixture(FIXTURES / "nvidia-apps.csv")
     gib = 2 ** 30
     return {"schema": "hyperloom/node-v1", "verb": "host", "checks": {
         "uptime_s": {"status": "ok", "value": 93000.0},

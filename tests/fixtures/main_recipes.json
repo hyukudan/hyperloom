@@ -22,7 +22,7 @@
      "Ninja",
      "-DCMAKE_BUILD_TYPE=Release",
      "-DCMAKE_HIP_ARCHITECTURES=gfx1151",
-     "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++",
+     "-DCMAKE_HIP_COMPILER=<posix>/opt/rocm/core-10.1/bin/amdclang++",
      "-DSTRIX_ENABLE_HIP_RUNTIME=ON",
      "-DSTRIX_ENABLE_EXPERIMENTAL_Q4K_A8_RUNTIME=ON"
     ],
@@ -69,7 +69,7 @@
      "Ninja",
      "-DCMAKE_BUILD_TYPE=Release",
      "-DCMAKE_HIP_ARCHITECTURES=gfx1151",
-     "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++",
+     "-DCMAKE_HIP_COMPILER=<posix>/opt/rocm/core-10.1/bin/amdclang++",
      "-DSTRIX_ENABLE_HIP_RUNTIME=ON",
      "-DSTRIX_ENABLE_EXPERIMENTAL_Q4K_A8_RUNTIME=ON"
     ],
@@ -116,7 +116,7 @@
      "Ninja",
      "-DCMAKE_BUILD_TYPE=Release",
      "-DCMAKE_HIP_ARCHITECTURES=gfx1151",
-     "-DCMAKE_HIP_COMPILER=/opt/rocm/core-10.1/bin/amdclang++",
+     "-DCMAKE_HIP_COMPILER=<posix>/opt/rocm/core-10.1/bin/amdclang++",
      "-DSTRIX_ENABLE_HIP_RUNTIME=ON",
      "-DSTRIX_ENABLE_EXPERIMENTAL_Q4K_A8_RUNTIME=ON"
     ],

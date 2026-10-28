@@ -4,6 +4,7 @@ state file."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
@@ -11,7 +12,7 @@ import time
 
 from .. import engines, render, rtx
 from ..config import ConfigError
-from . import apply, commands, core, descriptors, facts, probe, session
+from . import apply, commands, core, descriptors, facts, probe, runtime, session
 from .reader import RecipeError
 
 STUB_ENV = "HYPERLOOM_RECIPE_STUB"
@@ -29,6 +30,9 @@ class Options:
     exact_dirs: bool = False
     digest: str | None = None
     pin: Path | None = None          # the launch's pin on its snapshot (service.acquire_pin), released after up
+    components: dict | None = None  # local cache sidecar; never inserted in the recipe or desc-v1
+    selected_content: dict | None = None
+    placement_inputs: dict | None = None  # per-route cached configuration references, never acquisition requests
 
 
 @dataclass
@@ -44,6 +48,7 @@ class Launch:
     layers: session.Layers | None = None
     inputs: list = field(default_factory=list)
     digest: str | None = None
+    placement_request: runtime.Request | None = None
 
     def record(self):
         """What the profile state keeps about the recipe (shown by `hyperloom status` and `recipe active`): the
@@ -135,32 +140,57 @@ def plan_service(cluster, profile, cap, host, *, free_physical_gib=None):
     return plan.to_dict(), None
 
 
-def prepare(cluster, profile, options, *, router, vram_cap_gib, state_dir, source=None):
+def prepare(cluster, profile, options, *, router, vram_cap_gib, state_dir, source=None, reviewed=None):
     """Resolve, probe, match, plan and decide; refuse with every reason before any lease or process exists."""
+    if options.components is not None:
+        commands.components_store().load(options.components, selected=options.selected_content)
     backend, production = _backend(cluster)
     if vram_cap_gib is not None:
         raise RecipeError("--vram-cap-gib and --recipe both set the RTX cap: put it in the recipe (device_gib)")
-    check_router()
+    from . import preflight
+    placement = preflight.includes(options)
+    if not placement:
+        check_router()
     source = source or commands.live_source(cluster)
-    if options.recipe == "auto":
-        dirs = options.dirs if options.exact_dirs else commands.recipe_dirs(cluster, options.dirs)
-        chosen, rows = session.pick(cluster, profile, dirs, options.layers, source, backend)
-        if chosen is None:
-            raise RecipeError("no recipe fits: " + "; ".join(f"{r['path']}: {r['result']}" for r in rows)
-                              if rows else "no recipe files in " + ", ".join(map(str, commands.recipe_dirs(cluster))))
-        evaluation = chosen
-    else:
-        evaluation = session.evaluate(cluster, profile, options.recipe, options.layers, source, backend)
-    why = refusal_of(evaluation)
-    if why is not None:
-        raise RecipeError(why)
+    with ExitStack() as stack:
+        owners, _, _ = preflight._reviewed_resources(reviewed, cluster) if placement and reviewed else ({}, {}, {})
+        observer = preflight._open_observer(stack, None) if owners else None
+        if options.recipe == "auto":
+            dirs = options.dirs if options.exact_dirs else commands.recipe_dirs(cluster, options.dirs)
+            chosen, rows = session.pick(cluster, profile, dirs, options.layers, source, backend,
+                                        **({"reviewed": reviewed} if reviewed is not None else {}),
+                                        **({"observer": observer} if observer is not None else {}))
+            if chosen is None:
+                raise RecipeError("no recipe fits: " + "; ".join(f"{r['path']}: {r['result']}" for r in rows)
+                                  if rows else "no recipe files in " + ", ".join(map(str, commands.recipe_dirs(cluster))))
+            evaluation = chosen
+        else:
+            evaluation = session.evaluate(cluster, profile, options.recipe, options.layers, source, backend,
+                                          **({"placement_inputs": options.placement_inputs}
+                                             if options.placement_inputs is not None else {}),
+                                          **({"reviewed": reviewed} if reviewed is not None else {}),
+                                          **({"observer": observer} if observer is not None else {}))
+        why = refusal_of(evaluation)
+        if why is not None:
+            raise RecipeError(why)
+        if evaluation.decision.get("placement"):
+            if router != "local":
+                raise RecipeError("the placement decode replica is loopback-only: use --router local")
+            request = runtime.request(evaluation.decision)
+            # Pure render (including artifact/release checks) before any state, helper or gate exists.
+            spec = render_placement(cluster, profile, request, api_key="0" * 64, owners=owners, observer=observer)
+            table = {"effective_sha256": evaluation.effective_sha256, "state": {"file": None}, "routes": []}
+            return Launch(evaluation, production and not evaluation.effective.untuned, True, None, None, None,
+                          table, spec.placement, options.layers, options.inputs, options.digest, request)
+    if placement:
+        check_router()
     decision = evaluation.decision
     service = dict(decision["service"])
     cap, host, plan = None, None, None
     if service["start"]:
         if router != "local":
             raise RecipeError("the recipe starts the RTX prefill service, which is loopback-only: use --router local")
-        # The budget is forwarded exactly, zero included (Sol-5 #5); the planner runs now, before any lease (#2).
+        # The budget is forwarded exactly, zero included (review #5); the planner runs now, before any lease (#2).
         cap, host = _service_budget(evaluation)
         plan, why = plan_service(cluster, profile, cap, host)
         if why is not None:
@@ -282,6 +312,103 @@ def router_prefill(launch, cluster, profile, key_file):
         data = rtx._service(cluster, profile)[1]
         block.update(services=[rtx.router_service(cluster, profile, key_file)], handoff_path=data["handoff_path"])
     return block
+
+
+def render_placement(cluster, profile, request, *, api_key, owners=None, observer=None):
+    """Pure rendering of already admitted local artifacts, before any launch-state or lease mutation."""
+    return rtx.render_service(cluster, profile, api_key=api_key, handoff_api_key="0" * 64,
+                              free_physical_gib=0, placement_request=request, placement_owners=owners,
+                              placement_observer=observer)
+
+
+def selection(cluster, profile, launch, *, router="local", resources=None):
+    """The selected input (using its original path across snapshots), kind and admission resources."""
+    from .. import admission, orchestrate
+    path = launch.evaluation.path
+    key = lambda p: os.path.normcase(os.path.abspath(p))  # noqa: E731
+    for item in launch.inputs:
+        if item["role"] in ("recipe", "candidate") and key(item["path"]) == key(path):
+            path = item["original"]
+            break
+    placement = launch.placement_request is not None
+    if resources is None:
+        if placement:
+            resources = {launch.evaluation.context.pc}
+        else:
+            try:
+                resources = admission.profile_resources(cluster, profile, orchestrate, router)
+            except Exception:
+                resources = {"*"}
+    return {"path": key(path), "effective_sha256": launch.evaluation.effective_sha256,
+            "kind": "placement" if placement else "legacy", "resources": sorted(resources)}
+
+
+def check_admission(cluster, profile, launch, admitted, *, router="local"):
+    """Fresh preparation may refuse a launch, but may never change what the existing hold admitted."""
+    if admitted is not None:
+        # A conservative wildcard hold remains a wildcard after resolving the snapshot/profile.
+        resources = {"*"} if admitted["resources"] == ["*"] else None
+        if selection(cluster, profile, launch, router=router, resources=resources) != admitted:
+            raise RecipeError("recipe selection changed after admission; retry")
+
+
+def up_placement(cluster, profile, launch, *, deadline_s, cancelled=None, admitted_selection=None):
+    """The RTX-alone decode path: no remote engines or parked-import/prefill router are involved."""
+    from dataclasses import replace
+    import uuid
+    from .. import orchestrate, procs, secrets
+
+    check_admission(cluster, profile, launch, admitted_selection)
+    request = launch.placement_request
+    spec = render_placement(cluster, profile, request, api_key="0" * 64)
+    spec = replace(spec, deadline=min(spec.deadline, time.time() + deadline_s))
+    path = orchestrate._state_path(profile)
+    lock = procs.InstanceLock(path.with_suffix(".lock")).acquire()
+    handlers = ExitStack()
+    owned = False
+    state = {"profile": profile, "leases": [], "router": None, "machines": {}, "keys": [],
+             "known_hosts": str(orchestrate._known_hosts()), "token": uuid.uuid4().hex,
+             "phase": "starting", "production": launch.production, "diagnostic": [],
+             "recipe": launch.record(), "deadline": spec.deadline, "started_at": time.time(),
+             "nodes": [], "devices": list(spec.placement_supervision["caps_bytes"])}
+    from . import service
+    if service.configured_file() is not None:
+        state["config"] = orchestrate.config_record(service.configured_file())
+
+    def check():
+        if cancelled is not None and cancelled():
+            raise orchestrate.OrchestrationError("profile stop requested")
+        orchestrate._check_stop(path)
+    try:
+        if path.exists():
+            raise orchestrate.OrchestrationError("profile has saved running state; run down before up")
+        if cancelled is not None and cancelled():
+            raise orchestrate.OrchestrationError("profile stop requested")
+        path.with_suffix(".stop").unlink(missing_ok=True)
+        handlers.enter_context(orchestrate._up_handlers(path))
+        request.files.publish()
+        owned = True
+        orchestrate._write(path, state)
+        orchestrate._start_up_watch(path, state["token"])
+        state["prefill_service"] = rtx.prepare_service(spec)
+        orchestrate._write(path, state)
+        rtx.launch_service(state["prefill_service"], spec, detached=orchestrate._detached,
+                           owner={"state_path": str(path), "token": state["token"]}, check=check)
+        check()
+        state["phase"] = "running"
+        orchestrate._write(path, state)
+        return state
+    except BaseException:
+        if owned:
+            try:
+                orchestrate._down_state(state)
+                path.unlink(missing_ok=True)
+            except Exception:
+                orchestrate._write(path, state)
+        raise
+    finally:
+        handlers.close()
+        lock.close()
 
 
 def route_state_spec(launch, service_record, reservation_end, state):

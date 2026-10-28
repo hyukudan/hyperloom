@@ -11,6 +11,7 @@ from unittest import mock
 
 from hyperloom import cli, metrics_export
 from hyperloom.adapters import prom
+from tests.portable_fixtures import read_fixture
 
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "adapters"
@@ -18,7 +19,7 @@ ROUTER = {"address": "127.0.0.1", "port": 18600}
 
 
 def _fixture(name):
-    return (FIXTURES / name).read_text(encoding="utf-8")
+    return read_fixture(FIXTURES / name)
 
 
 def fake_fetch(documents):

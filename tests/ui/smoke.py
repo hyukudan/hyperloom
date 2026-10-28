@@ -26,6 +26,7 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+from tests.portable_fixtures import read_fixture
 ROUTES = ("devices", "topology", "models", "recipes", "engines", "stats", "logs", "settings", "results", "sessioncache")
 TITLES = ("Devices", "Topology & links", "Models & placement", "Recipes & profiles", "Engines", "Live stats", "Logs",
           "Settings & pairing", "Measured results", "Session cache")
@@ -177,7 +178,7 @@ def fixture_server(args):
            "install_root": "/opt/hyperloom/halo-1", "lab_mode": True, "devices": [{"id": "gpu"}]}], "assets": assets,
            "profiles": {"qwen-replicas": {"nodes": ["halo-1"]}}, "router": {}, "pc": {}}
     cluster = config.Cluster({machine.id: machine}, assets, raw["profiles"], {}, {}, raw)
-    inspection = json.loads((ROOT / "tests/fixtures/web/inspection.json").read_text(encoding="utf-8"))
+    inspection = json.loads(read_fixture(ROOT / "tests/fixtures/web/inspection.json"))
     for mid, system, access, address in (("workstation", "windows", "local", "192.0.2.20"),
                                           ("halo-2", "linux", "ssh", "192.0.2.11")):
         cluster.machines[mid] = config.Machine(mid, system, access, address, mid, 22,
@@ -199,7 +200,7 @@ def fixture_server(args):
     running = {"value": not args.blocked}
     cancelled = threading.Event()
     fixture_path = ROOT / "tests/fixtures/adapters"
-    router_status = json.loads((fixture_path / "router-status.json").read_text(encoding="utf-8"))
+    router_status = json.loads(read_fixture(fixture_path / "router-status.json"))
     router_status["replicas"] = [router_status["replicas"][0]]
     router_status["replicas"][0]["endpoint"] = "127.0.0.1:18501"
     engine_status = json.loads((fixture_path / "engine-status.json").read_text(encoding="utf-8"))
@@ -455,9 +456,10 @@ def check_tokens(css, theme):
 
 
 def find_chrome():
-    candidates = [os.environ.get("CHROME")]
+    candidates = [os.environ.get("CHROME"), os.environ.get("HYPERLOOM_TEST_CHROME")]
     candidates += [shutil.which(name) for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome")]
-    for variable in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+    # The test package moves LOCALAPPDATA into its sandbox and keeps the original for per-user browser installs.
+    for variable in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA", "HYPERLOOM_TEST_ORIGINAL_LOCALAPPDATA"):
         if os.environ.get(variable):
             candidates.append(str(Path(os.environ[variable]) / "Google/Chrome/Application/chrome.exe"))
     candidates += ["/opt/google/chrome/chrome", "/usr/bin/google-chrome", "/usr/bin/chromium"]
@@ -742,14 +744,53 @@ def recipes_walkthrough(client, server, output=None):
     wait("!document.querySelector('[data-recipe-action=deploy]').disabled")
     click('[data-recipe-action="deploy"]')
     wait("document.getElementById('recipe-dialog')?.open")
+    previous_job = client.evaluate("Hyperloom.state.job?.id || null")
     click("#recipe-dialog-confirm")
-    wait("/(succeeded|failed)/.test(document.getElementById('job-panel').innerText)", timeout=120)
+    wait("!Hyperloom.state.launchRefusal && Hyperloom.state.job?.id !== " + json.dumps(previous_job)
+         + " && ['succeeded', 'failed'].includes(Hyperloom.state.job?.state)", timeout=120)
     job = client.evaluate("document.getElementById('job-panel').innerText")
     if "recipes/deploy" not in job or "succeeded" not in job:
         raise AssertionError("recipes walkthrough: the deploy job did not succeed: " + job[:2000])
     if client.errors:
         raise AssertionError("Browser console/exception errors: " + json.dumps(client.errors))
     return ("deploy job" if ready else "deploy gated by the preview's refusal") + ", fixture recipe deployed by a job"
+
+
+def preflight_refusal_walkthrough(client, server):
+    """A real synchronous legacy recipe refusal stays in the job-error panel through polling."""
+    client.call("Page.navigate", url=server.url + "#/recipes")
+    eventually(lambda: client.evaluate("!!window.Hyperloom && Hyperloom.state.fresh && !Hyperloom.mutationReason()"))
+    message = "recipe preflight refused: preflight checks failed; see local audit"
+    for action, arguments, detail in (
+            ("up", {"profile": "qwen-replicas", "recipe_inputs": "0" * 64, "node": ["halo-1"]},
+             "planned snapshot as it is"),
+            ("recipes/deploy", {"inputs": "0" * 64}, "no snapshot")):
+        eventually(lambda: client.evaluate("Hyperloom.state.fresh && !Hyperloom.mutationReason()"))
+        client.evaluate(f"window.refusal = null; Hyperloom.mutate({json.dumps(action)}, {json.dumps(arguments)})"
+                        ".catch(e => { window.refusal = {message: e.message, status: e.status}; });")
+        eventually(lambda: client.evaluate("window.refusal !== null"))
+        refusal = client.evaluate("window.refusal")
+        if refusal != {"status": 400, "message": message}:
+            raise AssertionError("unexpected preflight refusal: " + json.dumps(refusal))
+        audit_path = server.directory / "hyperloom/audit.jsonl"
+        audit = json.loads(audit_path.read_text(encoding="utf-8").splitlines()[-1])
+        if audit["action"] != action or audit["result"]["state"] != "refused" or detail not in audit["result"]["error"]:
+            raise AssertionError("local preflight audit did not retain the refusal detail")
+        eventually(lambda: client.evaluate("!document.getElementById('job-panel').hidden && "
+                                           "document.getElementById('job-panel').innerText.includes(window.refusal.message)"), timeout=5)
+        client.evaluate("Hyperloom.refresh()")
+        if not client.evaluate("document.getElementById('job-panel').innerText.includes(window.refusal.message)"):
+            raise AssertionError("polling erased the preflight refusal")
+    if client.evaluate("!!document.querySelector('#job-panel [data-action=cancel], #job-panel [data-action=stop]')"):
+        raise AssertionError("a refused launch must have no running-job controls")
+    if any(call["action"] == "up" for call in server.calls()):
+        raise AssertionError("preflight refusal started the legacy engine")
+    jobs = client.evaluate("Hyperloom.request('jobs')")
+    if jobs["jobs"]:
+        raise AssertionError("preflight refusal created a job")
+    if client.errors:
+        raise AssertionError("Browser console/exception errors: " + json.dumps(client.errors))
+    return "HTTP 400 message retained in job panel; no job or launch"
 
 
 def feature_pages(client, server, output, width, theme):
@@ -1322,7 +1363,7 @@ def launch_walkthrough(client, server, output):
 
 
 def browser_smoke(chrome, server, output, *, keyboard=False, keyboard_only=False, recipes_only=False,
-                  launch_only=False):
+                  launch_only=False, refusals_only=False):
     with tempfile.TemporaryDirectory(prefix="hyperloom-chrome-", ignore_cleanup_errors=True) as profile:
         port = free_port()
         command = [chrome, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-first-run", "--no-default-browser-check",
@@ -1355,7 +1396,7 @@ def browser_smoke(chrome, server, output, *, keyboard=False, keyboard_only=False
                     launch_walkthrough(client, server, output)
                     return 1
                 captures = 0
-                for width in (() if keyboard_only or recipes_only else (1440, 390)):
+                for width in (() if keyboard_only or recipes_only or refusals_only else (1440, 390)):
                     client.call("Emulation.setDeviceMetricsOverride", width=width, height=1000,
                                 deviceScaleFactor=1, mobile=False)
                     backgrounds = {}
@@ -1430,7 +1471,7 @@ def browser_smoke(chrome, server, output, *, keyboard=False, keyboard_only=False
                         captures += feature_pages(client, server, output, width, theme)
                     if not backgrounds.get("light") or backgrounds["light"] == backgrounds.get("dark"):
                         raise AssertionError("System light/dark preference did not change the rendered theme")
-                if not keyboard_only and not recipes_only:
+                if not keyboard_only and not recipes_only and not refusals_only:
                     print("PASS shell walkthrough: " + shell_walkthrough(client, server, output), flush=True)
                 if keyboard or keyboard_only:
                     # Desktop makes every opener visible; the manual walkthrough
@@ -1443,6 +1484,8 @@ def browser_smoke(chrome, server, output, *, keyboard=False, keyboard_only=False
                 if client.errors:
                     raise AssertionError(json.dumps(client.errors))
                 if not keyboard_only:
+                    print("PASS preflight refusal: " + preflight_refusal_walkthrough(client, server), flush=True)
+                if not keyboard_only and not refusals_only:
                     print("PASS recipes walkthrough: edit, inline refusal, fix, preview, " + recipes_walkthrough(client, server, output)
                           + ", save copy", flush=True)
                     if not recipes_only:
@@ -1465,6 +1508,7 @@ def main():
     parser.add_argument("--keyboard", action="store_true", help="also check dialog keyboard focus and destructive Enter handling")
     parser.add_argument("--keyboard-only", action="store_true", help="run the dialog keyboard pass without screenshots")
     parser.add_argument("--recipes-only", action="store_true", help="run only the Recipes & profiles walkthrough")
+    parser.add_argument("--refusals-only", action="store_true", help="run only the synchronous launch refusal walkthrough")
     parser.add_argument("--serve", action="store_true", help="keep a fake-backed UI running for keyboard review")
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--chrome", help="Chrome/Chromium executable (or set CHROME)")
@@ -1497,7 +1541,7 @@ def main():
     print("Screenshots: " + str(output), flush=True)
     with FixtureServer() as server:
         count = browser_smoke(chrome, server, output, keyboard=args.keyboard, keyboard_only=args.keyboard_only,
-                              recipes_only=args.recipes_only)
+                              recipes_only=args.recipes_only, refusals_only=args.refusals_only)
     with FixtureServer(launch_fixture=True) as server:
         count += browser_smoke(chrome, server, output, launch_only=True)
     print(f"PASS {count} route/viewport/theme captures; no console errors" if count else "PASS requested walkthrough; no console errors")

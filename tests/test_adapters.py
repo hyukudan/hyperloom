@@ -6,13 +6,14 @@ import unittest
 
 from hyperloom.adapters import AdapterError
 from hyperloom.adapters import engine, prefill, prom, router
+from tests.portable_fixtures import read_fixture
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "adapters"
 
 
 def fixture(name):
-    return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+    return json.loads(read_fixture(FIXTURES / name))
 
 
 class PromTests(unittest.TestCase):

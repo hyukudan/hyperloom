@@ -10,7 +10,7 @@ schema = "strix-stream/recipe-v1"
 name = "deepseek-v4.1-flash-lab-rtx-replica"
 description = "DeepSeek V4.1 Flash: RTX PRO decode replica (expert cache + pinned + NVMe, <= 4 sequences per forward) admitted first; when it is not admissible the request decodes on the pair (<= 2 sequences)"
 x-status = "pending: engine not run on the PRO; no calibrated model for this budget"
-x-schema = "wave4/recipes/core/schema-draft-5.md (Sol GO)"
+x-schema = "wave4/recipes/core/schema-draft-5.md (reviewed)"
 
 [match]
 model = "deepseek-v4.1-flash"

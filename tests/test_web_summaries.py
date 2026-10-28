@@ -1,4 +1,5 @@
 """Portal summaries against sanitized captured field shapes; no hardware access."""
+from tests.portable_fixtures import read_fixture
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,11 +15,14 @@ FIXTURE = Path(__file__).parent / "fixtures" / "web" / "inspection.json"
 
 class SummaryTests(unittest.TestCase):
     def setUp(self):
-        self.inspection = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        self.inspection = json.loads(read_fixture(FIXTURE))
         machines = {mid: config.Machine(mid, "windows" if mid == "workstation" else "linux",
                     "local" if mid == "workstation" else "ssh", "192.0.2." + str(i + 10), mid, 22,
                     "/opt/hyperloom/" + mid, True, [{"id": "gpu"}])
                     for i, mid in enumerate(("workstation", "halo-1", "halo-2"))}
+        # The captured second GPU is excluded by this configuration, independently of its model name.
+        machines["workstation"].devices.append({"id": "excluded-fixture", "excluded": True,
+            "name": self.inspection["workstation"]["probe"]["devices"][1]["name"]})
         self.cluster = config.Cluster(machines, {}, {"qwen-replicas": {"nodes": ["halo-1", "halo-2"]}}, {}, {}, {})
         self.orch = Mock()
         self.orch._read.side_effect = FileNotFoundError

@@ -307,7 +307,7 @@ class LaunchTests(unittest.TestCase):
                     mock.patch.object(self.api, "_unhold"), \
                     mock.patch.object(self.api, "_resources_of_profile", return_value=set()), \
                     mock.patch.object(self.api, "_execute", return_value={"phase": "running", "profile": "qwen"}), \
-                    mock.patch.object(launch, "record_ready", side_effect=observe):
+                    mock.patch.object(launch, "record_ready", side_effect=observe),                     mock.patch("hyperloom.recipes.preflight.cli", return_value=None):
                 recorded.clear()
                 # Validation and admission are covered separately; this checks the real common worker.
                 with mock.patch.object(self.api, "_arguments", return_value={"profile": "qwen"} if action == "up" else {"inputs": "a" * 64, "stop": []}):

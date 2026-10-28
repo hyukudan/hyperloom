@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from tests.portable_fixtures import read_fixture
 from hyperloom.telemetry.store import Store
 from hyperloom.web.api import API
 from hyperloom.web.features import ledger
@@ -188,7 +189,7 @@ class CollectorTests(unittest.TestCase):
                          ["cached", "generated", "imported", "prompt"])
 
     def fleet(self, ts, **changes):
-        record = json.loads((FIXTURES / "ledger" / "fleet-engine.json").read_text(encoding="utf-8"))
+        record = json.loads(read_fixture(FIXTURES / "ledger" / "fleet-engine.json"))
         record.update(ts=ts, **changes)
         self.api.telemetry.put(ledger.FLEET_ENGINE, "halo-1:mm:18090", record)
         return record

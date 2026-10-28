@@ -86,5 +86,5 @@
  ],
  "globals": 2027130880,
  "engram_file": 202758032400,
- "source": "D:/models/ds41-w2/DeepSeek-V4.1-Flash-1017-Q2.gguf header (hyperloom.placement.ds41.sizes)"
+ "source": "<drive-d><posix>/models/ds41-w2/DeepSeek-V4.1-Flash-1017-Q2.gguf header (hyperloom.placement.ds41.sizes)"
 }

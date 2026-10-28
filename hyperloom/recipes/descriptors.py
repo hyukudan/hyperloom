@@ -19,7 +19,7 @@ class DescriptorError(RuntimeError):
     pass
 
 
-def _files(path):
+def _files(path, *, nanoseconds=False):
     """The files a model path reads (same rule as modelfiles.read), with their identity."""
     path = Path(path)
     if path.is_dir():
@@ -33,7 +33,8 @@ def _files(path):
     out = []
     for f in files:
         st = os.stat(f)
-        out.append({"file": str(f), "device": st.st_dev, "size": st.st_size, "mtime": int(st.st_mtime)})
+        out.append({"file": str(f), "device": st.st_dev, "size": st.st_size,
+                    **({"mtime_ns": st.st_mtime_ns} if nanoseconds else {"mtime": int(st.st_mtime)})})
     return out
 
 
@@ -42,6 +43,9 @@ def _key(path):
 
 
 class Store:
+    schema = None
+    nanoseconds = False
+
     def __init__(self, directory):
         self.directory = Path(directory)
 
@@ -50,10 +54,12 @@ class Store:
 
     def save(self, model):
         """Read the headers of ``model`` now (explicit) and save them."""
-        identity = _files(model)
+        identity = _files(model, nanoseconds=self.nanoseconds)
         metadata, tensors = modelfiles.read(model)
         record = {"model": str(model), "files": identity, "metadata": metadata,
                   "tensors": [[t.name, t.bytes, t.file, t.dtype, list(t.shape)] for t in tensors]}
+        if self.schema is not None:
+            record["schema"] = self.schema
         self.directory.mkdir(parents=True, exist_ok=True)
         temporary = self._path(model).with_suffix(".tmp")
         temporary.write_text(json.dumps(record), encoding="utf-8")
@@ -68,8 +74,12 @@ class Store:
         except (OSError, ValueError) as exc:
             raise DescriptorError(f"{model}: no saved header descriptor; run `hyperloom recipe probe <profile> "
                                   "--descriptors`") from exc
+        if self.schema is not None and record.get("schema") != self.schema:
+            raise DescriptorError(f"{model}: incompatible placement header-cache version; refresh its descriptor")
         try:
-            current = _files(model)
+            # Also read the short-lived nanosecond records written before legacy comparison was restored.
+            current = _files(model, nanoseconds=self.nanoseconds or
+                             (bool(record["files"]) and "mtime_ns" in record["files"][0]))
         except OSError as exc:
             raise DescriptorError(f"{model}: unavailable: {exc}") from exc
         if current != record["files"]:
@@ -77,6 +87,16 @@ class Store:
                                   "`hyperloom recipe probe <profile> --descriptors`")
         tensors = [modelfiles.Tensor(n, b, f, d, tuple(s)) for n, b, f, d, s in record["tensors"]]
         return record["metadata"], tensors
+
+
+class PlacementStore(Store):
+    """Versioned strict headers; never reinterpret or overwrite the legacy descriptor cache."""
+
+    schema = "hyperloom/placement-headers-v1"
+    nanoseconds = True
+
+    def __init__(self, directory):
+        super().__init__(Path(directory) / "placement-headers-v1")
 
 
 @contextmanager

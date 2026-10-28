@@ -6,7 +6,7 @@ Status: plan, 2026-10-23. It builds on the Phase 1a acceptance results recorded 
 
 **Input:** `docs/ui/UI-SPEC.md` (§§1–11) and the mockups in `docs/ui/mockups/`.
 
-**Tasks** (three Sol workers, disjoint files):
+**Tasks** (three coding workers, disjoint files):
 
 | Task | Owner files | Content |
 |---|---|---|

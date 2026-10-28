@@ -9,3 +9,11 @@ dist/
 *.log
 cluster.json
 secrets/
+**/run/components-v1/
+**/run/content-manifests/
+**/run/placement-inputs/
+**/run/placements/
+**/run/solver-inputs/
+**/run/solver-plans/
+**/run/context-v1.json
+**/run/receipts/

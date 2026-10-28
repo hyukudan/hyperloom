@@ -1,5 +1,6 @@
 """Portal feature usb4: collector accounting (C3/C10), stored state, GET document, refresh, exchange view."""
 
+from tests.portable_fixtures import read_fixture
 import copy
 import json
 import threading
@@ -14,7 +15,7 @@ from hyperloom.web import features
 from hyperloom.web.features import usb4
 
 ROOT = Path(__file__).resolve().parents[1]
-REPORTS = {name: json.loads((ROOT / f"tests/fixtures/usb4/node-{name}.json").read_text(encoding="utf-8"))
+REPORTS = {name: json.loads(read_fixture(ROOT / f"tests/fixtures/usb4/node-{name}.json"))
            for name in ("halo-1", "halo-2")}
 
 

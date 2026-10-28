@@ -13,7 +13,7 @@ description = "Qwen3.8-Flash-Next: two node replicas; prompts >= 1K prefill on t
 x-status = "measured"
 x-engine = "strix-cuda-qwen-prefill-service --max-positions 32768 --blocks 1024,2048,4096,8192; descriptor = the qwen.py option for block cap 8192"
 x-host-fixed = "descriptor host_fixed = ple_table_mapped + export_staging = 27.845 GiB at 32768 positions; host_pinned_gib 28.0 covers both"
-x-schema = "wave4/recipes/core/schema-draft-5.md (Sol GO)"
+x-schema = "wave4/recipes/core/schema-draft-5.md (reviewed)"
 
 [match]
 model = "qwen3.8-flash-next"
@@ -191,9 +191,9 @@ note = "plan.json lines 20-42: context 0.6 + weights 77.232 + mtp 0.033 + state 
 [x-evidence.qw-prod-context]
 ref = "../hyperloom/hyperloom/presets/qwen-replicas-w5.json:225"
 quote = "\"min\": 12288,"
-note = "production replica line: --context 12288 (line 27), 8 slots (one replica, 8 slots: qsplit/qbatch.md:3)"
+note = "production replica line: --context 12288, 8 slots (one replica, reviewed deployment evidence)"
 [x-evidence.qw-batch]
-ref = "wave4/qsplit/qbatch.md:3"
+ref = "reviewed deployment evidence"
 quote = "measured with the production server (one replica, 8 slots)"
 [x-evidence.qw-adapter-fixed]
 ref = "../hyperloom/hyperloom/placement/qwen.py:98"

@@ -5,6 +5,7 @@ tests/fixtures/observe, with their timestamps moved to the fixture's start; a lo
 sampler would hand it over. History series (TTFT, acceptance, generated tokens) get an hour of samples with a gap.
 """
 
+from tests.portable_fixtures import read_fixture
 import copy
 import ipaddress
 import json
@@ -19,7 +20,7 @@ NODE1 = str(ipaddress.IPv4Address(0xC0000201))         # documentation range, ne
 
 
 def _load(name):
-    text = (FIXTURES / name).read_text(encoding="utf-8")
+    text = read_fixture(FIXTURES / name)
     return json.loads(text) if name.endswith(".json") else text
 
 

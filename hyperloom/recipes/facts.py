@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 import re
 import time
 
 from .. import engines, render, rtx
 from ..config import ConfigError
 from . import apply, probe
+from .reader import RecipeError
 
 # The model id each engine family serves (equals `match.model` of its recipes) and the asset that holds the model.
 FAMILY_MODELS = {"qwen-replicas": ("qwen3.8-flash-next", "model"),
@@ -268,11 +270,15 @@ def _ok(result):
 
 
 def gather(cluster, ctx, *, call, gpus=None, memory=None, pro_busy=None, cache=None, measure_disks=False,
-           measurer=None, now=None):
+           measurer=None, now=None, release_executable=None, release_commit=None, sysmem_reader=None,
+           transfer_identity=None, placement=False):
     """(inventory, facts, availability, notes). ``call(machine_id, verb)`` runs a node verb and returns its result or
     raises; any failure is an unavailable fact with its reason, never an invented value."""
     now = time.time() if now is None else now
-    gpus, memory = gpus or probe.nvidia_gpus, memory or probe.host_memory
+    placement = placement or release_executable is not None or transfer_identity is not None
+    if gpus is None:
+        gpus = (lambda: probe.nvidia_gpus(placement=True)) if placement else probe.nvidia_gpus
+    memory = memory or probe.host_memory
     pro_busy, measurer = pro_busy or rtx.pro_busy, measurer or probe.read_bandwidth
     notes = []
     try:
@@ -285,7 +291,9 @@ def gather(cluster, ctx, *, call, gpus=None, memory=None, pro_busy=None, cache=N
     hosts = {ctx.pc: {"free_ram_gib": pc_mem["free_gib"], "free_commit_gib": pc_mem["free_commit_gib"]}}
     pc_assets = cluster.assets.get(ctx.pc, {})
     for gpu in inventory["cuda"]:
-        row = {"name": gpu["name"], "memory_gib": gpu["memory_gib"], "host_ram_gib": pc_mem["total_gib"]}
+        row = {"name": gpu["name"], "memory_gib": gpu["memory_gib"], "host_ram_gib": pc_mem["total_gib"],
+               **{k: gpu[k] for k in ("uuid", "pci", "arch", "driver", "memory_bytes", "platform",
+                                     "pci_path", "link", "via", "numa_node") if placement and k in gpu}}
         if ctx.service is not None and gpu["uuid"] == ctx.service["uuid"]:
             asset = pc_assets.get(ctx.service.get("model_asset") or "")
             if asset is not None and cache is not None:
@@ -315,7 +323,7 @@ def gather(cluster, ctx, *, call, gpus=None, memory=None, pro_busy=None, cache=N
             gpu_result = call(mid, "gpu")
             doctor_result = call(mid, "doctor")
         except Exception as exc:  # any remote failure is the node being unavailable
-            devices[mid] = {"name": None, "memory_gib": None}
+            devices[mid] = {"name": None, "memory_gib": None, "present": False}
             avail_devices[mid] = {"available": False, "why": f"node unreachable: {exc}"}
             hosts[mid] = {"free_ram_gib": None}
             lan[mid] = {"up": False, "why": f"node unreachable: {exc}"}
@@ -343,8 +351,54 @@ def gather(cluster, ctx, *, call, gpus=None, memory=None, pro_busy=None, cache=N
         notes.append("USB4 bandwidth not probed: reported as 0 Gb/s (only gbps_min = 0 passes)")
     facts = {"model": ctx.model, "devices": devices, "links": links,
              "node_runtime": node_runtime(cluster, ctx, cache)}
+    # Store identities come from local cached provenance, never an implicit measurement or hostname lookup.
+    if placement:
+        from . import topology
+        facts.update({key: (transfer_identity or {}).get(key, "unknown")
+                      for key in ("file_store", "engram_store")})
+        facts["xfer_host"] = ((transfer_identity or {}).get("xfer_host")
+                              if transfer_identity and "xfer_host" in transfer_identity else topology.host())
     availability = {"devices": avail_devices, "hosts": hosts, "lan": lan, "usb4": usb4}
+    if release_executable is not None:
+        from . import sysmem
+        facts.update(_identities(cluster, ctx, release_executable, release_commit, notes))
+        availability["sysmem_policy"] = (sysmem_reader or sysmem.probe)(release_executable)
     return inventory, facts, availability, notes
+
+
+def _identities(cluster, ctx, executable, commit, notes):
+    """Hash the small release binary; use verified model metadata without reading model content."""
+    from .. import assets
+    from . import content_cache
+    identities = {}
+    try:
+        binary = Path(executable)
+        release = content_cache._read(binary.parent.parent / "MANIFEST.json", "PL_E_STALE")
+        expected = release.get("binaries", {}).get(binary.name)
+        if not content_cache._digest(expected) or (commit is not None and release.get("engine_commit") != commit):
+            raise ValueError("release manifest differs from the selected build")
+        with binary.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        if digest != expected:
+            raise ValueError("release binary differs from its verified digest")
+        identities["engine_sha256"] = digest
+    except (OSError, ValueError, RecipeError) as exc:
+        notes.append("engine identity unavailable: " + str(exc))
+    try:
+        name = FAMILY_MODELS_BY_ID.get(ctx.model)
+        asset = cluster.assets.get(ctx.pc, {}).get(name)
+        entry = assets.read_manifest().get(ctx.pc, {}).get(name)
+        if asset is None or entry is None:
+            raise ValueError("run assets verify for the selected model")
+        stat = Path(asset.get("control_path", asset["path"])).stat()
+        fresh = dict(bytes=stat.st_size, mtime_ns=stat.st_mtime_ns, inode=stat.st_ino, dev=stat.st_dev)
+        reason = assets._reason(asset, fresh, entry)
+        if reason or not content_cache._digest(entry.get("sha256")):
+            raise ValueError(reason or "verified model digest unavailable")
+        identities["model_sha256"] = entry["sha256"]
+    except (OSError, ValueError) as exc:
+        notes.append("model identity unavailable: " + str(exc))
+    return identities
 
 
 def _gtt(gpu_result):

@@ -9,7 +9,7 @@ schema = "strix-stream/recipe-v1"
 name = "minimax-m3.1-flash-card32"
 description = "MiniMax M3.1 Flash: pair TP2 + a 32 GB card for prompts >= 8K (few resident blobs, ~70 GB pinned, rest NVMe): ~15.7 s at 8K vs 45 s"
 x-status = "pending: no 32 GB card measured; ranked-order MiniMax descriptor (blob list); conditional planner projection"
-x-schema = "wave4/recipes/core/schema-draft-5.md (Sol GO)"
+x-schema = "wave4/recipes/core/schema-draft-5.md (reviewed)"
 
 [match]
 model = "minimax-m3.1-flash"

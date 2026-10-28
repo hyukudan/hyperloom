@@ -14,7 +14,7 @@
     {
       "id": "halo-1",
       "node": "halo-1",
-      "endpoint": "192.0.2.1:18501",
+      "endpoint": "<ipv4-replica-a>:18501",
       "state": "up",
       "admitting": true,
       "inflight": 0,
@@ -28,7 +28,7 @@
     {
       "id": "halo-2",
       "node": "halo-2",
-      "endpoint": "192.0.2.2:18501",
+      "endpoint": "<ipv4-replica-b>:18501",
       "state": "up",
       "admitting": true,
       "inflight": 0,

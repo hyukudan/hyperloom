@@ -9,6 +9,8 @@ import itertools
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -161,6 +163,235 @@ class ReaderTests(unittest.TestCase):
             reader.resolve(MM, profile=(profile_text().replace(', pair = "6.4.3"', ""), "p.toml"), probe=identity())
         with self.assertRaisesRegex(RecipeError, 'is for "other"'):
             reader.resolve(MM, overrides=[('schema = "strix-stream/recipe-overrides-v1"\nrecipe = "other"\n[set]\n', "o")])
+
+
+class PlacementSchemaTests(unittest.TestCase):
+    """Schema only: no binding, sizing arithmetic, probes or engine processes."""
+
+    @staticmethod
+    def document():
+        return {"schema": reader.SCHEMA, "name": "placement-schema", "match": {"model": "synthetic", "devices": [
+            {"id": "anchor", "kind": "cuda", "memory_min_gib": 94},
+            {"id": "aux", "kind": "cuda", "memory_min_gib": 8, "optional": True}]}, "routes": [
+                {"id": "decode", "phase": "decode", "devices": ["anchor"], "execute": "single",
+                 "max_rows": 4, "max_sequences": 1, "assist": {"aux": {"device_gib": 8}},
+                 "components": {"drafter": {"device": "aux"}, "arena": {"units": 8192}},
+                 "placement": {"anchor": {"device_gib": 90, "max_context_tokens": 32768, "max_batch": 1,
+                                          "host_pinned_gib": 68, "host_pageable_gib": 2,
+                                          "host_available_floor_gib": 20}}}]}
+
+    def parse(self, doc=None):
+        return reader.parse(json.dumps(self.document() if doc is None else doc))
+
+    def test_placement_defaults_and_optional_key_omission(self):
+        recipe = self.parse()
+        route = recipe["routes"][0]
+        self.assertTrue(reader.placement_mode(route))
+        self.assertEqual(route["assist"]["aux"], {"device_gib": 8.0, "margin_gib": 0.5, "margin_fraction": 0.03})
+        self.assertEqual(route["components"]["arena"], {"device": "auto", "units": 8192})
+        self.assertEqual(route["placement"]["anchor"]["margin_gib"], 2.0)
+        self.assertNotIn("optional", recipe["match"]["devices"][0])
+        doc = self.document()
+        doc["routes"][0]["assist"]["aux"] = {}
+        self.assertEqual(self.parse(doc)["routes"][0]["assist"]["aux"]["device_gib"], 0)
+
+    def test_selectors_and_optional_binding_order(self):
+        doc = self.document()
+        doc["match"]["devices"].insert(0, {"id": "z_aux", "kind": "hip", "memory_min_gib": 8, "optional": True})
+        aux = doc["match"]["devices"][-1]
+        # Synthetic selector identities, never measurements from a local machine.
+        aux.update(uuid=GPU, pci="0000:06:00.0", index=1)
+        parsed = self.parse(doc)
+        self.assertEqual([d["id"] for d in parsed["match"]["devices"]], ["anchor", "aux", "z_aux"])
+        self.assertEqual({k: parsed["match"]["devices"][1][k] for k in ("uuid", "pci", "index")},
+                         {"uuid": GPU, "pci": "0000:06:00.0", "index": 1})
+
+    def test_activation_requires_a_non_empty_assist_or_components_table(self):
+        # Contract rev 21c: empty tables (or ones holding only x- notes) carry no placement content and stay legacy.
+        for tables in ({}, {"assist": {}, "components": {}}, {"components": {"x-note": {}}}):
+            doc = self.document()
+            route = doc["routes"][0]
+            for key in ("assist", "components", "max_rows", "max_sequences"):
+                route.pop(key)
+            route.update(tables)
+            self.assertFalse(reader.placement_mode(self.parse(doc)["routes"][0]))
+            route["max_rows"] = 1
+            with self.assertRaisesRegex(RecipeError, "PL_E_SCHEMA"):
+                self.parse(doc)
+
+    def test_legacy_canonical_bytes_and_alias_schemas(self):
+        # Frozen with a8d112c reader on these portable fixtures; shipped recipe hashes stay unchanged.
+        for text, sha in ((DS, "301a9b097f955aecd2c475f9f0d3008bac6a96ded86a5544db3067fbf9bd38eb"),
+                          (MM, "fa68cc0060695ec0ed88a56cc16686a1767e30f27431a6791e4bf55f1bd33c29")):
+            self.assertEqual(reader.resolve(text).canonical_sha256(), sha)
+            self.assertEqual(reader.resolve(text.replace("strix-stream/", "tierstream/")).canonical_sha256(), sha)
+        shipped = {
+            "deepseek-v4.1-flash.lab-hetero.toml": "626cbf6149d6fa31c893e10b04dc74b8f15b8a3859ba51d8f7635534e5cc606a",
+            "deepseek-v4.1-flash.lab.toml": "f67c89a1babda15c17a2bafc16e02d01da105c8f2e13d577491068cdb900ae8c",
+            "minimax-m3.1-flash.lab.toml": "03aa4745b2a3d0580ab4e4bef37969c575d3c1a645c39b7c9b8f988d2a0fd8ec",
+            "qwen3.8-flash-next.lab.toml": "3d77634953f4855e8523ccc50e20dae131b7f9eb4a17258e995bb12cfc183bc0",
+        }
+        for name, sha in shipped.items():
+            text = (repo_root() / "hyperloom/recipes/examples" / name).read_text(encoding="utf-8")
+            self.assertEqual(reader.resolve(text).canonical_sha256(), sha)
+        # Renamed layer schemas are compatible too; the old output identity stays unchanged.
+        layer = {"schema": "tierstream/recipe-overrides-v1", "recipe": reader.parse(MM)["name"],
+                 "set": {"limits.host_free_ram_floor_gib": 9}}
+        self.assertEqual(reader.resolve(MM, overrides=[(json.dumps(layer), "alias")]).recipe["limits"]
+                         ["host_free_ram_floor_gib"], 9)
+        tuned = reader.resolve(MM, profile=(profile_text().replace("strix-stream/", "tierstream/"), "alias"),
+                               probe=identity())
+        self.assertFalse(tuned.untuned, tuned.refused)
+
+    def test_zero_extension_fields_and_legacy_reserved_ids(self):
+        doc = self.document()
+        route = doc["routes"][0]
+        for key in ("assist", "components", "max_rows", "max_sequences"):
+            route.pop(key)
+        route["placement"]["anchor"]["host_pageable_gib"] = 0
+        route["placement"]["anchor"]["host_available_floor_gib"] = 0
+        doc["match"]["devices"][1]["optional"] = False
+        doc["match"]["devices"].append({"id": "auto", "kind": "cuda", "memory_min_gib": 1})
+        parsed = self.parse(doc)
+        self.assertFalse(reader.placement_mode(parsed["routes"][0]))
+        self.assertNotIn("optional", parsed["match"]["devices"][1])
+        for key in reader.HOST:
+            self.assertNotIn(key, parsed["routes"][0]["placement"]["anchor"])
+        self.assertNotIn(reader.ABSENT, reader.placement_defaults().values())
+
+    @staticmethod
+    def rejection_cases():
+        base = PlacementSchemaTests.document()
+        changes = [
+            (("match", "devices", 1, "uuid"), "GPU-BAD", "PL_E_SCHEMA"),
+            (("match", "devices", 1, "pci"), "0000:AF:00.0", "PL_E_SCHEMA"),
+            (("match", "devices", 1, "pci"), "0000:06:00.8", "PL_E_SCHEMA"),
+            (("match", "devices", 1, "index"), -1, "index"),
+            (("match", "devices", 1, "index"), True, "index"),
+            (("match", "devices", 1, "optional"), 1, "optional"),
+            (("match", "devices", 1, "kind"), "cpu", "PL_E_SCHEMA"),
+            (("match", "devices", 1, "count"), 2, "PL_E_SCHEMA"),
+            (("match", "devices", 0, "optional"), True, "PL_E_SCHEMA"),
+            (("routes", 0, "assist"), {"missing": {}}, "PL_E_UNKNOWN_DEVICE"),
+            (("routes", 0, "assist"), {"anchor": {}}, "PL_E_SCHEMA"),
+            (("routes", 0, "assist", "aux", "device_gib"), -1, "device_gib"),
+            (("routes", 0, "assist", "aux", "margin_gib"), 65, "margin_gib"),
+            (("routes", 0, "assist", "aux", "margin_fraction"), 0.51, "margin_fraction"),
+            (("routes", 0, "assist", "aux", "exact"), True, "exactness"),
+            (("routes", 0, "components"), {"unknown": {}}, "PL_E_UNKNOWN_COMPONENT"),
+            (("routes", 0, "components", "drafter", "device"), "missing", "PL_E_UNKNOWN_DEVICE"),
+            (("routes", 0, "components", "drafter", "gib"), 1, "PL_E_SCHEMA"),
+            (("routes", 0, "components", "drafter", "units"), 1, "PL_E_SCHEMA"),
+            (("routes", 0, "components", "arena", "gib"), 1, "PL_E_SCHEMA"),
+            (("routes", 0, "components", "arena", "units"), -1, "units"),
+            (("routes", 0, "components", "arena", "units"), 2 ** 32 + 1, "units"),
+            (("routes", 0, "max_rows"), 0, "max_rows"),
+            (("routes", 0, "max_sequences"), 65537, "max_sequences"),
+            (("routes", 0, "placement", "anchor", "host_pageable_gib"), -1, "host_pageable_gib"),
+            (("routes", 0, "placement", "anchor", "host_available_floor_gib"), "20", "host_available_floor_gib"),
+        ]
+        for path, value, message in changes:
+            doc = deepcopy(base)
+            target = doc
+            for key in path[:-1]:
+                target = target[key]
+            target[path[-1]] = value
+            yield ".".join(map(str, path)), doc, message
+        doc = deepcopy(base)
+        doc["match"]["devices"][0]["count"] = 2
+        doc["routes"][0]["execute"] = "tp"
+        yield "execute", doc, "PL_E_SCHEMA"
+        doc = deepcopy(base)
+        doc["routes"][0]["assist"] = {}
+        yield "unlisted assist destination", doc, "PL_E_UNKNOWN_DEVICE"
+        for word in reader.DESTINATIONS:
+            doc = deepcopy(base)
+            doc["match"]["devices"].append({"id": word, "kind": "cuda", "memory_min_gib": 1})
+            yield "reserved " + word, doc, "PL_E_SCHEMA"
+
+    def test_rejections(self):
+        for name, doc, message in self.rejection_cases():
+            with self.subTest(name=name), self.assertRaisesRegex(RecipeError, message):
+                self.parse(doc)
+
+    def test_layers_are_a_capability_refusal(self):
+        doc = self.document()
+        doc["routes"][0]["components"]["dense"] = {"layers": [[0, 2], 4]}
+        with self.assertRaisesRegex(RecipeError, "layers: PL_E_CAPABILITY"):
+            self.parse(doc)
+
+    def test_schema_extensions_cannot_launch_through_the_legacy_adapter(self):
+        doc = self.document()
+        with mock.patch.object(apply, "requirements", side_effect=AssertionError("must refuse before planning")):
+            with self.assertRaisesRegex(RecipeError, "PL_E_CAPABILITY.*schema only"):
+                apply.deploy(self.parse(doc), None, None, None, "0" * 64)
+            doc["match"]["devices"][1].pop("optional")
+            with self.assertRaisesRegex(RecipeError, "PL_E_CAPABILITY.*schema only"):
+                apply.deploy(self.parse(doc), None, None, None, "0" * 64)
+            route = doc["routes"][0]
+            for key in ("assist", "components", "max_rows", "max_sequences"):
+                route.pop(key)
+            with self.assertRaisesRegex(RecipeError, "PL_E_CAPABILITY.*schema only"):
+                apply.deploy(self.parse(doc), None, None, None, "0" * 64)
+            for key in reader.HOST:
+                route["placement"]["anchor"].pop(key)
+            for key, value in (("index", 0), ("pci", "0000:06:00.0"), ("uuid", GPU)):
+                doc["match"]["devices"][1][key] = value
+                with self.assertRaisesRegex(RecipeError, "PL_E_CAPABILITY.*schema only"):
+                    apply.deploy(self.parse(doc), None, None, None, "0" * 64)
+                doc["match"]["devices"][1].pop(key)
+        apply.refuse_unsupported(self.parse(doc))
+
+    def test_all_component_ids_destinations_and_elastic_quotas(self):
+        for ident in reader.COMPONENT_IDS:
+            for destination in sorted(reader.DESTINATIONS | {"anchor", "aux"}):
+                doc = self.document()
+                value = {"device": destination}
+                if ident in reader.ELASTIC_IDS:
+                    value["gib"] = 0.25
+                doc["routes"][0]["components"] = {ident: value}
+                with self.subTest(component=ident, destination=destination):
+                    self.assertEqual(self.parse(doc)["routes"][0]["components"][ident], value)
+
+    def test_tierstream_parser_and_canonical_parity(self):
+        executable = os.environ.get("HYPERLOOM_TS_RECIPE") or shutil.which("ts-recipe")
+        if not executable:
+            self.skipTest("set HYPERLOOM_TS_RECIPE to a placement-capable Tierstream CLI for CPU parity")
+        with tempfile.TemporaryDirectory(prefix="hl-schema-") as tmp:
+            path = Path(tmp) / "recipe.json"
+
+            def validate(doc):
+                path.write_text(json.dumps(doc), encoding="utf-8")
+                return subprocess.run([executable, "validate", str(path)], capture_output=True, text=True, timeout=30)
+
+            docs = [self.document(), reader.load_text(DS), reader.load_text(MM)]
+            selectors = self.document()
+            selectors["match"]["devices"][1].update(uuid=GPU, pci="0000:06:00.0", index=1)
+            docs.append(selectors)
+            for ident in reader.COMPONENT_IDS:
+                doc = self.document()
+                value = {"device": "auto"}
+                if ident in reader.ELASTIC_IDS:
+                    value["gib"] = 0.25
+                doc["routes"][0]["components"] = {ident: value}
+                docs.append(doc)
+            for doc in docs:
+                result = validate(doc)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                canonical = json.loads(result.stdout)
+                # Re-read the authoritative canonical form into Hyperloom's established normalized shape.
+                left, right = self.parse(doc), self.parse(canonical)
+                left.pop("_written")
+                right.pop("_written")
+                self.assertEqual(left, right)
+                again = validate(canonical)
+                self.assertEqual(again.returncode, 0, again.stderr)
+                self.assertEqual(again.stdout, result.stdout)
+            for name, doc, message in self.rejection_cases():
+                with self.subTest(name=name):
+                    result = validate(doc)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertIn(message, result.stderr)
 
 
 def profile_text(recipe_sha=None, set_lines=('"limits.host_free_ram_floor_gib" = 4',)):
@@ -340,7 +571,7 @@ class ApplyTests(unittest.TestCase):
             self.deploy(local)
 
     def test_local_prefill_field_rules(self):
-        # R3 (design-r14 v3, Sol-10): one rule per field for a prefill route run by the decode processes.
+        # R3 (design-r14 v3): one rule per field for a prefill route run by the decode processes.
         prefill = 'max_context_tokens = 32768\nmax_batch = 1\nchunk_tokens = 4096\n'
         self.assertIn(prefill, PLAIN)
         self.deploy(PLAIN)                                                                  # equal to the engine facts
@@ -916,7 +1147,7 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual([r["rank"] for r in rows], [0, 1])
         self.assertTrue(all(r["argv"][-1] == "--describe-capabilities-json" and facts.IDENTITY_KEY in r["argv"]
                             for r in rows))
-        # Sol-11 #1: `up` sets another release id and its own key paths; the final render has the same identity.
+        # Review #1: `up` sets another release id and its own key paths; the final render has the same identity.
         final = deepcopy(cluster)
         final.profiles["ds41-rtx"]["release_id"] = "abcdef012345"
         final.profiles["ds41-rtx"]["api_key_files"] = {m: f"/opt/hl/secrets/{m}-new.key" for m in ("halo-1", "halo-2")}
@@ -937,7 +1168,7 @@ class LaunchTests(unittest.TestCase):
         self.assertNotEqual(rows[0]["launch_sha256"], replaced[0]["launch_sha256"])
 
     def test_router_follows_the_release_auth(self):
-        # Sol-11 #2: a key-enabled MiniMax release is reached over the LAN with its key, from either router placement.
+        # Review #2: a key-enabled MiniMax release is reached over the LAN with its key, from either router placement.
         from tests import test_rtx
         from hyperloom import engines, render
         from hyperloom.config import parse
@@ -970,7 +1201,7 @@ class LaunchTests(unittest.TestCase):
                             self.assertNotIn("api_key_file", replica)
 
     def test_saved_declarations_and_the_final_launch_are_rechecked(self):
-        # Sol-11 #3: a saved runtime row for another launch is a refusal reason, not a pass.
+        # Review #3: a saved runtime row for another launch is a refusal reason, not a pass.
         from tests import test_rtx
         from hyperloom import render
         from hyperloom.config import parse
@@ -982,7 +1213,7 @@ class LaunchTests(unittest.TestCase):
         out = facts.current_runtime(cluster, context, rows)
         self.assertEqual(out["halo-1"]["gib"], 7.6)
         self.assertIn("for another launch", out["halo-2"]["why"])
-        # Sol-11 #1: up refuses a final render that is not the checked launch (before any lease).
+        # Review #1: up refuses a final render that is not the checked launch (before any lease).
         launch_obj = mock.Mock()
         launch_obj.evaluation.context.limits = {"node_runtime": {m: {"gib": 7.6, "launch_sha256": s,
                                                                      "executable_sha256": "e" * 64}
@@ -1326,7 +1557,7 @@ LAB = {"deepseek-v4.1-flash": dict(topology="pair", caps=("import-state-parked",
 
 
 class LabExampleTests(unittest.TestCase):
-    """The deployable lab examples stay refused until their contracts and measurements exist (design-r14 v3, Sol-10):
+    """The deployable lab examples stay refused until their contracts and measurements exist (design-r14 v3):
     each refusal is pinned here; no fixture is edited to reach "admitted"."""
 
     def deploy(self, name, nodes_free=124.0):
@@ -1419,7 +1650,7 @@ class ConformanceTests(unittest.TestCase):
         if routes is None:
             self.skipTest("TensorMeld without prefill_routes (set HYPERLOOM_TM_SRC to a src dir that has it)")
         resolved, bound, decision, sha = self.prepare(core.StubBackend())
-        # The PRO route plans a file tier: its member needs disk_available too (Sol-6 #2).
+        # The PRO route plans a file tier: its member needs disk_available too (review #2).
         decision["requirements"] = apply.with_disk(decision["requirements"], {"prefill_long"}, "rtx", GIB_BYTES, sha)
         table = routes.RouteTable.parse(apply.route_table(resolved.to_json(), resolved.file_sha256, bound, decision,
                                                           "s.json", ctx()))

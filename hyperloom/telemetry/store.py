@@ -66,8 +66,14 @@ def _finite(value):
 
 
 class Store:
-    def __init__(self, path=":memory:", clock=time.time):
+    def __init__(self, path=":memory:", clock=time.time, *, readonly=False):
         self.path = str(path)
+        if readonly:
+            self.clock = clock
+            self._lock = threading.RLock()
+            self._db = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True,
+                                       check_same_thread=False, isolation_level=None, timeout=1)
+            return  # Passive preference readers never create, migrate or modify a store.
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self.clock = clock

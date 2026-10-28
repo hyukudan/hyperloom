@@ -1,5 +1,5 @@
 {
-  "halo-1": {
+  "<node-1>": {
     "doctor": {
       "schema": "hyperloom/node-v1",
       "checks": {
@@ -52,7 +52,7 @@
             "status": "ok",
             "value": {
               "0-2.0/data0": {
-                "device": "/dev/tbstream0",
+                "device": "<posix>/dev/tbstream0",
                 "config": {
                   "gpu_direct": 0
                 },
@@ -60,7 +60,7 @@
                 "attached": true
               },
               "0-2.0/data1": {
-                "device": "/dev/tbstream1",
+                "device": "<posix>/dev/tbstream1",
                 "config": {
                   "gpu_direct": 0
                 },
@@ -68,7 +68,7 @@
                 "attached": true
               },
               "1-2.0/data0": {
-                "device": "/dev/tbstream2",
+                "device": "<posix>/dev/tbstream2",
                 "config": {
                   "gpu_direct": 0
                 },
@@ -76,7 +76,7 @@
                 "attached": true
               },
               "1-2.0/data1": {
-                "device": "/dev/tbstream3",
+                "device": "<posix>/dev/tbstream3",
                 "config": {
                   "gpu_direct": 0
                 },
@@ -85,7 +85,7 @@
               },
               "version": 2,
               "topology": {
-                "host": "halo-1",
+                "host": "<node-1>",
                 "cables_total": 2,
                 "cables_up": 2,
                 "cables": [
@@ -93,7 +93,7 @@
                     "id": "A",
                     "state": "up",
                     "remote": {
-                      "device_name": "halo-2"
+                      "device_name": "<node-2>"
                     },
                     "link": {
                       "gbps": 40,
@@ -109,7 +109,7 @@
                     "id": "B",
                     "state": "up",
                     "remote": {
-                      "device_name": "halo-2"
+                      "device_name": "<node-2>"
                     },
                     "link": {
                       "gbps": 40,
@@ -130,7 +130,7 @@
             "status": "ok",
             "value": {
               "0-2.0/data0": {
-                "device": "/dev/tbstream0",
+                "device": "<posix>/dev/tbstream0",
                 "config": {
                   "gpu_direct": 0
                 },
@@ -138,7 +138,7 @@
                 "attached": true
               },
               "0-2.0/data1": {
-                "device": "/dev/tbstream1",
+                "device": "<posix>/dev/tbstream1",
                 "config": {
                   "gpu_direct": 0
                 },
@@ -146,7 +146,7 @@
                 "attached": true
               },
               "1-2.0/data0": {
-                "device": "/dev/tbstream2",
+                "device": "<posix>/dev/tbstream2",
                 "config": {
                   "gpu_direct": 0
                 },
@@ -154,7 +154,7 @@
                 "attached": true
               },
               "1-2.0/data1": {
-                "device": "/dev/tbstream3",
+                "device": "<posix>/dev/tbstream3",
                 "config": {
                   "gpu_direct": 0
                 },
@@ -163,7 +163,7 @@
               },
               "version": 2,
               "topology": {
-                "host": "halo-1",
+                "host": "<node-1>",
                 "cables_total": 2,
                 "cables_up": 2,
                 "cables": [
@@ -171,7 +171,7 @@
                     "id": "A",
                     "state": "up",
                     "remote": {
-                      "device_name": "halo-2"
+                      "device_name": "<node-2>"
                     },
                     "link": {
                       "gbps": 40,
@@ -187,7 +187,7 @@
                     "id": "B",
                     "state": "up",
                     "remote": {
-                      "device_name": "halo-2"
+                      "device_name": "<node-2>"
                     },
                     "link": {
                       "gbps": 40,
@@ -277,7 +277,7 @@
       }
     }
   },
-  "halo-2": {
+  "<node-2>": {
     "doctor": {
       "schema": "hyperloom/node-v1",
       "checks": {
@@ -330,7 +330,7 @@
             "status": "ok",
             "value": {
               "0-2.0/data0": {
-                "device": "/dev/tbstream0",
+                "device": "<posix>/dev/tbstream0",
                 "config": {
                   "gpu_direct": 0
                 },
@@ -338,7 +338,7 @@
                 "attached": true
               },
               "0-2.0/data1": {
-                "device": "/dev/tbstream1",
+                "device": "<posix>/dev/tbstream1",
                 "config": {
                   "gpu_direct": 0
                 },
@@ -346,7 +346,7 @@
                 "attached": true
               },
               "1-2.0/data0": {
-                "device": "/dev/tbstream2",
+                "device": "<posix>/dev/tbstream2",
                 "config": {
                   "gpu_direct": 0
                 },
@@ -354,7 +354,7 @@
                 "attached": true
               },
               "1-2.0/data1": {
-                "device": "/dev/tbstream3",
+                "device": "<posix>/dev/tbstream3",
                 "config": {
                   "gpu_direct": 0
                 },
@@ -363,7 +363,7 @@
               },
               "version": 2,
               "topology": {
-                "host": "halo-2",
+                "host": "<node-2>",
                 "cables_total": 2,
                 "cables_up": 2,
                 "cables": [
@@ -371,7 +371,7 @@
                     "id": "A",
                     "state": "up",
                     "remote": {
-                      "device_name": "halo-1"
+                      "device_name": "<node-1>"
                     },
                     "link": {
                       "gbps": 40,
@@ -387,7 +387,7 @@
                     "id": "B",
                     "state": "up",
                     "remote": {
-                      "device_name": "halo-1"
+                      "device_name": "<node-1>"
                     },
                     "link": {
                       "gbps": 20,
@@ -410,7 +410,7 @@
             "status": "ok",
             "value": {
               "0-2.0/data0": {
-                "device": "/dev/tbstream0",
+                "device": "<posix>/dev/tbstream0",
                 "config": {
                   "gpu_direct": 0
                 },
@@ -418,7 +418,7 @@
                 "attached": true
               },
               "0-2.0/data1": {
-                "device": "/dev/tbstream1",
+                "device": "<posix>/dev/tbstream1",
                 "config": {
                   "gpu_direct": 0
                 },
@@ -426,7 +426,7 @@
                 "attached": true
               },
               "1-2.0/data0": {
-                "device": "/dev/tbstream2",
+                "device": "<posix>/dev/tbstream2",
                 "config": {
                   "gpu_direct": 0
                 },
@@ -434,7 +434,7 @@
                 "attached": true
               },
               "1-2.0/data1": {
-                "device": "/dev/tbstream3",
+                "device": "<posix>/dev/tbstream3",
                 "config": {
                   "gpu_direct": 0
                 },
@@ -443,7 +443,7 @@
               },
               "version": 2,
               "topology": {
-                "host": "halo-2",
+                "host": "<node-2>",
                 "cables_total": 2,
                 "cables_up": 2,
                 "cables": [
@@ -451,7 +451,7 @@
                     "id": "A",
                     "state": "up",
                     "remote": {
-                      "device_name": "halo-1"
+                      "device_name": "<node-1>"
                     },
                     "link": {
                       "gbps": 40,
@@ -467,7 +467,7 @@
                     "id": "B",
                     "state": "up",
                     "remote": {
-                      "device_name": "halo-1"
+                      "device_name": "<node-1>"
                     },
                     "link": {
                       "gbps": 20,
