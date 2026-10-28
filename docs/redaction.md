@@ -39,7 +39,7 @@ Each row is a form the rules deliberately leave as described.
 | A kept value (None, a count, a uid:gid) written inside a repr of JSON is hidden, and so is the closing quote after it; in one more layer of encoding it stays hidden | `'{"m": "api_key=None"}'` | `api_key=[redacted]}'` |
 | The portal shows a password given to sshpass after its command's own options, as its base did (the node hides it, as its base did) | `sshpass ssh -p S3cret` | unchanged on the portal |
 | In text, only the first password glued to `-p` in a mysql command is hidden (an argument list hides each) | `mysql -pA1 -pB2` | `mysql -p[redacted] -pB2` |
-| `--user` followed by a value that starts with `-` is read as an option, not a value, in text and argument lists (as in 2a7c803) | `wget --user -alice:x` | unchanged |
+| `--user` followed by a value that starts with `-` is read as an option, not a value (as in 2a7c803): in text for tools other than curl (`curl --user -alice:x` is hidden), and in argument lists | `wget --user -alice:x`, `["curl", "--user", "-alice:x"]` | unchanged |
 
 ## Hidden by a path's base replay
 

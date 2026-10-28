@@ -644,9 +644,18 @@ class SharedRulesTests(unittest.TestCase):
 
     def test_the_node_rules_compile_on_python_3_10(self):
         # The node runs on Python 3.10+: no pattern may use an atomic group or a possessive repeat (3.11+), found
-        # by parsing each pattern as re compiles it.
-        import re._parser as parser   # 3.11+: names the opcodes these constructs parse to
-        forbidden = {parser.ATOMIC_GROUP, parser.POSSESSIVE_REPEAT}
+        # by parsing each pattern as re compiles it. 3.11+ parses them to their own opcodes; 3.10 refuses them.
+        try:
+            import re._parser as parser
+        except ImportError:             # Python 3.10
+            import sre_parse as parser
+        forbidden = {getattr(parser, name) for name in ("ATOMIC_GROUP", "POSSESSIVE_REPEAT") if hasattr(parser, name)}
+
+        def uses_311_syntax(source, flags=0):
+            try:
+                return bool(forbidden & set(opcodes(parser.parse(source, flags))))
+            except re.error:
+                return True
 
         def opcodes(parsed):
             for op, arg in parsed:
@@ -667,10 +676,10 @@ class SharedRulesTests(unittest.TestCase):
         self.assertGreater(len(found), 40)
         for pattern in found:
             with self.subTest(pattern=pattern.pattern[:60]):
-                self.assertFalse(forbidden & set(opcodes(parser.parse(pattern.pattern, pattern.flags))))
+                self.assertFalse(uses_311_syntax(pattern.pattern, pattern.flags))
         # The check sees either construct, nested too.
-        self.assertTrue(forbidden & set(opcodes(parser.parse(r"(?>a+)b"))))
-        self.assertTrue(forbidden & set(opcodes(parser.parse(r"(x(?=(a++))|y)"))))
+        self.assertTrue(uses_311_syntax(r"(?>a+)b"))
+        self.assertTrue(uses_311_syntax(r"(x(?=(a++))|y)"))
 
     def assert_linear(self, name, unit, run):
         timings = []

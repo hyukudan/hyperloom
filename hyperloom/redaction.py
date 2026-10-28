@@ -31,7 +31,7 @@ Known limits (also in docs/redaction.md, with the follow-ups and the text each p
     a kept value inside a repr of JSON (and deeper)            '{"m": "api_key=None"}'         [redacted]}'
     the portal shows sshpass's -p after its command's options  sshpass ssh -p S3cret           unchanged (node: hidden)
     in text, a second glued mysql -p shows                     mysql -pA1 -pB2                 -p[redacted] -pB2
-    --user with a value that starts with - (text, argv)        wget --user -alice:x            unchanged
+    --user value starting with - (not curl in text; argv)      wget --user -alice:x            unchanged
 """
 
 import re
