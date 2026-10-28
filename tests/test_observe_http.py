@@ -6,6 +6,7 @@ import socket
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 from hyperloom.web.features import observe
 
@@ -76,6 +77,39 @@ class HttpTests(unittest.TestCase):
             self.assertIn("Connection: close\r\n", request)
         finally:
             server.close()
+
+    def test_observe_interfaces_remain_get_only(self):
+        for reader in (observe.http_get, observe._http):
+            server = Server(fixed(200, b'{"a": 1}'))
+            try:
+                headers = {"Authorization": "Bearer k"}
+                self.assertEqual(reader(server.url(), headers, False, time.monotonic() + 1), {"a": 1})
+                request = server.requests[0]
+                self.assertTrue(request.startswith(b"GET /x HTTP/1.1\r\n"))
+                self.assertTrue(request.endswith(b"\r\n\r\n"))
+                self.assertNotIn(b"Content-Length", request)
+                self.assertNotIn(b"Content-Type", request)
+                self.assertEqual(headers, {"Authorization": "Bearer k"})
+                with self.assertRaises(TypeError):
+                    reader(server.url(), method="POST", json_body={"op": "delete"})
+                self.assertEqual(len(server.requests), 1)
+            finally:
+                server.close()
+
+    def test_post_transport_callers_are_sessioncache_only(self):
+        import ast
+        from pathlib import Path
+        directory = Path(observe.__file__).parent
+        callers = []
+        for path in directory.glob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call):
+                    name = getattr(node.func, "attr", getattr(node.func, "id", None))
+                    if name == "_bounded_http":
+                        callers.append((path.name, [k.arg for k in node.keywords]))
+        self.assertEqual(sorted(callers), [("observe.py", []),
+                         ("sessioncache.py", ["deadline", "method", "json_body"])])
 
     def test_chunked(self):
         def reply(request, conn):

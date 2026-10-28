@@ -1,0 +1,14 @@
+{
+  "list": {
+    "sessions": [
+      "conversation-A"
+    ],
+    "ok": true
+  },
+  "stats": {
+    "bytes": 76800,
+    "entries": 1,
+    "evictions": 2,
+    "ok": true
+  }
+}

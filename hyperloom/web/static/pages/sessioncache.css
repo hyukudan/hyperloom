@@ -1,0 +1,9 @@
+.sessioncache { display: grid; gap: 16px; min-width: 0; }
+.sessioncache-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px; margin-block: 16px; }
+.sessioncache-strip strong { display: block; margin-top: 6px; }
+.sessioncache meter { width: 100%; accent-color: var(--accent); }
+.sessioncache-scroll { overflow-x: auto; max-width: 100%; }
+.sessioncache table { width: 100%; border-collapse: collapse; }
+.sessioncache th, .sessioncache td { padding: 10px; text-align: left; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.sessioncache caption { text-align: left; padding-block: 10px; }
+@media (max-width: 500px) { .sessioncache-strip { grid-template-columns: 1fr; } .sessioncache table { min-width: 560px; } }

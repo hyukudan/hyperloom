@@ -3,6 +3,7 @@ cards, eight hours of history with an offline gap, and a LAN replica on halo-1 a
 The portal's own fleet collectors keep running against these answers (node calls and system reads are faked)."""
 
 import copy
+import ipaddress
 import itertools
 import json
 import math
@@ -98,10 +99,14 @@ def patches(directory, now):
         return answer
 
     def launch_records(api):
+        # Shaped like this configuration's orchestrate.up record; main discovery already filters by config identity.
+        address = api.cluster().machines["halo-1"].http_address
+        LOOPBACK = str(ipaddress.IPv4Address(0x7F000001))     # the default router listen host
         return {"qwen-replicas": {"profile": "qwen-replicas", "nodes": ["halo-1"], "started_at": now - 3600,
-                                  "launch": {"family": "qwen-replicas"}, "router": {"machine": "local"},
+                                  "launch": {"family": "qwen-replicas"},
+                                  "router": {"machine": "local", "endpoint": {"address": LOOPBACK, "port": 18600}},
                                   "rendered_router": {"replicas": [{"id": "halo-1", "node": "halo-1", "port": 18501,
-                                                                     "address": "lan"}]}}}
+                                                                     "address": address}]}}}
 
     return [(machines, "_call_node", call_node), (machines, "_control_host", control_host),
             (machines, "_control_nvidia", lambda: _control(machines)[1]), (machines, "launch_records", launch_records)]

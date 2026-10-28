@@ -2058,6 +2058,12 @@ class API:
                 job.update(update, finished_at=self.clock(), progress="finished")
                 if self._active == jid:
                     self._active = None
+            if update["state"] == "succeeded" and action in ("up", "recipes/deploy"):
+                from hyperloom.web.features import launch
+                try:
+                    launch.record_ready(self, job, result, job["finished_at"])
+                except Exception:
+                    pass        # historical estimates must never fail a successful launch
             with self._poll_lock:
                 self._expires = 0
                 self._status_stale = True

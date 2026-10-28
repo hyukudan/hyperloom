@@ -1,0 +1,33 @@
+{
+  "list": {
+    "sessions": [
+      {
+        "id": "conversation-A",
+        "parked": true,
+        "disk": true
+      },
+      {
+        "id": "ram-only",
+        "parked": true,
+        "disk": false
+      },
+      {
+        "id": "disk-only",
+        "parked": false,
+        "disk": true
+      }
+    ]
+  },
+  "stats": {
+    "ram_bytes": 1048576,
+    "ram_budget": 8388608,
+    "tombstone_bytes": 258,
+    "tombstones": 1,
+    "disk_fallback_disabled": false,
+    "parked": 2,
+    "max_parked": 8,
+    "evicted": 3,
+    "hits": 5,
+    "misses": 7
+  }
+}

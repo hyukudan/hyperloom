@@ -1,0 +1,7 @@
+.launch-progress { margin-block: 1rem; }
+.launch-progress ol { display: grid; gap: .6rem; padding-inline-start: 1.5rem; }
+.launch-progress li { padding: .4rem; overflow-wrap: anywhere; }
+.launch-progress li[aria-current="step"] { border-inline-start: 3px solid currentColor; }
+.launch-progress li span { margin-inline-start: .6rem; }
+.launch-progress p { margin-block: .3rem; }
+.launch-progress progress { display: block; width: 100%; margin-block: .5rem; }
