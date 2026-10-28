@@ -198,7 +198,7 @@ hyperloom recipe list --model qwen3.8-flash-next
  "result": {
   "recipes": [{
     "id": "qwen3.8-flash-next.lab", "name": "qwen3.8-flash-next-lab", "model": "qwen3.8-flash-next",
-    "source": "builtin", "status": "builtin", "writable": false, "sha256": "ee0f6036...", "error": null,
+    "source": "builtin", "status": "builtin", "writable": false, "sha256": "a8e96c23...", "error": null,
     "description": "Qwen3.8-Flash-Next: two node replicas; prompts >= 1K prefill on the RTX PRO (...)",
     "headline": {"ttft_1k_s": {"value": 1.36, "unit": "s", "basis": "measured", "route": "prefill_rtx", "label": "TTFT"},
                  "ttft_8k_s": {"value": 2.94, "unit": "s", "basis": "measured", "route": "prefill_rtx", "label": "TTFT"},
@@ -371,14 +371,14 @@ needs its router on rank 0, while recipes need the local router).
 
 ```sh
 hyperloom recipe save qwen3.8-flash-next.mine --from mine.toml
-hyperloom recipe save qwen3.8-flash-next.fast --base qwen3.8-flash-next.lab --base-sha256 ee0f6036... \
+hyperloom recipe save qwen3.8-flash-next.fast --base qwen3.8-flash-next.lab --base-sha256 a8e96c23... \
     --set routes.prefill_rtx.when.prompt_tokens_min=2048
 hyperloom recipe delete qwen3.8-flash-next.mine --sha256 <sha256 of the file>
 ```
 
 ```json
 POST recipes/save {"id": "qwen3.8-flash-next.mine", "text": "<TOML or JSON>"}
-POST recipes/save {"id": "qwen3.8-flash-next.fast", "base": "qwen3.8-flash-next.lab", "base_sha256": "ee0f6036...",
+POST recipes/save {"id": "qwen3.8-flash-next.fast", "base": "qwen3.8-flash-next.lab", "base_sha256": "a8e96c23...",
                    "set": ["routes.prefill_rtx.when.prompt_tokens_min=2048"], "name": "qwen-fast"}
 POST recipes/save {"id": "qwen3.8-flash-next.mine", "text": "...", "replace": "<sha256 it had when read>"}
 POST recipes/delete {"id": "qwen3.8-flash-next.mine", "sha256": "<sha256 it had when read>"}
