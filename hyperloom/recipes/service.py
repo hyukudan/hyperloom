@@ -1541,13 +1541,15 @@ def check_layer_document(layer_name, text, recipe_text, recipe_file, backend):
     return recipe
 
 
-def publish_bundle(cluster, recipe_id, recipe_text, layers, *, replace=None):
+def publish_bundle(cluster, recipe_id, recipe_text, layers, *, replace=None, backend=None):
     """Write an import's checked files: under the writers' lock, a catalog recipe with exactly this text is reused
     (nothing written for it), else the recipe is written with save's id/name/CAS checks; a layer [(name, text)] whose
     file already holds exactly that text is kept, any other taken name refuses the import. Every check runs before
     the first write, so a refusal writes nothing. Each file is written atomically; if a write fails part-way (a full
-    disk, a stopped process), what was written is valid on its own, and running the same import again completes it."""
-    from . import reader
+    disk, a stopped process), what was written is valid on its own (the recipe with the bundle's layers on disk, kept
+    ones included, resolves: _publication_order), and running the same import again completes it."""
+    from . import core, reader
+    backend = backend or core.backend(cluster)
     with _transaction(cluster) as root:
         layers_root = _plain_dir(root / "layers")
         data = recipe_text.encode("utf-8")
@@ -1584,6 +1586,8 @@ def publish_bundle(cluster, recipe_id, recipe_text, layers, *, replace=None):
                 taken.append(name)
         if taken:
             raise Conflict(f"layer names already in use: {', '.join(taken)} (remove or rename them first)")
+        pending = _publication_order(recipe_text, recipe_id + suffix, layers, pending, backend,
+                                     recipe_written=present is None)
         out = {"recipe": None, "present": present["id"] if present else None, "layers": [], "kept": kept}
         if present is None:
             target = _publish(root, recipe_id + suffix, data, current)
@@ -1594,6 +1598,44 @@ def publish_bundle(cluster, recipe_id, recipe_text, layers, *, replace=None):
             target = _publish(layers_root, name + (".json" if text.lstrip().startswith("{") else ".toml"), data, None)
             out["layers"].append({"name": target.name, "path": str(target), "sha256": _sha256(data)})
     return out
+
+
+def _publication_order(recipe_text, recipe_file, layers, pending, backend, *, recipe_written):
+    """The order to write the ``pending`` layers in, so that after every write (the recipe's too) the bundle's layers
+    on disk, kept ones included, applied in the bundle's order resolve with the recipe: an import stopped part-way
+    leaves a valid subset. The bundle's order first; a layer whose stage does not resolve waits, and each step writes
+    the first waiting layer whose stage resolves (at most n*(n+1)/2 resolutions for n pending layers). RecipeError
+    naming the layer when none can be written next."""
+    def stage(names):
+        _resolve_text(recipe_text, recipe_file, backend=backend,
+                      extra=[(name + (".json" if text.lstrip().startswith("{") else ".toml"), text)
+                             for name, text in layers if name in names])
+
+    present = {name for name, _ in layers} - {name for name, _ in pending}
+    if recipe_written and present:
+        try:
+            stage(present)
+        except RecipeError as exc:
+            raise RecipeError(f"bundle: the recipe with the layers already present ({', '.join(sorted(present))}) "
+                              f"does not resolve, so writing it would leave an invalid subset: {exc}") from exc
+    order, waiting = [], list(pending)
+    while waiting:
+        refusals = []
+        for index, (name, _) in enumerate(waiting):
+            try:
+                stage(present | {name})
+            except RecipeError as exc:
+                refusals.append((name, exc))
+                continue
+            present.add(name)
+            order.append(waiting.pop(index))
+            break
+        else:
+            name, exc = refusals[0]
+            raise RecipeError(f"bundle layer {name}: no write order keeps every installed subset valid (with "
+                              f"{', '.join(sorted(present)) or 'no other layer'} it does not resolve: {exc}); "
+                              "remove the kept layers it conflicts with, or reorder the bundle")
+    return order
 
 
 def _check_namespace(cluster, recipe_id, name, own):

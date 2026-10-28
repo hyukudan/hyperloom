@@ -156,6 +156,7 @@ def import_(cluster, data, *, recipe_id=None, replace=None):
     for layer in bundle["layers"]:
         service.check_layer_document(layer["name"], layer["text"], recipe["text"], recipe_file, backend)
     out = service.publish_bundle(cluster, recipe_id, recipe["text"],
-                                 [(layer["name"], layer["text"]) for layer in bundle["layers"]], replace=replace)
+                                 [(layer["name"], layer["text"]) for layer in bundle["layers"]], replace=replace,
+                                 backend=backend)
     out.update(reader=backend.label)
     return out

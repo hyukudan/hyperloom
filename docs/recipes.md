@@ -58,7 +58,9 @@ renamed.
   for example) is not copied; a layer file that already holds the same text is kept. A replacement keeps the
   recipe's format (TOML stays TOML, JSON stays JSON). Export checks the same bytes it bundles, as import would:
   a layer of another version of the recipe, a tuning profile or a file name that is not a recipe id is refused. Each file is written atomically:
-  if an import stops part-way, what it wrote is valid, and running the same import again completes it.
+  if an import stops part-way, what it wrote is valid (the layers are written in an order in which the recipe with
+  the bundle's layers on disk, kept ones included, resolves after every write; an import with no such order is
+  refused), and running the same import again completes it.
 
 - **validate** checks the recipe and its layers, and with a profile also the hardware match and what `up` would
   decide. It exits with 1 and lists every reason when something is refused.

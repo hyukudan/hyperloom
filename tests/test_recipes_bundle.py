@@ -14,6 +14,9 @@ from tests.test_recipes_service import QWEN, run_cli, user_ds
 
 FLOOR = [("limits.host_free_ram_floor_gib", 8.0)]
 FLOOR2 = [("limits.host_free_ram_floor_gib", 9.0)]
+MEMORY = "match.devices.rtx.memory_min_gib"                          # 90 in ds-user
+BUDGET = "routes.prefill_long.placement.rtx.device_gib"              # 88, at most the memory
+WORKSPACE = "routes.prefill_long.placement.rtx.workspace_gib"        # unset, below the budget
 
 
 def data(document):
@@ -134,6 +137,84 @@ class BundleTests(unittest.TestCase):
             self.assertEqual(result["kept"], ["floor.json"])
             self.assertEqual([r["name"] for r in result["layers"]], ["floor2.json"])
             self.assertEqual(files(service.layers_dir()), ["floor.json", "floor2.json"])
+
+    def test_every_installed_subset_resolves_with_kept_layers(self):
+        # Bundle order a, c, b: a lowers the device memory to 89, c raises it to 100, b's budget is 90. With b kept,
+        # writing a first would leave a, b installed (90 exceeds 89): c is written first, and an import stopped after
+        # one layer leaves c, b, which resolves.
+        from hyperloom.recipes import core, session
+        changes = [("a", [(MEMORY, 89.0)]), ("c", [(MEMORY, 100.0)]), ("b", [(BUDGET, 90.0)])]
+        for mode in ("reuse", "new"):
+            with self.subTest(mode=mode), isolated() as env:
+                cluster = orchestrate.load_cluster(env.config)
+                path = user_ds()
+                for name, sets in changes:
+                    service.save_layer(cluster, name, "ds-user", sets=sets)
+                shared = bundle.export(cluster, "ds-user", ["a.json", "c.json", "b.json"])
+                for name in ("a.json", "c.json"):
+                    (service.layers_dir() / name).unlink()
+                if mode == "new":
+                    path.unlink()
+                publish, written = service._publish, []
+
+                def failing(root, name, data_, current):
+                    if root.name == "layers" and written:
+                        raise OSError(28, "No space left on device")
+                    if root.name == "layers":
+                        written.append(name)
+                    return publish(root, name, data_, current)
+                with mock.patch.object(service, "_publish", side_effect=failing):
+                    with self.assertRaises(OSError):
+                        bundle.import_(cluster, data(shared))
+                self.assertEqual(written, ["c.json"])
+                self.assertEqual(files(service.layers_dir()), ["b.json", "c.json"])
+                installed = [service.layers_dir() / name for name in ("c.json", "b.json")]      # the bundle's order
+                session.resolve(path, session.Layers(overrides=installed), backend=core.backend(cluster))
+                result = bundle.import_(cluster, data(shared))
+                self.assertEqual(result["kept"], ["c.json", "b.json"])
+                self.assertEqual([r["name"] for r in result["layers"]], ["a.json"])
+
+    def test_an_import_with_no_valid_write_order_writes_nothing(self):
+        # Bundle order k1, a1, a2, k2, every prefix resolves (a layer is checked on top of the ones before it); with
+        # k1 and k2 kept, a1 next leaves device_gib 84 above memory 83 and a2 next leaves workspace 85 not below 84.
+        changes = [("k1", [(WORKSPACE, 85.0)]), ("a1", [(WORKSPACE, 80.0), (MEMORY, 83.0), (BUDGET, 82.0)]),
+                   ("a2", [(MEMORY, 90.0)]), ("k2", [(BUDGET, 84.0)])]
+        with isolated() as env:
+            cluster = orchestrate.load_cluster(env.config)
+            path = user_ds()
+            for name, sets in changes:
+                service.save_layer(cluster, name, "ds-user", sets=sets)
+            shared = bundle.export(cluster, "ds-user", ["k1.json", "a1.json", "a2.json", "k2.json"])
+            for name in ("a1.json", "a2.json"):
+                (service.layers_dir() / name).unlink()
+            before = path.read_bytes()
+            with self.assertRaisesRegex(RecipeError, "bundle layer a1: no write order"):
+                bundle.import_(cluster, data(shared))
+            self.assertEqual(path.read_bytes(), before)
+            self.assertEqual(files(service.layers_dir()), ["k1.json", "k2.json"])
+
+    def test_a_new_recipe_is_not_written_beside_kept_layers_it_does_not_resolve_with(self):
+        # Bundle order k1, a, k2: k1 (workspace 85) and k2 (device_gib 84) resolve with a (workspace 80) between
+        # them, not without it. Writing the recipe first would leave k1, k2 installed: refused before any write. A
+        # catalog recipe with that text is reused instead (nothing written for it) and only a is written.
+        changes = [("k1", [(WORKSPACE, 85.0)]), ("a", [(WORKSPACE, 80.0)]), ("k2", [(BUDGET, 84.0)])]
+        with isolated() as env:
+            cluster = orchestrate.load_cluster(env.config)
+            path = user_ds()
+            for name, sets in changes:
+                service.save_layer(cluster, name, "ds-user", sets=sets)
+            shared = bundle.export(cluster, "ds-user", ["k1.json", "a.json", "k2.json"])
+            (service.layers_dir() / "a.json").unlink()
+            text = path.read_bytes()
+            path.unlink()
+            with self.assertRaisesRegex(RecipeError, r"layers already present \(k1, k2\) does not resolve"):
+                bundle.import_(cluster, data(shared))
+            self.assertFalse(path.exists())
+            self.assertEqual(files(service.layers_dir()), ["k1.json", "k2.json"])
+            path.write_bytes(text)
+            result = bundle.import_(cluster, data(shared))
+            self.assertEqual(result["present"], "ds-user")
+            self.assertEqual([r["name"] for r in result["layers"]], ["a.json"])
 
     def test_a_replacement_never_changes_the_format(self):
         # TOML replaced by JSON (or back) would need two file operations; it is refused before any write.
