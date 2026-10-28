@@ -13,11 +13,12 @@ from pathlib import Path
 import random
 import re
 import unittest
+from unittest import mock
 
 from hyperloom import redaction
 from hyperloom.web.api import redact
-from tests.redaction_corpus_metric import (Rules, argv_hidden, hides_more, merged, render, secret_positions, shows,
-                                             substitution_hidden)
+from tests.redaction_corpus_metric import (Rules, UnknownTransformation, argv_hidden, hides_more, merged, render,
+                                             secret_positions, shows, substitution_hidden)
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURE = ROOT / "tests" / "fixtures" / "redaction"
@@ -36,6 +37,31 @@ previous = load(FIXTURE / "rules_65f2fe5.py", "redaction_rules_65f2fe5")
 HEAD = Rules(lambda text: merged(redaction._hidden(text, 0, redaction.BASE_PORTAL_RULES)),
              lambda text: merged(node._hidden(text, 0, node.BASE_NODE_RULES)),
              lambda value, text: redact(value, text=text))
+
+
+def head_without(names):
+    """The head with the changes an allowlist reason names turned off ("decoded": no decoded layers, "base replay":
+    no replay on either path, any other: that pass), to check that they are what makes the difference."""
+    replay = "base replay" not in names
+
+    def off(module):
+        return (mock.patch.object(module, "_PASSES", tuple(p for p in module._PASSES if p[0] not in names)),
+                mock.patch.object(module, "_LAYERS", 0 if "decoded" in names else module._LAYERS),
+                mock.patch.object(redaction, "BASE_ARGV_OPTIONS", redaction.BASE_ARGV_OPTIONS if replay else ()))
+
+    def run(module, call):
+        patches = off(module)
+        with patches[0], patches[1], patches[2]:
+            return call()
+
+    def text_rules(module, rules):
+        return lambda text: run(module, lambda: merged(module._hidden(text, 0, rules if replay else None)))
+
+    def argv(value, text):
+        each = (lambda item: redaction.redact_text(item, redaction.BASE_PORTAL_RULES if replay else None)
+                if isinstance(item, str) else item) if text else (lambda item: item)
+        return run(redaction, lambda: redaction.redact_argv(value, each))
+    return Rules(text_rules(redaction, redaction.BASE_PORTAL_RULES), text_rules(node, node.BASE_NODE_RULES), argv)
 PREVIOUS = Rules(lambda text: merged(previous.hidden_spans(text)), lambda text: merged(previous.hidden_spans(text)),
                  lambda value, text: previous.portal_redact(value, text=text))
 BASE = Rules(lambda text: substitution_hidden(base.PORTAL_TEXT_PATTERNS, text),
@@ -53,7 +79,7 @@ class CorpusTests(unittest.TestCase):
         allow = json.loads((FIXTURE / "allowlist.json").read_text(encoding="utf-8"))
         corpus = load_corpus()
         self.assertGreater(len(corpus), 3000)
-        leaks, extra, stale, unfaithful = [], [], [], []
+        leaks, extra, stale, unfaithful, unexplained = [], [], [], [], []
         for entry in corpus:
             new, was, first = HEAD.hidden(entry), PREVIOUS.hidden(entry), BASE.hidden(entry)
             if entry["kind"] == "text":       # the spans measured are what the public functions hide
@@ -73,10 +99,31 @@ class CorpusTests(unittest.TestCase):
                     extra.append((path, entry["id"], entry["input"]))
                 elif reason is not None and not more:
                     stale.append((path, entry["id"], reason))
+                elif reason is not None and "base replay" in reason.split(" + "):
+                    # The changes the reason names are the cause: with them off (the replay alone for "base
+                    # replay"), the head hides no more than 65f2fe5 on that path.
+                    if hides_more(entry, head_without(reason.split(" + ")).hidden(entry)[path], was[path]):
+                        unexplained.append((path, entry["id"], reason))
         self.assertEqual(unfaithful, [])
         self.assertEqual(leaks, [])
         self.assertEqual(extra, [])
         self.assertEqual(stale, [])
+        self.assertEqual(unexplained, [])
+
+    def test_the_metric_rejects_an_argument_list_it_cannot_read(self):
+        # An output that shows a secret in a form the metric does not read is an error, never a hidden item.
+        entry = next(entry for entry in load_corpus() if entry["id"] == 389)
+        self.assertEqual(entry["input"], ["sudo", "-n", "curl", "-u", "alice:Secret"])
+        HEAD.hidden(entry)
+        mutated = Rules(HEAD.portal_text, HEAD.node_text,
+                        lambda value, text: redact(value, text=text)[:-1] + ["[redacted]!alice:Secret"])
+        with self.assertRaises(UnknownTransformation):
+            mutated.hidden(entry)
+        for output in (["sudo", "-n", "curl", "-u"], ["sudo", "-n", "curl", "-u", "alice:[redacted]x"],
+                       ["sudo", "-n", "curl", "-u", "-[redacted]Secret"]):
+            with self.subTest(output=output), self.assertRaises(UnknownTransformation):
+                argv_hidden(entry["input"], output, None)
+        self.assertEqual(argv_hidden(["--user=a:b"], ["--user=[redacted]"], None), {(0, 7), (0, 8), (0, 9)})
 
     def test_the_metric_sees_one_shown_character(self):
         # Any one secret character that the head's spans no longer hide is a leak against the head itself.

@@ -13,30 +13,39 @@ def merged(spans):
     return {at for start, end in spans for at in range(start, end)}
 
 
+class UnknownTransformation(ValueError):
+    """An argument-list output that is none of the forms the metric reads; it is never counted as hiding."""
+
+
 def argv_hidden(value, output, text_hidden):
     """The positions an argument-list redaction hid: a whole item, the value glued to an option ('--user=[redacted]',
-    "'--api-key=[redacted]'", -u[redacted]) or what the text rules hid in an item (text_hidden(item), or None)."""
+    "'--api-key=[redacted]'", -u[redacted]) or what the text rules hid in an item (text_hidden(item), or None).
+    Every item's positions must render to its actual output; anything else raises UnknownTransformation."""
+    if not isinstance(output, (list, tuple)) or len(output) != len(value):
+        raise UnknownTransformation((value, output))
     positions = set()
     for index, item in enumerate(value):
+        shown = output[index]
         if not isinstance(item, str):
+            if shown != item and shown != REDACTED:
+                raise UnknownTransformation((index, item, shown))
             continue
-        shown = output[index] if index < len(output) else ""
         if shown == item:
             continue
+        own = None
         if shown == REDACTED:
-            positions |= {(index, at) for at in range(len(item))}
-            continue
-        if text_hidden is not None:
-            own = text_hidden(item)
-            if render(item, own) == shown:          # what the text rules hid in the item
-                positions |= {(index, at) for at in own}
-                continue
-        cut = shown.find(REDACTED)               # a value glued to an option: prefix [redacted] suffix
-        prefix, suffix = shown[:cut], shown[cut + len(REDACTED):]
-        if cut != -1 and item.startswith(prefix) and item.endswith(suffix) and len(prefix) + len(suffix) <= len(item):
-            positions |= {(index, at) for at in range(len(prefix), len(item) - len(suffix))}
+            own = set(range(len(item)))
+        elif text_hidden is not None and render(item, text_hidden(item)) == shown:
+            own = text_hidden(item)                 # what the text rules hid in the item
         else:
-            positions |= {(index, at) for at in range(len(item))}
+            cut = shown.find(REDACTED)              # a value glued to an option: prefix [redacted] suffix
+            prefix, suffix = shown[:cut], shown[cut + len(REDACTED):]
+            if cut != -1 and item.startswith(prefix) and item.endswith(suffix) and \
+                    len(prefix) + len(suffix) < len(item):
+                own = set(range(len(prefix), len(item) - len(suffix)))
+        if own is None or render(item, own) != shown and not (item == "" and shown == REDACTED):
+            raise UnknownTransformation((index, item, shown))
+        positions |= {(index, at) for at in own}
     return positions
 
 

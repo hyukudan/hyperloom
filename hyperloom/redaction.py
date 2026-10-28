@@ -19,7 +19,7 @@ Known limits (also in docs/redaction.md, with the follow-ups and the text each p
 
     limit                                                      example                         result
     the node reads one line: a continued command is split      curl https://x \\ / -u a:pw     a:pw shown
-    a token option keeps a number (argument list)              ["--hf-token", "123456789012"]  unchanged
+    a token option keeps a number (argument list, portal text) --hf-token 123456789012         unchanged (node: hidden)
     --user name:group is hidden like name:password             docker run --user root:root     [redacted]
     an argument list that mentions mysql hides a glued -p      ["echo", "mysql", "-pretty"]    -p[redacted]
     bare hf_ / GitHub words: 30+ characters or "secret"        hf_hub_download                 unchanged
@@ -30,6 +30,8 @@ Known limits (also in docs/redaction.md, with the follow-ups and the text each p
     a shell-escaped blank joins the next command               sshpass -p=a\\ {sshpass -p 'x"y' 'x"y' shown
     a kept value inside a repr of JSON (and deeper)            '{"m": "api_key=None"}'         [redacted]}'
     the portal shows sshpass's -p after its command's options  sshpass ssh -p S3cret           unchanged (node: hidden)
+    in text, a second glued mysql -p shows                     mysql -pA1 -pB2                 -p[redacted] -pB2
+    --user with a value that starts with - (text, argv)        wget --user -alice:x            unchanged
 """
 
 import re
@@ -468,19 +470,23 @@ def _pass_spans(text, strings, patterns=None, shorter_read=False):
 # credential word (hf_tokencurl t).
 _ENV_UPPER = (r"(?:(?=[A-Z0-9_]*?(?P<cred>KEY|SECRET|PASS|PWD|CREDENTIALS?|AUTH))|(?=[A-Z0-9_]*?TOKEN(?!IZ)))"
               r"[A-Z0-9]+(?:_[A-Z0-9]+)*")
+# A snake-case name whose last part holds the credential word (%s: what may follow the word in that part). The
+# name is the whole run of name characters before the blank that must follow it, so it is matched once: one
+# lookahead checks its parts, the last _ is found once, and the word is searched for in the last part only.
 _ENV_LOWER = (r"(?P<lower>(?i:(?:(?=[a-z0-9_]*?(?P<cred2>key|secret|pass|pwd|credentials?|auth))"
               r"|(?=[a-z0-9_]*?token(?!iz)))"
-              r"[a-z0-9]+(?:_[a-z0-9]+)*_[a-z0-9]*(?:key|secret|token|pass(?:wd|word)?|pwd|credentials?|auth)%s))")
+              r"(?=[a-z0-9]+(?:_[a-z0-9]+)+(?![a-z0-9_]))(?=(?P<head>[a-z0-9_]*_))(?P=head)"
+              r"(?=[a-z0-9]*?(?:key|secret|token|pass|pwd|credential|auth)%s)[a-z0-9]+))")
 _PASSES = (
     ("shorter reading", None, True),
     ("dash value", (
         (re.compile(r"(?i)\b(?:passw(?:or)?d|passwd|passphrase|pwd)\s+(?=--[A-Za-z])" + _START), "", _keep_plain),
-        (re.compile(r"\b(?:" + _ENV_UPPER + "|" + _ENV_LOWER % "[a-z0-9]*" + r")\s+(?=--[A-Za-z])" + _START), "",
+        (re.compile(r"\b(?:" + _ENV_UPPER + "|" + _ENV_LOWER % "" + r")\s+(?=--[A-Za-z])" + _START), "",
          _keep_token_value)), False),
     ("glued scheme", (
         (re.compile(r"(?i)(?<=\w)(?P<bearer>Bearer)\s+" + _START), "", _keep_scheme_value),), False),
     ("glued name", (
-        (re.compile(r"\b(?:" + _ENV_LOWER % "[a-z0-9]+" + r")\s+(?![:=])" + _NOT_OPTION + _START), "",
+        (re.compile(r"\b(?:" + _ENV_LOWER % "[a-z0-9]" + r")\s+(?![:=])" + _NOT_OPTION + _START), "",
          _keep_token_value),), False),
 )
 
@@ -547,23 +553,24 @@ def _decoded(text, start, end):
 # no secret 2a7c803 hid on a path shows on it. The portal's text rules are verbatim. The node's line rules are
 # written to give the same substitutions in linear time (a test checks them against the verbatim ones): a name runs
 # to the end of its run of name characters in every match the base rules made, so it is matched once, from the
-# run's start, without backtracking into it; a line whose first mysql or sshpass word finds no -p value is kept
-# whole (the "keep" alternative), as every later such word on it finds none either. A replacement keeps its groups
-# and the literal after [redacted] (the URL rule's @).
+# run's start, and never given back ((?=(run))\N, as an atomic group would, which Python 3.10 lacks); a line whose
+# first mysql or sshpass word finds no -p value is kept whole (the "keep" alternative), as every later such word on
+# it finds none either. A replacement keeps its groups and the literal after [redacted] (the URL rule's @).
 BASE_NODE_RULES = (
     (re.compile(r"(?i)\b((?:Bearer|Basic|Digest|Token|Negotiate)\s+)[A-Za-z0-9+/=._~:-]+"), r"\1[redacted]"),
-    (re.compile(r"""(?i)(["']?(?<![\w.-])(?>[\w.-]*(?:key|secret|token|pass|pwd|credential|auth)[\w.-]*+)["']?"""
+    (re.compile(r"""(?i)(["']?(?<![\w.-])(?=([\w.-]*(?:key|secret|token|pass|pwd|credential|auth)[\w.-]*))\2["']?"""
                 r"""\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}]+)"""), r"\1[redacted]"),
-    (re.compile(r"(?i)(?<![\w-])((?:\w|-(?!-))*+)(--(?>[\w-]*(?:key|secret|token|passw(?:or)?d|credential)[\w-]*+)"
-                r"(?:\s+|=))(?!\[redacted\])\S+"), r"\1\2[redacted]"),
+    (re.compile(r"(?i)(?<![\w-])((?=((?:\w|-(?!-))*))\2)"
+                r"(--(?=([\w-]*(?:key|secret|token|passw(?:or)?d|credential)[\w-]*))\4(?:\s+|=))(?!\[redacted\])\S+"),
+     r"\1\3[redacted]"),
     (re.compile(r"(?i)\b(passw(?:or)?d|passwd|passphrase|pwd)(\s+)(?!\[redacted\])(?![:=])\S+"), r"\1\2[redacted]"),
-    (re.compile(r"(?i)(?<![a-z0-9+.-])((?>(?=[a-z0-9+.-]*+://)(?:(?<!\w)[a-z]|[a-z0-9+.-]*?[+.-][a-z])"
-                r"[a-z0-9+.-]*+://))[^/\s:@]+:[^/\s@]+@"), r"\1[redacted]@"),
-    (re.compile(r"\b((?=[A-Z0-9_]*?(?:KEY|SECRET|TOKEN|PASS|PWD|CREDENTIALS?|AUTH))[A-Z0-9]++(?:_[A-Z0-9]++)*+"
-                r"|(?i:(?=[a-z0-9_]*?(?:key|secret|token|pass|pwd|credentials?|auth))[a-z0-9]++(?:_[a-z0-9]++)++))"
-                r"(\s+)(?![:=])(?!\[redacted\])\S+"), r"\1\2[redacted]"),
-    (re.compile(r"(?i)\b((?>mysql\w*\b|mariadb[\w-]*\b)[^\n]*?\s-p)(?!\[redacted\])(?=\S)\S+"
-                r"|\b(?P<keep>(?>mysql\w*\b|mariadb[\w-]*\b)[^\n]*)"), r"\1[redacted]"),
+    (re.compile(r"(?i)(?<![a-z0-9+.-])((?=((?=[a-z0-9+.-]*://)(?:(?<!\w)[a-z]|[a-z0-9+.-]*?[+.-][a-z])"
+                r"[a-z0-9+.-]*://))\2)[^/\s:@]+:[^/\s@]+@"), r"\1[redacted]@"),
+    (re.compile(r"\b((?=[A-Z0-9_]*?(?:KEY|SECRET|TOKEN|PASS|PWD|CREDENTIALS?|AUTH))(?=([A-Z0-9]+(?:_[A-Z0-9]+)*))\2"
+                r"|(?i:(?=[a-z0-9_]*?(?:key|secret|token|pass|pwd|credentials?|auth))(?=([a-z0-9]+(?:_[a-z0-9]+)+))\3))"
+                r"(\s+)(?![:=])(?!\[redacted\])\S+"), r"\1\4[redacted]"),
+    (re.compile(r"(?i)\b((?=(mysql\w*\b|mariadb[\w-]*\b))\2[^\n]*?\s-p)(?!\[redacted\])(?=\S)\S+"
+                r"|\b(?P<keep>(?=(mysql\w*\b|mariadb[\w-]*\b))\4[^\n]*)"), r"\1[redacted]"),
     (re.compile(r"(?i)\b(sshpass\b[^\n]*?\s-p\s*)(?!\[redacted\])\S+|\b(?P<keep>sshpass\b[^\n]*)"), r"\1[redacted]"),
 )
 BASE_PORTAL_RULES = (

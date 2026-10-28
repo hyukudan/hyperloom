@@ -631,6 +631,46 @@ class SharedRulesTests(unittest.TestCase):
                     started = time.perf_counter()
                     implementation(line if name != "portal" else line.replace(" ", "\n", 64))
                     self.assertLess(time.perf_counter() - started, 1.0)
+        # Whole lines: a snake-case name whose last part repeats its credential word, before a character that ends
+        # no name, a --value and a value (each was read once per repetition).
+        for line in ("a_" + "pass" * 16383 + "!", "a_" + "pass" * 16383 + " --x", "a_" + "pass" * 16383 + " x",
+                     "A_" + "PASS" * 16383 + " --x"):
+            for name, implementation in (("shared", redaction.redact_text), ("node", node.redact),
+                                         ("portal", redact)):
+                with self.subTest(implementation=name, line=line[-8:]):
+                    started = time.perf_counter()
+                    implementation(line)
+                    self.assertLess(time.perf_counter() - started, 1.0)
+
+    def test_the_node_rules_compile_on_python_3_10(self):
+        # The node runs on Python 3.10+: no pattern may use an atomic group or a possessive repeat (3.11+), found
+        # by parsing each pattern as re compiles it.
+        import re._parser as parser   # 3.11+: names the opcodes these constructs parse to
+        forbidden = {parser.ATOMIC_GROUP, parser.POSSESSIVE_REPEAT}
+
+        def opcodes(parsed):
+            for op, arg in parsed:
+                yield op
+                for item in arg if isinstance(arg, (list, tuple)) else ():
+                    for sub in item if isinstance(item, list) else (item,):
+                        if isinstance(sub, parser.SubPattern):
+                            yield from opcodes(sub)
+
+        def patterns(value, seen):
+            if isinstance(value, re.Pattern):
+                yield value
+            elif isinstance(value, (list, tuple, dict)) and id(value) not in seen:
+                seen.add(id(value))
+                for item in value.values() if isinstance(value, dict) else value:
+                    yield from patterns(item, seen)
+        found = list(patterns([value for value in vars(node).values()], set()))
+        self.assertGreater(len(found), 40)
+        for pattern in found:
+            with self.subTest(pattern=pattern.pattern[:60]):
+                self.assertFalse(forbidden & set(opcodes(parser.parse(pattern.pattern, pattern.flags))))
+        # The check sees either construct, nested too.
+        self.assertTrue(forbidden & set(opcodes(parser.parse(r"(?>a+)b"))))
+        self.assertTrue(forbidden & set(opcodes(parser.parse(r"(x(?=(a++))|y)"))))
 
     def assert_linear(self, name, unit, run):
         timings = []

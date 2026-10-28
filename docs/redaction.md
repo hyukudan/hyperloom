@@ -28,7 +28,7 @@ Each row is a form the rules deliberately leave as described.
 | Limit | Minimal example | Result |
 |---|---|---|
 | The node redacts one log line at a time; a command continued with a backslash is seen without its first line | `curl https://x \` then `  -u a:pw` | the second line shows `a:pw` |
-| A token option keeps a number in an argument list | `["--hf-token", "123456789012"]` | unchanged |
+| A token option keeps a number, in an argument list and in portal text (the node hides it, as its base did) | `--hf-token 123456789012`, `["--hf-token", "123456789012"]` | unchanged |
 | `--user name:group` is hidden like `name:password` | `docker run --user root:root img` | `--user [redacted]` |
 | An argument list that only mentions mysql hides a later glued `-p` value | `["echo", "mysql", "-pretty"]` | `-p[redacted]` |
 | A bare `hf_` or GitHub token word is hidden only with 30+ token characters or when it calls itself a secret | `hf_hub_download` | unchanged |
@@ -38,6 +38,8 @@ Each row is a form the rules deliberately leave as described.
 | A shell-escaped blank joins the next command into a value | `sshpass -p=a\ {sshpass -p 'x"y'` | `'x"y'` shown |
 | A kept value (None, a count, a uid:gid) written inside a repr of JSON is hidden, and so is the closing quote after it; in one more layer of encoding it stays hidden | `'{"m": "api_key=None"}'` | `api_key=[redacted]}'` |
 | The portal shows a password given to sshpass after its command's own options, as its base did (the node hides it, as its base did) | `sshpass ssh -p S3cret` | unchanged on the portal |
+| In text, only the first password glued to `-p` in a mysql command is hidden (an argument list hides each) | `mysql -pA1 -pB2` | `mysql -p[redacted] -pB2` |
+| `--user` followed by a value that starts with `-` is read as an option, not a value, in text and argument lists (as in 2a7c803) | `wget --user -alice:x` | unchanged |
 
 ## Hidden by a path's base replay
 
@@ -86,4 +88,6 @@ inside a longer name) and anything after `Bearer`. The base node did the same.
   (`pad_token: <|endoftext|>`); either needs the base-parity bar relaxed for that form.
 - Keep a prose apostrophe (`it's`) from pairing with a later value's opening quote.
 - Read a shell-escaped blank (`\ `) as part of one word without joining the next command into it.
+- Hide every glued `-p` value of a mysql command in text, not only the first.
+- Tell a `--user` value that starts with `-` (`-alice:x`) from the next option.
 - Keep a kept value's closing quote in a repr of JSON (`'{"m": "api_key=None"}'` keeps `None"}'`).
