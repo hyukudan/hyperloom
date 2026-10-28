@@ -42,3 +42,10 @@ def portal_redact(value, text=True):
         return re.sub(r'''(?ix)((?:["']?(?:api[_-]?key|handoff[_-]?api[_-]?key|password|secret|token)["']?)\s*[:=]\s*|--(?:api-key|handoff-api-key|password|token)\s+)(?:"[^"]*"|'[^']*'|[^\s,;}]+)''',
                       r"\1[redacted]", value)
     return value
+
+
+# The portal's text substitutions above, in order, as (pattern, replacement) pairs (for the corpus metric).
+PORTAL_TEXT_PATTERNS = (
+    (re.compile(r"(?i)(Bearer\s+)\S+"), r"\1[redacted]"),
+    (re.compile(r'''(?ix)((?:["']?(?:api[_-]?key|handoff[_-]?api[_-]?key|password|secret|token)["']?)\s*[:=]\s*|--(?:api-key|handoff-api-key|password|token)\s+)(?:"[^"]*"|'[^']*'|[^\s,;}]+)'''), r"\1[redacted]"),
+)

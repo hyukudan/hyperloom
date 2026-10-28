@@ -579,6 +579,32 @@ def redact_argv(value, each=None):
     return result
 
 
+def hidden_spans(text):
+    """The spans redact_text hides (its own code, up to where it merges them; for the corpus metric)."""
+    strings = _strings(text)
+    found = [*_values(text, strings), *((start, end, None) for start, end in _curl_users(text, strings))]
+    spans = sorted((start, end) for start, end, name in found if name is None or name == -1)
+    union, ends = [], []                # the hidden spans merged, to look a name up in them
+    for start, end in sorted((start, end) for start, end, name in found if name is None):
+        if union and start <= ends[-1]:
+            ends[-1] = max(ends[-1], end)
+        else:
+            union.append(start)
+            ends.append(end)
+    for start, end, name in found:
+        if name is not None and name != -1:
+            low, high = 0, len(union)
+            while low < high:           # the last merged span that starts at or before the name
+                middle = (low + high) // 2
+                if union[middle] <= name:
+                    low = middle + 1
+                else:
+                    high = middle
+            if not (low and name < ends[low - 1]):
+                spans.append((start, end))
+    return spans
+
+
 # The portal and the node tool at 65f2fe5 (for the corpus test).
 def node_redact(line):
     return redact_text(line)

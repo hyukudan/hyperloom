@@ -1,34 +1,34 @@
 {
  "entries": {
-  "1021": {
+  "1011": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "1123": {
+  "1113": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "1352": {
+  "1342": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "1413": {
+  "1403": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "1510": {
+  "1500": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "1573": {
+  "1563": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "1574": {
+  "1564": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "1638": {
+  "1628": {
    "node": "decoded",
    "portal": "decoded"
   },
@@ -45,14 +45,18 @@
    "portal": "dash value"
   },
   "171": {
-   "node": "glued name",
-   "portal": "glued name"
+   "node": "glued name + base parity: an environment-style name",
+   "portal": "glued name + base parity: an environment-style name"
   },
   "173": {
-   "node": "dash value",
-   "portal": "dash value"
+   "node": "dash value + base parity: an environment-style name",
+   "portal": "dash value + base parity: an environment-style name"
   },
-  "1758": {
+  "1748": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1804": {
    "node": "decoded",
    "portal": "decoded"
   },
@@ -60,11 +64,7 @@
    "node": "decoded",
    "portal": "decoded"
   },
-  "1824": {
-   "node": "decoded",
-   "portal": "decoded"
-  },
-  "1837": {
+  "1827": {
    "node": "decoded",
    "portal": "decoded"
   },
@@ -72,175 +72,271 @@
    "node": "decoded",
    "portal": "decoded"
   },
-  "1903": {
+  "1893": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "1949": {
+  "193": {
+   "node": "base parity: a scheme value",
+   "portal": "base parity: a scheme value"
+  },
+  "1939": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "2090": {
+  "2080": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "2128": {
+  "2118": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "2155": {
+  "2145": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "2156": {
+  "2146": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "2202": {
+  "2192": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "2332": {
+  "2322": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "2356": {
+  "2346": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "2420": {
+  "2384": {
+   "node": "base parity: a scheme value",
+   "portal": "base parity: a scheme value"
+  },
+  "2410": {
    "node": "dash value",
    "portal": "dash value"
   },
-  "2567": {
+  "2423": {
+   "node": "base parity: a scheme value",
+   "portal": "base parity: a scheme value"
+  },
+  "2449": {
+   "node": "base parity: a scheme value",
+   "portal": "base parity: a scheme value"
+  },
+  "2490": {
+   "node": "base parity: a scheme value",
+   "portal": "base parity: a scheme value"
+  },
+  "2496": {
+   "node": "base parity: a scheme value",
+   "portal": "base parity: a scheme value"
+  },
+  "2517": {
+   "node": "base parity: a scheme value",
+   "portal": "base parity: a scheme value"
+  },
+  "2557": {
    "node": "glued scheme",
    "portal": "glued scheme"
   },
-  "2576": {
+  "2566": {
    "node": "dash value",
    "portal": "dash value"
   },
-  "2604": {
+  "2581": {
+   "node": "base parity: a scheme value",
+   "portal": "base parity: a scheme value"
+  },
+  "2587": {
+   "node": "base parity: a scheme value",
+   "portal": "base parity: a scheme value"
+  },
+  "2594": {
    "node": "glued scheme",
    "portal": "glued scheme"
   },
-  "2610": {
-   "node": "base parity: a short scheme value",
-   "portal": "base parity: a short scheme value"
+  "2601": {
+   "node": "base parity: an environment-style name",
+   "portal": "base parity: an environment-style name"
   },
-  "2611": {
-   "node": "base parity: password or secret in a snake-case name",
-   "portal": "base parity: password or secret in a snake-case name"
-  },
-  "2630": {
+  "2620": {
    "node": "dash value",
    "portal": "dash value"
   },
-  "2652": {
-   "node": "dash value",
-   "portal": "dash value"
+  "2642": {
+   "node": "dash value + base parity: an environment-style name",
+   "portal": "dash value + base parity: an environment-style name"
   },
-  "2664": {
-   "node": "dash value + base parity: password or secret in a snake-case name",
-   "portal": "dash value + base parity: password or secret in a snake-case name"
+  "2654": {
+   "node": "dash value + base parity: an environment-style name",
+   "portal": "dash value + base parity: an environment-style name"
   },
-  "2694": {
+  "2676": {
+   "node": "base parity: an environment-style name",
+   "portal": "base parity: an environment-style name"
+  },
+  "2684": {
    "node": "glued scheme",
    "portal": "glued scheme"
   },
-  "2696": {
-   "node": "dash value + base parity: password or secret in a snake-case name",
-   "portal": "dash value + base parity: password or secret in a snake-case name"
+  "2686": {
+   "node": "dash value + base parity: an environment-style name",
+   "portal": "dash value + base parity: an environment-style name"
+  },
+  "2733": {
+   "node": "base parity: a scheme value",
+   "portal": "base parity: a scheme value"
+  },
+  "2756": {
+   "node": "dash value + base parity: an environment-style name + base parity: a scheme value",
+   "portal": "dash value + base parity: an environment-style name + base parity: a scheme value"
   },
   "2766": {
-   "node": "dash value + base parity: a short scheme value",
-   "portal": "dash value + base parity: a short scheme value"
+   "node": "base parity: an environment-style name",
+   "portal": "base parity: an environment-style name"
   },
-  "2782": {
+  "2772": {
+   "node": "dash value + base parity: a scheme value",
+   "portal": "dash value + base parity: a scheme value"
+  },
+  "2806": {
+   "node": "base parity: a scheme value",
+   "portal": "base parity: a scheme value"
+  },
+  "2820": {
+   "node": "base parity: a scheme value",
+   "portal": "base parity: a scheme value"
+  },
+  "2822": {
+   "node": "base parity: a scheme value",
+   "portal": "base parity: a scheme value"
+  },
+  "2825": {
+   "node": "dash value + base parity: an environment-style name",
+   "portal": "dash value + base parity: an environment-style name"
+  },
+  "2827": {
+   "node": "base parity: a scheme value",
+   "portal": "base parity: a scheme value"
+  },
+  "2833": {
    "node": "dash value",
    "portal": "dash value"
   },
-  "2816": {
-   "node": "base parity: a short scheme value",
-   "portal": "base parity: a short scheme value"
+  "2834": {
+   "node": "base parity: an environment-style name",
+   "portal": "base parity: an environment-style name"
   },
-  "2830": {
-   "node": "base parity: a short scheme value",
-   "portal": "base parity: a short scheme value"
+  "2845": {
+   "node": "base parity: a scheme value",
+   "portal": "base parity: a scheme value"
   },
-  "2832": {
-   "node": "base parity: a short scheme value",
-   "portal": "base parity: a short scheme value"
+  "2850": {
+   "node": "base parity: an environment-style name",
+   "portal": "base parity: an environment-style name"
   },
-  "2835": {
+  "2881": {
+   "node": "base parity: a scheme value",
+   "portal": "base parity: a scheme value"
+  },
+  "2884": {
    "node": "dash value",
    "portal": "dash value"
   },
-  "2843": {
-   "node": "dash value",
-   "portal": "dash value"
+  "2896": {
+   "node": "dash value + base parity: an environment-style name",
+   "portal": "dash value + base parity: an environment-style name"
   },
-  "2844": {
-   "node": "base parity: password or secret in a snake-case name",
-   "portal": "base parity: password or secret in a snake-case name"
+  "2897": {
+   "node": "base parity: an environment-style name",
+   "portal": "base parity: an environment-style name"
   },
-  "2860": {
-   "node": "base parity: password or secret in a snake-case name",
-   "portal": "base parity: password or secret in a snake-case name"
+  "2902": {
+   "node": "base parity: a scheme value",
+   "portal": "base parity: a scheme value"
   },
-  "2894": {
-   "node": "dash value",
-   "portal": "dash value"
+  "2908": {
+   "node": "dash value + base parity: an environment-style name",
+   "portal": "dash value + base parity: an environment-style name"
   },
-  "2906": {
-   "node": "dash value + base parity: password or secret in a snake-case name",
-   "portal": "dash value + base parity: password or secret in a snake-case name"
+  "2915": {
+   "node": "base parity: a scheme value",
+   "portal": "base parity: a scheme value"
   },
-  "2918": {
-   "node": "dash value + base parity: password or secret in a snake-case name",
-   "portal": "dash value + base parity: password or secret in a snake-case name"
+  "2944": {
+   "node": "glued scheme + base parity: an environment-style name",
+   "portal": "glued scheme + base parity: an environment-style name"
   },
-  "2954": {
+  "3009": {
+   "node": "base parity: a scheme value",
+   "portal": "base parity: a scheme value"
+  },
+  "3015": {
+   "node": "glued name + base parity: an environment-style name",
+   "portal": "glued name + base parity: an environment-style name"
+  },
+  "3018": {
+   "node": "base parity: a scheme value",
+   "portal": "base parity: a scheme value"
+  },
+  "3020": {
+   "node": "dash value + base parity: an environment-style name",
+   "portal": "dash value + base parity: an environment-style name"
+  },
+  "3031": {
+   "node": "base parity: a scheme value",
+   "portal": "base parity: a scheme value"
+  },
+  "3038": {
+   "node": "base parity: a scheme value",
+   "portal": "base parity: a scheme value"
+  },
+  "3042": {
+   "node": "base parity: an environment-style name",
+   "portal": "base parity: an environment-style name"
+  },
+  "3045": {
+   "node": "glued name + base parity: an environment-style name",
+   "portal": "glued name + base parity: an environment-style name"
+  },
+  "3049": {
+   "node": "glued name + base parity: an environment-style name",
+   "portal": "glued name + base parity: an environment-style name"
+  },
+  "3062": {
+   "node": "base parity: an environment-style name",
+   "portal": "base parity: an environment-style name"
+  },
+  "3070": {
+   "node": "glued name + base parity: an environment-style name",
+   "portal": "glued name + base parity: an environment-style name"
+  },
+  "3083": {
    "node": "glued scheme",
    "portal": "glued scheme"
   },
-  "3025": {
-   "node": "glued name",
-   "portal": "glued name"
+  "3114": {
+   "node": "base parity: a scheme value",
+   "portal": "base parity: a scheme value"
   },
-  "3030": {
-   "node": "dash value",
-   "portal": "dash value"
-  },
-  "3041": {
-   "node": "base parity: a short scheme value",
-   "portal": "base parity: a short scheme value"
-  },
-  "3048": {
-   "node": "base parity: a short scheme value",
-   "portal": "base parity: a short scheme value"
-  },
-  "3055": {
-   "node": "glued name + base parity: password or secret in a snake-case name",
-   "portal": "glued name + base parity: password or secret in a snake-case name"
-  },
-  "3059": {
-   "node": "glued name + base parity: password or secret in a snake-case name",
-   "portal": "glued name + base parity: password or secret in a snake-case name"
-  },
-  "3080": {
-   "node": "glued name",
-   "portal": "glued name"
-  },
-  "3093": {
+  "3148": {
    "node": "glued scheme",
    "portal": "glued scheme"
   },
-  "3158": {
-   "node": "glued scheme",
-   "portal": "glued scheme"
+  "33": {
+   "node": "base parity: a scheme value",
+   "portal": "base parity: a scheme value"
   },
-  "549": {
+  "359": {
+   "node": "base parity: a scheme value",
+   "portal": "base parity: a scheme value"
+  },
+  "539": {
    "node": "decoded",
    "portal": "decoded"
   },
@@ -248,32 +344,33 @@
    "node": "dash value",
    "portal": "dash value"
   },
-  "640": {
+  "630": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "734": {
+  "724": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "891": {
+  "881": {
    "node": "decoded",
    "portal": "decoded"
   },
-  "996": {
+  "986": {
    "node": "decoded",
    "portal": "decoded"
   }
  },
  "reasons": {
-  "base parity: a short scheme value": "base parity: a short credential-shaped value after Token, Basic, Digest or Negotiate is hidden, as 2a7c803 did",
-  "base parity: password or secret in a snake-case name": "base parity: a snake-case name that holds pass, pwd or secret anywhere hides its value, as 2a7c803 did",
+  "base parity: a scheme value": "base parity: any value after a scheme word, as 2a7c803 hid it",
+  "base parity: an environment-style name": "base parity: an environment-style name's value, as 2a7c803 hid it",
   "dash value": "a value after a password or credential word that starts with -- is hidden, as 2a7c803 hid it",
-  "dash value + base parity: a short scheme value": "a value after a password or credential word that starts with -- is hidden, as 2a7c803 hid it and base parity: a short credential-shaped value after Token, Basic, Digest or Negotiate is hidden, as 2a7c803 did",
-  "dash value + base parity: password or secret in a snake-case name": "a value after a password or credential word that starts with -- is hidden, as 2a7c803 hid it and base parity: a snake-case name that holds pass, pwd or secret anywhere hides its value, as 2a7c803 did",
+  "dash value + base parity: a scheme value": "a value after a password or credential word that starts with -- is hidden, as 2a7c803 hid it and base parity: any value after a scheme word, as 2a7c803 hid it",
+  "dash value + base parity: an environment-style name": "a value after a password or credential word that starts with -- is hidden, as 2a7c803 hid it and base parity: an environment-style name's value, as 2a7c803 hid it",
+  "dash value + base parity: an environment-style name + base parity: a scheme value": "a value after a password or credential word that starts with -- is hidden, as 2a7c803 hid it and base parity: an environment-style name's value, as 2a7c803 hid it and base parity: any value after a scheme word, as 2a7c803 hid it",
   "decoded": "hidden in a decoded string literal as the same text is hidden in plain text",
-  "glued name": "a snake-case name with letters glued after its credential word, as 2a7c803 read it",
-  "glued name + base parity: password or secret in a snake-case name": "a snake-case name with letters glued after its credential word, as 2a7c803 read it and base parity: a snake-case name that holds pass, pwd or secret anywhere hides its value, as 2a7c803 did",
-  "glued scheme": "Bearer glued after other characters is a scheme word, as 2a7c803 read it"
+  "glued name + base parity: an environment-style name": "a snake-case name with letters glued after its credential word, as 2a7c803 read it and base parity: an environment-style name's value, as 2a7c803 hid it",
+  "glued scheme": "Bearer glued after other characters is a scheme word, as 2a7c803 read it",
+  "glued scheme + base parity: an environment-style name": "Bearer glued after other characters is a scheme word, as 2a7c803 read it and base parity: an environment-style name's value, as 2a7c803 hid it"
  }
 }

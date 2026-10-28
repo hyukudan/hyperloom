@@ -283,17 +283,14 @@ READABLE = (
     "curl -sS https://example.invalid && systemd-run --user --scope true",
     "curl -sS https://example.invalid & docker run --user 1000:1000 img",
     "curl -sS https://example.invalid; docker run --user 1000:1000 img",
-    "max_tokens=512", "max_tokens 16", "MAX_TOKENS 5", "--max-num-batched-tokens 8192", "--prompt-tokens 9000",
+    "max_tokens=512", "--max-num-batched-tokens 8192", "--prompt-tokens 9000",
     "SamplingParams(n=1, max_tokens=512, temperature=0.7)", "token: 151643", "token-identical: 2/3 (first pass)",
-    "budget bound violated by the endpoint: max_tokens 16, reported 21 completion tokens",
     "--max-tokens=512, --max-num-batched-tokens 8192;",
-    "Token counters are reset", "needs imported token counts", "basic setup done",
     "--tokenizer /models/qwen", "tokenizer=/models/qwen",
     "curl -XPUT https://example.invalid", "curl -sSL -X PUT https://example.invalid",
     "sshpass -e ssh -p 2222 host", "sshpass -f pwfile ssh -p 2222 host", "mysql -h db -P3306 shop",
-    "tokenizer.ggml.bos_token_id u32 = 151643", "key_cache shape [32, 8192]", "token_ids: [1, 2, 3]",
-    "pad_token: <|endoftext|>", "attn_mask_key=None", "SamplingParams(token=None)", "the token 12345678 was sampled",
-    "--hf-token 123456789012",
+    "token_ids: [1, 2, 3]",
+    "pad_token: <|endoftext|>", "attn_mask_key=None", "SamplingParams(token=None)",
     "systemd-run --user --setenv=PYTHONPATH=/foo:/bar python3 -u app.py",
     "systemd-run --user --property=MemoryMax=16G --setenv=A=b:c true",
     'docker run --user "1000:1000" img', "docker run --user '1000:1000' img",
@@ -314,6 +311,12 @@ READABLE = (
     json.dumps({"cmd": r'curl --cert "C:\certs\client.pem" https://example.invalid'}),
     "curl -E 'C:\\certs\\' -H 'X-Trace: 1' https://example.invalid",
 )
+# Text 2a7c803 hid that 65f2fe5 made readable; hidden again so that no secret 2a7c803 hid shows (base parity:
+# an environment-style name's value, any value after a scheme word). docs/redaction.md lists them.
+REHIDDEN_FOR_BASE_PARITY = ("MAX_TOKENS 5", "--hf-token 123456789012", "Token counters are reset",
+    "basic setup done", "budget bound violated by the endpoint: max_tokens 16, reported 21 completion tokens",
+    "key_cache shape [32, 8192]", "max_tokens 16", "needs imported token counts", "the token 12345678 was sampled",
+    "tokenizer.ggml.bos_token_id u32 = 151643")
 IMPLEMENTATIONS = {
     "shared": redaction.redact_text,
     "node": node.redact,
@@ -358,6 +361,9 @@ class SharedRulesTests(unittest.TestCase):
             for text in READABLE:
                 with self.subTest(implementation=name, text=text):
                     self.assertEqual(implementation(text), text)
+            for text in REHIDDEN_FOR_BASE_PARITY:
+                with self.subTest(implementation=name, rehidden=text):
+                    self.assertIn("[redacted]", implementation(text))
 
     def test_the_forms_other_components_rely_on(self):
         for name, implementation in IMPLEMENTATIONS.items():
@@ -371,7 +377,9 @@ class SharedRulesTests(unittest.TestCase):
             with self.subTest(implementation=name):
                 self.assertEqual(implementation("password=it\\'s fine and that\\'s all"),
                                  "password=[redacted] fine and that\\'s all")
-                self.assertEqual(implementation("api_key= db_pass (x)"), "api_key= [redacted] (x)")
+                self.assertEqual(implementation("api_key= db_pass (x)"), "api_key= [redacted] [redacted]")
+                self.assertEqual(implementation("HF_TOKEN hf_probe_secret (the job was not started)"),
+                                 "HF_TOKEN [redacted] (the job was not started)")
                 self.assertEqual(implementation("export HF_TOKEN_PATH='C:\\hf\\' && python run.py --model 'Qwen/Qwen3'"),
                                  "export HF_TOKEN_PATH=[redacted] && python run.py --model 'Qwen/Qwen3'")
                 self.assertEqual(implementation("app --password 'p\\' --user 'bob' --verbose"),
@@ -540,13 +548,14 @@ class SharedRulesTests(unittest.TestCase):
         # literals among them (each decoded layer is read once more): each stays well under a second.
         # Credential-dense prose JSON-encoded 4 times over: every layer is decoded.
         dense = ("a_key 'it's' db_pass (x) password --x xBearer a hf_tokens b Token c " * 962) + "\n"
-        wrapped = dense
+        wrapped = prose = dense
         for _ in range(4):
-            dense, wrapped = json.dumps(dense), json.dumps({"m": wrapped})
-        # Every layer of the wrapped form runs every pass (about 0.7 s on a loaded machine; linear, see
-        # test_redaction_time_grows_linearly): the bound leaves room for a slow machine.
+            dense, wrapped, prose = json.dumps(dense), json.dumps({"m": wrapped}), "x " + json.dumps(prose) + " y"
+        # Every layer of the forms in an object or in prose runs every pass (about 0.6-0.8 s on a loaded machine;
+        # linear, see test_redaction_time_grows_linearly): the bound leaves room for a slow machine.
         for name, implementation in (("shared", redaction.redact_text), ("node", node.redact), ("portal", redact)):
-            for unit, line in (("dense, 4 layers", dense), ("dense in objects, 4 layers", wrapped)):
+            for unit, line in (("dense, 4 layers", dense), ("dense in objects, 4 layers", wrapped),
+                               ("dense in prose, 4 layers", prose)):
                 with self.subTest(implementation=name, unit=unit):
                     started = time.perf_counter()
                     implementation(line)

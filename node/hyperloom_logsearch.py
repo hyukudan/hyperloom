@@ -299,12 +299,6 @@ def _keep_scheme_value(match, value):
         len(value) >= 8 and not value.isdigit() and _CREDENTIAL_LOOK.search(value))
 
 
-def _keep_short_scheme_value(match, value):
-    """A value of any length after a scheme word is hidden when it looks like a credential (not only digits, with a
-    digit, +, / or =, or an upper-case letter after the first: Token hunter2), as the base rules hid it."""
-    return value.isdigit() or not _CREDENTIAL_LOOK.search(value)
-
-
 def _keep_user(match, value):
     """--user keeps a value without a colon and a numeric uid:gid (docker run --user 1000:1000)."""
     return ":" not in value or _UID_GID.fullmatch(value) is not None
@@ -487,9 +481,8 @@ def _pass_spans(text, strings, patterns=None, shorter_read=False):
 # another's span readable): a name read after the shorter reading of an apostrophe value ({'a_key': 'it\'s"x',
 # 'secret': " y'"}), a value that starts with -- after a password word or an environment-style name
 # (password --x), Bearer glued after other characters (xBearer t), a snake-case name with letters glued after its
-# credential word (hf_tokencurl t); and, as the base rules read them, a snake-case name that holds pass, pwd or
-# secret anywhere (db_password_prod x, secret_db x; not a parenthesised message after it) and a short credential-shaped value after a scheme word
-# (Token hunter2).
+# credential word (hf_tokencurl t); and, as the base rules read them, an environment-style name (db_password_prod x,
+# key_cache x, hf_token_ci x) and any value after a scheme word (Token hunter, Basic auth).
 _ENV_UPPER = (r"(?:(?=[A-Z0-9_]*?(?P<cred>KEY|SECRET|PASS|PWD|CREDENTIALS?|AUTH))|(?=[A-Z0-9_]*?TOKEN(?!IZ)))"
               r"[A-Z0-9]+(?:_[A-Z0-9]+)*")
 _ENV_LOWER = (r"(?P<lower>(?i:(?:(?=[a-z0-9_]*?(?P<cred2>key|secret|pass|pwd|credentials?|auth))"
@@ -503,15 +496,41 @@ _PASSES = (
          _keep_token_value)), False),
     ("glued scheme", (
         (re.compile(r"(?i)(?<=\w)(?P<bearer>Bearer)\s+" + _START), "", _keep_scheme_value),), False),
-    ("base parity: password or secret in a snake-case name", (
-        (re.compile(r"(?i)\b(?=[a-z0-9_]*?(?:pass|pwd|secret))(?=[a-z0-9_]*_[a-z0-9])(?=([a-z0-9_]+))\1"
-                    r"\s+(?![:=(])(?!\[redacted\])(?P<v>\S+)"), "", _keep_nothing),), False),
-    ("base parity: a short scheme value", (
-        (re.compile(r"(?i)\b(?:Basic|Digest|Token|Negotiate)\s+" + _START), "", _keep_short_scheme_value),), False),
+    ("base parity: an environment-style name", "_base_names", False),
+    ("base parity: a scheme value", (
+        (re.compile(r"(?i)\b(?:Bearer|Basic|Digest|Token|Negotiate)\s+(?!\[redacted\])(?P<v>[A-Za-z0-9+/=._~:-]+)"),
+         "", _keep_nothing),), False),
     ("glued name", (
         (re.compile(r"\b(?:" + _ENV_LOWER % "[a-z0-9]+" + r")\s+(?![:=])" + _NOT_OPTION + _START), "",
          _keep_token_value),), False),
 )
+
+
+def _base_names(text):
+    """The base rules' environment-style names, read as they read them: a whole word followed by blanks and a value
+    (not = or :) that is any non-blank run; the word is upper case (A-Z, 0-9, single underscores) with a credential
+    word in a part, or, in any case, two or more such parts one of which holds a credential word (key_cache,
+    db_password_prod, hf_token_ci). Matches do not overlap, left to right, as one substitution makes them; a value
+    that opens a parenthesis it does not close (a message: "(the job ...)") is not taken."""
+    spans, pos = [], 0
+    while True:
+        found = _BASE_NAME.search(text, pos)
+        if found is None:
+            return spans
+        word, pos = found.group(1), found.start(2)
+        parts = word.split("_")
+        if "" not in parts and (_BASE_UPPER.fullmatch(word) and any(_BASE_CREDENTIAL.search(part) for part in parts)
+                                or len(parts) > 1 and any(_BASE_CREDENTIAL_ANY.search(part) for part in parts)):
+            value = found.group(2)
+            if not (value.startswith("(") and ")" not in value):
+                spans.append(found.span(2))
+                pos = found.end()
+
+
+_BASE_NAME = re.compile(r"\b([A-Za-z0-9_]+)\s+(?![:=])(?!\[redacted\])(\S+)")
+_BASE_UPPER = re.compile(r"[A-Z0-9_]+")
+_BASE_CREDENTIAL = re.compile(r"KEY|SECRET|TOKEN|PASS|PWD|CREDENTIALS?|AUTH")
+_BASE_CREDENTIAL_ANY = re.compile(r"(?i)key|secret|token|pass|pwd|credentials?|auth")
 
 
 def _layer_spans(text):
@@ -519,7 +538,7 @@ def _layer_spans(text):
     strings = _strings(text)
     spans = _pass_spans(text, strings)
     for name, patterns, shorter_read in _PASSES:
-        spans += _pass_spans(text, strings, patterns, shorter_read)
+        spans += _base_names(text) if patterns == "_base_names" else _pass_spans(text, strings, patterns, shorter_read)
     return spans
 
 

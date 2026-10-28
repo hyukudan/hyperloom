@@ -24,13 +24,32 @@ Each row is a form the rules deliberately leave as described.
 | A token option keeps a number | `--hf-token 123456789012` | unchanged |
 | `--user name:group` is hidden like `name:password` | `docker run --user root:root img` | `--user [redacted]` |
 | An argument list that only mentions mysql hides a later glued `-p` value | `["echo", "mysql", "-pretty"]` | `-p[redacted]` |
-| A snake-case name that is another value's end is not a name when a parenthesis follows it (the message after a value stays readable) | `api_key= db_pass (x)` | `api_key= [redacted] (x)` |
+| After an environment-style name, a value that opens a parenthesis it does not close in the same word is a message and stays readable (`HF_TOKEN hf_probe_secret (the job was not started)` keeps `(the job ...)`); a secret written that way shows | `db_password_prod (hunter2 pw)` | unchanged |
 | A bare `hf_` or GitHub token word is hidden only with 30+ token characters or when it calls itself a secret | `hf_hub_download` | unchanged |
 | A shell-quoted value holding a double quote and a blank, inside a single-quoted command, as written, JSON-encoded or in a repr | `ssh host 'export HF_TOKEN='"'"'"q r x'"'"''` | `r x` shown |
 | A client certificate's password is hidden for curl only | `wget --certificate c.pem:pw` | unchanged |
 | An apostrophe that opens prose (`it's`) can pair with the opening quote of a later value, which then shows its words after the first blank | `a_key it's db_pass 'hunter2 pw'` | `pw'` shown |
 | A shell-escaped blank joins the next command into a value | `sshpass -p=a\ {sshpass -p 'x"y'` | `'x"y'` shown |
 | A kept value (None, a count, a uid:gid) written inside a repr of JSON is hidden, and so is the closing quote after it; in one more layer of encoding it stays hidden | `'{"m": "api_key=None"}'` | `api_key=[redacted]}'` |
+
+## Re-hidden for base parity
+
+No secret the base rules (2a7c803) hid may show, so these forms, readable at 65f2fe5, are hidden again as the base
+rules hid them: the value after an environment-style name (any word with a credential word in a part: upper case,
+or two or more parts) and any value after `Bearer`, `Basic`, `Digest`, `Token` or `Negotiate`.
+
+| Text | Result |
+|---|---|
+| `MAX_TOKENS 5` | `MAX_TOKENS [redacted]` |
+| `max_tokens 16` | `max_tokens [redacted]` |
+| `budget bound violated by the endpoint: max_tokens 16, reported 21 completion tokens` | `max_tokens [redacted] reported ...` |
+| `--hf-token 123456789012` | `--hf-token [redacted]` |
+| `key_cache shape [32, 8192]` | `key_cache [redacted] [32, 8192]` |
+| `tokenizer.ggml.bos_token_id u32 = 151643` | `tokenizer.ggml.bos_token_id [redacted] = 151643` |
+| `Token counters are reset` | `Token [redacted] are reset` |
+| `basic setup done` | `basic [redacted] done` |
+| `needs imported token counts` | `needs imported token [redacted]` |
+| `the token 12345678 was sampled` | `the token [redacted] was sampled` |
 
 ## Follow-ups
 
