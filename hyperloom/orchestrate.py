@@ -97,6 +97,23 @@ def ownership(state, config_path):
     return "own" if owns(state, config_path) else "other"
 
 
+def _held_elsewhere(profile, path, record):
+    """The refusal of an up whose profile name another configuration's launch holds, naming that configuration, or
+    None. Launch states are named by profile in one runtime directory shared by every configuration, so profile
+    names are unique across those configurations (docs/install.md). ``record``: this launch's `config_record`."""
+    try:
+        saved = _read(path)
+    except (OSError, ValueError):
+        return None
+    owner = saved.get("config") if isinstance(saved, dict) else None
+    owner = owner.get("path") if isinstance(owner, dict) else None
+    if not isinstance(owner, str) or (isinstance(record, dict) and owns(saved, record.get("path"))):
+        return None
+    return (f"profile {profile} is running from the configuration {owner}: profile names must be unique across the "
+            f"configurations that share the runtime directory (stop it there: hyperloom down {profile} --config "
+            f"{owner}, or give this profile another name)")
+
+
 def launch_states(config_path, read=None, unknown=False):
     """{profile: state} of the saved launch states (the up-*.json files) launched from the configuration at
     ``config_path``, in profile order. A state that records another configuration is left out: a portal or a command
@@ -745,7 +762,8 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
     handlers = ExitStack()
     try:
         if path.exists():
-            raise OrchestrationError("profile has saved running state; run down before up")
+            raise OrchestrationError(_held_elsewhere(profile, path, state.get("config"))
+                                     or "profile has saved running state; run down before up")
         path.with_suffix(".stop").unlink(missing_ok=True)
         if cancelled is not None and cancelled():
             # A portal job (an up or a recipe deploy) cancelled while this launch was being handed over: start nothing.
@@ -1363,14 +1381,15 @@ def log_machine(profile, process, read=None):
     return lease.get("process_machines", {}).get(name, lease["machine"])
 
 
-def logs(profile, process, tail=100, config_path=None, read=None):
+def logs(profile, process, tail=100, config_path=None, read=None, unknown=False):
     """A process's recent output; with ``config_path``, only of a launch of that configuration (`owns`): another
-    configuration's launch (or one without the record) is refused before any read or call. ``read``: as in
-    ``status``."""
+    configuration's launch (or one without the record, unless ``unknown``: the command line, which lists those as
+    `status` does) is refused before any read or call. ``read``: as in ``status``."""
     if type(tail) is not int or not 1 <= tail <= 65536:
         raise ValueError("tail must be in 1..65536")
     state = _read(_state_path(profile))
-    if config_path is not None and not owns(state, config_path):
+    kind = ownership(state, config_path) if config_path is not None else "own"
+    if kind == "other" or (kind == "unknown" and not unknown):
         raise OrchestrationError(f"{profile}: launched from another configuration")
     local = {"router": state.get("router") or {}, "prefill": state.get("prefill_service") or {}}.get(process, {})
     if local.get("directory") and (process == "prefill" or local.get("machine") == "local"):

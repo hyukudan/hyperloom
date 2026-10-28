@@ -32,6 +32,7 @@ are refused while an admitted job holds an overlapping resource, and a stop (``d
 from dataclasses import dataclass, field
 import importlib
 import re
+import threading
 
 
 MODULES = ("overview", "machines", "history", "observe", "ledger", "endpoints", "usb4", "energy", "health", "alerts",
@@ -164,16 +165,28 @@ def load(modules=MODULES):
 
 
 _registry = None
+_generation = 0             # bumped by every reset(): a load started before it never replaces what it installed
+_lock = threading.Lock()
 
 
 def registry():
+    """The process registry, loaded on first use. Concurrent first uses (request threads) share one registry: a load
+    that finishes after another one, or after a reset(), does not replace the installed registry."""
     global _registry
-    if _registry is None:
-        _registry = load()
-    return _registry
+    with _lock:
+        if _registry is not None:
+            return _registry
+        generation = _generation
+    loaded = load()             # outside the lock: feature imports may start threads that read the registry
+    with _lock:
+        if _registry is None and _generation == generation:
+            _registry = loaded
+        return _registry if _registry is not None else loaded
 
 
 def reset(value=None):
     """Tests: install a registry (or reload the default one on next use)."""
-    global _registry
-    _registry = value
+    global _registry, _generation
+    with _lock:
+        _registry = value
+        _generation += 1

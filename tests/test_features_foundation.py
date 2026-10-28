@@ -87,6 +87,40 @@ class RegistryTests(unittest.TestCase):
         reg = features.load(("no-such-feature-module",))
         self.assertEqual((reg.loaded, reg.failed), ([], {}))
 
+    def test_a_late_load_never_replaces_an_installed_registry(self):
+        # A request thread left over from an earlier server finds no registry and loads the default one; the next
+        # test installs its own meanwhile. The late load must not replace it (it did: "registered twice").
+        self.addCleanup(features.reset)
+        features.reset()
+        entered, release, seen = threading.Event(), threading.Event(), []
+        default = features.Registry()
+
+        def slow_load():
+            entered.set()
+            release.wait(5)
+            return default
+        with mock.patch.object(features, "load", slow_load):
+            late = threading.Thread(target=lambda: seen.append(features.registry()))
+            late.start()
+            self.assertTrue(entered.wait(5))
+            mine = features.Registry()
+            features.reset(mine)
+            release.set()
+            late.join(5)
+        self.assertIs(features.registry(), mine)
+        self.assertEqual(seen, [mine])
+        # Concurrent first uses share the registry the first finished load installed.
+        features.reset()
+        with mock.patch.object(features, "load", features.Registry):
+            results = []
+            threads = [threading.Thread(target=lambda: results.append(features.registry())) for _ in range(8)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(5)
+        self.assertEqual(len({id(value) for value in results}), 1)
+        self.assertIs(results[0], features.registry())
+
 
 class APIDispatchTests(unittest.TestCase):
     def setUp(self):

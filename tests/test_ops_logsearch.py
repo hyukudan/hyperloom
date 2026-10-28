@@ -242,12 +242,27 @@ class NodeSearchTests(unittest.TestCase):
             "mysql -u root -pXyzzy42 shop": "Xyzzy42",
             "mysqldump -h db -pAnother7 --all": "Another7",
             "sshpass -p Sp4ce sshx": "Sp4ce",
+            "download with hf_AbCdEfGhIjKlMnOpQrStUvWxYz01234567 ok": "hf_AbCdEfGhIjKlMnOpQrStUvWxYz01234567",
+            "token is hf_abcdefghijklmnopqrstuvwxyzabcdefgh": "hf_abcdefghijklmnopqrstuvwxyzabcdefgh",
+            "curl -u alice:Wonder7land https://example.invalid/x": "Wonder7land",
+            "curl -sSu bob:Pa55-w0rd -o out.json https://example.invalid": "Pa55-w0rd",
+            "curl --user carol:hunter4 https://example.invalid": "hunter4",
+            "curl --user=dave:Sw0rdfish https://example.invalid": "Sw0rdfish",
+            "curl -ueve:Gl0bal https://example.invalid": "Gl0bal",
+            "curl -x http://proxy.invalid -U frank:Pr0xyPw https://example.invalid": "Pr0xyPw",
+            "curl -u 'gina:two words' https://example.invalid": "two words",
+            "wget --user hank:C0mbined https://example.invalid": "C0mbined",
+            "curl -H 'Cookie: a=1; b=2' -u ivy:C00kieJar https://example.invalid": "C00kieJar",
+            'curl -H "Accept: a|b" -u jo:P1peLine https://example.invalid': "P1peLine",
         }
         for line, secret in lines.items():
             with self.subTest(line=line):
                 self.assertNotIn(secret, node.redact(line))
         for prose in ("generated 512 tokens in 3.1 s", "keyboard input ignored",
-                      "pass 2 of 3 finished", "mysql connection pool size 8"):
+                      "pass 2 of 3 finished", "mysql connection pool size 8",
+                      "hf_transfer enabled, hf_hub_download retried, hf_qwen3moe loaded",
+                      "docker run --user 1000:1000 img", "curl -sS https://example.invalid | python3 -u -",
+                      "systemd-run --user --scope -p MemoryMax=16G", "curl -sS https://example.invalid/health"):
             with self.subTest(prose=prose):
                 self.assertEqual(node.redact(prose), prose)
 
@@ -256,6 +271,7 @@ class NodeSearchTests(unittest.TestCase):
         result = self.run_search(text="match", max_results=500, context=2)
         self.assertLessEqual(len(json.dumps(result["results"])), node.OUTPUT_BUDGET)
         self.assertIn("output", result["report"]["truncated"])
+        self.assertNotIn("deadline", result["report"]["truncated"])     # redaction stays linear in a long word
 
 
 class PortalSearchTests(APIFixture, unittest.TestCase):

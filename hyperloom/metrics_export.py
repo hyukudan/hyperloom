@@ -106,16 +106,29 @@ def _get(endpoint, suffix, text=False):
     return data.decode("utf-8") if text else json.loads(data)
 
 
-def running_routers():
-    """Router endpoints of profiles with saved state, from orchestrate's state files."""
+def saved_states(config_path=None):
+    """{profile: saved launch state} from orchestrate's state files: with ``config_path``, the launches of that
+    configuration and those without the record (`orchestrate.launch_states`, as `status` lists them; another
+    configuration's is left out); None reads every configuration's. An unreadable state is skipped."""
+    if config_path is not None:
+        from . import orchestrate
+        return orchestrate.launch_states(config_path, unknown=True)
     result = {}
     for path in sorted(secrets.runtime_dir().glob("up-*.json")):
         try:
-            state = json.loads(path.read_text(encoding="utf-8"))
+            result[path.stem[3:]] = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
+    return result
+
+
+def running_routers(config_path=None):
+    """Router endpoints of profiles with saved state, from orchestrate's state files (``config_path``: as in
+    `saved_states`)."""
+    result = {}
+    for name, state in saved_states(config_path).items():
         endpoint = (state.get("router") or {}).get("endpoint") if isinstance(state, dict) else None
-        result[path.stem[3:]] = endpoint if isinstance(endpoint, dict) else None
+        result[name] = endpoint if isinstance(endpoint, dict) else None
     return result
 
 
@@ -688,17 +701,13 @@ def _lock_commits():
         return {}  # Unknown commits are left out rather than invented.
 
 
-def _launches():
-    """{profile: launch record} of each saved launch state."""
+def _launches(config_path=None):
+    """{profile: launch record} of each saved launch state (``config_path``: as in `saved_states`)."""
     result = {}
-    for path in sorted(secrets.runtime_dir().glob("up-*.json")):
-        try:
-            state = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
+    for name, state in saved_states(config_path).items():
         launch = state.get("launch") if isinstance(state, dict) else None
         if isinstance(launch, dict):
-            result[path.stem[3:]] = launch
+            result[name] = launch
     return result
 
 
@@ -737,11 +746,11 @@ def _loopback(family, preset=None):
         return False
 
 
-def launch_commits():
+def launch_commits(config_path=None):
     """{profile: {engine_commit, tensormeld_commit}} of each saved launch: the running release's manifest components,
     else the launched preset's engine pin. Missing values are left out."""
     result = {}
-    for name, launch in _launches().items():
+    for name, launch in _launches(config_path).items():
         components = launch.get("components") if isinstance(launch.get("components"), dict) else {}
         row = {}
         engine_commit = components.get("engine") or launch.get("engine_sha")
@@ -790,19 +799,25 @@ DEFAULT_STORE = object()
 
 
 def collect(routers=None, fetch=_get, profile=None, deadline_s=SCRAPE_DEADLINE_S, launches=None, families=None,
-            telemetry=DEFAULT_STORE, now=None):
+            telemetry=DEFAULT_STORE, now=None, config_path=None):
     """Return the exposition text for {profile: router endpoint or None}.
 
     Routers, then every replica's engine sources, are fetched in parallel against one overall deadline. ``launches``
     ({profile: commits}) and ``families`` ({profile: engine family}) default to the saved launch states. Replicas of
     a loopback-bound family are never probed: their address is 127.0.0.1 on their node, not on this machine.
     ``telemetry`` is the store path (default: the portal's, next to the configuration; None skips it); it is read
-    while the network fetches run."""
-    routers = running_routers() if routers is None else routers
+    while the network fetches run. ``config_path``: the launches of that configuration only (`saved_states`) and its
+    telemetry store; None reads every configuration's launches and the default configuration's store."""
+    routers = running_routers(config_path) if routers is None else routers
     presets = {}
+    if launches is None and config_path is not None:
+        try:
+            launches = launch_commits(config_path)
+        except (OSError, RuntimeError):
+            launches = {}
     if families is None:
         try:
-            saved = _launches()
+            saved = _launches(config_path)
             families, presets = launch_families(saved), launch_presets(saved)
         except (OSError, RuntimeError):
             families = {}
@@ -821,7 +836,7 @@ def collect(routers=None, fetch=_get, profile=None, deadline_s=SCRAPE_DEADLINE_S
                          fetches.submit(endpoint, "/metrics", True)))
     if telemetry is DEFAULT_STORE:
         try:
-            telemetry = telemetry_path()
+            telemetry = Path(config_path).parent / "telemetry.sqlite3" if config_path is not None else telemetry_path()
         except (OSError, RuntimeError):
             telemetry = None
     _telemetry(out, telemetry, now, fetches.deadline)
@@ -923,8 +938,8 @@ class Handler(BaseHTTPRequestHandler):
     do_POST = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = do_TRACE = do_HEAD = _method
 
 
-def serve(listen=DEFAULT_LISTEN, profile=None):
-    with MetricsServer(listen, collector=lambda: collect(profile=profile)) as server:
+def serve(listen=DEFAULT_LISTEN, profile=None, config_path=None):
+    with MetricsServer(listen, collector=lambda: collect(profile=profile, config_path=config_path)) as server:
         print(f"Hyperloom metrics: http://{sorted(server.allowed_hosts)[0]}/metrics", flush=True)
         try:
             server.serve_forever(poll_interval=.2)

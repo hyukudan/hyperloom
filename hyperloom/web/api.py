@@ -30,7 +30,7 @@ import time
 import uuid
 from urllib.request import ProxyHandler, Request, build_opener
 
-from hyperloom import __version__, admission, cli, config, engines, nodegate, nodepoll, orchestrate, pollbudget, remote, render, secrets
+from hyperloom import __version__, admission, cli, config, engines, nodegate, nodepoll, orchestrate, pollbudget, redaction, remote, render, secrets
 from hyperloom.adapters import engine, router
 from hyperloom.paths import repo_root
 from hyperloom.stats import Window
@@ -214,15 +214,9 @@ def redact(value, text=True):
                 not exempt else redact(item, text)
         return result
     if isinstance(value, (list, tuple)):
-        result, hide = [], False
-        for item in value:
-            result.append("[redacted]" if hide else redact(item, text))
-            hide = isinstance(item, str) and item in ("--api-key", "--handoff-api-key", "--password", "--token")
-        return result
+        return redaction.redact_argv(value, lambda item: redact(item, text))
     if isinstance(value, str) and text:
-        value = re.sub(r"(?i)(Bearer\s+)\S+", r"\1[redacted]", value)
-        return re.sub(r'''(?ix)((?:["']?(?:api[_-]?key|handoff[_-]?api[_-]?key|password|secret|token)["']?)\s*[:=]\s*|--(?:api-key|handoff-api-key|password|token)\s+)(?:"[^"]*"|'[^']*'|[^\s,;}]+)''',
-                      r"\1[redacted]", value)
+        return redaction.redact_text(value)         # the repository's one set of free-text rules
     return value
 
 
@@ -1359,11 +1353,12 @@ class API:
             self.admission_db = admission.for_config(self.config_path)
         return self.admission_db
 
-    def _resources_of_profile(self, profile, router=None):
+    def _resources_of_profile(self, profile, router=None, shown=False):
         """Resource ids a profile occupies (its nodes, its prefill service's machine and its router); everything
-        ("*") when unknown."""
+        ("*") when unknown. ``shown``: only the ids of this portal's configuration (a preview; holds are global)."""
         try:
-            return admission.profile_resources(self._cluster(), profile, self.orchestrate, router)
+            return admission.profile_resources(self._cluster(), profile, self.orchestrate, router,
+                                               config_path=self.config_path if shown else None)
         except Exception:
             return {"*"}
 

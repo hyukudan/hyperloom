@@ -164,6 +164,49 @@ class GuardAndWorkerTests(unittest.TestCase):
             with self.assertRaises(ValueError):                 # unreadable: the caller holds everything
                 admission.profile_resources(cluster, "plain", orchestrate)
 
+    def test_a_preview_shows_only_this_configurations_launch_and_the_hold_stays_global(self):
+        from types import SimpleNamespace
+        import json
+        import tempfile
+        from hyperloom import orchestrate as real
+        cluster = SimpleNamespace(profiles={"plain": {}})
+        with tempfile.TemporaryDirectory() as directory:
+            mine, theirs = Path(directory, "a", "cluster.json"), Path(directory, "b", "cluster.json")
+            orchestrate = SimpleNamespace(_profile=lambda c, p: (None, None, ["halo-1"]), owns=real.owns,
+                                          _state_path=lambda p: Path(directory, "up-" + p + ".json"))
+            state = Path(directory, "up-plain.json")
+            state.write_text(json.dumps({"machines": {"halo-9": {}}, "prefill_service": {"machine": "pc-2"},
+                                         "config": {"path": str(theirs)}}), encoding="utf-8")
+            self.assertEqual(admission.profile_resources(cluster, "plain", orchestrate),
+                             {"halo-1", "halo-9", "pc-2", "router"})                  # the hold: every saved state
+            self.assertEqual(admission.profile_resources(cluster, "plain", orchestrate, config_path=mine),
+                             {"halo-1", "router"})                                    # shown: not another's launch
+            self.assertEqual(admission.profile_resources(cluster, "plain", orchestrate, config_path=theirs),
+                             {"halo-1", "halo-9", "pc-2", "router"})
+            state.write_text(json.dumps({"machines": {"halo-9": {}}}), encoding="utf-8")   # no record: no owner
+            self.assertEqual(admission.profile_resources(cluster, "plain", orchestrate, config_path=mine),
+                             {"halo-1", "router"})
+        # The guard document: the preview lists this configuration's ids, its verdict uses the global hold.
+        bench = support.Bench(self)
+        bench.api._resources_of_profile = lambda profile, router=None, shown=False: (
+            {"halo-1", "router"} if shown else {"halo-1", "halo-9", "pc-2", "router"})
+        bench.api.admission_db.acquire("bench", {"halo-9"}, label="bench elsewhere")
+        guard = bench.api.read("bench/guard", {"target": "profile:qwen"})
+        self.assertEqual(guard["preview"]["resources"], ["halo-1", "router"])
+        self.assertFalse(guard["preview"]["admitted"])
+        self.assertIn("held by bench elsewhere", guard["preview"]["refusal"])
+        self.assertIn("another configuration", guard["why"]["preview_resources"])
+        with self.assertRaises(admission.Refused):
+            bench.api.admission_db.acquire("bench", {"halo-1", "halo-9", "pc-2", "router"})
+        # This configuration's ids unreadable (or not within the hold's): the preview lists none, never the hold's.
+        for shown_ids in ({"*"}, {"halo-7"}):
+            bench.api._resources_of_profile = lambda profile, router=None, shown=False, ids=shown_ids: (
+                ids if shown else {"halo-1", "halo-9", "pc-2", "router"})
+            guard = bench.api.read("bench/guard", {"target": "profile:qwen"})
+            self.assertIsNone(guard["preview"]["resources"])
+            self.assertFalse(guard["preview"]["admitted"])                          # the verdict stays global
+            self.assertIn("could not be read", guard["why"]["preview_resources"])
+
     def test_the_ops_preview_counts_a_cancelled_benchmark(self):
         from hyperloom.web.features import ops
         db = admission.Admission(":memory:")

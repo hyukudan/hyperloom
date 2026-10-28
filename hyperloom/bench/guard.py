@@ -100,6 +100,18 @@ def document(api, query):
             resources = sorted(targets.resources(api, parsed, readonly=True))
         except LookupError as exc:
             resources, why["preview"] = None, str(exc).strip("'\"")
+        shown = resources
+        if resources is not None and kind == "profile" and resources != ["*"]:
+            # Shown: this configuration's ids only. The admission (and the refusal below) holds every saved state
+            # for the profile, whichever configuration launched it.
+            # When this configuration's ids cannot be read (or disagree with the hold's), the preview lists none:
+            # the hold's ids would show another configuration's machines.
+            shown = sorted(api._resources_of_profile(name, shown=True))
+            if shown == ["*"] or not set(shown) <= set(resources):
+                shown = None
+                why["preview_resources"] = "this configuration's machines for the profile could not be read"
+            elif shown != resources:
+                why["preview_resources"] = "the hold also covers machines of another configuration's launch"
         if resources is not None:
             reason = None
             if core:
@@ -109,7 +121,7 @@ def document(api, query):
                 why["preview"] = "admission state unavailable: " + (why_holds or "")
             else:
                 reason = refusal(holds, resources)
-            preview = {"target": query["target"], "resources": resources, "admitted": reason is None and holds is not None,
+            preview = {"target": query["target"], "resources": shown, "admitted": reason is None and holds is not None,
                        "refusal": reason}
     return api.document("bench-guard", rules=RULES, cap=admission.BENCH_CAP, holds=holds, running=running,
                         core_jobs=[{"job": j.get("id"), "action": j.get("action")} for j in core], preview=preview,

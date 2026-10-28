@@ -1,0 +1,2499 @@
+{
+ "entries": {
+  "1001": {
+   "portal": "base replay"
+  },
+  "1014": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1039": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1043": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1091": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1098": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1103": {
+   "node": "base replay"
+  },
+  "1106": {
+   "portal": "base replay"
+  },
+  "1119": {
+   "node": "base replay"
+  },
+  "1141": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1149": {
+   "node": "base replay"
+  },
+  "1159": {
+   "node": "base replay"
+  },
+  "1160": {
+   "node": "decoded + base replay",
+   "portal": "decoded"
+  },
+  "1168": {
+   "node": "base replay"
+  },
+  "1169": {
+   "portal": "base replay"
+  },
+  "1177": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1209": {
+   "portal": "base replay"
+  },
+  "1211": {
+   "node": "base replay"
+  },
+  "1228": {
+   "portal": "base replay"
+  },
+  "1232": {
+   "portal": "base replay"
+  },
+  "1237": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1250": {
+   "portal": "base replay"
+  },
+  "1259": {
+   "node": "base replay"
+  },
+  "127": {
+   "node": "base replay"
+  },
+  "1274": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1310": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1313": {
+   "node": "base replay"
+  },
+  "1328": {
+   "node": "base replay"
+  },
+  "1331": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1332": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1343": {
+   "node": "base replay"
+  },
+  "1370": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1381": {
+   "node": "base replay"
+  },
+  "1386": {
+   "portal": "base replay"
+  },
+  "1392": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1409": {
+   "portal": "base replay"
+  },
+  "1413": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1424": {
+   "node": "base replay"
+  },
+  "1431": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1448": {
+   "node": "base replay"
+  },
+  "145": {
+   "node": "base replay"
+  },
+  "1504": {
+   "node": "base replay"
+  },
+  "1525": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1528": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1591": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1592": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1596": {
+   "portal": "base replay"
+  },
+  "1602": {
+   "node": "base replay"
+  },
+  "1605": {
+   "node": "base replay"
+  },
+  "1606": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1607": {
+   "node": "base replay"
+  },
+  "1608": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1609": {
+   "node": "base replay"
+  },
+  "1610": {
+   "node": "base replay"
+  },
+  "1611": {
+   "node": "base replay"
+  },
+  "1613": {
+   "node": "base replay"
+  },
+  "1614": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1616": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1617": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1618": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1619": {
+   "node": "base replay"
+  },
+  "1620": {
+   "node": "base replay"
+  },
+  "1623": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1624": {
+   "node": "base replay"
+  },
+  "1625": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1626": {
+   "node": "base replay"
+  },
+  "1630": {
+   "node": "base replay"
+  },
+  "1631": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1632": {
+   "node": "base replay"
+  },
+  "1635": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1640": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1645": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1650": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1651": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1654": {
+   "node": "base replay"
+  },
+  "1656": {
+   "node": "decoded + base replay",
+   "portal": "decoded + base replay"
+  },
+  "1657": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1658": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1660": {
+   "node": "base replay"
+  },
+  "1663": {
+   "node": "base replay"
+  },
+  "1664": {
+   "node": "base replay"
+  },
+  "1668": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1669": {
+   "node": "base replay"
+  },
+  "1670": {
+   "node": "base replay"
+  },
+  "1671": {
+   "node": "base replay"
+  },
+  "1672": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1674": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1675": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1676": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1677": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1678": {
+   "node": "base replay"
+  },
+  "1679": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "168": {
+   "node": "glued scheme",
+   "portal": "glued scheme + base replay"
+  },
+  "1681": {
+   "node": "base replay"
+  },
+  "1682": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1684": {
+   "node": "base replay"
+  },
+  "1685": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1686": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1687": {
+   "node": "base replay"
+  },
+  "1688": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "169": {
+   "node": "glued scheme",
+   "portal": "glued scheme + base replay"
+  },
+  "1690": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1694": {
+   "node": "base replay"
+  },
+  "1697": {
+   "node": "base replay"
+  },
+  "1699": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "170": {
+   "node": "dash value + base replay",
+   "portal": "dash value"
+  },
+  "1701": {
+   "node": "base replay"
+  },
+  "1704": {
+   "node": "base replay"
+  },
+  "1706": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1707": {
+   "node": "base replay"
+  },
+  "1708": {
+   "node": "base replay"
+  },
+  "171": {
+   "node": "glued name + base replay",
+   "portal": "glued name"
+  },
+  "1711": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1712": {
+   "node": "base replay"
+  },
+  "1715": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1716": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1717": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1718": {
+   "node": "base replay"
+  },
+  "1720": {
+   "node": "base replay"
+  },
+  "1723": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1724": {
+   "node": "base replay"
+  },
+  "1725": {
+   "node": "base replay"
+  },
+  "1726": {
+   "node": "base replay"
+  },
+  "1727": {
+   "node": "base replay"
+  },
+  "1728": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "173": {
+   "node": "dash value + base replay",
+   "portal": "dash value"
+  },
+  "1730": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1731": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1732": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1735": {
+   "node": "base replay"
+  },
+  "1739": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1742": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1743": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1745": {
+   "node": "base replay"
+  },
+  "1747": {
+   "node": "base replay"
+  },
+  "1748": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1749": {
+   "node": "base replay"
+  },
+  "1750": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1752": {
+   "node": "base replay"
+  },
+  "1754": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1755": {
+   "node": "base replay"
+  },
+  "1760": {
+   "node": "base replay"
+  },
+  "1762": {
+   "node": "base replay"
+  },
+  "1763": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1764": {
+   "node": "base replay"
+  },
+  "1765": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1766": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1769": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1772": {
+   "node": "base replay"
+  },
+  "1773": {
+   "node": "base replay"
+  },
+  "1774": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1776": {
+   "node": "decoded + base replay",
+   "portal": "decoded + base replay"
+  },
+  "1777": {
+   "node": "base replay"
+  },
+  "1778": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1779": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1782": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1783": {
+   "node": "base replay"
+  },
+  "1784": {
+   "node": "base replay"
+  },
+  "1785": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1786": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1787": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1788": {
+   "node": "base replay"
+  },
+  "1793": {
+   "node": "base replay"
+  },
+  "1795": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1797": {
+   "node": "base replay"
+  },
+  "1798": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1801": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1804": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1805": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1806": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1809": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "181": {
+   "portal": "base replay"
+  },
+  "1811": {
+   "node": "base replay"
+  },
+  "1812": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1813": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1816": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1818": {
+   "node": "base replay"
+  },
+  "1819": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1820": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1821": {
+   "node": "base replay"
+  },
+  "1822": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1823": {
+   "node": "base replay"
+  },
+  "1824": {
+   "node": "base replay"
+  },
+  "1828": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1830": {
+   "node": "base replay"
+  },
+  "1832": {
+   "node": "decoded + base replay",
+   "portal": "decoded + base replay"
+  },
+  "1834": {
+   "node": "base replay"
+  },
+  "1836": {
+   "node": "base replay"
+  },
+  "1837": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1838": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1839": {
+   "node": "base replay"
+  },
+  "184": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1840": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1841": {
+   "node": "base replay"
+  },
+  "1842": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1844": {
+   "node": "base replay"
+  },
+  "1845": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1847": {
+   "node": "base replay"
+  },
+  "1850": {
+   "node": "base replay"
+  },
+  "1851": {
+   "node": "base replay"
+  },
+  "1852": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1854": {
+   "node": "base replay"
+  },
+  "1855": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1857": {
+   "node": "base replay"
+  },
+  "1858": {
+   "node": "base replay"
+  },
+  "1859": {
+   "node": "base replay"
+  },
+  "186": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1860": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1864": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1865": {
+   "node": "base replay"
+  },
+  "1866": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1867": {
+   "node": "base replay"
+  },
+  "1868": {
+   "node": "base replay"
+  },
+  "1870": {
+   "node": "base replay"
+  },
+  "1871": {
+   "node": "base replay"
+  },
+  "1873": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1875": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1876": {
+   "node": "base replay"
+  },
+  "1878": {
+   "node": "base replay"
+  },
+  "1879": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1880": {
+   "node": "base replay"
+  },
+  "1882": {
+   "node": "base replay"
+  },
+  "1883": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1886": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1887": {
+   "node": "base replay"
+  },
+  "1889": {
+   "node": "base replay"
+  },
+  "1893": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1897": {
+   "node": "base replay"
+  },
+  "1898": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1899": {
+   "node": "base replay"
+  },
+  "1900": {
+   "node": "base replay"
+  },
+  "1902": {
+   "node": "base replay"
+  },
+  "1907": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1908": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1909": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1912": {
+   "node": "base replay"
+  },
+  "1914": {
+   "node": "base replay"
+  },
+  "1917": {
+   "node": "base replay"
+  },
+  "1919": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "192": {
+   "node": "base replay"
+  },
+  "1921": {
+   "node": "decoded + base replay",
+   "portal": "decoded + base replay"
+  },
+  "1922": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1923": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1925": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1927": {
+   "node": "base replay"
+  },
+  "1928": {
+   "node": "base replay"
+  },
+  "1929": {
+   "node": "base replay"
+  },
+  "1930": {
+   "node": "base replay"
+  },
+  "1931": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1932": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1934": {
+   "node": "base replay"
+  },
+  "1937": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1938": {
+   "node": "base replay"
+  },
+  "1939": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1940": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1941": {
+   "node": "base replay"
+  },
+  "1942": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1943": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1945": {
+   "node": "base replay"
+  },
+  "1946": {
+   "node": "base replay"
+  },
+  "1947": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1948": {
+   "node": "base replay"
+  },
+  "1950": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1951": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1954": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1955": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1956": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1957": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1958": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1960": {
+   "node": "base replay"
+  },
+  "1961": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1963": {
+   "node": "base replay"
+  },
+  "1964": {
+   "node": "base replay"
+  },
+  "1965": {
+   "node": "base replay"
+  },
+  "1967": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "1968": {
+   "node": "base replay"
+  },
+  "1969": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1971": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1972": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1973": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1976": {
+   "node": "base replay"
+  },
+  "1977": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1978": {
+   "node": "base replay"
+  },
+  "1979": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1980": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1981": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1983": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1984": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1985": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1986": {
+   "node": "base replay"
+  },
+  "1987": {
+   "node": "base replay"
+  },
+  "1989": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "1993": {
+   "node": "base replay"
+  },
+  "2000": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2001": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2003": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "2004": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2007": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2010": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2012": {
+   "node": "base replay"
+  },
+  "2014": {
+   "node": "base replay"
+  },
+  "2015": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2016": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2017": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2018": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2019": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2020": {
+   "node": "base replay"
+  },
+  "2021": {
+   "node": "base replay"
+  },
+  "2022": {
+   "node": "base replay"
+  },
+  "2026": {
+   "node": "base replay"
+  },
+  "2027": {
+   "node": "base replay"
+  },
+  "2028": {
+   "node": "base replay"
+  },
+  "2029": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2030": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2032": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2033": {
+   "node": "base replay"
+  },
+  "2034": {
+   "node": "base replay"
+  },
+  "2035": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2037": {
+   "node": "base replay"
+  },
+  "2038": {
+   "node": "base replay"
+  },
+  "2039": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2040": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2041": {
+   "node": "base replay"
+  },
+  "2044": {
+   "node": "base replay"
+  },
+  "2048": {
+   "node": "base replay"
+  },
+  "2049": {
+   "node": "base replay"
+  },
+  "2050": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2051": {
+   "node": "base replay"
+  },
+  "2053": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "2054": {
+   "node": "base replay"
+  },
+  "2055": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2058": {
+   "node": "base replay"
+  },
+  "2062": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2063": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2064": {
+   "node": "base replay"
+  },
+  "2065": {
+   "node": "base replay"
+  },
+  "2067": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2068": {
+   "node": "base replay"
+  },
+  "2069": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2073": {
+   "node": "base replay"
+  },
+  "2075": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2077": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2078": {
+   "node": "base replay"
+  },
+  "2079": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2082": {
+   "node": "base replay"
+  },
+  "2084": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2089": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2090": {
+   "node": "base replay"
+  },
+  "2091": {
+   "node": "base replay"
+  },
+  "2092": {
+   "node": "base replay"
+  },
+  "2094": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2095": {
+   "node": "base replay"
+  },
+  "2099": {
+   "node": "base replay"
+  },
+  "21": {
+   "node": "base replay"
+  },
+  "2100": {
+   "node": "base replay"
+  },
+  "2101": {
+   "node": "base replay"
+  },
+  "2104": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2107": {
+   "node": "base replay"
+  },
+  "2108": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "2111": {
+   "node": "base replay"
+  },
+  "2112": {
+   "node": "base replay"
+  },
+  "2113": {
+   "node": "base replay"
+  },
+  "2114": {
+   "node": "base replay"
+  },
+  "2115": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2116": {
+   "node": "base replay"
+  },
+  "2117": {
+   "node": "base replay"
+  },
+  "2118": {
+   "node": "base replay"
+  },
+  "2119": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2120": {
+   "node": "base replay"
+  },
+  "2122": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2125": {
+   "node": "base replay"
+  },
+  "2126": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2127": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2128": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2129": {
+   "node": "base replay"
+  },
+  "2131": {
+   "node": "base replay"
+  },
+  "2132": {
+   "node": "base replay"
+  },
+  "2135": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2136": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2137": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2138": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2139": {
+   "node": "base replay"
+  },
+  "2141": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2142": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2145": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2146": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "2147": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2149": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2150": {
+   "node": "base replay"
+  },
+  "2155": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2156": {
+   "node": "base replay"
+  },
+  "2157": {
+   "node": "base replay"
+  },
+  "2159": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2160": {
+   "node": "base replay"
+  },
+  "2161": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2163": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2165": {
+   "node": "base replay"
+  },
+  "2166": {
+   "node": "base replay"
+  },
+  "2167": {
+   "node": "base replay"
+  },
+  "2168": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2169": {
+   "node": "base replay"
+  },
+  "2170": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2173": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "2174": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "2175": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2179": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2181": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2185": {
+   "node": "base replay"
+  },
+  "2186": {
+   "node": "base replay"
+  },
+  "2187": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2188": {
+   "node": "base replay"
+  },
+  "2190": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2191": {
+   "node": "base replay"
+  },
+  "2192": {
+   "node": "base replay"
+  },
+  "2195": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2196": {
+   "node": "base replay"
+  },
+  "22": {
+   "node": "base replay"
+  },
+  "2200": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2202": {
+   "node": "base replay"
+  },
+  "2204": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2207": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2208": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2209": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2210": {
+   "node": "base replay"
+  },
+  "2211": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2212": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2219": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2220": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "2221": {
+   "node": "base replay"
+  },
+  "2222": {
+   "node": "base replay"
+  },
+  "2223": {
+   "node": "base replay"
+  },
+  "2224": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2225": {
+   "node": "base replay"
+  },
+  "2228": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2231": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2232": {
+   "node": "base replay"
+  },
+  "2233": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2235": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2237": {
+   "node": "base replay"
+  },
+  "2241": {
+   "node": "base replay"
+  },
+  "2242": {
+   "node": "base replay"
+  },
+  "2245": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2246": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2247": {
+   "node": "base replay"
+  },
+  "2248": {
+   "node": "base replay"
+  },
+  "2250": {
+   "node": "base replay"
+  },
+  "2251": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2252": {
+   "node": "base replay"
+  },
+  "2253": {
+   "node": "base replay"
+  },
+  "2254": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2257": {
+   "node": "base replay"
+  },
+  "2258": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2259": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2260": {
+   "node": "base replay"
+  },
+  "2261": {
+   "node": "base replay"
+  },
+  "2262": {
+   "node": "base replay"
+  },
+  "2266": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2267": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2268": {
+   "node": "base replay"
+  },
+  "2269": {
+   "node": "base replay"
+  },
+  "2270": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2271": {
+   "node": "base replay"
+  },
+  "2272": {
+   "node": "base replay"
+  },
+  "2273": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2274": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2275": {
+   "node": "base replay"
+  },
+  "2279": {
+   "node": "base replay"
+  },
+  "2280": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2281": {
+   "node": "base replay"
+  },
+  "2282": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2284": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2285": {
+   "node": "base replay"
+  },
+  "2288": {
+   "node": "base replay"
+  },
+  "2289": {
+   "node": "base replay"
+  },
+  "2291": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2293": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2294": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2295": {
+   "node": "base replay"
+  },
+  "2296": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2298": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "23": {
+   "node": "base replay"
+  },
+  "2300": {
+   "node": "base replay"
+  },
+  "2302": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2304": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2305": {
+   "node": "base replay"
+  },
+  "2306": {
+   "node": "base replay"
+  },
+  "2307": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2308": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2309": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2311": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2312": {
+   "node": "base replay"
+  },
+  "2314": {
+   "node": "base replay"
+  },
+  "2317": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2320": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2321": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2322": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2323": {
+   "node": "base replay"
+  },
+  "2328": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2329": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2331": {
+   "node": "base replay"
+  },
+  "2333": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2334": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2335": {
+   "node": "base replay"
+  },
+  "2336": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2337": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "2338": {
+   "node": "base replay"
+  },
+  "2339": {
+   "node": "base replay"
+  },
+  "2341": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2347": {
+   "node": "base replay"
+  },
+  "2348": {
+   "node": "base replay"
+  },
+  "2349": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2350": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "2351": {
+   "node": "base replay"
+  },
+  "2355": {
+   "node": "base replay"
+  },
+  "2356": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2358": {
+   "node": "base replay"
+  },
+  "2359": {
+   "node": "base replay"
+  },
+  "2360": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2362": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2365": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2368": {
+   "node": "base replay"
+  },
+  "2370": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2371": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2372": {
+   "node": "base replay"
+  },
+  "2373": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2374": {
+   "node": "decoded + base replay",
+   "portal": "decoded + base replay"
+  },
+  "2375": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2376": {
+   "node": "base replay"
+  },
+  "2377": {
+   "node": "base replay"
+  },
+  "2380": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "2382": {
+   "node": "base replay"
+  },
+  "2386": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2387": {
+   "node": "base replay"
+  },
+  "2388": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2389": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2390": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2391": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2392": {
+   "node": "base replay"
+  },
+  "2393": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2394": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2395": {
+   "node": "base replay"
+  },
+  "2398": {
+   "node": "base replay"
+  },
+  "2399": {
+   "node": "base replay"
+  },
+  "2401": {
+   "node": "base replay"
+  },
+  "2412": {
+   "node": "base replay"
+  },
+  "2438": {
+   "node": "dash value + base replay",
+   "portal": "dash value"
+  },
+  "2451": {
+   "node": "base replay"
+  },
+  "247": {
+   "node": "base replay"
+  },
+  "2477": {
+   "node": "base replay"
+  },
+  "248": {
+   "node": "base replay"
+  },
+  "249": {
+   "node": "base replay"
+  },
+  "250": {
+   "node": "base replay"
+  },
+  "251": {
+   "node": "base replay"
+  },
+  "2518": {
+   "node": "base replay"
+  },
+  "252": {
+   "node": "base replay"
+  },
+  "2524": {
+   "node": "base replay"
+  },
+  "2529": {
+   "node": "base replay"
+  },
+  "253": {
+   "node": "base replay"
+  },
+  "254": {
+   "node": "base replay"
+  },
+  "2545": {
+   "node": "base replay"
+  },
+  "255": {
+   "node": "base replay"
+  },
+  "256": {
+   "node": "base replay"
+  },
+  "257": {
+   "node": "base replay"
+  },
+  "258": {
+   "node": "base replay"
+  },
+  "2585": {
+   "node": "glued scheme",
+   "portal": "glued scheme + base replay"
+  },
+  "259": {
+   "node": "base replay"
+  },
+  "2594": {
+   "node": "dash value + base replay",
+   "portal": "dash value"
+  },
+  "260": {
+   "node": "base replay"
+  },
+  "2609": {
+   "node": "base replay"
+  },
+  "261": {
+   "node": "base replay"
+  },
+  "2615": {
+   "node": "base replay"
+  },
+  "262": {
+   "node": "base replay"
+  },
+  "2622": {
+   "node": "glued scheme",
+   "portal": "glued scheme + base replay"
+  },
+  "2629": {
+   "node": "base replay"
+  },
+  "263": {
+   "node": "base replay"
+  },
+  "264": {
+   "node": "base replay"
+  },
+  "2648": {
+   "node": "dash value + base replay",
+   "portal": "dash value"
+  },
+  "265": {
+   "node": "base replay"
+  },
+  "266": {
+   "node": "base replay"
+  },
+  "2660": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "267": {
+   "node": "base replay"
+  },
+  "2670": {
+   "node": "dash value",
+   "portal": "dash value"
+  },
+  "268": {
+   "node": "base replay"
+  },
+  "2682": {
+   "node": "dash value + base replay",
+   "portal": "dash value"
+  },
+  "269": {
+   "node": "base replay"
+  },
+  "270": {
+   "node": "base replay"
+  },
+  "2704": {
+   "node": "base replay"
+  },
+  "271": {
+   "node": "base replay"
+  },
+  "2712": {
+   "node": "glued scheme",
+   "portal": "glued scheme + base replay"
+  },
+  "2714": {
+   "node": "dash value",
+   "portal": "dash value"
+  },
+  "272": {
+   "node": "base replay"
+  },
+  "273": {
+   "node": "base replay"
+  },
+  "274": {
+   "node": "base replay"
+  },
+  "275": {
+   "node": "base replay"
+  },
+  "276": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2761": {
+   "node": "base replay"
+  },
+  "277": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "278": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2784": {
+   "node": "dash value + base replay",
+   "portal": "dash value"
+  },
+  "279": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2794": {
+   "node": "base replay"
+  },
+  "280": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2800": {
+   "node": "dash value + base replay",
+   "portal": "dash value"
+  },
+  "281": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "282": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "283": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2834": {
+   "node": "base replay"
+  },
+  "284": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2848": {
+   "node": "base replay"
+  },
+  "285": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "2850": {
+   "node": "base replay"
+  },
+  "2853": {
+   "node": "dash value + base replay",
+   "portal": "dash value"
+  },
+  "2855": {
+   "node": "base replay"
+  },
+  "2861": {
+   "node": "dash value",
+   "portal": "dash value"
+  },
+  "2862": {
+   "node": "base replay"
+  },
+  "2873": {
+   "node": "base replay"
+  },
+  "2878": {
+   "node": "base replay"
+  },
+  "2909": {
+   "node": "base replay"
+  },
+  "2912": {
+   "node": "dash value",
+   "portal": "dash value"
+  },
+  "2924": {
+   "node": "dash value + base replay",
+   "portal": "dash value"
+  },
+  "2925": {
+   "node": "base replay"
+  },
+  "2930": {
+   "node": "base replay"
+  },
+  "2936": {
+   "node": "dash value",
+   "portal": "dash value"
+  },
+  "2943": {
+   "node": "base replay"
+  },
+  "2957": {
+   "node": "base replay"
+  },
+  "2972": {
+   "node": "glued scheme + base replay",
+   "portal": "glued scheme + base replay"
+  },
+  "3019": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "3037": {
+   "node": "base replay"
+  },
+  "3043": {
+   "node": "glued name + base replay",
+   "portal": "glued name"
+  },
+  "3046": {
+   "node": "base replay"
+  },
+  "3048": {
+   "node": "dash value + base replay",
+   "portal": "dash value"
+  },
+  "3059": {
+   "node": "base replay"
+  },
+  "3066": {
+   "node": "base replay"
+  },
+  "3070": {
+   "node": "base replay"
+  },
+  "3073": {
+   "node": "glued name + base replay",
+   "portal": "glued name"
+  },
+  "3077": {
+   "node": "glued name + base replay",
+   "portal": "glued name"
+  },
+  "3098": {
+   "node": "glued name + base replay",
+   "portal": "glued name"
+  },
+  "3111": {
+   "node": "glued scheme",
+   "portal": "glued scheme + base replay"
+  },
+  "3142": {
+   "node": "base replay"
+  },
+  "3176": {
+   "node": "glued scheme",
+   "portal": "glued scheme + base replay"
+  },
+  "329": {
+   "node": "base replay"
+  },
+  "33": {
+   "node": "base replay"
+  },
+  "334": {
+   "node": "base replay"
+  },
+  "344": {
+   "node": "base replay"
+  },
+  "359": {
+   "node": "base replay"
+  },
+  "364": {
+   "node": "base replay"
+  },
+  "369": {
+   "node": "base replay"
+  },
+  "379": {
+   "node": "base replay"
+  },
+  "380": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "381": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "387": {
+   "node": "base replay"
+  },
+  "396": {
+   "portal": "base replay",
+   "recipe": "base replay"
+  },
+  "411": {
+   "node": "base replay"
+  },
+  "419": {
+   "node": "base replay"
+  },
+  "425": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "427": {
+   "node": "base replay"
+  },
+  "439": {
+   "node": "base replay"
+  },
+  "449": {
+   "node": "base replay"
+  },
+  "483": {
+   "node": "base replay"
+  },
+  "488": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "492": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "494": {
+   "node": "base replay"
+  },
+  "506": {
+   "node": "base replay"
+  },
+  "509": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "544": {
+   "node": "base replay"
+  },
+  "546": {
+   "node": "base replay"
+  },
+  "567": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "599": {
+   "portal": "base replay"
+  },
+  "60": {
+   "node": "base replay"
+  },
+  "601": {
+   "node": "base replay"
+  },
+  "602": {
+   "node": "base replay"
+  },
+  "61": {
+   "node": "dash value + base replay",
+   "portal": "dash value"
+  },
+  "630": {
+   "node": "base replay"
+  },
+  "638": {
+   "node": "base replay"
+  },
+  "658": {
+   "node": "decoded + base replay",
+   "portal": "decoded"
+  },
+  "662": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "670": {
+   "node": "base replay"
+  },
+  "675": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "681": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "699": {
+   "portal": "base replay"
+  },
+  "707": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "709": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "728": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "739": {
+   "portal": "base replay"
+  },
+  "750": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "752": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "76": {
+   "node": "base replay"
+  },
+  "771": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "772": {
+   "node": "base replay"
+  },
+  "775": {
+   "node": "base replay"
+  },
+  "801": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "813": {
+   "node": "base replay"
+  },
+  "82": {
+   "node": "base replay"
+  },
+  "83": {
+   "node": "base replay"
+  },
+  "85": {
+   "node": "base replay"
+  },
+  "856": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "859": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "897": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "909": {
+   "node": "decoded",
+   "portal": "decoded"
+  },
+  "922": {
+   "node": "base replay"
+  },
+  "926": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "930": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "933": {
+   "node": "base replay"
+  },
+  "937": {
+   "node": "base replay"
+  },
+  "942": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "95": {
+   "node": "base replay"
+  },
+  "961": {
+   "node": "base replay"
+  },
+  "966": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "976": {
+   "node": "base replay",
+   "portal": "base replay"
+  },
+  "983": {
+   "portal": "base replay"
+  },
+  "986": {
+   "node": "base replay"
+  }
+ },
+ "reasons": {
+  "base replay": "hidden as this path's own rules of 2a7c803 hid it (the base replay)",
+  "dash value": "a value after a password or credential word that starts with -- is hidden, as 2a7c803 hid it",
+  "dash value + base replay": "a value after a password or credential word that starts with -- is hidden, as 2a7c803 hid it and hidden as this path's own rules of 2a7c803 hid it (the base replay)",
+  "decoded": "hidden in a decoded string literal as the same text is hidden in plain text",
+  "decoded + base replay": "hidden in a decoded string literal as the same text is hidden in plain text and hidden as this path's own rules of 2a7c803 hid it (the base replay)",
+  "glued name": "a snake-case name with letters glued after its credential word, as 2a7c803 read it",
+  "glued name + base replay": "a snake-case name with letters glued after its credential word, as 2a7c803 read it and hidden as this path's own rules of 2a7c803 hid it (the base replay)",
+  "glued scheme": "Bearer glued after other characters is a scheme word, as 2a7c803 read it",
+  "glued scheme + base replay": "Bearer glued after other characters is a scheme word, as 2a7c803 read it and hidden as this path's own rules of 2a7c803 hid it (the base replay)"
+ }
+}

@@ -322,5 +322,64 @@ class StopWithoutAdmissionTests(unittest.TestCase):
         self.assertNotIn("Traceback", err)
 
 
+class ConfigScopeTests(unittest.TestCase):
+    """status, logs and metrics show the launches of --config (default: the default configuration) unless
+    --all-configs: every configuration's launch states share one runtime directory."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="hyperloom cli scope ")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        self.run_dir, self.mine, self.theirs = root / "run", root / "a" / "cluster.json", root / "b" / "cluster.json"
+        self.run_dir.mkdir()
+        for name, config in (("pa", self.mine), ("pb", self.theirs), ("legacy", None)):
+            state = {"machines": {}, "leases": [], "router": {"endpoint": {"address": "127.0.0.1", "port": 9}}}
+            if config is not None:
+                state["config"] = {"path": str(config), "sha256": None}
+            (self.run_dir / f"up-{name}.json").write_text(json.dumps(state), encoding="utf-8")
+        for patcher in (patch("hyperloom.secrets.runtime_dir", return_value=self.run_dir),
+                        patch.object(cli, "config_path", return_value=self.mine)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def invoke(self, *args):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err),                 patch("hyperloom.orchestrate._http_json", side_effect=OSError("not reached")):
+            status = cli.main(list(args))
+        return status, out.getvalue(), err.getvalue()
+
+    def test_status_lists_only_the_current_configuration_unless_all_configs(self):
+        status, out, _ = self.invoke("status")
+        self.assertEqual((status, sorted(json.loads(out))), (0, ["legacy", "pa"]))   # legacy: shown, marked
+        self.assertEqual(json.loads(out)["legacy"]["config_identity"], "unknown")
+        status, out, _ = self.invoke("status", "--config", str(self.theirs))
+        self.assertEqual(sorted(json.loads(out)), ["legacy", "pb"])
+        status, out, _ = self.invoke("status", "--all-configs")
+        self.assertEqual(sorted(json.loads(out)), ["legacy", "pa", "pb"])
+        status, out, _ = self.invoke("status", "pb")
+        self.assertEqual(json.loads(out), {"profile": "pb", "state": "stopped",
+                                           "why": "launched from another configuration"})
+
+    def test_logs_read_only_a_launch_of_the_current_configuration_unless_all_configs(self):
+        status, _, err = self.invoke("logs", "pb", "router")
+        self.assertEqual(status, 1)
+        self.assertIn("launched from another configuration", err)
+        for args in (("logs", "pb", "router", "--all-configs"), ("logs", "legacy", "router")):
+            status, _, err = self.invoke(*args)                       # read: these launches have no router lease
+            self.assertEqual(status, 1)
+            self.assertNotIn("configuration", err)
+            self.assertIn("choose a machine id", err)
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            cli.main(["status", "--config", str(self.theirs), "--all-configs"])     # one or the other
+
+    def test_metrics_dump_exports_only_the_current_configuration_unless_all_configs(self):
+        # The routers' saved endpoint is a closed loopback port: every source is down, labelled by its profile.
+        for args, expected in ((("metrics", "dump"), {"pa", "legacy"}), (("metrics", "dump", "--all-configs"), {"pa", "pb", "legacy"})):
+            _, out, _ = self.invoke(*args)
+            profiles = {line.split('profile="')[1].split('"')[0] for line in out.splitlines()
+                        if line.startswith("hyperloom_source_up") and 'profile="' in line}
+            self.assertEqual(profiles, expected, args)
+
+
 if __name__ == "__main__":
     unittest.main()
