@@ -232,12 +232,10 @@ SECRETS = {
     "api_keyfile --X4pw": "X4pw",
     "db_passwordx\t--X4pw": "X4pw",
     "HF_TOKENcurl --X4pw": "X4pw",
-    # as the base rules read them: pass, pwd or secret anywhere in a snake-case name, a short credential-shaped value
-    # after a scheme word
-    "db_password_prod ProdSecret42": "ProdSecret42",
-    "secret_db ProdSecret43": "ProdSecret43",
-    "Token hunter2": "hunter2",
-    "Basic hunter3": "hunter3",
+    json.dumps(json.dumps("Bearer abc\nSecret42")): "Secret42",
+    # a quoted value with an escaped quote in it, a value glued to an earlier [redacted]
+    'secret: " S3cret \\" x': "S3cret",
+    "api_key= [redacted]S3cret": "S3cret",
     # decoded string literals: the last layer, and a literal whose own decoding stops, are read
     json.dumps(json.dumps(json.dumps(r'"\"password=Secret42\""'))): "Secret42",
     repr("\"curl -H 'Cookie: a;b' -u alice:pw9 h\""): "pw9",
@@ -249,6 +247,25 @@ SECRETS = {
     "'\\'Bear\\x65r hunter6\\''": "hunter6",
     # a scheme word that is itself a name with a value
     "api_key: Token : Sch3meName": "Sch3meName",
+}
+# What the node hides as 2a7c803's node rules did (its base replay); the portal's base showed these, and so does it.
+NODE_SECRETS = {
+    "db_password_prod ProdSecret42": "ProdSecret42",
+    "db_password_prod (hunter2 pw)": "hunter2",
+    "secret_db ProdSecret43": "ProdSecret43",
+    "Token hunter2": "hunter2",
+    "Basic hunter3": "hunter3",
+    "auth_header hunter2": "hunter2",
+    "x_auth_y Abc123": "Abc123",
+    "oauth_cfg S3c": "S3c",
+    "sshpass ssh -p S3cret": "S3cret",
+    "sshpass x -p S3cret": "S3cret",
+    "sshpass -HQ1Z -pQ2Z": "Q2Z",
+    "password: my_secret_pw db_password_prod hunter2": "hunter2",
+    "api_key: abc_key_1 key_cache hunter2": "hunter2",
+    "export HF_TOKEN=x_key_y key_cache S3": "S3",
+    "password key_cache key_cache val": "val",
+    "Token key_cache key_cache val": "val",
 }
 # Forms other components rely on (synthetic values), each in the messages that carry it: the exact masked text.
 PLACEMENT_FORMS = {
@@ -283,18 +300,10 @@ READABLE = (
     "curl -sS https://example.invalid && systemd-run --user --scope true",
     "curl -sS https://example.invalid & docker run --user 1000:1000 img",
     "curl -sS https://example.invalid; docker run --user 1000:1000 img",
-    "max_tokens=512", "--max-num-batched-tokens 8192", "--prompt-tokens 9000",
-    "SamplingParams(n=1, max_tokens=512, temperature=0.7)", "token: 151643", "token-identical: 2/3 (first pass)",
-    "--max-tokens=512, --max-num-batched-tokens 8192;",
-    "--tokenizer /models/qwen", "tokenizer=/models/qwen",
     "curl -XPUT https://example.invalid", "curl -sSL -X PUT https://example.invalid",
-    "sshpass -e ssh -p 2222 host", "sshpass -f pwfile ssh -p 2222 host", "mysql -h db -P3306 shop",
-    "token_ids: [1, 2, 3]",
-    "pad_token: <|endoftext|>", "attn_mask_key=None", "SamplingParams(token=None)",
     "systemd-run --user --setenv=PYTHONPATH=/foo:/bar python3 -u app.py",
     "systemd-run --user --property=MemoryMax=16G --setenv=A=b:c true",
     'docker run --user "1000:1000" img', "docker run --user '1000:1000' img",
-    'curl -H "Authorization: Bearer [redacted]" -d "x y" https://example.invalid',
     "curl's manual page",
     "ghs_runner ok", "ghr_ready", "gho_offset=3", "ghu_users table",
     "curl -E cert.pem https://example.invalid", "curl.exe -E C:\\certs\\client.pem https://example.invalid",
@@ -305,23 +314,52 @@ READABLE = (
     json.dumps(json.dumps({"api_key": "None"})),
     '{"body": "{\\"token\\": null, \\"max_new_tokens\\": \\"1024\\"}"}',
     json.dumps({"cmd": 'docker run --user "1000:1000" img'}),
-    "max_tokens=\\'512\\' then", 'max_tokens=\\"512\\" then', 'token: \\"None\\" ok',
-    "pad_token: </s>", "bos_token: <s>", "unk_token: <unk>", "eos_token: <|im_end|>",
-    "pad_token_id=-1", "eos_token: <\uff5cend\u2581of\u2581sentence\uff5c>",
     json.dumps({"cmd": r'curl --cert "C:\certs\client.pem" https://example.invalid'}),
     "curl -E 'C:\\certs\\' -H 'X-Trace: 1' https://example.invalid",
 )
-# Text 2a7c803 hid that 65f2fe5 made readable; hidden again so that no secret 2a7c803 hid shows (base parity:
-# an environment-style name's value, any value after a scheme word). docs/redaction.md lists them.
-REHIDDEN_FOR_BASE_PARITY = ("MAX_TOKENS 5", "--hf-token 123456789012", "Token counters are reset",
-    "basic setup done", "budget bound violated by the endpoint: max_tokens 16, reported 21 completion tokens",
-    "key_cache shape [32, 8192]", "max_tokens 16", "needs imported token counts", "the token 12345678 was sampled",
-    "tokenizer.ggml.bos_token_id u32 = 151643")
+# Readable on the portal; the node hides a value in each, as 2a7c803's node rules did (its base replay).
+# docs/redaction.md lists them.
+READABLE_ON_THE_PORTAL = (
+    "max_tokens 16", "MAX_TOKENS 5",
+    "budget bound violated by the endpoint: max_tokens 16, reported 21 completion tokens",
+    "Token counters are reset", "needs imported token counts", "basic setup done", "Token ledger",
+    "generated-token counters", "token ids", "tokenizer.ggml.bos_token_id u32 = 151643", "key_cache shape [32, 8192]",
+    "the token 12345678 was sampled", "--hf-token 123456789012",
+    "max_tokens=512", "--max-num-batched-tokens 8192", "--prompt-tokens 9000",
+    "SamplingParams(n=1, max_tokens=512, temperature=0.7)", "token-identical: 2/3 (first pass)",
+    "--max-tokens=512, --max-num-batched-tokens 8192;", "--tokenizer /models/qwen", "tokenizer=/models/qwen",
+    "sshpass -e ssh -p 2222 host", "sshpass -f pwfile ssh -p 2222 host", "mysql -h db -P3306 shop",
+    "token_ids: [1, 2, 3]", "attn_mask_key=None", "max_tokens=\\'512\\' then", 'max_tokens=\\"512\\" then',
+    "pad_token_id=-1",
+)
+# 65f2fe5 kept these; both 2a7c803's node rules and its portal rules hid a value in each (the portal's took any
+# token: or token= value, and anything after Bearer), so every path hides it again. docs/redaction.md lists them.
+HIDDEN_AS_BOTH_BASES_DID = (
+    "token: 151643", "pad_token: <|endoftext|>", "SamplingParams(token=None)",
+    'curl -H "Authorization: Bearer [redacted]" -d "x y" https://example.invalid', 'token: \\"None\\" ok',
+    "pad_token: </s>", "bos_token: <s>", "unk_token: <unk>", "eos_token: <|im_end|>",
+    "eos_token: <\uff5cend\u2581of\u2581sentence\uff5c>",
+)
 IMPLEMENTATIONS = {
     "shared": redaction.redact_text,
     "node": node.redact,
     "portal text": redact,
     "portal document": lambda line: redact({"stderr": line, "lines": [line]})["lines"][0],
+}
+PORTAL = {name: implementation for name, implementation in IMPLEMENTATIONS.items() if name != "node"}
+# The placement messages on the node where its base hid the parenthesis after the value (a snake-case or upper case
+# name, or -p, before a blank): the exact masked text it gives.
+NODE_PLACEMENT = {
+    "audit write failed: curl -u user:curl_probe_secret (the job was not started)":
+        "audit write failed: curl -u [redacted] [redacted] job was not started)",
+    "audit write failed: mysql -pmysql_probe_secret (the job was not started)":
+        "audit write failed: mysql -p[redacted] [redacted] job was not started)",
+    "audit write failed: sshpass -p ssh_probe_secret (the job was not started)":
+        "audit write failed: sshpass -p [redacted] [redacted] job was not started)",
+    "audit write failed: hf_probe_secret (the job was not started)":
+        "audit write failed: [redacted] [redacted] job was not started)",
+    "audit write failed: ghp_probe_secret (the job was not started)":
+        "audit write failed: [redacted] [redacted] job was not started)",
 }
 
 
@@ -361,23 +399,36 @@ class SharedRulesTests(unittest.TestCase):
             for text in READABLE:
                 with self.subTest(implementation=name, text=text):
                     self.assertEqual(implementation(text), text)
-            for text in REHIDDEN_FOR_BASE_PARITY:
+            for text in READABLE_ON_THE_PORTAL:
+                with self.subTest(implementation=name, portal_readable=text):
+                    if name == "node":
+                        self.assertIn("[redacted]", implementation(text))
+                    else:
+                        self.assertEqual(implementation(text), text)
+            for text in HIDDEN_AS_BOTH_BASES_DID:
                 with self.subTest(implementation=name, rehidden=text):
                     self.assertIn("[redacted]", implementation(text))
+        for line, secret in NODE_SECRETS.items():
+            with self.subTest(node=line):
+                self.assertIn("[redacted]", node.redact(line))
+                self.assertNotIn(secret, node.redact(line))
 
     def test_the_forms_other_components_rely_on(self):
         for name, implementation in IMPLEMENTATIONS.items():
             for form, masked in PLACEMENT_FORMS.items():
                 for message in PLACEMENT_MESSAGES:
-                    with self.subTest(implementation=name, line=message.format(form)):
-                        self.assertEqual(implementation(message.format(form)), message.format(masked))
+                    line = message.format(form)
+                    with self.subTest(implementation=name, line=line):
+                        expected = NODE_PLACEMENT.get(line, message.format(masked)) if name == "node" else \
+                            message.format(masked)
+                        self.assertEqual(implementation(line), expected)
 
     def test_what_stays_around_a_redacted_value(self):
         for name, implementation in IMPLEMENTATIONS.items():
             with self.subTest(implementation=name):
                 self.assertEqual(implementation("password=it\\'s fine and that\\'s all"),
                                  "password=[redacted] fine and that\\'s all")
-                self.assertEqual(implementation("api_key= db_pass (x)"), "api_key= [redacted] [redacted]")
+                self.assertEqual(implementation("api_key= db_pass (x)"), "api_key= [redacted] (x)")
                 self.assertEqual(implementation("HF_TOKEN hf_probe_secret (the job was not started)"),
                                  "HF_TOKEN [redacted] (the job was not started)")
                 self.assertEqual(implementation("export HF_TOKEN_PATH='C:\\hf\\' && python run.py --model 'Qwen/Qwen3'"),
@@ -388,7 +439,9 @@ class SharedRulesTests(unittest.TestCase):
                                  "curl -u [redacted] -U [redacted] https://x && python -u serve.py")
                 self.assertEqual(implementation("mysql -u root -pXyz shop"), "mysql -u root -p[redacted] shop")
                 self.assertEqual(implementation("export HF_TOKEN=" + HF), "export HF_TOKEN=[redacted]")
-                self.assertEqual(implementation("Authorization: Bearer abc.def"), "Authorization: Bearer [redacted]")
+                # The node's base also read Authorization: as a name and hid the scheme word.
+                self.assertEqual(implementation("Authorization: Bearer abc.def"), "Authorization: [redacted] [redacted]"
+                                 if name == "node" else "Authorization: Bearer [redacted]")
 
     def test_argument_lists(self):
         cases = [
@@ -463,11 +516,17 @@ class SharedRulesTests(unittest.TestCase):
             # An argument is one whole value, blanks included; a credential option keeps None/null/true/false.
             (["curl", "--user=alice smith:Secret", "-ualice smith:Secret"],
              ["curl", "--user=[redacted]", "-u[redacted]"]),
-            (["app", "--api-key", "None", "--password=null", "--password", "Secret"],
-             ["app", "--api-key", "None", "--password=null", "--password", "[redacted]"]),
+            # After --api-key, --handoff-api-key, --password or --token the next argument is hidden whatever it is, as
+            # 2a7c803's portal did, and so is password=null (its text rule); another credential option keeps None.
+            (["app", "--api-key", "None", "--password=null", "--password", "Secret", "--db-password", "None"],
+             ["app", "--api-key", "[redacted]", "--password=[redacted]", "--password", "[redacted]", "--db-password",
+              "None"]),
+            (["app", "--token", "512", "--max-tokens", "512", "--hf-token", "123456789012", "--token", ";", "x"],
+             ["app", "--token", "[redacted]", "--max-tokens", "512", "--hf-token", "123456789012", "--token",
+              "[redacted]", "x"]),
             # A quoted word at the start of an argument does not make the rest of it readable.
             (["app", "--password", "'None' ArgSecret", "--password", "None"],
-             ["app", "--password", "[redacted]", "--password", "None"]),
+             ["app", "--password", "[redacted]", "--password", "[redacted]"]),
             (["curl", "--user='alice' smith:ArgSecret", "--hf-token=123 SECX"],
              ["curl", "--user=[redacted]", "--hf-token=[redacted]"]),
             # An option name that keeps literal quotes.
@@ -493,10 +552,11 @@ class SharedRulesTests(unittest.TestCase):
                 self.assertEqual(redact(argv), expected)
                 self.assertEqual(redact({"argv": argv})["argv"], expected)
                 # Recipe results: keys and argv only (text=False), so the argv rules alone must hide them (all but a
-                # bare token after an environment name, which only the text rules know).
+                # bare token after an environment name and password=null, which only the text rules hide, at
+                # 2a7c803 too).
+                recipe = [item if item == "--password=null" else shown for item, shown in zip(argv, expected)]
                 if "HF_TOKEN=" + HF not in argv:
-                    self.assertEqual(recipe_web.redacted({"result": {"argv": argv}}, redact)["result"]["argv"],
-                                     expected)
+                    self.assertEqual(recipe_web.redacted({"result": {"argv": argv}}, redact)["result"]["argv"], recipe)
         self.assertEqual(redaction.redact_argv([1, None, "x"]), [1, None, "x"])       # non-text items kept
         self.assertEqual(redact("curl -u x:y " + HF, text=False), "curl -u x:y " + HF)     # documents' prose
 

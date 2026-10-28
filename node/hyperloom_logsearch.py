@@ -335,8 +335,9 @@ SECRET_PATTERNS = (
                 r"(?P<v>[^/\s:@]*:[^/\s@]+)@"), "", _keep_nothing),
     # An environment-style name and its value separated by blanks only (`HF_TOKEN hf_x`, `export DB_PASS s3`): the
     # name is upper case, or snake case ending with the credential word (hf_token, db_pass), so prose such as
-    # "512 tokens in 3.1 s" or "key_cache shape" stays readable. A snake-case name inside a value another rule hides
-    # is that value, not a name, before a parenthesis (HF_TOKEN hf_probe_secret (the job...): "(the" stays).
+    # "512 tokens in 3.1 s" or "key_cache shape" stays readable (the node's base replay hides the latter, as its base
+    # did). A snake-case name inside a value another rule hides is that value, not a name, before a parenthesis
+    # (HF_TOKEN hf_probe_secret (the job...): "(the" stays, unless the path's base replay hides it).
     (re.compile(r"\b(?:(?:(?=[A-Z0-9_]*?(?P<cred>KEY|SECRET|PASS|PWD|CREDENTIALS?|AUTH))|(?=[A-Z0-9_]*?TOKEN(?!IZ)))"
                 r"[A-Z0-9]+(?:_[A-Z0-9]+)*"
                 r"|(?P<lower>(?i:(?:(?=[a-z0-9_]*?(?P<cred2>key|secret|pass|pwd|credentials?|auth))"
@@ -481,8 +482,7 @@ def _pass_spans(text, strings, patterns=None, shorter_read=False):
 # another's span readable): a name read after the shorter reading of an apostrophe value ({'a_key': 'it\'s"x',
 # 'secret': " y'"}), a value that starts with -- after a password word or an environment-style name
 # (password --x), Bearer glued after other characters (xBearer t), a snake-case name with letters glued after its
-# credential word (hf_tokencurl t); and, as the base rules read them, an environment-style name (db_password_prod x,
-# key_cache x, hf_token_ci x) and any value after a scheme word (Token hunter, Basic auth).
+# credential word (hf_tokencurl t).
 _ENV_UPPER = (r"(?:(?=[A-Z0-9_]*?(?P<cred>KEY|SECRET|PASS|PWD|CREDENTIALS?|AUTH))|(?=[A-Z0-9_]*?TOKEN(?!IZ)))"
               r"[A-Z0-9]+(?:_[A-Z0-9]+)*")
 _ENV_LOWER = (r"(?P<lower>(?i:(?:(?=[a-z0-9_]*?(?P<cred2>key|secret|pass|pwd|credentials?|auth))"
@@ -496,41 +496,10 @@ _PASSES = (
          _keep_token_value)), False),
     ("glued scheme", (
         (re.compile(r"(?i)(?<=\w)(?P<bearer>Bearer)\s+" + _START), "", _keep_scheme_value),), False),
-    ("base parity: an environment-style name", "_base_names", False),
-    ("base parity: a scheme value", (
-        (re.compile(r"(?i)\b(?:Bearer|Basic|Digest|Token|Negotiate)\s+(?!\[redacted\])(?P<v>[A-Za-z0-9+/=._~:-]+)"),
-         "", _keep_nothing),), False),
     ("glued name", (
         (re.compile(r"\b(?:" + _ENV_LOWER % "[a-z0-9]+" + r")\s+(?![:=])" + _NOT_OPTION + _START), "",
          _keep_token_value),), False),
 )
-
-
-def _base_names(text):
-    """The base rules' environment-style names, read as they read them: a whole word followed by blanks and a value
-    (not = or :) that is any non-blank run; the word is upper case (A-Z, 0-9, single underscores) with a credential
-    word in a part, or, in any case, two or more such parts one of which holds a credential word (key_cache,
-    db_password_prod, hf_token_ci). Matches do not overlap, left to right, as one substitution makes them; a value
-    that opens a parenthesis it does not close (a message: "(the job ...)") is not taken."""
-    spans, pos = [], 0
-    while True:
-        found = _BASE_NAME.search(text, pos)
-        if found is None:
-            return spans
-        word, pos = found.group(1), found.start(2)
-        parts = word.split("_")
-        if "" not in parts and (_BASE_UPPER.fullmatch(word) and any(_BASE_CREDENTIAL.search(part) for part in parts)
-                                or len(parts) > 1 and any(_BASE_CREDENTIAL_ANY.search(part) for part in parts)):
-            value = found.group(2)
-            if not (value.startswith("(") and ")" not in value):
-                spans.append(found.span(2))
-                pos = found.end()
-
-
-_BASE_NAME = re.compile(r"\b([A-Za-z0-9_]+)\s+(?![:=])(?!\[redacted\])(\S+)")
-_BASE_UPPER = re.compile(r"[A-Z0-9_]+")
-_BASE_CREDENTIAL = re.compile(r"KEY|SECRET|TOKEN|PASS|PWD|CREDENTIALS?|AUTH")
-_BASE_CREDENTIAL_ANY = re.compile(r"(?i)key|secret|token|pass|pwd|credentials?|auth")
 
 
 def _layer_spans(text):
@@ -538,7 +507,7 @@ def _layer_spans(text):
     strings = _strings(text)
     spans = _pass_spans(text, strings)
     for name, patterns, shorter_read in _PASSES:
-        spans += _base_names(text) if patterns == "_base_names" else _pass_spans(text, strings, patterns, shorter_read)
+        spans += _pass_spans(text, strings, patterns, shorter_read)
     return spans
 
 
@@ -590,14 +559,82 @@ def _decoded(text, start, end):
     return "".join(decoded), starts, ends, at >= end
 
 
-def _hidden(text, depth=0):
-    """The spans to hide in ``text``: the rules' own, and what they hide in its escaped string literals, decoded. A
-    decoded layer that holds nothing a rule starts from is only decoded further, and so is one that is itself one
-    string literal with escapes that decodes whole (JSON of JSON) when another layer will read it; the last layer,
-    and a literal whose decoding stops, are always read."""
-    whole = (0 < depth < _LAYERS and text[:1] in ("'", '"') and len(text) > 1 and "\\" in text[1:-1]
-             and _LITERAL[text[0]].fullmatch(text) is not None and _decoded(text, 1, len(text) - 1)[3])
-    spans = _layer_spans(text) if not depth or not whole and _TRIGGER.search(text) else []
+# The base replay. The rules of 2a7c803, per path, applied in order as that version applied them (each substitution
+# reads the text the previous ones left); what they replaced is mapped back to the original text and hidden too, so
+# no secret 2a7c803 hid on a path shows on it. The portal's text rules are verbatim. The node's line rules are
+# written to give the same substitutions in linear time (a test checks them against the verbatim ones): a name runs
+# to the end of its run of name characters in every match the base rules made, so it is matched once, from the
+# run's start, without backtracking into it; a line whose first mysql or sshpass word finds no -p value is kept
+# whole (the "keep" alternative), as every later such word on it finds none either. A replacement keeps its groups
+# and the literal after [redacted] (the URL rule's @).
+BASE_NODE_RULES = (
+    (re.compile(r"(?i)\b((?:Bearer|Basic|Digest|Token|Negotiate)\s+)[A-Za-z0-9+/=._~:-]+"), r"\1[redacted]"),
+    (re.compile(r"""(?i)(["']?(?<![\w.-])(?>[\w.-]*(?:key|secret|token|pass|pwd|credential|auth)[\w.-]*+)["']?"""
+                r"""\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}]+)"""), r"\1[redacted]"),
+    (re.compile(r"(?i)(?<![\w-])((?:\w|-(?!-))*+)(--(?>[\w-]*(?:key|secret|token|passw(?:or)?d|credential)[\w-]*+)"
+                r"(?:\s+|=))(?!\[redacted\])\S+"), r"\1\2[redacted]"),
+    (re.compile(r"(?i)\b(passw(?:or)?d|passwd|passphrase|pwd)(\s+)(?!\[redacted\])(?![:=])\S+"), r"\1\2[redacted]"),
+    (re.compile(r"(?i)(?<![a-z0-9+.-])((?>(?=[a-z0-9+.-]*+://)(?:(?<!\w)[a-z]|[a-z0-9+.-]*?[+.-][a-z])"
+                r"[a-z0-9+.-]*+://))[^/\s:@]+:[^/\s@]+@"), r"\1[redacted]@"),
+    (re.compile(r"\b((?=[A-Z0-9_]*?(?:KEY|SECRET|TOKEN|PASS|PWD|CREDENTIALS?|AUTH))[A-Z0-9]++(?:_[A-Z0-9]++)*+"
+                r"|(?i:(?=[a-z0-9_]*?(?:key|secret|token|pass|pwd|credentials?|auth))[a-z0-9]++(?:_[a-z0-9]++)++))"
+                r"(\s+)(?![:=])(?!\[redacted\])\S+"), r"\1\2[redacted]"),
+    (re.compile(r"(?i)\b((?>mysql\w*\b|mariadb[\w-]*\b)[^\n]*?\s-p)(?!\[redacted\])(?=\S)\S+"
+                r"|\b(?P<keep>(?>mysql\w*\b|mariadb[\w-]*\b)[^\n]*)"), r"\1[redacted]"),
+    (re.compile(r"(?i)\b(sshpass\b[^\n]*?\s-p\s*)(?!\[redacted\])\S+|\b(?P<keep>sshpass\b[^\n]*)"), r"\1[redacted]"),
+)
+BASE_PORTAL_RULES = (
+    (re.compile(r"(?i)(Bearer\s+)\S+"), r"\1[redacted]"),
+    (re.compile(r'''(?ix)((?:["']?(?:api[_-]?key|handoff[_-]?api[_-]?key|password|secret|token)["']?)\s*[:=]\s*|'''
+                r'''--(?:api-key|handoff-api-key|password|token)\s+)(?:"[^"]*"|'[^']*'|[^\s,;}]+)'''), r"\1[redacted]"),
+)
+_GROUP = re.compile(r"\\(\d)")
+
+
+def _replay(text, rules):
+    """The spans of ``text`` that ``rules`` ((pattern, replacement) pairs, applied in order as re.sub applies them)
+    replace: each match (but one of a "keep" group) less the groups its replacement keeps and the literal it ends
+    with, mapped back through every earlier substitution to the original text."""
+    origin, current, spans = list(range(len(text))), text, []
+    for pattern, replacement in rules:
+        groups = [int(number) for number in _GROUP.findall(replacement)]
+        tail = replacement.rsplit(REDACTED, 1)[1]
+        out, mapped, last = [], [], 0
+        keep = pattern.groupindex.get("keep")
+        for found in pattern.finditer(current):
+            if keep and found.group(keep) is not None:
+                continue                # kept as it is (a line no rule's value is on)
+            out.append(current[last:found.start()])
+            mapped += origin[last:found.start()]
+            kept_end = found.start()
+            for number in groups:       # the kept groups (in the order they appear, from the match's start)
+                start, end = found.span(number)
+                out.append(current[start:end])
+                mapped += origin[start:end]
+                kept_end = max(kept_end, end)
+            end = found.end() - len(tail) if tail and current.endswith(tail, 0, found.end()) else found.end()
+            hidden = [at for at in origin[kept_end:end] if at is not None]
+            if hidden:
+                spans.append((hidden[0], hidden[-1] + 1))
+            out.append(REDACTED)
+            mapped += [None] * len(REDACTED)
+            out.append(current[end:found.end()])
+            mapped += origin[end:found.end()]
+            last = found.end()
+        out.append(current[last:])
+        mapped += origin[last:]
+        current, origin = "".join(out), mapped
+    return spans
+
+
+def _hidden(text, depth=0, base=None):
+    """The spans to hide in ``text``: the rules' own, the base replay's (``base``: a path's base rules; the text
+    itself only), and what the rules hide in its escaped string literals, decoded. A
+    decoded layer that holds nothing a rule starts from (every rule starts from one of _TRIGGER's words) is only
+    decoded further; every other layer runs every pass."""
+    spans = _layer_spans(text) if not depth or _TRIGGER.search(text) else []
+    if base is not None:
+        spans += _replay(text, base)
     if depth >= _LAYERS or "\\" not in text:
         return spans
     pos, failed, size = 0, {"'": -1, '"': -1}, len(text)
@@ -623,11 +660,11 @@ def _hidden(text, depth=0):
     return spans
 
 
-def redact_text(text):
+def redact_text(text, base=BASE_PORTAL_RULES):
     """``text`` with every credential the shared rules recognise replaced by [redacted] (overlapping or touching
-    hidden spans become one)."""
+    hidden spans become one); ``base``: the path's base rules (the portal's, or the node's: BASE_NODE_RULES)."""
     parts, last = [], 0
-    for start, end in sorted(_hidden(text)):
+    for start, end in sorted(_hidden(text, 0, base)):
         if end <= start:
             continue
         if start <= last and parts:
@@ -645,7 +682,7 @@ REPARSE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 
 def redact(line):
-    return redact_text(line)
+    return redact_text(line, BASE_NODE_RULES)
 
 
 def show(line):

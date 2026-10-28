@@ -132,7 +132,8 @@ def substitution_hidden(patterns, text):
 
 
 def _pieces(replacement):
-    """A replacement template as group numbers and literal texts (\\1[redacted] -> [1, "[redacted]"])."""
+    """A replacement template as group numbers and literal texts, [redacted] apart (\\1[redacted]@ -> [1,
+    "[redacted]", "@"])."""
     pieces, at = [], 0
     while at < len(replacement):
         if replacement[at] == "\\" and replacement[at + 1:at + 2].isdigit():
@@ -141,6 +142,12 @@ def _pieces(replacement):
             continue
         end = replacement.find("\\", at + 1)
         end = len(replacement) if end == -1 else end
-        pieces.append(replacement[at:end])
+        literal = replacement[at:end]           # [redacted] apart from what follows it: [redacted]@ keeps "@"
+        while REDACTED in literal and literal != REDACTED:
+            cut = literal.index(REDACTED)
+            pieces += [piece for piece in (literal[:cut], REDACTED) if piece]
+            literal = literal[cut + len(REDACTED):]
+        if literal:
+            pieces.append(literal)
         at = end
     return pieces
