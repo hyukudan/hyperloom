@@ -3,7 +3,7 @@ import json
 import re
 import time
 
-from hyperloom import telemetry
+from hyperloom import nodepoll, pollbudget, telemetry
 from hyperloom.adapters import sessions
 from . import observe
 from .launch import config_key
@@ -17,6 +17,11 @@ LIMIT = 256
 SOURCE_WHY_BYTES = 2048
 INTERVAL = 30
 UNSUPPORTED_BACKOFF = 600
+PAGE_WHY = "collected only while a portal page is open"
+
+
+def namespace(api):
+    return NAMESPACE + "/" + config_key(api)
 
 
 def _http(url, headers=None, deadline=None, *, method="GET", json_body=None):
@@ -72,7 +77,7 @@ def _bounded_why(why):
     return why
 
 
-def _source(api, cluster, launch, replica, kind, deadline):
+def _source(api, cluster, launch, replica, kind, deadline, now, previous=None):
     row = {"replica": replica["id"], "supported": None, "why": {}, "stats": None, "sessions": None}
     machine = cluster.machines.get(replica.get("node"))
     address = replica.get("address")
@@ -84,6 +89,12 @@ def _source(api, cluster, launch, replica, kind, deadline):
         row["why"] = {"collection": "engine is bound to node loopback; no node calls in this collector"}
         return row
     base = f"http://{observe._host(replica['address'])}:{replica['port']}"
+    why = pollbudget.for_api(api).engine(replica["node"],
+        f"{replica['address']}:{replica['port']}", "sessioncache", now=now)
+    if why is not None:
+        row = dict(previous or row)
+        row["why"] = {**row.get("why", {}), "stale": why}
+        return row
     try:
         headers = observe._bearer(api.orchestrate._secret_name(launch["profile"], replica["node"]))
         if kind == "minimax":
@@ -122,22 +133,25 @@ def _source(api, cluster, launch, replica, kind, deadline):
 
 def collect(api, now, store=None):
     store = store if store is not None else telemetry.open_store(api)
+    scope = namespace(api)
+    poll = nodepoll.of(api)
+    if poll is None or not poll.page_open():
+        for key, _, previous in list(store.items(scope)):
+            previous["why"] = {**previous.get("why", {}), "stale": PAGE_WHY}
+            store.put(scope, key, previous)
+        return []
     cluster = api.cluster()
     launches, omitted = observe.launches(api)
-    store.put("sessioncache/discovery", "scope", {"configuration": config_key(api),
+    store.put("sessioncache/discovery", config_key(api), {"configuration": config_key(api),
                                                "omitted": omitted, "why": "launch discovery includes only this portal's configuration"})
     keep = {p["profile"] for p in launches if PROFILE_ID.fullmatch(p["profile"])}
-    observe._reconcile(store, NAMESPACE, keep)
+    observe._reconcile(store, scope, keep)
     deadline = time.monotonic() + observe.RUN_BUDGET_S
     for launch in observe._rotated(api, "sessioncache", launches):
         profile, kind = launch["profile"], FAMILIES.get(launch.get("family"))
         if profile not in keep:
             continue
-        previous = store.get(NAMESPACE, profile)
-        if (previous and previous.get("_configuration") == config_key(api)
-                and previous.get("supported") is False
-                and 0 <= now - previous.get("as_of", 0) < UNSUPPORTED_BACKOFF):
-            continue
+        previous = store.get(scope, profile) or {}
         sources = []
         for replica in observe._rotated(api, "sessioncache/" + profile, launch["replicas"]):
             if not kind:
@@ -146,7 +160,21 @@ def collect(api, now, store=None):
                 sources.append({"replica": replica["id"], "supported": None, "stats": None, "sessions": None,
                                 "why": {"collection": "collector time budget exhausted"}})
                 continue
-            sources.append(_source(api, cluster, launch, replica, kind, deadline))
+            endpoint = [kind, replica.get("node"), replica.get("address"), replica.get("port")]
+            old = next((dict(s) for s in previous.get("sources", [])
+                        if s["replica"] == replica["id"] and s.get("_endpoint") == endpoint), None)
+            if old:
+                old["sessions"] = [{k: v for k, v in r.items() if k != "replica"}
+                                   for r in previous.get("sessions", []) if r["replica"] == replica["id"]]
+            if (old and old.get("supported") is False
+                    and 0 <= now - old.get("as_of", 0) < UNSUPPORTED_BACKOFF):
+                sources.append(old)
+                continue
+            source = _source(api, cluster, launch, replica, kind, deadline, now, old)
+            source["_endpoint"] = endpoint
+            if "stale" not in source["why"]:
+                source["as_of"] = now
+            sources.append(source)
         supported = (True if any(s["supported"] is True for s in sources) else
                      False if not kind or sources and all(s["supported"] is False for s in sources) else None)
         why = {"scope": "launch discovery includes only this portal's configuration"}
@@ -154,6 +182,8 @@ def collect(api, now, store=None):
             why["supported"] = UNSUPPORTED
         elif supported is None:
             why["collection"] = "no successful session cache query"
+        if any("stale" in s["why"] for s in sources):
+            why["stale"] = "some endpoint observations retained; see sources"
         rows = [{**r, "replica": s["replica"]} for s in sources for r in s.get("sessions") or []]
         rows.sort(key=lambda r: (r.get("last_used") is not None, r.get("last_used") or 0), reverse=True)
         stats = {}
@@ -173,8 +203,8 @@ def collect(api, now, store=None):
         # Keep only capped sessions once, rather than duplicating unbounded source lists.
         for source in sources:
             source.pop("sessions", None)
-        store.put(NAMESPACE, profile, {"_configuration": config_key(api), "profile": profile, "engine": kind or "unknown", "supported": supported,
-                  "why": why, "as_of": now, "stats": stats, "sessions": rows[:LIMIT], "coverage": coverage,
+        store.put(scope, profile, {"_configuration": config_key(api), "profile": profile, "engine": kind or "unknown", "supported": supported,
+                  "why": why, "as_of": min((s.get("as_of", now) for s in sources), default=now), "stats": stats, "sessions": rows[:LIMIT], "coverage": coverage,
                   "sources": sources})
     return []
 
@@ -186,7 +216,7 @@ def document(api, query, store=None):
     store = store if store is not None else telemetry.existing_store(api)
     why = {"profiles": observe.NO_STORE} if store is None else {}
     coverage = {"ignored_profiles": 0, "why": "launch discovery includes only this portal's configuration"}
-    discovery = store.get("sessioncache/discovery", "scope") if store is not None else None
+    discovery = store.get("sessioncache/discovery", config_key(api)) if store is not None else None
     if discovery and discovery.get("configuration") == config_key(api):
         coverage["discovery_omitted"] = discovery["omitted"]
         coverage["why"] = discovery.get("why", "launch discovery includes only this portal's configuration")
@@ -196,14 +226,15 @@ def document(api, query, store=None):
         profiles = [] if store is not None else None
         why["profiles"] = "current configuration is unavailable or invalid"
     else:
-        retained = list(store.items(NAMESPACE)) if store is not None else []
+        retained = list(store.items(namespace(api))) if store is not None else []
         profiles = [{k: v for k, v in value.items() if k != "_configuration"} for key, _, value in retained
                     if key in declared and value.get("_configuration") == config_key(api) and
                     ("profile" not in query or key == query["profile"])] if store is not None else None
         coverage["ignored_profiles"] = sum(key not in declared or value.get("_configuration") != config_key(api)
                                            for key, _, value in retained)
     for profile in profiles or []:
-        profile["sources"] = [{**source, "why": _bounded_why(source.get("why", {}))}
+        profile["sources"] = [{**{k: v for k, v in source.items() if not k.startswith("_")},
+                               "why": _bounded_why(source.get("why", {}))}
                               for source in profile.get("sources", [])]
     return api.document("sessioncache", profiles=profiles,
                         why=why, coverage=coverage,

@@ -187,6 +187,58 @@ class LaunchTests(unittest.TestCase):
             self.api.read("launch/aa")
         self.assertEqual(caught.exception.status, 404)
 
+    def test_config_key_falls_back_when_orchestrate_has_no_key(self):
+        import hashlib
+        import os
+        expected = hashlib.sha256(os.path.normcase(os.path.abspath(str(self.api.config_path))).encode("utf-8")).hexdigest()[:16]
+        with mock.patch("hyperloom.orchestrate._config_key", return_value=None):
+            self.assertEqual(launch.config_key(self.api), expected)
+            self.assertEqual(launch.estimate(self.api, "qwen")["n"], 0)
+
+    def test_latest_reads_history_once_and_skips_superseded_finished_jobs(self):
+        self.job.update(state="failed", finished_at=105)
+        for i in range(20):
+            jid = format(i, "x")
+            self.api._jobs[jid] = dict(self.job, job=jid, started_at=110 + i)
+        with mock.patch.object(launch, "read_history", return_value=([], None)) as history, mock.patch.object(service, "read_progress", return_value=None) as progress:
+            doc = self.api.read("launch")
+        self.assertEqual([r["job"] for r in doc["launches"]], ["13"])
+        history.assert_called_once_with(self.api)
+        self.assertEqual(progress.call_count, 1)
+
+    def test_latest_skips_job_evicted_between_roster_and_detail(self):
+        self.api._jobs["bcd"] = dict(self.job, job="bcd", arguments={"profile": "other"})
+        real = launch.launch
+        def evict(api, jid, query, **kw):
+            if jid == "abc123":
+                api._jobs.pop(jid, None)
+            return real(api, jid, query, **kw)
+        with mock.patch.object(launch, "launch", side_effect=evict), mock.patch.object(service, "read_progress", return_value=None):
+            doc = self.api.read("launch")
+        self.assertEqual([r["job"] for r in doc["launches"]], ["bcd"])
+
+    def test_history_lock_does_not_block_recipe_lock(self):
+        entered, release, recipe = threading.Event(), threading.Event(), threading.Event()
+        path = self.directory / "history.lock"
+        def hold():
+            with service._file_lock(path, thread_lock=launch._history_lock):
+                entered.set()
+                release.wait(5)
+        def transact():
+            with service._file_lock(self.directory / "recipe.lock"):
+                recipe.set()
+        holder = threading.Thread(target=hold)
+        holder.start()
+        try:
+            self.assertTrue(entered.wait(2))
+            transaction = threading.Thread(target=transact)
+            transaction.start()
+            self.assertTrue(recipe.wait(2), "history held the recipe service lock")
+            transaction.join(3)
+        finally:
+            release.set()
+            holder.join(3)
+
     def test_latest_and_redaction(self):
         self.job.update(state="failed", error="password=hunter2", finished_at=140)
         self.api._jobs["bcd"] = dict(self.job, job="bcd", started_at=110)

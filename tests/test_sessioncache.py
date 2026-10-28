@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from hyperloom import pollbudget
 from hyperloom.adapters import AdapterError, sessions
 from hyperloom.telemetry.store import Store
 from hyperloom.web import features
@@ -98,6 +99,7 @@ class CollectorTests(unittest.TestCase):
         self.api = SimpleNamespace(document=lambda name, **kw: {"schema": "hyperloom/ui-" + name + "-v1", **kw},
                                    orchestrate=SimpleNamespace(_secret_name=lambda p, n: p + "-" + n),
                                    config_path=Path("cluster.json"),
+                                   node_poll=SimpleNamespace(page_open=lambda: True),
                                    cluster=lambda: SimpleNamespace(profiles={"example": {}}, machines={"node0": SimpleNamespace(http_address="engine.example")}))
         self.launch = {"profile": "example", "family": "ds41-pair", "replicas": [
             {"id": "rank0", "node": "node0", "address": "engine.example", "port": 18501, "loopback": False}]}
@@ -106,7 +108,8 @@ class CollectorTests(unittest.TestCase):
         self.addCleanup(self.discovery.stop)
 
     def collect(self, http):
-        self.store.delete(sc.NAMESPACE, "example")
+        self.store.delete(sc.namespace(self.api), "example")
+        self.api._poll_budget = pollbudget.Budget()
         with patch.object(sc, "_http", side_effect=http), patch.object(observe.secrets, "get", return_value="secret-key"):
             sc.collect(self.api, 1000, self.store)
         return sc.document(self.api, {}, self.store)["profiles"][0]
@@ -216,7 +219,7 @@ class CollectorTests(unittest.TestCase):
                 self.assertNotIn("private-id", json.dumps(parsed))
         row = self.collect(lambda *a, **kw: {"sessions": [None] * 30000}
                            if kw["json_body"]["op"] == "list" else fixture("deepseek")["stats"])
-        retained = self.store.get(sc.NAMESPACE, "example")
+        retained = self.store.get(sc.namespace(self.api), "example")
         response = sc.document(self.api, {}, self.store)
         self.assertLess(len(json.dumps(retained).encode()), 16 * 1024)
         self.assertLess(len(json.dumps(response).encode()), 16 * 1024)
@@ -226,9 +229,9 @@ class CollectorTests(unittest.TestCase):
 
     def test_get_bounds_diagnostics_from_preexisting_store(self):
         self.collect(lambda *a, **kw: fixture("deepseek")[kw["json_body"]["op"]])
-        retained = self.store.get(sc.NAMESPACE, "example")
+        retained = self.store.get(sc.namespace(self.api), "example")
         retained["sources"][0]["why"] = {str(i): "invalid entry" for i in range(30000)}
-        self.store.put(sc.NAMESPACE, "example", retained)
+        self.store.put(sc.namespace(self.api), "example", retained)
         response = sc.document(self.api, {}, self.store)
         self.assertLess(len(json.dumps(response).encode()), 16 * 1024)
         self.assertIn("omitted", response["profiles"][0]["sources"][0]["why"]["collection"])
@@ -277,13 +280,80 @@ class CollectorTests(unittest.TestCase):
         self.assertIn("budget", row["sources"][0]["why"]["collection"])
 
     def test_multiple_replicas_are_summed_and_identified(self):
-        self.launch["replicas"].append({**self.launch["replicas"][0], "id": "replica2"})
+        self.launch["replicas"].append({**self.launch["replicas"][0], "id": "replica2", "port": 18502})
         row = self.collect(lambda *a, **kw: fixture("deepseek")[kw["json_body"]["op"]])
         self.assertEqual(row["stats"]["ram_bytes"], 8192)
         self.assertEqual(row["stats"]["entries"], 4)
         self.assertEqual({r["replica"] for r in row["sessions"]}, {"rank0", "replica2"})
         self.assertTrue(row["coverage"]["complete"])
         self.assertIsNone(row["stats"]["hits"])
+
+    def test_foreign_turn_and_rapid_refresh_preserve_observation(self):
+        original = self.collect(lambda *a, **kw: fixture("deepseek")[kw["json_body"]["op"]])
+        budget = pollbudget.for_api(self.api)
+        for now, holder, reason in ((1001, None, "once per"), (1031, "foreign", "paused")):
+            budget.note_turn("node0", holder, now=now)
+            with patch.object(observe, "_bearer") as key, patch.object(sc, "_http") as http:
+                sc.collect(self.api, now, self.store)
+                key.assert_not_called()
+                http.assert_not_called()
+            row = sc.document(self.api, {}, self.store)["profiles"][0]
+            self.assertEqual(row["sessions"], original["sessions"])
+            self.assertEqual(row["stats"], original["stats"])
+            self.assertEqual(row["as_of"], 1000)
+            self.assertIn(reason, row["sources"][0]["why"]["stale"])
+        budget.note_turn("node0", None, now=1032)
+        with patch.object(sc, "_http", side_effect=lambda *a, **kw: fixture("deepseek")[kw["json_body"]["op"]]):
+            sc.collect(self.api, 1032, self.store)
+        self.assertNotIn("stale", sc.document(self.api, {}, self.store)["profiles"][0]["why"])
+
+    def test_closed_page_or_missing_poller_keeps_previous_without_discovery(self):
+        original = self.collect(lambda *a, **kw: fixture("deepseek")[kw["json_body"]["op"]])
+        for poll in (None, SimpleNamespace(page_open=lambda: False)):
+            self.api.node_poll = poll
+            with patch.object(observe, "launches") as discovery, patch.object(observe, "_bearer") as key, patch.object(sc, "_http") as http:
+                sc.collect(self.api, 1100, self.store)
+                discovery.assert_not_called()
+                key.assert_not_called()
+                http.assert_not_called()
+            row = sc.document(self.api, {}, self.store)["profiles"][0]
+            self.assertEqual(row["sessions"], original["sessions"])
+            self.assertEqual(row["as_of"], original["as_of"])
+            self.assertEqual(row["why"]["stale"], sc.PAGE_WHY)
+
+    def test_configurations_share_store_without_reconciling_each_other(self):
+        self.collect(lambda *a, **kw: fixture("deepseek")[kw["json_body"]["op"]])
+        other = SimpleNamespace(**vars(self.api))
+        other.config_path = Path("other.json")
+        other._poll_budget = pollbudget.Budget()
+        other.cluster = lambda: SimpleNamespace(profiles={"beta": {}}, machines=self.api.cluster().machines)
+        launch = {**self.launch, "profile": "beta"}
+        with patch.object(observe, "launches", return_value=([launch], {"profiles": 2, "replicas": 1})), patch.object(sc, "_http", side_effect=lambda *a, **kw: fixture("deepseek")[kw["json_body"]["op"]]):
+            sc.collect(other, 1030, self.store)
+        self.assertEqual(sc.document(self.api, {}, self.store)["profiles"][0]["profile"], "example")
+        self.assertEqual(sc.document(other, {}, self.store)["profiles"][0]["profile"], "beta")
+        with patch.object(observe, "launches", return_value=([], {"profiles": 0, "replicas": 0})):
+            sc.collect(self.api, 1060, self.store)
+        self.assertEqual(sc.document(self.api, {}, self.store)["profiles"], [])
+        doc = sc.document(other, {}, self.store)
+        self.assertEqual(doc["profiles"][0]["profile"], "beta")
+        self.assertEqual(doc["coverage"]["discovery_omitted"], {"profiles": 2, "replicas": 1})
+
+    def test_mixed_roster_backs_off_only_unsupported_endpoint(self):
+        self.launch["replicas"].append({**self.launch["replicas"][0], "id": "old", "port": 18502})
+        def http(url, *a, **kw):
+            return {"error": "unknown route"} if ":18502/" in url else fixture("deepseek")[kw["json_body"]["op"]]
+        self.assertTrue(self.collect(http)["supported"])
+        for now in (1030, 1599):
+            with patch.object(sc, "_http", side_effect=http) as transport:
+                sc.collect(self.api, now, self.store)
+            self.assertEqual(transport.call_count, 2)
+            self.assertTrue(all(":18501/" in call.args[0] for call in transport.call_args_list))
+        # A changed endpoint must be tried immediately, even for the same replica id.
+        self.launch["replicas"][1]["port"] = 18503
+        with patch.object(sc, "_http", side_effect=http) as transport:
+            sc.collect(self.api, 1600, self.store)
+        self.assertTrue(any(":18503/" in call.args[0] for call in transport.call_args_list))
 
     def test_registration_is_read_only(self):
         reg = features.Registry()

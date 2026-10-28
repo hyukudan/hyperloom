@@ -9,7 +9,7 @@ from hyperloom.web.features import observe, sessioncache
 
 def seed(store, now):
     fixtures = Path(__file__).resolve().parents[2] / "fixtures" / "sessioncache"
-    api = SimpleNamespace(orchestrate=SimpleNamespace(_secret_name=lambda p, n: "fixture-node"),
+    api = SimpleNamespace(node_poll=SimpleNamespace(page_open=lambda: True), orchestrate=SimpleNamespace(_secret_name=lambda p, n: "fixture-node"),
                           config_path=Path(store.path).with_name("cluster.json"),
                           cluster=lambda: SimpleNamespace(profiles={p: {} for p in
                               ("session-demo", "normal-minimax", "qwen-session-demo")}, machines={

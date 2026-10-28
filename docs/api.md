@@ -627,8 +627,11 @@ Missing fields are null with a reason; unknown location is `unknown`. Invalid ID
 `coverage` discloses returned/parsed counts, omissions, the 256-row limit and ordering: newest first when recency
 is reported, engine order otherwise. `sources` retains per-replica support, stats and reasons.
 
-The collector runs at most every 30 s, even without a page open, and backs off for 10 min for profiles
-reported unsupported. It performs bounded reads (2 s/request, 4 s/run, 1 MiB/response) using node engine
+The collector runs at most every 30 s per endpoint, only while a portal page is open, and backs off
+for 10 min per endpoint reported unsupported. With no page open or no node poller, it collects nothing
+and keeps previous observations with the reason `collected only while a portal page is open`. Engine
+reads require a poll-budget grant before credential lookup; foreign GPU turns pause collection.
+Profile and discovery storage, including reconciliation, are partitioned by configuration identity. It performs bounded reads (2 s/request, 4 s/run, 1 MiB/response) using node engine
 keys from the secret store, only after checking each replica address against its configured machine
 (or a loopback address for loopback bindings; these are not queried). GET never collects, discovers launches, creates a store or contacts a node. Stopped
 profiles are reconciled on collection; clients should mark observations older than `stale_after_s` stale.

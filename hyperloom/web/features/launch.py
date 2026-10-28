@@ -3,6 +3,7 @@
 import hashlib
 import json
 import math
+import os
 import re
 import statistics
 import threading
@@ -34,6 +35,8 @@ def config_key(api):
     """Rows are kept per portal configuration: two configurations in one directory share the history file."""
     from hyperloom import orchestrate
     path = orchestrate._config_key(api.config_path)
+    if path is None:
+        path = os.path.normcase(os.path.abspath(os.fspath(api.config_path)))
     return hashlib.sha256(path.encode("utf-8")).hexdigest()[:16]
 
 
@@ -54,8 +57,8 @@ def history(api):
     return read_history(api)[0]
 
 
-def estimate(api, profile):
-    rows, why = read_history(api)
+def estimate(api, profile, retained=None):
+    rows, why = read_history(api) if retained is None else retained
     key = config_key(api)
     values = [r["seconds"] for r in rows if r["profile"] == profile and r.get("config") == key][-20:]
     n = len(values)
@@ -84,7 +87,7 @@ def record_ready(api, job, result, finished):
     row = redact({"profile": profile, "config": config_key(api), "seconds": finished - start})
     path = history_path(api)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with _history_lock, service._file_lock(path.with_suffix(".lock")):
+    with service._file_lock(path.with_suffix(".lock"), thread_lock=_history_lock):
         rows, why = read_history(api)
         if why:
             return {"why": why}
@@ -100,7 +103,7 @@ def record_ready(api, job, result, finished):
         temporary = None
         try:
             with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
-                                             prefix="launch-history-", suffix=".tmp", delete=False) as stream:
+                                             prefix="launch-history-", suffix=".tmp", delete=False, newline="\n") as stream:
                 temporary = Path(stream.name)
                 json.dump(list(reversed(kept)), stream)
             retry_sharing(lambda: temporary.replace(path))
@@ -264,7 +267,7 @@ def jobs(api):
         return [dict(j) for j in api._jobs.values() if j.get("action") in ACTIONS]
 
 
-def launch(api, jid, query):
+def launch(api, jid, query, *, retained=None):
     if query or not re.fullmatch(r"[0-9a-fA-F]+", jid):
         raise ValueError("launch accepts a hex job id and no query parameters")
     job = next((j for j in jobs(api) if j["job"] == jid), None)
@@ -287,17 +290,26 @@ def launch(api, jid, query):
     profile = next((p for p in (snapshot.get("profiles") or {}).get("profiles") or [] if p.get("id") == name), None)
     result = derive(job, progress, profile, (snapshot.get("logs") or {}).get("entries") or [], api.clock())
     from hyperloom.web.api import redact
-    return redact(api.document("launch", **result, eta=estimate(api, result["profile"]), why=why))
+    return redact(api.document("launch", **result, eta=estimate(api, result["profile"], retained), why=why))
 
 
 def latest(api, query):
     if query:
         raise ValueError("launch accepts no query parameters")
     rows = {}
-    for job in sorted(jobs(api), key=lambda j: j.get("started_at") or 0):
-        document = launch(api, job["job"], {})
+    retained = read_history(api)
+    seen = set()
+    for job in sorted(jobs(api), key=lambda j: j.get("started_at") or 0, reverse=True):
+        name = (job.get("arguments", {}).get("profile") or completed(job.get("result")).get("profile"))
+        if job.get("state") != "running" and name and name in seen:
+            continue
+        try:
+            document = launch(api, job["job"], {}, retained=retained)
+        except LookupError:  # the bounded job roster can evict a job between reads
+            continue
         if document["profile"]:
-            rows[document["profile"]] = document
+            seen.add(document["profile"])
+            rows.setdefault(document["profile"], document)
     from hyperloom.web.api import redact
     return redact(api.document("launch", launches=list(rows.values())))
 
