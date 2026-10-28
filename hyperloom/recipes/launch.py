@@ -190,7 +190,7 @@ def prepare(cluster, profile, options, *, router, vram_cap_gib, state_dir, sourc
     if service["start"]:
         if router != "local":
             raise RecipeError("the recipe starts the RTX prefill service, which is loopback-only: use --router local")
-        # The budget is forwarded exactly, zero included (Sol-5 #5); the planner runs now, before any lease (#2).
+        # The budget is forwarded exactly, zero included (review #5); the planner runs now, before any lease (#2).
         cap, host = _service_budget(evaluation)
         plan, why = plan_service(cluster, profile, cap, host)
         if why is not None:

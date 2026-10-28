@@ -571,7 +571,7 @@ class ApplyTests(unittest.TestCase):
             self.deploy(local)
 
     def test_local_prefill_field_rules(self):
-        # R3 (design-r14 v3, Sol-10): one rule per field for a prefill route run by the decode processes.
+        # R3 (design-r14 v3): one rule per field for a prefill route run by the decode processes.
         prefill = 'max_context_tokens = 32768\nmax_batch = 1\nchunk_tokens = 4096\n'
         self.assertIn(prefill, PLAIN)
         self.deploy(PLAIN)                                                                  # equal to the engine facts
@@ -1147,7 +1147,7 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual([r["rank"] for r in rows], [0, 1])
         self.assertTrue(all(r["argv"][-1] == "--describe-capabilities-json" and facts.IDENTITY_KEY in r["argv"]
                             for r in rows))
-        # Sol-11 #1: `up` sets another release id and its own key paths; the final render has the same identity.
+        # Review #1: `up` sets another release id and its own key paths; the final render has the same identity.
         final = deepcopy(cluster)
         final.profiles["ds41-rtx"]["release_id"] = "abcdef012345"
         final.profiles["ds41-rtx"]["api_key_files"] = {m: f"/opt/hl/secrets/{m}-new.key" for m in ("halo-1", "halo-2")}
@@ -1168,7 +1168,7 @@ class LaunchTests(unittest.TestCase):
         self.assertNotEqual(rows[0]["launch_sha256"], replaced[0]["launch_sha256"])
 
     def test_router_follows_the_release_auth(self):
-        # Sol-11 #2: a key-enabled MiniMax release is reached over the LAN with its key, from either router placement.
+        # Review #2: a key-enabled MiniMax release is reached over the LAN with its key, from either router placement.
         from tests import test_rtx
         from hyperloom import engines, render
         from hyperloom.config import parse
@@ -1201,7 +1201,7 @@ class LaunchTests(unittest.TestCase):
                             self.assertNotIn("api_key_file", replica)
 
     def test_saved_declarations_and_the_final_launch_are_rechecked(self):
-        # Sol-11 #3: a saved runtime row for another launch is a refusal reason, not a pass.
+        # Review #3: a saved runtime row for another launch is a refusal reason, not a pass.
         from tests import test_rtx
         from hyperloom import render
         from hyperloom.config import parse
@@ -1213,7 +1213,7 @@ class LaunchTests(unittest.TestCase):
         out = facts.current_runtime(cluster, context, rows)
         self.assertEqual(out["halo-1"]["gib"], 7.6)
         self.assertIn("for another launch", out["halo-2"]["why"])
-        # Sol-11 #1: up refuses a final render that is not the checked launch (before any lease).
+        # Review #1: up refuses a final render that is not the checked launch (before any lease).
         launch_obj = mock.Mock()
         launch_obj.evaluation.context.limits = {"node_runtime": {m: {"gib": 7.6, "launch_sha256": s,
                                                                      "executable_sha256": "e" * 64}
@@ -1557,7 +1557,7 @@ LAB = {"deepseek-v4.1-flash": dict(topology="pair", caps=("import-state-parked",
 
 
 class LabExampleTests(unittest.TestCase):
-    """The deployable lab examples stay refused until their contracts and measurements exist (design-r14 v3, Sol-10):
+    """The deployable lab examples stay refused until their contracts and measurements exist (design-r14 v3):
     each refusal is pinned here; no fixture is edited to reach "admitted"."""
 
     def deploy(self, name, nodes_free=124.0):
@@ -1650,7 +1650,7 @@ class ConformanceTests(unittest.TestCase):
         if routes is None:
             self.skipTest("TensorMeld without prefill_routes (set HYPERLOOM_TM_SRC to a src dir that has it)")
         resolved, bound, decision, sha = self.prepare(core.StubBackend())
-        # The PRO route plans a file tier: its member needs disk_available too (Sol-6 #2).
+        # The PRO route plans a file tier: its member needs disk_available too (review #2).
         decision["requirements"] = apply.with_disk(decision["requirements"], {"prefill_long"}, "rtx", GIB_BYTES, sha)
         table = routes.RouteTable.parse(apply.route_table(resolved.to_json(), resolved.file_sha256, bound, decision,
                                                           "s.json", ctx()))

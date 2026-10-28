@@ -912,7 +912,7 @@ def up(cluster, profile, router="local", nodes=None, devices=None, *, deadline_s
         _check_stop(path)
         node_ram = {}
         if launch is not None:
-            # The node engines' allocations are done: every node keeps the recipe's free-RAM floor (Sol-5 #4).
+            # The node engines' allocations are done: every node keeps the recipe's free-RAM floor (review #4).
             def read_ram(mid):
                 try:
                     node_ram[mid] = {"free_ram_gib": recipe_launch.node_ram(
