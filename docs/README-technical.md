@@ -347,6 +347,6 @@ Please report security issues privately to the repository owner; do not open pub
 
 ## License
 
-Copyright (c) 2026 hyukudan. All rights reserved. This repository is **proprietary**; no license is granted (see [LICENSE](../LICENSE)).
+Copyright (c) 2026 hyukudan. Licensed under the Apache License 2.0 (see [LICENSE](../LICENSE)); submodule components keep their own licenses (see [NOTICE](../NOTICE)).
 
 The components are pulled as pinned submodules and keep their own licenses (see [NOTICE](../NOTICE)): TensorMeld (MIT), the Strix Halo engine (Apache-2.0) and strix-trellis (Apache-2.0).

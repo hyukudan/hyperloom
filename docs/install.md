@@ -57,7 +57,7 @@ tar xzf hyperloom-<version>-g<commit>.tar.gz
 
 ### From a git checkout
 
-The repository is private; you need read access. Only the TensorMeld submodule is needed on the control machine
+Only the TensorMeld submodule is needed on the control machine
 (the engine and strix-trellis are fetched and built on the nodes by their pinned SHAs):
 
 ```sh

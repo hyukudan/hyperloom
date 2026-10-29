@@ -3,7 +3,7 @@
 Status: **FINAL for main's OK** (2026-10-23; sections 13-14 added after the 03:09 crash for the user's addenda A and B; second implementation review answered in section 15).
 - Author: the product design session (independent review).
 - History: `SPEC-draft.md` received an implementation review. Every review point is answered in §12. The spec body below already includes the accepted changes.
-- Language: English. Repo: **private** `hyukudan/hyperloom`.
+- Language: English. Repo: `hyukudan/hyperloom` (Apache-2.0).
 
 ## 0. Goal, scope, non-goals
 

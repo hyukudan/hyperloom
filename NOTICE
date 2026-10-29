@@ -1,3 +1,7 @@
+hyperloom
+Copyright (c) 2026 hyukudan
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
 hyperloom pulls these components as pinned git submodules; each keeps its own license:
 - TensorMeld (hyukudan/tensormeld): MIT
 - strix-halo-engine-lab (hyukudan/strix-halo-engine-lab): Apache-2.0

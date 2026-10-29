@@ -126,4 +126,4 @@ The pinned TensorMeld submodule must be available for router/parser and planner 
 
 ## License
 
-Copyright © 2026 hyukudan. **Proprietary; no license is granted.** See [LICENSE](LICENSE) and [NOTICE](NOTICE) for separate component licenses.
+Copyright © 2026 hyukudan. Licensed under the [Apache License 2.0](LICENSE). Components pulled as submodules keep their own licenses; see [NOTICE](NOTICE).
