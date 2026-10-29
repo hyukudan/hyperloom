@@ -7,7 +7,7 @@ Status: **FINAL for main's OK** (2026-10-23; sections 13-14 added after the 03:0
 
 ## 0. Goal, scope, non-goals
 
-**Goal.** One private repository that pulls in pinned versions of TensorMeld, the Strix Halo inference engine and strix-trellis. It builds them, installs them and drives them. It gives:
+**Goal.** One repository that pulls in pinned versions of TensorMeld, the Strix Halo inference engine and strix-trellis. It builds them, installs them and drives them. It gives:
 
 - **Windows (the PC with the RTX PRO 6000):** a front end to configure, install, start/stop, set parameters and see statistics. The PC runs the router and, in Phase 3, the RTX prefill service.
 - **Strix Halo nodes (Linux):** a node package (`hyperloom-node`) that builds and installs the engine and runs it safely inside the lab's GPU-turn rules.
@@ -202,7 +202,7 @@ Windows PC                                          Strix Halo node 1 / node 2
 ### 2.1 Repository layout
 ```
 hyperloom/
-  README.md  SECURITY.md  LICENSE (proprietary, private for now)  NOTICE (component licenses)
+  README.md  SECURITY.md  LICENSE (Apache-2.0)  NOTICE (component licenses)
   versions.lock                # pins (SHA), capability matrix, toolchain versions, qualifying receipts
   third_party/{tensormeld,engine,strix-trellis}   # git submodules, read-only here
   hyperloom/            config.py render.py remote.py lease.py stats.py adapters/ web/ presets/
@@ -552,10 +552,10 @@ It starts only when the engine ships a CUDA FRONT with an HTTP serving API, `/he
 | Scope creep | MVP = 1a CLI; UI thin; everything else is a later phase |
 
 ## 8. Conventions
-- **Repo:** `hyukudan/hyperloom` (private). Package and CLI: `hyperloom`. Node tool: `hyperloom-node`.
+- **Repo:** `hyukudan/hyperloom` (public since 2026-10-29). Package and CLI: `hyperloom`. Node tool: `hyperloom-node`.
 - **Python:** stdlib only in production (PC ≥ 3.11, node system python3 ≥ 3.10); pytest (`.[test]`), including unittest classes.
 - **Commit author** `hyukudan <19479239+hyukudan@users.noreply.github.com>`, with no trailers (no co-author or session lines).
-- **License:** proprietary/private for now; the `NOTICE` file preserves component licenses.
+- **License:** Apache-2.0 (since 2026-10-29); the `NOTICE` file preserves component licenses.
 
 ## 9. Build process (after main's OK)
 - One phase at a time. Coding workers get **disjoint** tasks (files/modules), for example in Phase 0:
@@ -789,7 +789,7 @@ A = accepted, P = partly accepted. Each answer is the binding change. Where it a
 ## 16. Decisions from main/user (05:18) — binding; they override earlier text
 
 ### 16.1 Name
-- Repo: **private `hyukudan/hyperloom`** (user decision 05:26; created as `telar` and renamed). No public visibility and no releases.
+- Repo: **private `hyukudan/hyperloom`** (user decision 05:26; created as `telar` and renamed). No public visibility and no releases. *Superseded 2026-10-29: the repository is public under Apache-2.0.*
 - CLI and package: `hyperloom` (short alias `hloom`). Node tool: `hyperloom-node`. GPU-turn labels: **`hl-<profile>-<short id>`**.
 - Every earlier mention of `tmc`, `tensormeld-cluster` or the label prefix `tmc-` reads as `hyperloom` / `hl-`.
 
